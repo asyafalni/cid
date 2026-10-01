@@ -1052,3 +1052,121 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
 
     try std.testing.expectError(error.NoSuchBranch, remote.merge(arena, "ghost", "user:test"));
 }
+
+test "s3 multipart: a large object goes up in parts and comes back identical" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .bucket = "cid-test",
+        .multipart_threshold = 5 * 1024 * 1024, // S3's minimum part size
+    });
+    defer s3c.deinit();
+    try s3c.createBucket(arena);
+
+    // 12 MB of varied bytes → 3 parts (5 + 5 + 2).
+    const big = try arena.alloc(u8, 12 * 1024 * 1024);
+    for (big, 0..) |*b, i| b.* = @truncate(i *% 31 +% (i >> 8));
+
+    const key = "items/sha256/mp/multipart-test-object";
+    try s3c.deleteObject(arena, key);
+    try s3c.putObject(arena, key, big);
+
+    const got = try s3c.getObjectAlloc(arena, key, 16 * 1024 * 1024);
+    try std.testing.expectEqual(big.len, got.len);
+    try std.testing.expect(std.mem.eql(u8, big, got));
+    try s3c.deleteObject(arena, key);
+}
+
+test "purge: bytes gone, history intact, verify says so, content cannot return" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var diag: cid.pg.Diag = .{};
+    var db = try connect(&diag);
+    defer db.close();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .bucket = "cid-test",
+    });
+    defer s3c.deinit();
+    try s3c.createBucket(arena);
+
+    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/purge" };
+
+    try db.exec("SET cid.maintenance = 'on'", &diag);
+    inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
+        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/purge')", &diag);
+    }
+    try db.exec("DELETE FROM purged_items WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/purge')", &diag);
+    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/purge'", &diag);
+    try db.exec("RESET cid.maintenance", &diag);
+
+    const sensitive = "a face image that must be erasable";
+    var dg: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(sensitive, &dg, .{});
+    const sensitive_hash = std.fmt.bytesToHex(dg, .lower);
+    {
+        const hz = try arena.dupeZ(u8, &sensitive_hash);
+        db.execParams("DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag) catch {};
+    }
+
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    try producer.dir.writeFile(io, .{ .sub_path = "face.jpg", .data = sensitive });
+    try producer.dir.writeFile(io, .{ .sub_path = "ok.txt", .data = "harmless" });
+    try cid.client.workspace.init(arena, io, producer.dir, "cid@test:test/datasets/purge", "g@h:p.git");
+    var pws = try cid.client.workspace.open(arena, io, producer.dir);
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "with face", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    _ = try remote.tag(arena, "v1.0.0");
+
+    const ds_id: [:0]const u8 = blk: {
+        var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/purge'", &.{}, &diag);
+        defer rows.deinit();
+        break :blk try arena.dupeZ(u8, rows.get(0, 0));
+    };
+
+    // Purge by path; the bytes vanish, the tombstone and audit land.
+    const purged = try cid.purge.purge(arena, &db, &s3c, "test/datasets/purge", "face.jpg", "erasure request #42", "user:admin");
+    try std.testing.expectEqualStrings(&sensitive_hash, purged.hash_hex);
+    try std.testing.expectEqual(@as(usize, 1), purged.releases_affected);
+    const key = try cid.api.itemKey(arena, &sensitive_hash);
+    try std.testing.expectEqual(@as(?u64, null), try s3c.headObject(arena, key));
+    try std.testing.expectError(error.AlreadyPurged, cid.purge.purge(arena, &db, &s3c, "test/datasets/purge", "face.jpg", "again", "user:admin"));
+
+    var audit = try db.query(
+        "SELECT count(*) FROM activity_events WHERE dataset_id = $1::uuid AND action = 'purge'",
+        &.{ds_id},
+        &diag,
+    );
+    defer audit.deinit();
+    try std.testing.expectEqualStrings("1", audit.get(0, 0));
+
+    // History rows untouched; verify is green with the purged item named.
+    const v = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    try std.testing.expect(v.ok);
+    try std.testing.expectEqual(@as(usize, 1), v.purged);
+    try std.testing.expectEqual(@as(usize, 2), v.items);
+
+    // The purged content can never come back through push.
+    const check_body = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\"]}}", .{&sensitive_hash});
+    const refused = cid.api.handle(arena, &deps, "POST", "/v0/datasets/test/datasets/purge/-/check-hashes", "Bearer test-token", check_body);
+    try std.testing.expectEqual(std.http.Status.unprocessable_entity, refused.status);
+}

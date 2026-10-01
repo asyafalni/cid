@@ -313,6 +313,8 @@ fn checkHashes(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const
     const now = nowEpoch(deps.io);
     for (req.hashes) |hash| {
         if (!validHashHex(hash)) return error.BadRequest;
+        if (try isPurged(arena, deps, hash))
+            return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then run 'cid push' again.");
         const key = itemKey(arena, hash) catch return error.OutOfMemory;
         const exists = deps.s3.headObject(arena, key) catch return error.Storage;
         if (exists == null) {
@@ -354,6 +356,8 @@ fn push(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) Ha
         for (commit.changes) |ch| {
             if (eql(ch.op, "add")) {
                 if (!validHashHex(ch.hash)) return error.BadRequest;
+                if (try isPurged(arena, deps, ch.hash))
+                    return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then run 'cid push' again.");
                 const key = itemKey(arena, ch.hash) catch return error.OutOfMemory;
                 const exists = deps.s3.headObject(arena, key) catch return error.Storage;
                 if (exists == null)
@@ -842,6 +846,16 @@ fn merge(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) H
     deps.db.exec("COMMIT", &diag) catch return error.Db;
 
     return json(arena, .ok, .{ .merge_commit = &merge_id.toString(), .changes = branch_changes.count() });
+}
+
+fn isPurged(arena: std.mem.Allocator, deps: *Deps, hash: []const u8) HandleError!bool {
+    var rows = deps.db.query(
+        "SELECT 1 FROM purged_items WHERE item_hash = decode($1, 'hex')",
+        &.{try arena.dupeZ(u8, hash)},
+        null,
+    ) catch return error.Db;
+    defer rows.deinit();
+    return rows.count() > 0;
 }
 
 fn findRow(rows: []const release_mod.StateRow, path: []const u8) ?release_mod.StateRow {

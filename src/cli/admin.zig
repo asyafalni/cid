@@ -10,6 +10,7 @@ const release = @import("../core/release.zig");
 const git_writer = @import("../gitrepo/writer.zig");
 const keys_mod = @import("../access/keys.zig");
 const gitlab_sync = @import("../access/gitlab_sync.zig");
+const purge_mod = @import("../core/purge.zig");
 const serve_mod = @import("../server/serve.zig");
 
 const ExitCode = root.ExitCode;
@@ -67,6 +68,9 @@ pub fn run(
     }
     if (eql(sub, "sync-gitlab")) {
         return runSyncGitlab(arena, io, out, env);
+    }
+    if (eql(sub, "purge")) {
+        return runPurge(arena, io, out, env, args[1..]);
     }
     return fail(io, .usage, "'cid admin {s}' is not an admin command. Run 'cid admin'.", .{sub});
 }
@@ -148,6 +152,41 @@ fn runServe(
     s3_client.createBucket(arena) catch
         return fail(io, .network, "cannot reach storage at {s}. Check SeaweedFS, then run 'cid admin serve' again.", .{s3_endpoint});
 
+    // The background loop: GitLab sync and git-write retries, every 10
+    // minutes (CID_SYNC_INTERVAL_SECS overrides). Each tick opens its own
+    // database connection, so a hiccup never poisons the server's.
+    {
+        const interval: u64 = blk: {
+            const text = env.get("CID_SYNC_INTERVAL_SECS") orelse break :blk 600;
+            break :blk std.fmt.parseInt(u64, text, 10) catch 600;
+        };
+        const bg: BackgroundConfig = .{
+            .io = io,
+            .conninfo = conninfo,
+            .interval_secs = interval,
+            .gitlab = if (env.get("CID_GITLAB_TOKEN")) |t| .{
+                .base_url = env.get("CID_GITLAB_URL") orelse "https://gitlab.com",
+                .token = t,
+            } else null,
+            .git = if (env.get("CID_GIT_WORKDIR")) |w| .{
+                .workdir = w,
+                .server_url = env.get("CID_PUBLIC_URL") orelse "http://127.0.0.1:7070",
+            } else null,
+        };
+        if (bg.gitlab != null or bg.git != null) {
+            const thread = std.Thread.spawn(.{}, backgroundLoop, .{bg}) catch |err| {
+                std.log.warn("background loop not started: {t}; use 'cid admin sync-gitlab' and 'cid admin git --resync' by hand", .{err});
+                return fail(io, .network, "could not start the background loop: {t}", .{err});
+            };
+            thread.detach();
+            std.log.info("background loop every {d}s (gitlab: {s}, git: {s})", .{
+                interval,
+                if (bg.gitlab != null) "on" else "off",
+                if (bg.git != null) "on" else "off",
+            });
+        }
+    }
+
     var deps: api.Deps = .{ .db = &db, .s3 = &s3_client, .io = io, .token = token, .token_secret = token_secret };
     if (env.get("CID_GIT_WORKDIR")) |git_workdir| {
         deps.git = .{
@@ -212,9 +251,15 @@ fn runVerify(
     };
 
     if (result.ok) {
-        out.print("Release {s} of {s} verifies: {d} items, manifest hash reproduced exactly.\n", .{
-            release_name, dataset_name, result.items,
-        }) catch return .network;
+        if (result.purged > 0) {
+            out.print("Release {s} of {s} verifies: {d} items, manifest hash reproduced exactly — intact except {d} purged item{s}.\n", .{
+                release_name, dataset_name, result.items, result.purged, plural(result.purged),
+            }) catch return .network;
+        } else {
+            out.print("Release {s} of {s} verifies: {d} items, manifest hash reproduced exactly.\n", .{
+                release_name, dataset_name, result.items,
+            }) catch return .network;
+        }
         out.flush() catch return .network;
         return .ok;
     }
@@ -412,6 +457,105 @@ fn runSyncGitlab(
     out.writeAll("\n") catch return .network;
     out.flush() catch return .network;
     return .ok;
+}
+
+fn runPurge(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+    env: *const std.process.Environ.Map,
+    args: []const [:0]const u8,
+) ExitCode {
+    var positional: std.ArrayList([]const u8) = .empty;
+    var reason: ?[]const u8 = null;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--reason")) {
+            i += 1;
+            if (i >= args.len) return fail(io, .usage, "--reason needs text. Run 'cid admin purge <dataset> <path|hash> --reason \"erasure request #123\"'.", .{});
+            reason = args[i];
+        } else {
+            positional.append(arena, args[i]) catch return .network;
+        }
+    }
+    if (positional.items.len != 2 or reason == null)
+        return fail(io, .usage, "run 'cid admin purge <dataset> <path|hash> --reason \"why\"'. The reason is recorded forever.", .{});
+
+    const s3_endpoint = env.get("CID_S3_ENDPOINT") orelse return missingEnv(io, "CID_S3_ENDPOINT", "http://127.0.0.1:8333");
+    const s3_access = env.get("CID_S3_ACCESS_KEY") orelse return missingEnv(io, "CID_S3_ACCESS_KEY", "cid");
+    const s3_secret = env.get("CID_S3_SECRET_KEY") orelse return missingEnv(io, "CID_S3_SECRET_KEY", "…");
+    const s3_bucket = env.get("CID_S3_BUCKET") orelse return missingEnv(io, "CID_S3_BUCKET", "cid");
+    var db = adminDb(arena, io, env, "cid admin purge") orelse return .network;
+    defer db.close();
+    var s3_client = s3.Client.init(arena, io, .{
+        .endpoint = s3_endpoint,
+        .access_key = s3_access,
+        .secret_key = s3_secret,
+        .bucket = s3_bucket,
+    }) catch return fail(io, .usage, "CID_S3_ENDPOINT must look like http://host:port.", .{});
+    defer s3_client.deinit();
+
+    const by = env.get("USER") orelse "admin";
+    const by_tag = std.fmt.allocPrint(arena, "user:{s}", .{by}) catch return .network;
+    const result = purge_mod.purge(arena, &db, &s3_client, positional.items[0], positional.items[1], reason.?, by_tag) catch |err| switch (err) {
+        error.NoSuchDataset => return fail(io, .usage, "no dataset named '{s}'.", .{positional.items[0]}),
+        error.NoSuchItem => return fail(io, .usage, "'{s}' matches no item in {s}. Give a path from the dataset or a 64-hex hash.", .{ positional.items[1], positional.items[0] }),
+        error.AlreadyPurged => return fail(io, .usage, "that content is already purged. Nothing to do.", .{}),
+        else => return fail(io, .network, "purge could not finish: {t}. Run the same command again; it resumes.", .{err}),
+    };
+    out.print("Purged {s} ({s}…) from storage. {d} release{s} now read{s} \"intact except purged\"; the reason is on record.\n", .{
+        positional.items[1],              result.hash_hex[0..12],                         result.releases_affected,
+        plural(result.releases_affected), if (result.releases_affected == 1) "s" else "",
+    }) catch return .network;
+    out.flush() catch return .network;
+    return .ok;
+}
+
+const BackgroundConfig = struct {
+    io: std.Io,
+    conninfo: [:0]const u8,
+    interval_secs: u64,
+    gitlab: ?gitlab_sync.Config,
+    git: ?git_writer.Config,
+};
+
+fn backgroundLoop(bg: BackgroundConfig) void {
+    while (true) {
+        std.Io.sleep(bg.io, .fromNanoseconds(@intCast(bg.interval_secs * std.time.ns_per_s)), .awake) catch return;
+        var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+
+        var db = pg.Db.connect(bg.conninfo, null) catch {
+            std.log.warn("background: database unreachable; will retry", .{});
+            continue;
+        };
+        defer db.close();
+
+        if (bg.gitlab) |config| {
+            if (gitlab_sync.syncAll(arena, bg.io, &db, config)) |outcome| {
+                if (outcome.members > 0 or outcome.keys > 0 or outcome.access_removed > 0)
+                    std.log.info("background: gitlab sync {d} members, {d} keys", .{ outcome.members, outcome.keys });
+            } else |err| {
+                std.log.warn("background: gitlab sync failed: {t}", .{err});
+            }
+        }
+        if (bg.git) |config| {
+            var names = db.query(
+                "SELECT DISTINCT d.name FROM git_writes w JOIN datasets d USING (dataset_id) WHERE w.status <> 'done'",
+                &.{},
+                null,
+            ) catch continue;
+            defer names.deinit();
+            var i: usize = 0;
+            while (i < names.count()) : (i += 1) {
+                const name = arena.dupe(u8, names.get(i, 0)) catch continue;
+                _ = git_writer.processDataset(arena, bg.io, &db, config, name) catch |err| {
+                    std.log.warn("background: git write for {s} failed: {t}", .{ name, err });
+                };
+            }
+        }
+    }
 }
 
 fn missingEnv(io: std.Io, name: []const u8, example: []const u8) ExitCode {

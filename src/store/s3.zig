@@ -15,6 +15,9 @@ pub const Config = struct {
     access_key: []const u8,
     secret_key: []const u8,
     bucket: []const u8,
+    /// Objects above this go up in parts (storage rules: multipart over
+    /// 64 MB). Tests lower it; S3 parts must be at least 5 MB.
+    multipart_threshold: u64 = 64 * 1024 * 1024,
 };
 
 // ---------------------------------------------------------------------------
@@ -171,11 +174,110 @@ pub const Client = struct {
     }
 
     pub fn putObject(self: *Client, arena: std.mem.Allocator, key: []const u8, bytes: []const u8) Error!void {
+        if (bytes.len > self.config.multipart_threshold)
+            return self.putObjectMultipart(arena, key, bytes);
         var digest: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
         const payload_hash = std.fmt.bytesToHex(digest, .lower);
         const status = try self.simpleRequest(arena, "PUT", key, "", &payload_hash, bytes, null);
         if (status != .ok) return error.RequestFailed;
+    }
+
+    /// CreateMultipartUpload → UploadPart× → CompleteMultipartUpload.
+    fn putObjectMultipart(self: *Client, arena: std.mem.Allocator, key: []const u8, bytes: []const u8) Error!void {
+        // Create: POST ?uploads, UploadId in the XML answer.
+        var aw: std.Io.Writer.Allocating = .init(arena);
+        const create_status = self.rawRequest(arena, "POST", key, "uploads=", empty_payload_hash, "", &aw.writer) catch
+            return error.RequestFailed;
+        if (create_status != .ok) return error.RequestFailed;
+        const created = aw.writer.buffered();
+        const open_tag = std.mem.indexOf(u8, created, "<UploadId>") orelse return error.RequestFailed;
+        const close_tag = std.mem.indexOf(u8, created, "</UploadId>") orelse return error.RequestFailed;
+        const upload_id = created[open_tag + "<UploadId>".len .. close_tag];
+        const upload_id_enc = try uriEncode(arena, upload_id, false);
+
+        const part_size: usize = @intCast(self.config.multipart_threshold);
+        var etags: std.ArrayList([]const u8) = .empty;
+        var offset: usize = 0;
+        var part_no: u32 = 1;
+        while (offset < bytes.len) : (part_no += 1) {
+            const end = @min(offset + part_size, bytes.len);
+            const query = try std.fmt.allocPrint(arena, "partNumber={d}&uploadId={s}", .{ part_no, upload_id_enc });
+            const etag = try self.uploadPart(arena, key, query, bytes[offset..end]);
+            try etags.append(arena, etag);
+            offset = end;
+        }
+
+        var xml: std.ArrayList(u8) = .empty;
+        try xml.appendSlice(arena, "<CompleteMultipartUpload>");
+        for (etags.items, 1..) |etag, n| {
+            try xml.print(arena, "<Part><PartNumber>{d}</PartNumber><ETag>{s}</ETag></Part>", .{ n, etag });
+        }
+        try xml.appendSlice(arena, "</CompleteMultipartUpload>");
+        var body_digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(xml.items, &body_digest, .{});
+        const body_hash = std.fmt.bytesToHex(body_digest, .lower);
+        const complete_query = try std.fmt.allocPrint(arena, "uploadId={s}", .{upload_id_enc});
+        const complete_status = self.rawRequest(arena, "POST", key, complete_query, &body_hash, xml.items, null) catch
+            return error.RequestFailed;
+        if (complete_status != .ok) return error.RequestFailed;
+    }
+
+    /// One part; returns its ETag (needed to complete the upload).
+    fn uploadPart(self: *Client, arena: std.mem.Allocator, key: []const u8, query: []const u8, part: []const u8) Error![]const u8 {
+        const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(self.http.io, .real).toSeconds()));
+        const date_time = dateTimeFromEpoch(now);
+        const path = self.objectPath(arena, key) catch return error.OutOfMemory;
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(part, &digest, .{});
+        const payload_hash = std.fmt.bytesToHex(digest, .lower);
+
+        const headers = [_]Header{
+            .{ .name = "host", .value = self.host },
+            .{ .name = "x-amz-content-sha256", .value = &payload_hash },
+            .{ .name = "x-amz-date", .value = &date_time },
+        };
+        const auth = authorizationHeader(arena, .{
+            .method = "PUT",
+            .canonical_path = path,
+            .canonical_query = query,
+            .headers = &headers,
+            .payload_hash = &payload_hash,
+            .date_time = &date_time,
+            .region = self.config.region,
+            .service = "s3",
+        }, self.config.access_key, self.config.secret_key) catch return error.OutOfMemory;
+
+        const url = std.fmt.allocPrint(arena, "{s}{s}?{s}", .{ self.config.endpoint, path, query }) catch
+            return error.OutOfMemory;
+        const uri = std.Uri.parse(url) catch return error.RequestFailed;
+        var req = self.http.request(.PUT, uri, .{
+            .keep_alive = false,
+            .extra_headers = &.{
+                .{ .name = "x-amz-content-sha256", .value = &payload_hash },
+                .{ .name = "x-amz-date", .value = &date_time },
+                .{ .name = "authorization", .value = auth },
+            },
+        }) catch return error.RequestFailed;
+        defer req.deinit();
+        req.transfer_encoding = .{ .content_length = part.len };
+        var body = req.sendBody(&.{}) catch return error.RequestFailed;
+        body.writer.writeAll(part) catch return error.RequestFailed;
+        body.end() catch return error.RequestFailed;
+        req.connection.?.flush() catch return error.RequestFailed;
+
+        var redirect_buf: [1024]u8 = undefined;
+        var response = req.receiveHead(&redirect_buf) catch return error.RequestFailed;
+        if (response.head.status != .ok) return error.RequestFailed;
+        var etag: ?[]const u8 = null;
+        var it = response.head.iterateHeaders();
+        while (it.next()) |h| {
+            if (std.ascii.eqlIgnoreCase(h.name, "etag"))
+                etag = arena.dupe(u8, h.value) catch return error.OutOfMemory;
+        }
+        const reader = response.reader(&.{});
+        _ = reader.discardRemaining() catch {};
+        return etag orelse error.RequestFailed;
     }
 
     /// Returns the object's size, or null if it does not exist.

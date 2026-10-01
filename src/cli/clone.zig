@@ -25,7 +25,15 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     }
     if (positional.items.len == 0 or positional.items.len > 2)
         return common.fail(ctx, .usage, "run 'cid clone <address> [folder]', e.g. cid clone cid@cidhub.com:org/datasets/calls", .{});
-    const address = positional.items[0];
+    var address = positional.items[0];
+
+    // The git URL copied from GitLab works too: the dataset repository's
+    // .cid marker says which server and dataset it mirrors. This is the
+    // CLI's one and only git invocation (CLAUDE.md, external programs).
+    if (std.mem.endsWith(u8, address, ".git")) {
+        address = resolveGitUrl(ctx, address) orelse
+            return common.fail(ctx, .usage, "could not read the dataset marker from that git repository. Check the URL, or run 'cid clone' with the cid address instead.", .{});
+    }
     const name = workspace.datasetPathOf(address) orelse
         return common.fail(ctx, .usage, "'{s}' is not a cid address (expected cid@host:org/path). Check it and run 'cid clone' again.", .{address});
 
@@ -63,6 +71,50 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         }) catch return .network;
     }
     return .ok;
+}
+
+/// Shallow-clones the repository to a scratch folder, reads `.cid`
+/// (cid-marker 1 / server <url> / dataset <name>), and builds the cid
+/// address cid@<server-host>:<dataset>.
+fn resolveGitUrl(ctx: *const common.Context, git_url: []const u8) ?[]const u8 {
+    const home = ctx.env.get("HOME") orelse return null;
+    var rand: [6]u8 = undefined;
+    ctx.io.random(&rand);
+    const tmp = std.fmt.allocPrint(ctx.arena, "{s}/.cache/cid/marker-{x}", .{ home, &rand }) catch return null;
+    defer std.Io.Dir.cwd().deleteTree(ctx.io, tmp) catch {};
+
+    const result = std.process.run(ctx.arena, ctx.io, .{
+        .argv = &.{ "git", "clone", "--depth", "1", "--quiet", git_url, tmp },
+        .timeout = .{ .duration = .{ .clock = .awake, .raw = .{ .nanoseconds = 60 * std.time.ns_per_s } } },
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(64 * 1024),
+    }) catch return null;
+    if (result.term != .exited or result.term.exited != 0) {
+        if (result.stderr.len > 0)
+            std.log.warn("git said: {s}", .{std.mem.trim(u8, result.stderr, " \n")});
+        return null;
+    }
+
+    const marker_path = std.fmt.allocPrint(ctx.arena, "{s}/.cid", .{tmp}) catch return null;
+    const text = std.Io.Dir.cwd().readFileAlloc(ctx.io, marker_path, ctx.arena, .limited(4096)) catch return null;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    if (!std.mem.eql(u8, lines.next() orelse "", "cid-marker 1")) return null;
+    var server: ?[]const u8 = null;
+    var dataset: ?[]const u8 = null;
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "server ")) server = line["server ".len..];
+        if (std.mem.startsWith(u8, line, "dataset ")) dataset = line["dataset ".len..];
+    }
+    const srv = server orelse return null;
+    const ds = dataset orelse return null;
+
+    // cid@<host>:<dataset> — the host from the server URL, port dropped
+    // (SSH has its own).
+    const scheme_end = std.mem.indexOf(u8, srv, "://") orelse return null;
+    var host = srv[scheme_end + 3 ..];
+    if (std.mem.indexOfScalar(u8, host, '/')) |slash| host = host[0..slash];
+    if (std.mem.indexOfScalar(u8, host, ':')) |colon| host = host[0..colon];
+    return std.fmt.allocPrint(ctx.arena, "cid@{s}:{s}", .{ host, ds }) catch null;
 }
 
 fn lastSegment(name: []const u8) []const u8 {

@@ -177,6 +177,9 @@ pub const VerifyProblem = enum {
 pub const VerifyResult = struct {
     ok: bool,
     items: usize,
+    /// Items whose bytes were purged (docs/data-model.md): the release is
+    /// "intact except N purged items", which is not a verification failure.
+    purged: usize = 0,
     problems: []const VerifyProblem,
 };
 
@@ -217,18 +220,27 @@ pub fn verify(
         problems.append(arena, .stored_manifest_missing) catch return error.OutOfMemory;
     }
 
+    var purged: usize = 0;
     for (rows) |row| {
         const key = std.fmt.allocPrint(arena, "items/sha256/{s}/{s}/{s}", .{
             row.hash_hex[0..2], row.hash_hex[2..4], row.hash_hex,
         }) catch return error.OutOfMemory;
         const present = s3.headObject(arena, key) catch return error.Storage;
         if (present == null) {
-            problems.append(arena, .item_missing_from_storage) catch return error.OutOfMemory;
-            break; // one is enough to fail; listing all comes later
+            const hash_z = arena.dupeZ(u8, row.hash_hex) catch return error.OutOfMemory;
+            var tomb = db.query("SELECT 1 FROM purged_items WHERE item_hash = decode($1, 'hex')", &.{hash_z}, null) catch
+                return error.Db;
+            defer tomb.deinit();
+            if (tomb.count() > 0) {
+                purged += 1;
+            } else {
+                problems.append(arena, .item_missing_from_storage) catch return error.OutOfMemory;
+                break; // one is enough to fail; listing all comes later
+            }
         }
     }
 
-    return .{ .ok = problems.items.len == 0, .items = rows.len, .problems = problems.items };
+    return .{ .ok = problems.items.len == 0, .items = rows.len, .purged = purged, .problems = problems.items };
 }
 
 test "release names" {

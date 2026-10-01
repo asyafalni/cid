@@ -26,6 +26,7 @@ pub const api = @import("server/api.zig");
 pub const serve = @import("server/serve.zig");
 pub const migrate = @import("core/migrate.zig");
 pub const release = @import("core/release.zig");
+pub const purge = @import("core/purge.zig");
 pub const canonical = @import("manifest/canonical.zig");
 pub const gitrepo = struct {
     pub const render = @import("gitrepo/render.zig");
