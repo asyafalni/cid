@@ -13,6 +13,9 @@
 const std = @import("std");
 
 pub const header = "cid-manifest 1\n";
+/// Annotated datasets: item rows then annotation rows. File-dataset
+/// manifests stay version 1, so their released hashes never move.
+pub const header_v2 = "cid-manifest 2\n";
 
 pub const ItemRow = struct {
     path: []const u8,
@@ -26,6 +29,18 @@ pub fn appendItemRow(arena: std.mem.Allocator, out: *std.ArrayList(u8), row: Ite
         row.path, row.hash_hex, row.size, row.split orelse "-",
     });
 }
+
+pub const AnnRow = struct {
+    item_id: []const u8,
+    annotation_id: []const u8,
+    kind: ?[]const u8,
+    class: ?[]const u8,
+    /// Already in RFC 8785 form (jcs.zig), or null.
+    geometry_jcs: ?[]const u8,
+    attrs_jcs: ?[]const u8,
+    author: []const u8,
+    policy_ver: []const u8,
+};
 
 /// Renders the full canonical stream for file-dataset rows (already sorted
 /// by path) and returns it with its SHA-256.
@@ -46,6 +61,49 @@ pub fn render(arena: std.mem.Allocator, rows: []const ItemRow) !Rendered {
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(out.items, &digest, .{});
     return .{ .bytes = out.items, .sha256_hex = std.fmt.bytesToHex(digest, .lower) };
+}
+
+pub const RenderError = error{ OutOfMemory, BadAnnotationText };
+
+/// The version-2 stream: items as in v1, then one `ann` row per
+/// annotation, sorted by (item_id, annotation_id). Text columns may not
+/// carry tabs or newlines (JCS already escapes them inside JSON strings);
+/// finding one is an error, never a silent mangling.
+pub fn renderAnnotated(
+    arena: std.mem.Allocator,
+    items: []const ItemRow,
+    anns: []const AnnRow,
+) RenderError![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(arena, header_v2);
+    for (items) |row| {
+        try appendItemRow(arena, &out, row);
+    }
+    var prev: ?AnnRow = null;
+    for (anns) |ann| {
+        if (prev) |p| {
+            const item_order = std.mem.order(u8, p.item_id, ann.item_id);
+            std.debug.assert(item_order == .lt or
+                (item_order == .eq and std.mem.order(u8, p.annotation_id, ann.annotation_id) == .lt));
+        }
+        prev = ann;
+        inline for (.{ ann.kind, ann.class, @as(?[]const u8, ann.author), @as(?[]const u8, ann.policy_ver) }) |field| {
+            if (field) |text| {
+                if (std.mem.indexOfAny(u8, text, "\t\n") != null) return error.BadAnnotationText;
+            }
+        }
+        try out.print(arena, "ann\t{s}\t{s}\t{s}\t{s}\t{s}\t{s}\t{s}\t{s}\n", .{
+            ann.item_id,
+            ann.annotation_id,
+            ann.kind orelse "-",
+            ann.class orelse "-",
+            ann.geometry_jcs orelse "-",
+            ann.attrs_jcs orelse "-",
+            ann.author,
+            ann.policy_ver,
+        });
+    }
+    return out.items;
 }
 
 pub fn hashOf(bytes: []const u8) [64]u8 {

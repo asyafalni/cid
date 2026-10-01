@@ -571,6 +571,7 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) Han
         error.BadName => return errorResponse(arena, .bad_request, "that is not a release name (letters, digits, dot, dash, underscore)", "Pick a name like v1.0.0 and run 'cid tag' again."),
         error.ReleaseExists => return errorResponse(arena, .conflict, "that release already exists and releases never move", "Pick a new name, e.g. the next version number."),
         error.NoSuchCommit => return errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits."),
+        error.BadAnnotationText => return errorResponse(arena, .unprocessable_entity, "an annotation carries text or JSON the manifest cannot hold", "Fix the offending annotation in the platform, commit, then tag again."),
         error.Storage => return error.Storage,
         error.OutOfMemory => return error.OutOfMemory,
         error.Db => return error.Db,

@@ -11,12 +11,14 @@ const std = @import("std");
 const pg = @import("../store/pg.zig");
 const s3_mod = @import("../store/s3.zig");
 const canonical = @import("../manifest/canonical.zig");
+const jcs = @import("../manifest/jcs.zig");
 const Uuid = @import("../util/uuid7.zig").Uuid;
 
 pub const Error = error{
     NoSuchCommit,
     ReleaseExists,
     BadName,
+    BadAnnotationText,
     Db,
     Storage,
     OutOfMemory,
@@ -100,12 +102,51 @@ pub fn stateRows(
     return out;
 }
 
-fn renderManifest(arena: std.mem.Allocator, rows: []const StateRow) Error!canonical.Rendered {
+fn datasetKind(arena: std.mem.Allocator, db: *pg.Db, dataset_id: [:0]const u8) Error![]const u8 {
+    var rows = db.query("SELECT kind FROM datasets WHERE dataset_id = $1::uuid", &.{dataset_id}, null) catch
+        return error.Db;
+    defer rows.deinit();
+    if (rows.count() == 0) return error.Db;
+    return arena.dupe(u8, rows.get(0, 0)) catch error.OutOfMemory;
+}
+
+/// The whole release stream: v1 for file datasets (hashes frozen since the
+/// first release ever), v2 with annotation rows for annotated ones.
+fn renderManifest(
+    arena: std.mem.Allocator,
+    db: *pg.Db,
+    dataset_id: [:0]const u8,
+    commit_id: [:0]const u8,
+    rows: []const StateRow,
+) Error!canonical.Rendered {
     const item_rows = arena.alloc(canonical.ItemRow, rows.len) catch return error.OutOfMemory;
     for (item_rows, 0..) |*r, i| {
         r.* = .{ .path = rows[i].path, .hash_hex = rows[i].hash_hex, .size = rows[i].size, .split = rows[i].split };
     }
-    return canonical.render(arena, item_rows) catch error.OutOfMemory;
+    const kind = try datasetKind(arena, db, dataset_id);
+    if (!std.mem.eql(u8, kind, "annotated")) {
+        return canonical.render(arena, item_rows) catch error.OutOfMemory;
+    }
+
+    const anns = try annotationRows(arena, db, dataset_id, commit_id);
+    const ann_rows = arena.alloc(canonical.AnnRow, anns.len) catch return error.OutOfMemory;
+    for (ann_rows, 0..) |*r, i| {
+        r.* = .{
+            .item_id = anns[i].item_id,
+            .annotation_id = anns[i].annotation_id,
+            .kind = anns[i].kind,
+            .class = anns[i].class,
+            .geometry_jcs = if (anns[i].geometry) |g| jcs.fromText(arena, g) catch return error.BadAnnotationText else null,
+            .attrs_jcs = if (anns[i].attrs) |a| jcs.fromText(arena, a) catch return error.BadAnnotationText else null,
+            .author = anns[i].author,
+            .policy_ver = anns[i].policy_ver,
+        };
+    }
+    const bytes = canonical.renderAnnotated(arena, item_rows, ann_rows) catch |err| switch (err) {
+        error.BadAnnotationText => return error.BadAnnotationText,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    return .{ .bytes = bytes, .sha256_hex = canonical.hashOf(bytes) };
 }
 
 pub const AnnotationRow = struct {
@@ -216,7 +257,7 @@ pub fn create(
     }
 
     const rows = try stateRows(arena, db, dataset_id, commit_id);
-    const rendered = try renderManifest(arena, rows);
+    const rendered = try renderManifest(arena, db, dataset_id, commit_id, rows);
 
     const key = try manifestKey(arena, dataset_id, commit_id);
     s3.putObject(arena, key, rendered.bytes) catch return error.Storage;
@@ -280,7 +321,7 @@ pub fn verify(
 
     var problems: std.ArrayList(VerifyProblem) = .empty;
     const rows = try stateRows(arena, db, dataset_id, commit_id);
-    const rendered = try renderManifest(arena, rows);
+    const rendered = try renderManifest(arena, db, dataset_id, commit_id, rows);
 
     if (!std.mem.eql(u8, &rendered.sha256_hex, recorded_hash))
         problems.append(arena, .recomputed_hash_differs) catch return error.OutOfMemory;

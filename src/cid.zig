@@ -28,6 +28,7 @@ pub const migrate = @import("core/migrate.zig");
 pub const release = @import("core/release.zig");
 pub const purge = @import("core/purge.zig");
 pub const canonical = @import("manifest/canonical.zig");
+pub const jcs = @import("manifest/jcs.zig");
 pub const gitrepo = struct {
     pub const render = @import("gitrepo/render.zig");
     pub const writer = @import("gitrepo/writer.zig");
@@ -72,6 +73,7 @@ test {
     _ = migrate;
     _ = release;
     _ = canonical;
+    _ = jcs;
     _ = gitrepo.render;
     _ = access.token;
     _ = access.auth;

@@ -1324,3 +1324,105 @@ test "annotated: the platform writes revisions, the server commits, state compos
     try std.testing.expectEqual(@as(usize, 2), s1_again.annotations.len);
     try std.testing.expectEqual(@as(i64, 10), s1_again.annotations[0].geometry.?.object.get("x").?.integer);
 }
+
+test "annotated releases: v2 manifest with JCS rows, verify catches smuggled boxes" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var diag: cid.pg.Diag = .{};
+    var db = try connect(&diag);
+    defer db.close();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .bucket = "cid-test",
+    });
+    defer s3c.deinit();
+    try s3c.createBucket(arena);
+
+    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/annrel" };
+
+    try db.exec("SET cid.maintenance = 'on'", &diag);
+    inline for (.{ "git_writes", "refs", "commits", "item_revisions", "annotation_revisions", "dataset_items" }) |table| {
+        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/annrel')", &diag);
+    }
+    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/annrel'", &diag);
+    try db.exec("RESET cid.maintenance", &diag);
+
+    _ = cid.api.handle(arena, &deps, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/annrel\",\"kind\":\"annotated\",\"git_url\":\"g@h:ar.git\"}");
+    const ds_id: [:0]const u8 = blk: {
+        var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/annrel'", &.{}, &diag);
+        defer rows.deinit();
+        break :blk try arena.dupeZ(u8, rows.get(0, 0));
+    };
+
+    // One image with one box, platform-style (bytes + register + revisions).
+    const pix = "annrel pixels";
+    var dg: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(pix, &dg, .{});
+    const hh = std.fmt.bytesToHex(dg, .lower);
+    try s3c.putObject(arena, try cid.api.itemKey(arena, &hh), pix);
+    try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len }});
+
+    var last = cid.uuid7.Uuid.now(io);
+    const item_id = cid.uuid7.Uuid.now(io).toString();
+    const box_id = cid.uuid7.Uuid.now(io).toString();
+    try db.exec("BEGIN", &diag);
+    {
+        const lock = try std.fmt.allocPrintSentinel(arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{ds_id}, 0);
+        try db.exec(lock, &diag);
+    }
+    try db.exec("SET LOCAL ROLE cid_writer", &diag);
+    {
+        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
+            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', 'img/a.jpg', 'add', '{s}', decode('{s}', 'hex'), 'train', 'agent:annotator')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &item_id, &hh }, 0);
+        try db.exec(sql, &diag);
+    }
+    last = cid.uuid7.Uuid.nextAfter(io, last);
+    {
+        // Written messy on purpose: unsorted keys, 10.0 instead of 10.
+        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'create', 'box', 'person', " ++
+            "'{{\"y\": 20, \"x\": 10.0, \"w\": 30.5, \"h\": 40}}'::jsonb, 'agent:annotator', 'policy-v1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &box_id, &item_id }, 0);
+        try db.exec(sql, &diag);
+    }
+    try db.exec("COMMIT", &diag);
+    _ = try remote.commitServer(arena, "main", "one box", "agent:annotator");
+
+    // Tag: the stored manifest is version 2 with a JCS annotation row.
+    const t = try remote.tag(arena, "v1.0.0");
+    try std.testing.expectEqual(@as(u64, 1), t.items);
+    const mkey = try cid.release.manifestKey(arena, ds_id, t.commit);
+    const stored = try s3c.getObjectAlloc(arena, mkey, 1024 * 1024);
+    try std.testing.expect(std.mem.startsWith(u8, stored, "cid-manifest 2\n"));
+    try std.testing.expect(std.mem.indexOf(u8, stored, "item\timg/a.jpg\t") != null);
+    const ann_line = try std.fmt.allocPrint(arena, "ann\t{s}\t{s}\tbox\tperson\t{{\"h\":40,\"w\":30.5,\"x\":10,\"y\":20}}\t-\tagent:annotator\tpolicy-v1\n", .{ &item_id, &box_id });
+    try std.testing.expect(std.mem.indexOf(u8, stored, ann_line) != null);
+
+    // Verify: green, repeatably.
+    const v1 = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    try std.testing.expect(v1.ok);
+
+    // A box smuggled under the sealed cutoff turns verify red.
+    const old_uuid = cid.uuid7.Uuid.init(last.unixMs() - 10_000, @splat(3));
+    {
+        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', gen_random_uuid(), '{s}', 'create', 'box', 'smuggled', '{{\"x\":1}}'::jsonb, 'user:evil', 'policy-v1')", .{ &old_uuid.toString(), old_uuid.unixMs() / 1000, ds_id, &item_id }, 0);
+        try db.exec(sql, &diag);
+    }
+    const v2 = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    try std.testing.expect(!v2.ok);
+    try std.testing.expectEqual(cid.release.VerifyProblem.recomputed_hash_differs, v2.problems[0]);
+    try db.exec("SET cid.maintenance = 'on'", &diag);
+    try db.exec("DELETE FROM annotation_revisions WHERE author = 'user:evil'", &diag);
+    try db.exec("RESET cid.maintenance", &diag);
+    const v3 = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    try std.testing.expect(v3.ok);
+}
