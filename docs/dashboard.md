@@ -280,6 +280,10 @@ accent colours.
   peaks, video poster frames and short previews, PDF page thumbnails, and per-file
   table statistics, when items are pushed or registered. It calls **ffmpeg** and
   **libvips** as external programs, so the cid binary itself gains no new C libraries.
+  **Generation is ingest-driven, never request-driven**: a page view can only read
+  previews that exist (or show a placeholder), so a thousand concurrent viewers cost
+  object reads, not ffmpeg runs. The queue is keyed by content hash — one build per
+  item ever, bounded retries, broken files skipped with the reason on record.
   Previews are stored in SeaweedFS by item hash and never re-built. For restricted
   items the worker **also stores a blurred rendition**, and that is the only preview
   the browse API will presign until the viewer hits the reveal endpoint — which logs

@@ -297,9 +297,15 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   manifests with DuckDB (filters, facets, cursors) and returns presigned preview URLs;
   it never scans raw files on page load.
 - **The preview worker** (`cid admin previews`) builds thumbnails, waveforms, video
-  posters, PDF page images and table statistics when items arrive, by calling `ffmpeg`
-  and `vips` as external programs. Previews are stored in SeaweedFS by item hash;
-  restricted items also get a blurred rendition (see `docs/dashboard.md`).
+  posters, PDF page images and table statistics, by calling `ffmpeg` (and `vips`
+  where present) as external programs. **ffmpeg never scales with users**: the
+  `previews` queue holds one row per content hash, filled at ingest (push,
+  register-items) and drained only by the worker — bounded concurrency
+  (CID_PREVIEW_JOBS, default 1), nice -19, -threads 1, hard timeouts, size
+  guards, bounded attempts then a recorded skip. Request paths only hand out
+  presigned URLs to previews that already exist; a missing preview renders as
+  a placeholder, never a generation. Previews are stored in SeaweedFS by item
+  hash; restricted items also get a blurred rendition (see `docs/dashboard.md`).
 - **The git writer** (`src/gitrepo/`) renders each release's small files and pushes a
   commit and tag to the dataset repository, using the `git` program on the server.
 - **SSH front door:** OpenSSH `sshd` on the cid host accepts only the user `cid`, looks

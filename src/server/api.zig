@@ -700,6 +700,7 @@ fn insertAddRevision(
         &.{ try arena.dupeZ(u8, hash), try intZ(arena, size) },
         diag,
     ) catch return error.Db;
+    try enqueuePreview(arena, deps, hash);
     // Item identity: new path → new item_id; existing path keeps its id.
     // On a branch, the path may live on main as of the branch start.
     deps.db.execParams(
@@ -980,6 +981,7 @@ fn registerItems(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []con
             &.{ try arena.dupeZ(u8, item.hash), try intZ(arena, item.size), try arena.dupeZ(u8, item.media_type), meta },
             &diag,
         ) catch return error.Db;
+        try enqueuePreview(arena, deps, item.hash);
     }
     return json(arena, .ok, .{ .registered = req.items.len });
 }
@@ -1118,6 +1120,17 @@ fn serverCommit(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []cons
     deps.db.exec("COMMIT", &diag) catch return error.Db;
 
     return json(arena, .created, .{ .commit = &commit_id.toString() });
+}
+
+/// One queue row per content hash, ever (ON CONFLICT DO NOTHING): the
+/// structural guarantee that preview work scales with ingested content
+/// and never with dashboard traffic. No request path builds previews.
+fn enqueuePreview(arena: std.mem.Allocator, deps: *Deps, hash: []const u8) HandleError!void {
+    deps.db.execParams(
+        "INSERT INTO previews (item_hash) VALUES (decode($1, 'hex')) ON CONFLICT (item_hash) DO NOTHING",
+        &.{try arena.dupeZ(u8, hash)},
+        null,
+    ) catch return error.Db;
 }
 
 fn isPurged(arena: std.mem.Allocator, deps: *Deps, hash: []const u8) HandleError!bool {

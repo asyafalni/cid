@@ -1473,6 +1473,17 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     try s3c.putObject(arena, try cid.api.itemKey(arena, &hh), pix);
     try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len, .media_type = "image/jpeg", .width = 640, .height = 480 }});
 
+    // Registering enqueues exactly one preview per content hash, ever —
+    // re-registering (or any number of viewers later) adds nothing.
+    try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len, .media_type = "image/jpeg", .width = 640, .height = 480 }});
+    {
+        const hz = try arena.dupeZ(u8, &hh);
+        var prows = try db.query("SELECT count(*), min(status) FROM previews WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag);
+        defer prows.deinit();
+        try std.testing.expectEqualStrings("1", prows.get(0, 0));
+        try std.testing.expectEqualStrings("pending", prows.get(0, 1));
+    }
+
     var last = cid.uuid7.Uuid.now(io);
     const fitem = cid.uuid7.Uuid.now(io).toString();
     const fbox = cid.uuid7.Uuid.now(io).toString();
