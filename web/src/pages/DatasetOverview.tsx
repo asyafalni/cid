@@ -6,6 +6,7 @@ import { gitWebUrl } from '../format';
 import { OverviewTab } from './OverviewTab';
 import { BrowseTab } from './BrowseTab';
 import { ReleasesTab } from './ReleasesTab';
+import { FilesTab } from './FilesTab';
 
 // The dataset page: sky-band header, the release tape, then the tabs.
 // The tab, the pinned release and the open item all live in the URL, so
@@ -13,11 +14,12 @@ import { ReleasesTab } from './ReleasesTab';
 export function DatasetOverview() {
   const { _splat: name = '' } = useParams({ strict: false });
   const search = useSearch({ strict: false }) as {
-    view?: 'overview' | 'browse' | 'releases';
+    view?: 'overview' | 'browse' | 'releases' | 'files';
     release?: string;
     item?: string;
     a?: string;
     b?: string;
+    dir?: string;
   };
   const navigate = useNavigate();
   const query = useQuery({
@@ -100,6 +102,15 @@ export function DatasetOverview() {
         >
           Releases
         </Link>
+        <Link
+          to="/d/$"
+          params={{ _splat: name }}
+          search={{ view: 'files', release: search.release }}
+          className={view === 'files' ? 'tab on' : 'tab'}
+          aria-current={view === 'files' ? 'page' : undefined}
+        >
+          Files
+        </Link>
       </nav>
 
       {view === 'overview' ? (
@@ -112,13 +123,20 @@ export function DatasetOverview() {
           openItem={search.item}
           onOpenItem={(path) => setSearch({ item: path })}
         />
-      ) : (
+      ) : view === 'releases' ? (
         <ReleasesTab
           name={name}
           overview={o}
           a={search.a}
           b={search.b}
           onPick={(patch) => setSearch(patch)}
+        />
+      ) : (
+        <FilesTab
+          name={name}
+          commit={pinnedCommit}
+          openDir={search.dir}
+          onOpenDir={(dir) => setSearch({ dir })}
         />
       )}
     </article>

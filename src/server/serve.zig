@@ -7,6 +7,7 @@
 const std = @import("std");
 const nilo = @import("nilo_http");
 const api = @import("api.zig");
+const assets = @import("web_assets");
 
 pub const Options = struct {
     host: []const u8 = "127.0.0.1",
@@ -24,6 +25,11 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
     try app.get("/v0/*", dispatch);
     try app.post("/v0/datasets", dispatch);
     try app.post("/v0/*", dispatch);
+    // The dashboard, embedded at build time: /v0/* wins over these by
+    // specificity, and every non-API path falls back to the app shell so
+    // deep links (/d/org/datasets/x) open where they point.
+    try app.get("/", serveIndex);
+    try app.get("/*", serveAsset);
 
     std.log.info("cid server listening on {s}:{d}", .{ options.host, options.port });
     try app.listen(.{
@@ -31,6 +37,36 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
         .port = options.port,
         .max_body = max_body,
     });
+}
+
+fn serveIndex(c: *nilo.Ctx) !void {
+    try sendAsset(c, "index.html");
+}
+
+fn serveAsset(c: *nilo.Ctx) !void {
+    const path = c.path().view();
+    const rel = if (path.len > 0 and path[0] == '/') path[1..] else path;
+    inline for (assets.files) |f| {
+        if (std.mem.eql(u8, f.path, rel)) {
+            // Hashed asset names never change content: cache hard.
+            if (std.mem.startsWith(u8, rel, "assets/") or std.mem.startsWith(u8, rel, "fonts/"))
+                c.setStaticHeader("Cache-Control", "public, max-age=31536000, immutable") catch {};
+            try c.send(200, f.mime, f.bytes);
+            return;
+        }
+    }
+    // Not a file: it is a route of the app shell.
+    try sendAsset(c, "index.html");
+}
+
+fn sendAsset(c: *nilo.Ctx, name: []const u8) !void {
+    inline for (assets.files) |f| {
+        if (std.mem.eql(u8, f.path, name)) {
+            try c.send(200, f.mime, f.bytes);
+            return;
+        }
+    }
+    try c.send(200, "text/plain; charset=utf-8", "The dashboard is not built into this binary. Run 'pnpm --dir web build', then 'zig build', and serve again.\n");
 }
 
 /// One door for every /v0 route: rebuild the target exactly as

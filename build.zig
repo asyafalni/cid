@@ -31,6 +31,10 @@ pub fn build(b: *std.Build) void {
     // sql/migrations/*.sql, embedded into the binary for `cid admin migrate`.
     const migrations_mod = buildMigrationsModule(b, target, optimize);
 
+    // web/dist, embedded so deployment stays one binary (docs/dashboard.md).
+    // Absent (dashboard not built), the server says so instead of 404ing.
+    const assets_mod = buildAssetsModule(b, target, optimize);
+
     // The cid library: everything except main().
     const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/cid.zig"),
@@ -41,6 +45,7 @@ pub fn build(b: *std.Build) void {
     lib_mod.addImport("libpq", libpq_dep.module("libpq"));
     lib_mod.addImport("nilo_http", nilo_dep.module("nilo_http"));
     lib_mod.addImport("migrations", migrations_mod);
+    lib_mod.addImport("web_assets", assets_mod);
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -128,4 +133,80 @@ fn buildMigrationsModule(
 
 fn lessThan(_: void, a: []const u8, b_: []const u8) bool {
     return std.mem.lessThan(u8, a, b_);
+}
+
+/// Embeds every file under web/dist (recursively) as
+///   pub const files = [_]Asset{ .{ .path, .mime, .bytes }, … };
+/// Missing dist → an empty list, and the server explains itself.
+fn buildAssetsModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    const wf = b.addWriteFiles();
+    const io = b.graph.io;
+
+    var src: std.ArrayList(u8) = .empty;
+    src.appendSlice(b.allocator,
+        \\pub const Asset = struct { path: []const u8, mime: []const u8, bytes: []const u8 };
+        \\pub const files = [_]Asset{
+        \\
+    ) catch @panic("OOM");
+
+    collectAssets(b, wf, &src, io, "web/dist", "") catch {};
+
+    src.appendSlice(b.allocator, "};\n") catch @panic("OOM");
+    const root = wf.add("web_assets.zig", src.items);
+    return b.createModule(.{
+        .root_source_file = root,
+        .target = target,
+        .optimize = optimize,
+    });
+}
+
+fn collectAssets(
+    b: *std.Build,
+    wf: *std.Build.Step.WriteFile,
+    src: *std.ArrayList(u8),
+    io: std.Io,
+    fs_dir: []const u8,
+    rel: []const u8,
+) !void {
+    const full = if (rel.len == 0) fs_dir else b.fmt("{s}/{s}", .{ fs_dir, rel });
+    var dir = try b.build_root.handle.openDir(io, full, .{ .iterate = true });
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        const child = if (rel.len == 0) b.dupe(entry.name) else b.fmt("{s}/{s}", .{ rel, entry.name });
+        switch (entry.kind) {
+            .directory => try collectAssets(b, wf, src, io, fs_dir, child),
+            .file => {
+                _ = wf.addCopyFile(b.path(b.fmt("{s}/{s}", .{ fs_dir, child })), child);
+                src.appendSlice(b.allocator, b.fmt(
+                    "    .{{ .path = \"{s}\", .mime = \"{s}\", .bytes = @embedFile(\"{s}\") }},\n",
+                    .{ child, mimeOf(child), child },
+                )) catch @panic("OOM");
+            },
+            else => {},
+        }
+    }
+}
+
+fn mimeOf(path: []const u8) []const u8 {
+    const exts = [_]struct { ext: []const u8, mime: []const u8 }{
+        .{ .ext = ".html", .mime = "text/html; charset=utf-8" },
+        .{ .ext = ".js", .mime = "text/javascript" },
+        .{ .ext = ".css", .mime = "text/css" },
+        .{ .ext = ".woff2", .mime = "font/woff2" },
+        .{ .ext = ".svg", .mime = "image/svg+xml" },
+        .{ .ext = ".png", .mime = "image/png" },
+        .{ .ext = ".webp", .mime = "image/webp" },
+        .{ .ext = ".ico", .mime = "image/x-icon" },
+        .{ .ext = ".map", .mime = "application/json" },
+        .{ .ext = ".json", .mime = "application/json" },
+    };
+    for (exts) |e| {
+        if (std.mem.endsWith(u8, path, e.ext)) return e.mime;
+    }
+    return "application/octet-stream";
 }
