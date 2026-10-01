@@ -530,7 +530,8 @@ pnpm --dir web test:e2e            # Playwright: UX budgets, axe, keyboard
 Dashboard changes must pass `pnpm --dir web lint`, `pnpm --dir web typecheck` and the
 e2e suite, and meet the budgets and acceptance tests in `docs/dashboard.md`.
 
-Before finishing any change: `zig fmt --check .`, `zig build test`, and
+Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
+`zig-pkg/` holds unpacked dependencies), `zig build test`, and
 `zig build integration` when touching `store/`, `core/`, `client/`, `server/`,
 `manifest/`, `tabular/` or SQL.
 

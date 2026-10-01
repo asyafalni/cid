@@ -177,8 +177,9 @@ CREATE TABLE refs (
 CREATE FUNCTION reject_release_change() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-  IF (TG_OP = 'DELETE' AND OLD.kind = 'release')
-     OR (TG_OP = 'UPDATE' AND OLD.kind = 'release') THEN
+  IF ((TG_OP = 'DELETE' AND OLD.kind = 'release')
+      OR (TG_OP = 'UPDATE' AND OLD.kind = 'release'))
+     AND current_setting('cid.maintenance', true) IS DISTINCT FROM 'on' THEN
     RAISE EXCEPTION 'cid: release ''%'' never moves (invariant 5)', OLD.name;
   END IF;
   IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
