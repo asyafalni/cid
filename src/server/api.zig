@@ -493,10 +493,10 @@ fn state(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, commit_id: []const 
         else => return error.Db,
     };
 
-    const Item = struct { path: []const u8, hash: []const u8, size: u64 };
+    const Item = struct { path: []const u8, hash: []const u8, size: u64, split: ?[]const u8, item_id: ?[]const u8, width: ?u32, height: ?u32 };
     const items = try arena.alloc(Item, rows.len);
     for (items, 0..) |*item, i| {
-        item.* = .{ .path = rows[i].path, .hash = rows[i].hash_hex, .size = rows[i].size };
+        item.* = .{ .path = rows[i].path, .hash = rows[i].hash_hex, .size = rows[i].size, .split = rows[i].split, .item_id = rows[i].item_id, .width = rows[i].width, .height = rows[i].height };
     }
 
     if (eql(ds.kind, "annotated")) {
@@ -900,6 +900,8 @@ const RegisterItemsBody = struct {
         hash: []const u8,
         size: u64,
         media_type: []const u8 = "application/octet-stream",
+        width: ?u32 = null,
+        height: ?u32 = null,
     },
 };
 
@@ -923,10 +925,14 @@ fn registerItems(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []con
             return errorResponse(arena, .unprocessable_entity, "an item is missing from storage", "Upload it through the check-hashes URLs first, then register again.");
         if (size != item.size)
             return errorResponse(arena, .unprocessable_entity, "an item's size does not match what storage holds", "Re-upload the file, then register again.");
+        const meta = try std.fmt.allocPrintSentinel(arena, "{f}", .{std.json.fmt(.{
+            .width = item.width,
+            .height = item.height,
+        }, .{ .emit_null_optional_fields = false })}, 0);
         deps.db.execParams(
-            "INSERT INTO items (item_hash, size_bytes, media_type) VALUES (decode($1, 'hex'), $2::bigint, $3) " ++
-                "ON CONFLICT (item_hash) DO NOTHING",
-            &.{ try arena.dupeZ(u8, item.hash), try intZ(arena, item.size), try arena.dupeZ(u8, item.media_type) },
+            "INSERT INTO items (item_hash, size_bytes, media_type, meta) VALUES (decode($1, 'hex'), $2::bigint, $3, $4::jsonb) " ++
+                "ON CONFLICT (item_hash) DO UPDATE SET meta = items.meta || excluded.meta",
+            &.{ try arena.dupeZ(u8, item.hash), try intZ(arena, item.size), try arena.dupeZ(u8, item.media_type), meta },
             &diag,
         ) catch return error.Db;
     }

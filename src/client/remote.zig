@@ -200,7 +200,7 @@ pub const Remote = struct {
         if (res.status != .ok) return error.ServerRefused;
     }
 
-    pub const StateItem = struct { path: []const u8, hash: []const u8, size: u64 };
+    pub const StateItem = struct { path: []const u8, hash: []const u8, size: u64, split: ?[]const u8 = null, item_id: ?[]const u8 = null, width: ?u32 = null, height: ?u32 = null };
 
     pub fn state(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8) Error![]const StateItem {
         const res = self.t.call(arena, "GET", try self.target(arena, "state/{s}", .{commit_id}), "") catch
@@ -300,7 +300,7 @@ pub const Remote = struct {
         return parsed.commit;
     }
 
-    pub const RegisterItem = struct { hash: []const u8, size: u64, media_type: []const u8 = "application/octet-stream" };
+    pub const RegisterItem = struct { hash: []const u8, size: u64, media_type: []const u8 = "application/octet-stream", width: ?u32 = null, height: ?u32 = null };
 
     pub fn registerItems(self: *const Remote, arena: std.mem.Allocator, items: []const RegisterItem) Error!void {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .items = items }, .{})});

@@ -41,6 +41,9 @@ pub const StateRow = struct {
     hash_hex: []const u8,
     size: u64,
     split: ?[]const u8,
+    item_id: ?[]const u8 = null,
+    width: ?u32 = null,
+    height: ?u32 = null,
 };
 
 /// State at a commit, sorted by path — the one query both the browse API
@@ -79,8 +82,9 @@ pub fn stateRows(
     }
 
     var rows = db.query(
-        "SELECT path, encode(item_hash, 'hex'), i.size_bytes::text, s.split FROM (" ++
-            "  SELECT DISTINCT ON (path) path, op, item_hash, split FROM item_revisions " ++
+        "SELECT path, encode(item_hash, 'hex'), i.size_bytes::text, s.split, " ++
+            "i.meta->>'width', i.meta->>'height', s.item_id::text FROM (" ++
+            "  SELECT DISTINCT ON (path) path, op, item_hash, split, item_id FROM item_revisions " ++
             "  WHERE dataset_id = $1::uuid AND (" ++
             "    (branch = 'main' AND rev_id <= $4::uuid) OR (branch = $2 AND rev_id <= $3::uuid)) " ++
             "  ORDER BY path, rev_id DESC) s " ++
@@ -97,6 +101,9 @@ pub fn stateRows(
             .hash_hex = arena.dupe(u8, rows.get(i, 1)) catch return error.OutOfMemory,
             .size = std.fmt.parseInt(u64, rows.get(i, 2), 10) catch return error.Db,
             .split = if (rows.isNull(i, 3)) null else arena.dupe(u8, rows.get(i, 3)) catch return error.OutOfMemory,
+            .width = if (rows.isNull(i, 4)) null else std.fmt.parseInt(u32, rows.get(i, 4), 10) catch null,
+            .height = if (rows.isNull(i, 5)) null else std.fmt.parseInt(u32, rows.get(i, 5), 10) catch null,
+            .item_id = if (rows.isNull(i, 6)) null else arena.dupe(u8, rows.get(i, 6)) catch return error.OutOfMemory,
         };
     }
     return out;

@@ -59,6 +59,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         error.LocalChangesInTheWay => return common.fail(ctx, .conflict, "local edits would be overwritten. Commit them ('cid commit -a -m \"...\"') or move them aside, then run 'cid checkout' again.", .{}),
         error.NoSuchDataset => return common.fail(ctx, .usage, "no such commit here. Run 'cid log' to list commits.", .{}),
         error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server. Check CID_SERVER, then run 'cid checkout' again.", .{}),
+        error.ExportFailed => return common.fail(ctx, .integrity, "the export sidecars could not be rebuilt (see the warning above). Fix the data in the platform, then run the command again.", .{}),
         error.TransferFailed => return common.fail(ctx, .integrity, "a download failed its hash check. Run 'cid checkout' again.", .{}),
         else => return common.fail(ctx, .integrity, ".cid/ state is unreadable. Run 'cid status' for details.", .{}),
     };

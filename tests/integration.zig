@@ -176,7 +176,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     const check1 = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/check-hashes", "Bearer test-token", check_body);
     try std.testing.expectEqual(std.http.Status.ok, check1.status);
     const Check = struct { missing: []const struct { hash: []const u8, url: []const u8 } };
-    const check1_parsed = try std.json.parseFromSliceLeaky(Check, arena, check1.body, .{});
+    const check1_parsed = try std.json.parseFromSliceLeaky(Check, arena, check1.body, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqual(@as(usize, 2), check1_parsed.missing.len);
 
     // Upload A through its presigned URL with a plain client — no credentials.
@@ -189,7 +189,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
         }
     }
     const check2 = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/check-hashes", "Bearer test-token", check_body);
-    const check2_parsed = try std.json.parseFromSliceLeaky(Check, arena, check2.body, .{});
+    const check2_parsed = try std.json.parseFromSliceLeaky(Check, arena, check2.body, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqual(@as(usize, 1), check2_parsed.missing.len);
     try std.testing.expectEqualStrings(&hash_b, check2_parsed.missing[0].hash);
 
@@ -227,14 +227,14 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     // head and state: only b.txt remains after the delete.
     const head_res = cid.api.handle(arena, &deps, "GET", "/v0/datasets/" ++ name ++ "/-/head?branch=main", "Bearer test-token", "");
     const Head = struct { commit: ?[]const u8 };
-    const head_parsed = try std.json.parseFromSliceLeaky(Head, arena, head_res.body, .{});
+    const head_parsed = try std.json.parseFromSliceLeaky(Head, arena, head_res.body, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqualStrings(&id2, head_parsed.commit.?);
 
     const state_target = try std.fmt.allocPrint(arena, "/v0/datasets/{s}/-/state/{s}", .{ name, &id2 });
     const state_res = cid.api.handle(arena, &deps, "GET", state_target, "Bearer test-token", "");
     try std.testing.expectEqual(std.http.Status.ok, state_res.status);
     const State = struct { commit: []const u8, items: []const struct { path: []const u8, hash: []const u8, size: u64 } };
-    const state_parsed = try std.json.parseFromSliceLeaky(State, arena, state_res.body, .{});
+    const state_parsed = try std.json.parseFromSliceLeaky(State, arena, state_res.body, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqual(@as(usize, 1), state_parsed.items.len);
     try std.testing.expectEqualStrings("b.txt", state_parsed.items[0].path);
     try std.testing.expectEqualStrings(&hash_b, state_parsed.items[0].hash);
@@ -242,7 +242,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
 
     // State at the first commit still shows a.txt: history is intact.
     const state1_target = try std.fmt.allocPrint(arena, "/v0/datasets/{s}/-/state/{s}", .{ name, &id1 });
-    const state1_parsed = try std.json.parseFromSliceLeaky(State, arena, cid.api.handle(arena, &deps, "GET", state1_target, "Bearer test-token", "").body, .{});
+    const state1_parsed = try std.json.parseFromSliceLeaky(State, arena, cid.api.handle(arena, &deps, "GET", state1_target, "Bearer test-token", "").body, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqual(@as(usize, 1), state1_parsed.items.len);
     try std.testing.expectEqualStrings("a.txt", state1_parsed.items[0].path);
 
@@ -250,7 +250,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     const dl_body = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\"]}}", .{&hash_b});
     const dl = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/downloads", "Bearer test-token", dl_body);
     const Dl = struct { downloads: []const struct { hash: []const u8, url: []const u8 } };
-    const dl_parsed = try std.json.parseFromSliceLeaky(Dl, arena, dl.body, .{});
+    const dl_parsed = try std.json.parseFromSliceLeaky(Dl, arena, dl.body, .{ .ignore_unknown_fields = true });
     var aw: std.Io.Writer.Allocating = .init(arena);
     const got = try plain.fetch(.{ .location = .{ .url = dl_parsed.downloads[0].url }, .raw_uri = true, .keep_alive = false, .response_writer = &aw.writer });
     try std.testing.expectEqual(std.http.Status.ok, got.status);
@@ -259,7 +259,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     // log: both commits, newest first.
     const log_res = cid.api.handle(arena, &deps, "GET", "/v0/datasets/" ++ name ++ "/-/log?branch=main", "Bearer test-token", "");
     const Log = struct { commits: []const struct { id: []const u8, parent: ?[]const u8, message: []const u8, author: []const u8, authored_at_ms: u64 } };
-    const log_parsed = try std.json.parseFromSliceLeaky(Log, arena, log_res.body, .{});
+    const log_parsed = try std.json.parseFromSliceLeaky(Log, arena, log_res.body, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqual(@as(usize, 2), log_parsed.commits.len);
     try std.testing.expectEqualStrings("second", log_parsed.commits[0].message);
     try std.testing.expectEqualStrings(&id1, log_parsed.commits[0].parent.?);
@@ -420,7 +420,7 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     defer reader_dir.cleanup();
     var reader_cache = std.testing.tmpDir(.{});
     defer reader_cache.cleanup();
-    const cloned = try cid.client.sync.clone(arena, io, reader_dir.dir, reader_cache.dir, &remote, "cid@test:test/datasets/sync", null);
+    const cloned = try cid.client.sync.clone(arena, io, reader_dir.dir, reader_cache.dir, &remote, "cid@test:test/datasets/sync", null, null);
     try std.testing.expectEqual(@as(u32, 2), cloned.files);
     try std.testing.expectEqual(@as(u32, 2), cloned.downloaded);
     try std.testing.expectEqualSlices(u8, "version one of a\n", try readWholeFile(io, reader_dir.dir, "a.txt", arena));
@@ -975,7 +975,7 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
     defer worker.cleanup();
     var wcache = std.testing.tmpDir(.{});
     defer wcache.cleanup();
-    _ = try cid.client.sync.clone(arena, io, worker.dir, wcache.dir, &remote, "cid@test:test/datasets/br", null);
+    _ = try cid.client.sync.clone(arena, io, worker.dir, wcache.dir, &remote, "cid@test:test/datasets/br", null, null);
     var wws = try cid.client.workspace.open(arena, io, worker.dir);
 
     // Switch to the branch: the base files are all there (composed state).
@@ -1425,4 +1425,127 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     try db.exec("RESET cid.maintenance", &diag);
     const v3 = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(v3.ok);
+}
+
+test "annotated clone --format: jsonl and yolo sidecars, clean status, pull regenerates" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var diag: cid.pg.Diag = .{};
+    var db = try connect(&diag);
+    defer db.close();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .bucket = "cid-test",
+    });
+    defer s3c.deinit();
+    try s3c.createBucket(arena);
+
+    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/fmt" };
+
+    try db.exec("SET cid.maintenance = 'on'", &diag);
+    inline for (.{ "git_writes", "refs", "commits", "item_revisions", "annotation_revisions", "dataset_items" }) |table| {
+        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/fmt')", &diag);
+    }
+    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/fmt'", &diag);
+    try db.exec("RESET cid.maintenance", &diag);
+
+    _ = cid.api.handle(arena, &deps, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/fmt\",\"kind\":\"annotated\",\"git_url\":\"g@h:f.git\"}");
+    const ds_id: [:0]const u8 = blk: {
+        var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/fmt'", &.{}, &diag);
+        defer rows.deinit();
+        break :blk try arena.dupeZ(u8, rows.get(0, 0));
+    };
+
+    // One 640x480 image with one person box, platform-style.
+    const pix = "fmt pixels pretending to be a jpeg";
+    var dg: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(pix, &dg, .{});
+    const hh = std.fmt.bytesToHex(dg, .lower);
+    try s3c.putObject(arena, try cid.api.itemKey(arena, &hh), pix);
+    try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len, .media_type = "image/jpeg", .width = 640, .height = 480 }});
+
+    var last = cid.uuid7.Uuid.now(io);
+    const fitem = cid.uuid7.Uuid.now(io).toString();
+    const fbox = cid.uuid7.Uuid.now(io).toString();
+    try db.exec("BEGIN", &diag);
+    {
+        const lock = try std.fmt.allocPrintSentinel(arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{ds_id}, 0);
+        try db.exec(lock, &diag);
+    }
+    try db.exec("SET LOCAL ROLE cid_writer", &diag);
+    {
+        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
+            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', 'img/a.jpg', 'add', '{s}', decode('{s}', 'hex'), 'train', 'agent:annotator')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &fitem, &hh }, 0);
+        try db.exec(sql, &diag);
+    }
+    last = cid.uuid7.Uuid.nextAfter(io, last);
+    {
+        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'create', 'box', 'person', '{{\"x\":32,\"y\":48,\"w\":64,\"h\":96}}'::jsonb, 'agent:annotator', 'p1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &fbox, &fitem }, 0);
+        try db.exec(sql, &diag);
+    }
+    try db.exec("COMMIT", &diag);
+    _ = try remote.commitServer(arena, "main", "one box", "agent:annotator");
+
+    // Clone as jsonl: item file plus the sidecar, and a clean status.
+    var jl_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer jl_dir.cleanup();
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    const jl = try cid.client.sync.clone(arena, io, jl_dir.dir, cache.dir, &remote, "cid@test:test/datasets/fmt", null, "jsonl");
+    try std.testing.expectEqual(@as(u32, 1), jl.files);
+    try std.testing.expectEqualSlices(u8, pix, try readWholeFile(io, jl_dir.dir, "img/a.jpg", arena));
+    const jl_text = try readWholeFile(io, jl_dir.dir, "annotations.jsonl", arena);
+    try std.testing.expect(std.mem.indexOf(u8, jl_text, "\"path\":\"img/a.jpg\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, jl_text, "\"class\":\"person\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, jl_text, "\"width\":640") != null);
+    var jl_ws = try cid.client.workspace.open(arena, io, jl_dir.dir);
+    try std.testing.expectEqualStrings("jsonl", jl_ws.config.format);
+    const jl_st = try cid.client.workspace.status(arena, io, &jl_ws);
+    try std.testing.expectEqual(@as(usize, 0), jl_st.unstaged_new.len); // sidecars ignored
+
+    // Clone as yolo: labels, classes, split list, dataset.yaml.
+    var yo_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer yo_dir.cleanup();
+    _ = try cid.client.sync.clone(arena, io, yo_dir.dir, cache.dir, &remote, "cid@test:test/datasets/fmt", null, "yolo");
+    try std.testing.expectEqualStrings("person\n", try readWholeFile(io, yo_dir.dir, "classes.txt", arena));
+    try std.testing.expectEqualStrings(
+        "0 0.100000 0.200000 0.100000 0.200000\n",
+        try readWholeFile(io, yo_dir.dir, "labels/img/a.txt", arena),
+    );
+    try std.testing.expectEqualStrings("img/a.jpg\n", try readWholeFile(io, yo_dir.dir, "train.txt", arena));
+    const yaml = try readWholeFile(io, yo_dir.dir, "dataset.yaml", arena);
+    try std.testing.expect(std.mem.indexOf(u8, yaml, "0: person") != null);
+
+    // The platform adds a vehicle box; a pull regenerates the sidecars.
+    try db.exec("BEGIN", &diag);
+    {
+        const lock = try std.fmt.allocPrintSentinel(arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{ds_id}, 0);
+        try db.exec(lock, &diag);
+    }
+    try db.exec("SET LOCAL ROLE cid_writer", &diag);
+    last = cid.uuid7.Uuid.nextAfter(io, last);
+    {
+        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', gen_random_uuid(), '{s}', 'create', 'box', 'vehicle', '{{\"x\":0,\"y\":0,\"w\":320,\"h\":240}}'::jsonb, 'agent:annotator', 'p1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &fitem }, 0);
+        try db.exec(sql, &diag);
+    }
+    try db.exec("COMMIT", &diag);
+    _ = try remote.commitServer(arena, "main", "vehicle too", "agent:annotator");
+
+    var yo_ws = try cid.client.workspace.open(arena, io, yo_dir.dir);
+    const pulled = try cid.client.sync.pull(arena, io, &yo_ws, cache.dir, &remote);
+    try std.testing.expect(pulled == .fast_forwarded);
+    try std.testing.expectEqualStrings("person\nvehicle\n", try readWholeFile(io, yo_dir.dir, "classes.txt", arena));
+    const label2 = try readWholeFile(io, yo_dir.dir, "labels/img/a.txt", arena);
+    try std.testing.expect(std.mem.indexOf(u8, label2, "1 0.250000 0.250000 0.500000 0.500000") != null);
 }

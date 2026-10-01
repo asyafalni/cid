@@ -22,6 +22,7 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
         error.LocalChangesInTheWay => return common.fail(ctx, .conflict, "local edits would be overwritten. Commit them ('cid commit -a -m \"...\"') or move them aside, then run 'cid pull' again.", .{}),
         error.EmptyDataset => return common.fail(ctx, .usage, "the server has nothing for this dataset yet. Run 'cid push' first.", .{}),
         error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server. Check CID_SERVER, then run 'cid pull' again.", .{}),
+        error.ExportFailed => return common.fail(ctx, .integrity, "the export sidecars could not be rebuilt (see the warning above). Fix the data in the platform, then run the command again.", .{}),
         error.TransferFailed => return common.fail(ctx, .integrity, "a download failed its hash check or the connection broke. Run 'cid pull' again.", .{}),
         else => return common.fail(ctx, .integrity, ".cid/ state is unreadable. Run 'cid status' for details.", .{}),
     };

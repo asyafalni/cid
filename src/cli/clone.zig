@@ -8,6 +8,7 @@ const sync = @import("../client/sync.zig");
 pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCode {
     var positional: std.ArrayList([]const u8) = .empty;
     var release: ?[]const u8 = null;
+    var format: ?[]const u8 = null;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--release")) {
@@ -17,8 +18,9 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         } else if (std.mem.eql(u8, args[i], "--format")) {
             i += 1;
             const f: []const u8 = if (i < args.len) args[i] else "";
-            if (!std.mem.eql(u8, f, "files"))
-                return common.fail(ctx, .usage, "formats other than 'files' arrive with annotated datasets; this build clones the folder tree. Run 'cid clone <address>'.", .{});
+            if (!std.mem.eql(u8, f, "files") and !std.mem.eql(u8, f, "jsonl") and !std.mem.eql(u8, f, "yolo"))
+                return common.fail(ctx, .usage, "this build knows the formats files, jsonl and yolo. Run 'cid clone <address> --format jsonl'.", .{});
+            format = f;
         } else {
             positional.append(ctx.arena, args[i]) catch return .network;
         }
@@ -52,8 +54,9 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     const remote = common.remoteFor(ctx, name, .read, address) catch
         return common.fail(ctx, .usage, common.no_server_msg, .{});
 
-    const outcome = sync.clone(ctx.arena, ctx.io, dest_dir, cache_dir, remote, address, release) catch |err| switch (err) {
+    const outcome = sync.clone(ctx.arena, ctx.io, dest_dir, cache_dir, remote, address, release, format) catch |err| switch (err) {
         error.NoSuchRelease => return common.fail(ctx, .usage, "no release named '{s}'. Leave --release off for the newest, or ask the owner which releases exist.", .{release.?}),
+        error.ExportFailed => return common.fail(ctx, .integrity, "the {s} export could not be built (see the warning above for the file). Fix it in the platform, or clone with --format files.", .{format orelse "requested"}),
         error.NoSuchDataset => return common.fail(ctx, .usage, "no dataset '{s}' on the server. Check the address, or run 'cid init' in the producing folder to create it.", .{name}),
         error.EmptyDataset => return common.fail(ctx, .usage, "'{s}' has nothing pushed yet. Push from the producing folder first.", .{name}),
         error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server. Check CID_SERVER, then run 'cid clone' again.", .{}),

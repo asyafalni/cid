@@ -29,6 +29,10 @@ pub const release = @import("core/release.zig");
 pub const purge = @import("core/purge.zig");
 pub const canonical = @import("manifest/canonical.zig");
 pub const jcs = @import("manifest/jcs.zig");
+pub const exports = struct {
+    pub const jsonl = @import("export/jsonl.zig");
+    pub const yolo = @import("export/yolo.zig");
+};
 pub const gitrepo = struct {
     pub const render = @import("gitrepo/render.zig");
     pub const writer = @import("gitrepo/writer.zig");
@@ -74,6 +78,8 @@ test {
     _ = release;
     _ = canonical;
     _ = jcs;
+    _ = exports.jsonl;
+    _ = exports.yolo;
     _ = gitrepo.render;
     _ = access.token;
     _ = access.auth;

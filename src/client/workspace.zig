@@ -12,6 +12,10 @@ const Uuid = @import("../util/uuid7.zig").Uuid;
 pub const Config = struct {
     address: []const u8,
     git_url: []const u8,
+    /// 'files' | 'annotated'; folders made by older builds default to files.
+    kind: []const u8 = "files",
+    /// The export format this folder was cloned with ('files' = plain tree).
+    format: []const u8 = "files",
 };
 
 pub const Workspace = struct {
@@ -49,6 +53,18 @@ pub fn init(
     address: []const u8,
     git_url: []const u8,
 ) InitError!void {
+    return initFull(arena, io, dir, address, git_url, "files", "files");
+}
+
+pub fn initFull(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    address: []const u8,
+    git_url: []const u8,
+    kind: []const u8,
+    format: []const u8,
+) InitError!void {
     if (datasetPathOf(address) == null) return error.BadAddress;
     if (dir.access(io, ".cid", .{})) |_| return error.AlreadyADataset else |_| {}
 
@@ -58,7 +74,7 @@ pub fn init(
 
     var config_buf: std.ArrayList(u8) = .empty;
     var aw: std.Io.Writer.Allocating = .init(arena);
-    std.zon.stringify.serialize(Config{ .address = address, .git_url = git_url }, .{}, &aw.writer) catch
+    std.zon.stringify.serialize(Config{ .address = address, .git_url = git_url, .kind = kind, .format = format }, .{}, &aw.writer) catch
         return error.InitFailed;
     config_buf.appendSlice(arena, aw.writer.buffered()) catch return error.InitFailed;
     config_buf.append(arena, '\n') catch return error.InitFailed;
