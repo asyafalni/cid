@@ -45,6 +45,8 @@ fn run(
         .clone => |cmd_args| cid.cli_clone.run(&ctx, cmd_args),
         .checkout => |cmd_args| cid.cli_checkout.run(&ctx, cmd_args),
         .tag => |cmd_args| cid.cli_tag.run(&ctx, cmd_args),
+        .restore => |cmd_args| cid.cli_restore.run(&ctx, cmd_args),
+        .diff => |cmd_args| cid.cli_diff.run(&ctx, cmd_args),
         .admin => |admin_args| cid.admin.run(arena, io, out, env, admin_args),
         .not_yet => |name| {
             var ebuf: [256]u8 = undefined;

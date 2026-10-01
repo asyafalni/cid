@@ -15,6 +15,8 @@ pub const cli_log = @import("cli/log.zig");
 pub const cli_clone = @import("cli/clone.zig");
 pub const cli_checkout = @import("cli/checkout.zig");
 pub const cli_tag = @import("cli/tag.zig");
+pub const cli_restore = @import("cli/restore.zig");
+pub const cli_diff = @import("cli/diff.zig");
 pub const pg = @import("store/pg.zig");
 pub const s3 = @import("store/s3.zig");
 pub const api = @import("server/api.zig");
@@ -64,4 +66,5 @@ test {
     _ = client.remote;
     _ = client.sync;
     _ = cli_log;
+    _ = cli_diff;
 }

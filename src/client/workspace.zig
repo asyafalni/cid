@@ -226,6 +226,129 @@ pub fn commit(
     return .{ .id = id, .changes = @intCast(changes.len) };
 }
 
+pub const RestoreError = error{ PathspecUnmatched, CorruptLocalState, StoreFailed } ||
+    std.mem.Allocator.Error;
+
+/// `cid restore --staged <path>...`: unstage. Returns how many entries left
+/// the index.
+pub fn restoreStaged(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    ws: *Workspace,
+    raw_paths: []const []const u8,
+) RestoreError!u32 {
+    var idx = loadIndex(arena, io, ws) catch return error.CorruptLocalState;
+    var specs = try arena.alloc([]const u8, raw_paths.len);
+    for (raw_paths, 0..) |raw, i| specs[i] = normalizeSpec(raw);
+
+    var removed: u32 = 0;
+    var i: usize = 0;
+    while (i < idx.entries.items.len) {
+        const e = idx.entries.items[i];
+        if (matchSpec(specs, e.path) != null) {
+            _ = idx.remove(e.path);
+            removed += 1;
+            continue;
+        }
+        i += 1;
+    }
+    if (removed == 0) return error.PathspecUnmatched;
+    saveIndex(arena, io, ws, &idx) catch return error.CorruptLocalState;
+    return removed;
+}
+
+pub const RestoreSummary = struct {
+    restored: u32 = 0,
+    /// New files never added to cid: restore leaves them alone.
+    skipped_untracked: u32 = 0,
+};
+
+/// `cid restore <path>...`: throw away local edits, bringing files back to
+/// their staged version (if one is staged) or the last committed one. The
+/// bytes come from the local cache, where `add` and every download put them.
+pub fn restoreWorktree(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    ws: *Workspace,
+    cache_dir: std.Io.Dir,
+    raw_paths: []const []const u8,
+) RestoreError!RestoreSummary {
+    const remote_mod = @import("remote.zig");
+    var idx = loadIndex(arena, io, ws) catch return error.CorruptLocalState;
+    var tracked = loadTracked(arena, io, ws) catch return error.CorruptLocalState;
+    const files = scan.scanWorkdir(arena, io, ws.work_dir) catch return error.CorruptLocalState;
+
+    var specs = try arena.alloc([]const u8, raw_paths.len);
+    for (raw_paths, 0..) |raw, i| specs[i] = normalizeSpec(raw);
+
+    var summary: RestoreSummary = .{};
+    var matched_any = false;
+
+    // Wanted content per path: the staged add wins over tracked.
+    // Paths with a staged delete restore to the tracked version (the
+    // delete itself stays staged; use --staged to drop it).
+    const Want = struct { path: []const u8, hash_hex: [64]u8, from_index: bool };
+    var wants: std.ArrayList(Want) = .empty;
+    for (idx.entries.items) |e| {
+        if (matchSpec(specs, e.path) == null) continue;
+        matched_any = true;
+        if (e.op == .add)
+            try wants.append(arena, .{ .path = e.path, .hash_hex = e.hash_hex, .from_index = true });
+    }
+    for (tracked.entries.items) |t| {
+        if (matchSpec(specs, t.path) == null) continue;
+        matched_any = true;
+        if (idx.get(t.path)) |staged| {
+            if (staged.op == .add) continue; // index version already wanted
+        }
+        try wants.append(arena, .{ .path = t.path, .hash_hex = t.hash_hex, .from_index = false });
+    }
+    for (files) |f| {
+        if (matchSpec(specs, f.path) == null) continue;
+        if (tracked.get(f.path) == null and idx.get(f.path) == null) {
+            matched_any = true;
+            summary.skipped_untracked += 1;
+        }
+    }
+    if (!matched_any) return error.PathspecUnmatched;
+
+    for (wants.items) |want| {
+        // Skip files already at the wanted content (size+mtime unchanged
+        // against where that content was last recorded).
+        if (findFile(files, want.path)) |f| {
+            const recorded: ?struct { size: u64, mtime_ns: i64 } = if (want.from_index) blk: {
+                const e = idx.get(want.path).?;
+                break :blk .{ .size = e.size, .mtime_ns = e.mtime_ns };
+            } else if (tracked.get(want.path)) |t|
+                .{ .size = t.size, .mtime_ns = t.mtime_ns }
+            else
+                null;
+            if (recorded) |r| {
+                if (r.size == f.size and r.mtime_ns == f.mtime_ns) continue;
+            }
+        }
+        remote_mod.placeFromCache(io, cache_dir, &want.hash_hex, ws.work_dir, want.path) catch
+            return error.StoreFailed;
+        const stat = ws.work_dir.statFile(io, want.path, .{}) catch return error.CorruptLocalState;
+        if (want.from_index) {
+            var e = idx.get(want.path).?;
+            e.size = stat.size;
+            e.mtime_ns = @intCast(stat.mtime.nanoseconds);
+            idx.put(e) catch return error.CorruptLocalState;
+        } else if (tracked.get(want.path)) |t| {
+            var updated = t;
+            updated.size = stat.size;
+            updated.mtime_ns = @intCast(stat.mtime.nanoseconds);
+            tracked.put(updated) catch return error.CorruptLocalState;
+        }
+        summary.restored += 1;
+    }
+
+    saveIndex(arena, io, ws, &idx) catch return error.CorruptLocalState;
+    saveTracked(arena, io, ws, &tracked) catch return error.CorruptLocalState;
+    return summary;
+}
+
 pub const Status = struct {
     branch: []const u8,
     local_commits: u32,
@@ -335,6 +458,72 @@ test "address parsing" {
     try std.testing.expect(datasetPathOf("no-colon") == null);
     try std.testing.expect(datasetPathOf("host:path-no-user") == null);
     try std.testing.expect(datasetPathOf("cid@host:") == null);
+}
+
+test "restore: unstage, throw away edits, leave untracked files alone" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var cache_tmp = std.testing.tmpDir(.{});
+    defer cache_tmp.cleanup();
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "keep.txt", .data = "committed content" });
+    try init(arena, io, tmp.dir, "cid@h:org/datasets/r", "g@h:r.git");
+    var ws = try open(arena, io, tmp.dir);
+    _ = try add(arena, io, &ws, cache_tmp.dir, &.{"."});
+    _ = try commit(arena, io, &ws, "base", "user:test");
+
+    // restore --staged unstages without touching the file.
+    try tmp.dir.writeFile(io, .{ .sub_path = "keep.txt", .data = "edited!" });
+    _ = try add(arena, io, &ws, cache_tmp.dir, &.{"."});
+    var st = try status(arena, io, &ws);
+    try std.testing.expectEqual(@as(usize, 1), st.staged.len);
+    const removed = try restoreStaged(arena, io, &ws, &.{"keep.txt"});
+    try std.testing.expectEqual(@as(u32, 1), removed);
+    st = try status(arena, io, &ws);
+    try std.testing.expectEqual(@as(usize, 0), st.staged.len);
+    try std.testing.expectEqual(@as(usize, 1), st.unstaged_modified.len);
+    try std.testing.expectError(error.PathspecUnmatched, restoreStaged(arena, io, &ws, &.{"keep.txt"}));
+
+    // Plain restore brings the committed bytes back…
+    const summary = try restoreWorktree(arena, io, &ws, cache_tmp.dir, &.{"keep.txt"});
+    try std.testing.expectEqual(@as(u32, 1), summary.restored);
+    const bytes = try tmp.dir.readFileAlloc(io, "keep.txt", arena, .limited(1024));
+    try std.testing.expectEqualStrings("committed content", bytes);
+    st = try status(arena, io, &ws);
+    try std.testing.expectEqual(@as(usize, 0), st.unstaged_modified.len);
+
+    // …recreates a deleted file…
+    try tmp.dir.deleteFile(io, "keep.txt");
+    const back = try restoreWorktree(arena, io, &ws, cache_tmp.dir, &.{"."});
+    try std.testing.expectEqual(@as(u32, 1), back.restored);
+    try std.testing.expectEqualStrings(
+        "committed content",
+        try tmp.dir.readFileAlloc(io, "keep.txt", arena, .limited(1024)),
+    );
+
+    // …and never deletes a file cid was never told about.
+    try tmp.dir.writeFile(io, .{ .sub_path = "scratch.tmp", .data = "mine" });
+    const skipped = try restoreWorktree(arena, io, &ws, cache_tmp.dir, &.{"."});
+    try std.testing.expectEqual(@as(u32, 1), skipped.skipped_untracked);
+    try std.testing.expectEqualStrings(
+        "mine",
+        try tmp.dir.readFileAlloc(io, "scratch.tmp", arena, .limited(1024)),
+    );
+
+    // A staged version wins over the committed one.
+    try tmp.dir.writeFile(io, .{ .sub_path = "keep.txt", .data = "staged version" });
+    _ = try add(arena, io, &ws, cache_tmp.dir, &.{"keep.txt"});
+    try tmp.dir.writeFile(io, .{ .sub_path = "keep.txt", .data = "edited after staging" });
+    _ = try restoreWorktree(arena, io, &ws, cache_tmp.dir, &.{"keep.txt"});
+    try std.testing.expectEqualStrings(
+        "staged version",
+        try tmp.dir.readFileAlloc(io, "keep.txt", arena, .limited(1024)),
+    );
 }
 
 test "init, add, commit, status: the offline loop" {

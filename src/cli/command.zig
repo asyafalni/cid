@@ -16,6 +16,8 @@ pub const Parsed = union(enum) {
     clone: []const [:0]const u8,
     checkout: []const [:0]const u8,
     tag: []const [:0]const u8,
+    restore: []const [:0]const u8,
+    diff: []const [:0]const u8,
     /// `cid admin …`; the payload is everything after `admin`.
     admin: []const [:0]const u8,
     /// A real cid command this build does not include yet.
@@ -27,7 +29,7 @@ pub const Parsed = union(enum) {
 /// Commands the docs promise but this build does not include yet. Saying
 /// "not built yet" beats pretending they are typos.
 const not_yet_commands = [_][]const u8{
-    "diff", "restore", "branch", "merge", "login",
+    "branch", "merge", "login",
 };
 
 pub fn parse(args: []const [:0]const u8) Parsed {
@@ -45,6 +47,8 @@ pub fn parse(args: []const [:0]const u8) Parsed {
     if (eql(first, "clone")) return .{ .clone = args[1..] };
     if (eql(first, "checkout")) return .{ .checkout = args[1..] };
     if (eql(first, "tag")) return .{ .tag = args[1..] };
+    if (eql(first, "restore")) return .{ .restore = args[1..] };
+    if (eql(first, "diff")) return .{ .diff = args[1..] };
     if (eql(first, "admin")) return .{ .admin = args[1..] };
     for (not_yet_commands) |cmd| {
         if (eql(first, cmd)) return .{ .not_yet = first };
