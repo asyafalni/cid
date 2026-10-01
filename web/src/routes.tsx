@@ -34,10 +34,19 @@ const datasetRoute = createRoute({
   // all live in the URL.
   validateSearch: (
     search: Record<string, unknown>,
-  ): { view?: 'overview' | 'browse'; release?: string; item?: string } => ({
-    view: search.view === 'browse' ? 'browse' : undefined,
+  ): {
+    view?: 'overview' | 'browse' | 'releases';
+    release?: string;
+    item?: string;
+    a?: string;
+    b?: string;
+  } => ({
+    view:
+      search.view === 'browse' ? 'browse' : search.view === 'releases' ? 'releases' : undefined,
     release: typeof search.release === 'string' ? search.release : undefined,
     item: typeof search.item === 'string' ? search.item : undefined,
+    a: typeof search.a === 'string' ? search.a : undefined,
+    b: typeof search.b === 'string' ? search.b : undefined,
   }),
   beforeLoad: () => {
     if (!getToken()) throw redirect({ to: '/signin' });

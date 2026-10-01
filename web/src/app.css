@@ -640,3 +640,132 @@
 .drawer-download:hover {
   text-decoration: none;
 }
+
+/* --- releases & compare --- */
+
+.releases {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.compare-picker h2 {
+  margin-bottom: var(--space-2);
+}
+
+.compare-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.compare-select {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.8125rem;
+}
+
+.compare-select select {
+  font: inherit;
+  font-family: var(--font-data);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  padding: var(--space-1) var(--space-2);
+  max-width: 18rem;
+}
+
+.change-list {
+  list-style: none;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.change {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 40%, transparent);
+}
+
+.change-verb {
+  font-size: 0.8125rem;
+  width: 4.5rem;
+}
+
+/* Verb plus color, never color alone. */
+.change-verb--added { color: var(--pass); }
+.change-verb--modified { color: var(--warn); }
+.change-verb--deleted { color: var(--fail); }
+
+.change-path {
+  overflow-wrap: anywhere;
+}
+
+.before-after {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+}
+
+.before-after img {
+  height: 56px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+}
+
+.history-title {
+  font-size: 1.05rem;
+  margin-bottom: var(--space-3);
+}
+
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--space-4);
+  border-left: 2px solid color-mix(in srgb, var(--brass) 45%, var(--line));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.moment {
+  position: relative;
+}
+
+.moment::before {
+  content: '';
+  position: absolute;
+  left: calc(-1 * var(--space-4) - 5px);
+  top: 0.45em;
+  width: 8px;
+  height: 2px;
+  background: color-mix(in srgb, var(--brass) 60%, var(--line));
+}
+
+.moment--release::before {
+  width: 12px;
+  height: 4px;
+  background: var(--brass);
+}
+
+.moment-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.moment-meta {
+  font-size: 0.8125rem;
+  margin: 2px 0 0;
+}
