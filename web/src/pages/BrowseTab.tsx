@@ -9,6 +9,7 @@ import {
   type StateItem,
 } from '../api';
 import { humanBytes } from '../format';
+import { AnnotationOverlay, classColor } from '../overlays';
 
 // Browse: never "viewer not available". Every item renders — as its
 // thumbnail when the worker has built one, as a type tile when not —
@@ -27,6 +28,11 @@ export function BrowseTab({
   onOpenItem: (path: string | undefined) => void;
 }) {
   const [mode, setMode] = useState<'gallery' | 'table'>('gallery');
+  // Overlay affordances: which classes are hidden, and how loud the
+  // shapes are. View affordances, not filters, so they stay local;
+  // the filters that belong in the URL arrive with the filter slice.
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
+  const [opacity, setOpacity] = useState(0.9);
 
   const state = useQuery({
     queryKey: ['state', name, commit],
@@ -58,6 +64,7 @@ export function BrowseTab({
   const annotations = state.data.annotations ?? [];
   const thumbByHash = new Map((thumbs.data?.thumbs ?? []).map((t) => [t.hash, t.url]));
   const annsByItem = groupAnnotations(annotations);
+  const classes = classCounts(annotations);
   const open = items.find((i) => i.path === openItem);
 
   return (
@@ -79,6 +86,44 @@ export function BrowseTab({
         <p className="quiet data">{items.length.toLocaleString()} items</p>
       </div>
 
+      {classes.length > 0 && (
+        <div className="overlay-bar">
+          <ul className="class-chips" aria-label="Annotation classes">
+            {classes.map(({ name: cls, count }) => (
+              <li key={cls}>
+                <button
+                  className={hidden.has(cls) ? 'class-chip class-chip--off' : 'class-chip'}
+                  aria-pressed={!hidden.has(cls)}
+                  onClick={() =>
+                    setHidden((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(cls)) next.delete(cls);
+                      else next.add(cls);
+                      return next;
+                    })
+                  }
+                >
+                  <span className="class-dot" style={{ background: classColor(cls) }} />
+                  {cls || 'unlabelled'} <span className="quiet data">{count}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          <label className="overlay-opacity">
+            overlay
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.1}
+              value={opacity}
+              onChange={(e) => setOpacity(Number(e.target.value))}
+              aria-label="Overlay opacity"
+            />
+          </label>
+        </div>
+      )}
+
       {items.length === 0 ? (
         <div className="empty blueprint">
           <h2>This version is empty</h2>
@@ -94,7 +139,28 @@ export function BrowseTab({
                 aria-pressed={openItem === item.path}
               >
                 {thumbByHash.has(item.hash) ? (
-                  <img src={thumbByHash.get(item.hash)} alt={item.path} loading="lazy" />
+                  item.item_id && item.width && item.height ? (
+                    // The fit box pins the image's own aspect, so shapes in
+                    // pixel space land where the pixels are: overlays never
+                    // ride a cover-crop.
+                    <span className="tile-media">
+                      <span
+                        className="overlay-fit"
+                        style={{ aspectRatio: `${item.width} / ${item.height}` }}
+                      >
+                        <img src={thumbByHash.get(item.hash)} alt={item.path} loading="lazy" />
+                        <AnnotationOverlay
+                          width={item.width}
+                          height={item.height}
+                          annotations={annsByItem.get(item.item_id) ?? []}
+                          hidden={hidden}
+                          opacity={opacity}
+                        />
+                      </span>
+                    </span>
+                  ) : (
+                    <img src={thumbByHash.get(item.hash)} alt={item.path} loading="lazy" />
+                  )
                 ) : (
                   <span className="tile-type data">{extOf(item.path)}</span>
                 )}
@@ -139,6 +205,8 @@ export function BrowseTab({
           annotated={overview.kind === 'annotated'}
           annotations={open.item_id ? (annsByItem.get(open.item_id) ?? []) : []}
           thumb={thumbByHash.get(open.hash)}
+          hidden={hidden}
+          opacity={opacity}
           onClose={() => onOpenItem(undefined)}
         />
       )}
@@ -152,6 +220,8 @@ function ItemDrawer({
   annotated,
   annotations,
   thumb,
+  hidden,
+  opacity,
   onClose,
 }: {
   name: string;
@@ -159,6 +229,8 @@ function ItemDrawer({
   annotated: boolean;
   annotations: StateAnnotation[];
   thumb: string | undefined;
+  hidden: ReadonlySet<string>;
+  opacity: number;
   onClose: () => void;
 }) {
   const download = useQuery({
@@ -176,7 +248,23 @@ function ItemDrawer({
         </button>
       </div>
       {thumb ? (
-        <img className="drawer-media" src={thumb} alt={item.path} />
+        item.item_id && item.width && item.height ? (
+          <span
+            className="drawer-media overlay-fit"
+            style={{ aspectRatio: `${item.width} / ${item.height}` }}
+          >
+            <img src={thumb} alt={item.path} />
+            <AnnotationOverlay
+              width={item.width}
+              height={item.height}
+              annotations={annotations}
+              hidden={hidden}
+              opacity={opacity}
+            />
+          </span>
+        ) : (
+          <img className="drawer-media" src={thumb} alt={item.path} />
+        )
       ) : (
         <div className="drawer-media drawer-media--none blueprint">
           <span className="data">{extOf(item.path)}</span>
@@ -214,6 +302,7 @@ function ItemDrawer({
             <ul className="ann-list">
               {annotations.map((a) => (
                 <li key={a.id}>
+                  <span className="class-dot" style={{ background: classColor(a.class) }} />
                   <span className="chip">{a.kind ?? '?'}</span> {a.class ?? '—'}
                   <span className="quiet"> — {a.author}</span>
                 </li>
@@ -258,6 +347,17 @@ function groupAnnotations(annotations: StateAnnotation[]): Map<string, StateAnno
     else map.set(a.item_id, [a]);
   }
   return map;
+}
+
+function classCounts(annotations: StateAnnotation[]): { name: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const a of annotations) {
+    const cls = a.class ?? '';
+    counts.set(cls, (counts.get(cls) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function extOf(path: string): string {

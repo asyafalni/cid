@@ -78,9 +78,29 @@ test('keyboard: the tape is reachable and Enter pins', async ({ page }) => {
   await expect(page).toHaveURL(/release=v1\.0\.0/);
 });
 
+test('a detection dataset: boxes are drawn in the gallery and the drawer', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/boxes?view=browse');
+  // Two boxes on the one frame, from the release's own pixel space.
+  await expect(page.locator('.tile .overlay rect')).toHaveCount(2);
+  // Toggling a class hides exactly its shapes, and says so on the chip.
+  const person = page.getByRole('button', { name: /person/ });
+  await expect(person).toHaveAttribute('aria-pressed', 'true');
+  await person.click();
+  await expect(page.locator('.tile .overlay rect')).toHaveCount(1);
+  await person.click();
+  await expect(page.locator('.tile .overlay rect')).toHaveCount(2);
+  // The opacity control is a labelled input, not a mystery dial.
+  await expect(page.getByLabel('Overlay opacity')).toBeVisible();
+  // The drawer draws the same shapes at size and names both classes.
+  await page.getByRole('button', { name: /street\.png/ }).click();
+  await expect(page.locator('.drawer .overlay rect')).toHaveCount(2);
+  await expect(page.locator('.drawer .ann-list li')).toHaveCount(2);
+});
+
 test('accessibility: no serious or critical axe findings', async ({ page }) => {
   await signIn(page);
-  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse']) {
+  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse']) {
     await page.goto(path);
     await page.waitForLoadState('networkidle');
     const results = await new AxeBuilder({ page }).analyze();

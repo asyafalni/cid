@@ -1,59 +1,165 @@
 import { execSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
-// Seeds e2e/datasets/demo through the real CLI: three frames (two
-// identical — the preview dedup on display), a README, two releases,
-// previews built. Idempotent: an existing seeded dataset is left alone.
-export default function setup() {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const cid = resolve(here, '../../zig-out/bin/cid');
-  const env = {
-    ...process.env,
-    CID_DB: 'host=127.0.0.1 port=5433 user=cid password=cid-test dbname=cid_test',
-    CID_S3_ENDPOINT: 'http://127.0.0.1:8333',
-    CID_S3_ACCESS_KEY: 'cid-test-key',
-    CID_S3_SECRET_KEY: 'cid-test-secret',
-    CID_TOKEN: 'e2e-dashboard-token',
-    CID_SERVER: 'http://127.0.0.1:7177',
-  };
-  const run = (cmd: string, cwd?: string) =>
-    execSync(cmd, { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] })
-      .toString()
-      .trim();
+// Seeds two datasets the way their real producers would:
+//   e2e/datasets/demo  — a file dataset through the CLI (frames, README,
+//                        two releases).
+//   e2e/datasets/boxes — an annotated dataset the platform's way: bytes
+//                        through check-hashes + register-items, revision
+//                        rows inserted directly (UUIDv7, like cid_writer),
+//                        sealed by the server's commit, tagged v1.0.0.
+// Idempotent: a dataset that already exists is left alone.
 
-  // A serve must be up for the CLI; playwright's webServer starts it
-  // before tests but after globalSetup, so run our own briefly.
+const here = dirname(fileURLToPath(import.meta.url));
+const cid = resolve(here, '../../zig-out/bin/cid');
+const compose = resolve(here, '../../docker-compose.test.yml');
+const token = 'e2e-dashboard-token';
+
+const env = {
+  ...process.env,
+  CID_DB: 'host=127.0.0.1 port=5433 user=cid password=cid-test dbname=cid_test',
+  CID_S3_ENDPOINT: 'http://127.0.0.1:8333',
+  CID_S3_ACCESS_KEY: 'cid-test-key',
+  CID_S3_SECRET_KEY: 'cid-test-secret',
+  CID_TOKEN: token,
+  CID_SERVER: 'http://127.0.0.1:7178',
+};
+
+function run(cmd: string, cwd?: string): string {
+  return execSync(cmd, { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    .toString()
+    .trim();
+}
+
+function api(method: string, path: string, body?: unknown): unknown {
+  const data = body === undefined ? '' : `--data '${JSON.stringify(body).replace(/'/g, "'\\''")}'`;
+  const out = run(
+    `curl -s -X ${method} ${data} -H "Authorization: Bearer ${token}" -H "content-type: application/json" http://127.0.0.1:7178${path}`,
+  );
+  return out ? JSON.parse(out) : {};
+}
+
+function psql(sql: string) {
+  execSync(`docker compose -f ${compose} exec -T timescaledb psql -q -U cid -d cid_test -v ON_ERROR_STOP=1`, {
+    input: sql,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+}
+
+// UUIDv7, strictly ascending the way cid_writer mints them: the counter
+// rides the bits right after the version, so two in one millisecond
+// still order.
+let uuidSeq = 0;
+function uuid7(): string {
+  const ms = BigInt(Date.now());
+  const bytes = Buffer.concat([Buffer.alloc(6), randomBytes(10)]);
+  bytes.writeUIntBE(Number(ms >> 8n), 0, 5);
+  bytes[5] = Number(ms & 0xffn);
+  uuidSeq = (uuidSeq + 1) & 0x3ff;
+  bytes[6] = 0x70 | ((uuidSeq >> 6) & 0x0f);
+  bytes[7] = ((uuidSeq & 0x3f) << 2) | (bytes[7] & 0x03);
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function seedDemo(dir: string) {
+  run(
+    `ffmpeg -nostdin -loglevel error -f lavfi -i testsrc=size=200x150:rate=1 -frames:v 1 -y ${dir}/img-a.png`,
+  );
+  run(
+    `ffmpeg -nostdin -loglevel error -f lavfi -i testsrc2=size=200x150:rate=1 -frames:v 1 -y ${dir}/img-b.png`,
+  );
+  writeFileSync(join(dir, 'README.txt'), 'the e2e dataset\n');
+  run(`${cid} init cid@127.0.0.1:e2e/datasets/demo --git g@h:e2e.git`, dir);
+  run(`${cid} add .`, dir);
+  run(`${cid} commit -m "first frames"`, dir);
+  run(`${cid} push`, dir);
+  run(`${cid} tag v1.0.0`, dir);
+  writeFileSync(join(dir, 'notes.txt'), 'a second version\n');
+  run(`${cid} commit -am "notes"`, dir);
+  run(`${cid} push`, dir);
+  run(`${cid} tag v1.1.0`, dir);
+}
+
+function seedBoxes(dir: string) {
+  const name = 'e2e/datasets/boxes';
+  const created = api('POST', '/v0/datasets', {
+    name,
+    kind: 'annotated',
+    git_url: 'g@h:boxes.git',
+  }) as { dataset_id?: string };
+  const datasetId = created.dataset_id;
+  if (!datasetId) throw new Error('could not create the boxes dataset');
+
+  const png = join(dir, 'street.png');
+  run(
+    `ffmpeg -nostdin -loglevel error -f lavfi -i testsrc=size=200x150:rate=1 -frames:v 1 -y ${png}`,
+  );
+  const bytes = readFileSync(png);
+  const hash = createHash('sha256').update(bytes).digest('hex');
+  const size = statSync(png).size;
+
+  const check = api('POST', `/v0/datasets/${name}/-/check-hashes`, { hashes: [hash] }) as {
+    missing: { hash: string; url: string }[];
+  };
+  for (const m of check.missing) {
+    run(`curl -s -X PUT --data-binary @${png} '${m.url}'`);
+  }
+  api('POST', `/v0/datasets/${name}/-/register-items`, {
+    items: [{ hash, size, media_type: 'image/png', width: 200, height: 150 }],
+  });
+  api('POST', `/v0/datasets/${name}/-/policy`, {
+    version: 'p1',
+    body: { rule: 'label every person and vehicle' },
+  });
+
+  // The platform's half: revision rows, directly, under UUIDv7 ids —
+  // then the server's commit seals them.
+  const itemId = uuid7();
+  const rev1 = uuid7();
+  const annPerson = uuid7();
+  const annVehicle = uuid7();
+  const rev2 = uuid7();
+  const rev3 = uuid7();
+  psql(`
+    INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author)
+    VALUES ('${rev1}'::uuid, now(), '${datasetId}'::uuid, 'main', 'frames/street.png', 'add',
+            '${itemId}'::uuid, decode('${hash}', 'hex'), 'train', 'agent:annotator');
+    INSERT INTO dataset_items (item_id, dataset_id)
+    VALUES ('${itemId}'::uuid, '${datasetId}'::uuid) ON CONFLICT (item_id) DO NOTHING;
+    INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver)
+    VALUES ('${rev2}'::uuid, now(), '${datasetId}'::uuid, 'main', '${annPerson}'::uuid, '${itemId}'::uuid,
+            'create', 'box', 'person', '{"x":20,"y":15,"w":60,"h":50}'::jsonb, 'agent:annotator', 'p1'),
+           ('${rev3}'::uuid, now(), '${datasetId}'::uuid, 'main', '${annVehicle}'::uuid, '${itemId}'::uuid,
+            'create', 'box', 'vehicle', '{"x":110,"y":40,"w":70,"h":80}'::jsonb, 'agent:annotator', 'p1');
+  `);
+
+  api('POST', `/v0/datasets/${name}/-/commit`, {
+    message: 'first labelled frame',
+    author: 'agent:annotator',
+  });
+  api('POST', `/v0/datasets/${name}/-/tag`, { name: 'v1.0.0' });
+}
+
+export default function setup() {
+  // A serve must be up for the CLI and the API; playwright's webServer
+  // starts its own before tests but after globalSetup, so run one briefly.
   const serve = spawn(cid, ['admin', 'serve', '--port', '7178'], { env, stdio: 'ignore' });
-  env.CID_SERVER = 'http://127.0.0.1:7178';
   try {
     execSync('sleep 1');
     const already = run(
-      `curl -s http://127.0.0.1:7178/v0/datasets -H "Authorization: Bearer e2e-dashboard-token"`,
+      `curl -s http://127.0.0.1:7178/v0/datasets -H "Authorization: Bearer ${token}"`,
     );
-    if (already.includes('e2e/datasets/demo')) return;
-
     const dir = mkdtempSync(join(tmpdir(), 'cid-e2e-'));
-    run(
-      `ffmpeg -nostdin -loglevel error -f lavfi -i testsrc=size=200x150:rate=1 -frames:v 1 -y ${dir}/img-a.png`,
-    );
-    run(
-      `ffmpeg -nostdin -loglevel error -f lavfi -i testsrc2=size=200x150:rate=1 -frames:v 1 -y ${dir}/img-b.png`,
-    );
-    writeFileSync(join(dir, 'README.txt'), 'the e2e dataset\n');
-    run(`${cid} init cid@127.0.0.1:e2e/datasets/demo --git g@h:e2e.git`, dir);
-    run(`${cid} add .`, dir);
-    run(`${cid} commit -m "first frames"`, dir);
-    run(`${cid} push`, dir);
-    run(`${cid} tag v1.0.0`, dir);
-    writeFileSync(join(dir, 'notes.txt'), 'a second version\n');
-    run(`${cid} commit -am "notes"`, dir);
-    run(`${cid} push`, dir);
-    run(`${cid} tag v1.1.0`, dir);
-    run(`${cid} admin previews`); // sniff + thumbs for the pngs
+    if (!already.includes('e2e/datasets/demo')) seedDemo(dir);
+    if (!already.includes('e2e/datasets/boxes')) seedBoxes(dir);
+    run(`${cid} admin previews`); // sniff + thumbs for every new png
   } finally {
     serve.kill();
   }

@@ -487,6 +487,108 @@
   text-align: left;
 }
 
+.tile-media {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.overlay-fit {
+  position: relative;
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.overlay-fit img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.overlay rect,
+.overlay polygon {
+  fill: none;
+  stroke-width: 2px;
+}
+
+.overlay-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.class-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.class-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.class-chip--off {
+  color: var(--text-muted);
+  border-style: dashed;
+}
+
+.class-chip--off .class-dot {
+  opacity: 0.35;
+}
+
+.class-dot {
+  width: 0.6em;
+  height: 0.6em;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+}
+
+.ann-list .class-dot {
+  margin-right: var(--space-2);
+}
+
+.overlay-opacity {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin-left: auto;
+}
+
+.overlay-opacity input {
+  accent-color: var(--aether);
+  width: 7rem;
+}
+
 .tile img {
   width: 100%;
   aspect-ratio: 4 / 3;
@@ -590,6 +692,16 @@
   width: 100%;
   border-radius: var(--radius-panel);
   border: 1px solid var(--line);
+}
+
+.drawer-media.overlay-fit {
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.drawer-media.overlay-fit img {
+  border-radius: 0;
+  border: 0;
 }
 
 .drawer-media--none {

@@ -36,6 +36,18 @@
   --radius-hero: 10px;
 
   --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--aether);
+
+  /* Overlay strokes: eight hues a class maps onto deterministically
+     (overlays.tsx). Bright against the night sky; color is never the
+     only carrier — the chip names the class, the shape's tooltip too. */
+  --ann-1: #5bd8e0;
+  --ann-2: #ffb454;
+  --ann-3: #8be28b;
+  --ann-4: #ff8fb2;
+  --ann-5: #b7a5ff;
+  --ann-6: #ffe066;
+  --ann-7: #7fb8ff;
+  --ann-8: #ff9d7a;
 }
 
 @media (prefers-color-scheme: light) {
@@ -54,6 +66,14 @@
     --pass: #1e7f52;
     --warn: #8a5a00;
     --fail: #b3261e;
+    --ann-1: #0c717a;
+    --ann-2: #a35b00;
+    --ann-3: #1e7f52;
+    --ann-4: #b03060;
+    --ann-5: #5f4bb6;
+    --ann-6: #8a6d00;
+    --ann-7: #205fa8;
+    --ann-8: #b34a22;
   }
 }
 
@@ -72,4 +92,12 @@
   --pass: #1e7f52;
   --warn: #8a5a00;
   --fail: #b3261e;
+  --ann-1: #0c717a;
+  --ann-2: #a35b00;
+  --ann-3: #1e7f52;
+  --ann-4: #b03060;
+  --ann-5: #5f4bb6;
+  --ann-6: #8a6d00;
+  --ann-7: #205fa8;
+  --ann-8: #b34a22;
 }
