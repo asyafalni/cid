@@ -5,6 +5,7 @@
 const std = @import("std");
 const common = @import("common.zig");
 const workspace = @import("../client/workspace.zig");
+const local = @import("../client/local.zig");
 const sync = @import("../client/sync.zig");
 
 pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCode {
@@ -26,18 +27,35 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     const remote = common.remoteFor(ctx, name, .read, ws.config.address) catch
         return common.fail(ctx, .usage, common.no_server_msg, .{});
 
-    // A release name resolves to its commit; a 36-char id is used as-is.
+    // Resolution order: release name, then branch name, then a commit id.
+    var branch: []const u8 = "";
+    var move_root = false;
     const commit_id: []const u8 = blk: {
         if (target.len == 36) break :blk target;
         const list = remote.releases(ctx.arena) catch
-            return common.fail(ctx, .network, "cannot reach the server to resolve '{s}'. Check CID_SERVER, then run 'cid checkout' again.", .{target});
+            return common.fail(ctx, .network, "cannot reach the server to resolve '{s}'. Check the connection, then run 'cid checkout' again.", .{target});
         for (list) |r| {
             if (std.mem.eql(u8, r.name, target)) break :blk r.commit;
         }
-        return common.fail(ctx, .usage, "no release named '{s}'. Run 'cid log' for commits, or ask the owner which releases exist.", .{target});
+        const branch_list = remote.branches(ctx.arena) catch
+            return common.fail(ctx, .network, "cannot reach the server to resolve '{s}'. Check the connection, then run 'cid checkout' again.", .{target});
+        for (branch_list) |b| {
+            if (std.mem.eql(u8, b.name, target)) {
+                branch = b.name;
+                move_root = true;
+                break :blk b.commit;
+            }
+        }
+        return common.fail(ctx, .usage, "'{s}' is neither a release, a branch nor a commit here. Run 'cid log', or 'cid branch {s}' to create the branch.", .{ target, target });
     };
+    if (branch.len == 0) {
+        const head = local.loadHead(ctx.arena, ctx.io, ws.cid_dir) catch
+            return common.fail(ctx, .integrity, ".cid/ state is unreadable. Run 'cid status' for details.", .{});
+        branch = head.branch;
+    }
 
-    const changed = sync.checkout(ctx.arena, ctx.io, &ws, cache_dir, remote, commit_id) catch |err| switch (err) {
+    const changed = sync.checkout(ctx.arena, ctx.io, &ws, cache_dir, remote, branch, commit_id, move_root) catch |err| switch (err) {
+        error.UnpushedCommits => return common.fail(ctx, .conflict, "you have local commits not pushed; switching would hide them. Run 'cid push' first.", .{}),
         error.LocalChangesInTheWay => return common.fail(ctx, .conflict, "local edits would be overwritten. Commit them ('cid commit -a -m \"...\"') or move them aside, then run 'cid checkout' again.", .{}),
         error.NoSuchDataset => return common.fail(ctx, .usage, "no such commit here. Run 'cid log' to list commits.", .{}),
         error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server. Check CID_SERVER, then run 'cid checkout' again.", .{}),

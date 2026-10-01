@@ -21,6 +21,7 @@ pub const Remote = remote_mod.Remote;
 pub const Error = error{
     EmptyDataset,
     NoSuchRelease,
+    UnpushedCommits,
     StagedChanges,
     LocalChangesInTheWay,
     CorruptLocalState,
@@ -139,7 +140,7 @@ pub fn clone(
 
     const downloaded = try materialize(arena, io, &ws, cache_dir, remote, items);
 
-    try setPosition(io, &ws, at_commit);
+    try setPosition(io, &ws, "main", at_commit);
     // Server history reaches the branch head even when the folder sits at
     // an older release; 'cid pull' moves up to it.
     local.writeLastPushed(io, ws.cid_dir, head_commit) catch return error.CorruptLocalState;
@@ -167,8 +168,8 @@ pub fn pull(
     cache_dir: std.Io.Dir,
     remote: *const Remote,
 ) Error!PullOutcome {
-    const server_head = (try remote.head(arena, "main")) orelse return error.EmptyDataset;
     const head = local.loadHead(arena, io, ws.cid_dir) catch return error.CorruptLocalState;
+    const server_head = (try remote.head(arena, head.branch)) orelse return error.EmptyDataset;
     if (head.commit) |c| {
         if (std.mem.eql(u8, &c.toString(), server_head)) {
             deletePullState(io, ws);
@@ -184,7 +185,7 @@ pub fn pull(
     if (unpushed_newest_first.len == 0) {
         const items = try remote.state(arena, server_head);
         const changed = try materialize(arena, io, ws, cache_dir, remote, items);
-        try setPosition(io, ws, server_head);
+        try setPosition(io, ws, head.branch, server_head);
         local.writeLastPushed(io, ws.cid_dir, server_head) catch return error.CorruptLocalState;
         deletePullState(io, ws);
         return .{ .fast_forwarded = .{ .files_changed = changed, .head_commit = server_head } };
@@ -310,7 +311,7 @@ pub fn pull(
         kept += 1;
     }
 
-    local.saveHead(io, ws.cid_dir, .{ .branch = "main", .commit = prev }) catch
+    local.saveHead(io, ws.cid_dir, .{ .branch = head.branch, .commit = prev }) catch
         return error.CorruptLocalState;
     local.writeLastPushed(io, ws.cid_dir, server_head) catch return error.CorruptLocalState;
 
@@ -389,18 +390,28 @@ fn stagedCount(arena: std.mem.Allocator, io: std.Io, ws: *workspace.Workspace) E
     return idx.len();
 }
 
-/// Switches the folder to any commit. The same safety rules as pull.
+/// Switches the folder to any commit, on `branch`. The same safety rules
+/// as pull; a branch switch also moves where server history is rooted.
 pub fn checkout(
     arena: std.mem.Allocator,
     io: std.Io,
     ws: *workspace.Workspace,
     cache_dir: std.Io.Dir,
     remote: *const Remote,
+    branch: []const u8,
     commit_id: []const u8,
+    move_root: bool,
 ) Error!u32 {
+    const last_pushed = local.readLastPushed(arena, io, ws.cid_dir);
+    const unpushed = local.listUnpushed(arena, io, ws.cid_dir, last_pushed) catch
+        return error.CorruptLocalState;
+    if (unpushed.len > 0) return error.UnpushedCommits;
+
     const items = try remote.state(arena, commit_id);
     const changed = try materialize(arena, io, ws, cache_dir, remote, items);
-    try setPosition(io, ws, commit_id);
+    try setPosition(io, ws, branch, commit_id);
+    if (move_root)
+        local.writeLastPushed(io, ws.cid_dir, commit_id) catch return error.CorruptLocalState;
     return changed;
 }
 
@@ -493,10 +504,10 @@ fn materialize(
 // server history begins (no local files below it).
 // --------------------------------------------------------------------------
 
-fn setPosition(io: std.Io, ws: *workspace.Workspace, commit_id: []const u8) Error!void {
+fn setPosition(io: std.Io, ws: *workspace.Workspace, branch: []const u8, commit_id: []const u8) Error!void {
     const Uuid = @import("../util/uuid7.zig").Uuid;
     const id = Uuid.parse(commit_id) catch return error.CorruptLocalState;
-    local.saveHead(io, ws.cid_dir, .{ .branch = "main", .commit = id }) catch
+    local.saveHead(io, ws.cid_dir, .{ .branch = branch, .commit = id }) catch
         return error.CorruptLocalState;
 }
 

@@ -451,7 +451,7 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     try std.testing.expect(pulled2 == .already_up_to_date);
 
     // Checkout the first commit: the old tree returns, byte for byte.
-    const changed_back = try cid.client.sync.checkout(arena, io, &rws, reader_cache.dir, &remote, &first.id.toString());
+    const changed_back = try cid.client.sync.checkout(arena, io, &rws, reader_cache.dir, &remote, "main", &first.id.toString(), false);
     try std.testing.expect(changed_back >= 2);
     try std.testing.expectEqualSlices(u8, "version one of a\n", try readWholeFile(io, reader_dir.dir, "a.txt", arena));
     try std.testing.expectEqualSlices(u8, "\x00\x01\x02\xff binary", try readWholeFile(io, reader_dir.dir, "sub/b.bin", arena));
@@ -462,7 +462,7 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     try reader_dir.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "my local edit" });
     try std.testing.expectError(
         error.LocalChangesInTheWay,
-        cid.client.sync.checkout(arena, io, &rws, reader_cache.dir, &remote, &first.id.toString()),
+        cid.client.sync.checkout(arena, io, &rws, reader_cache.dir, &remote, "main", &first.id.toString(), false),
     );
     // Put it back to the tracked content for the rest of the test.
     _ = try cid.client.workspace.add(arena, io, &rws, reader_cache.dir, &.{"a.txt"});
@@ -921,4 +921,134 @@ test "gitlab sync: members and keys applied, removals revoke access" {
     const key_second = try cid.access.gitlab.applyKeys(arena, &db, 9102, &.{});
     try std.testing.expectEqual(@as(u32, 1), key_second.removed);
     try std.testing.expectEqual(@as(?[]const u8, null), try cid.access.auth.authorizedKeysLine(arena, &db, "SHA256:dFtRBBCbqwbXXQkKRXzbOpi9eJQNbn/SAiaVrdWiLo0"));
+}
+
+test "branches: compose from main, push on branch, merge with conflicts listed" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var diag: cid.pg.Diag = .{};
+    var db = try connect(&diag);
+    defer db.close();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .bucket = "cid-test",
+    });
+    defer s3c.deinit();
+    try s3c.createBucket(arena);
+
+    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/br" };
+
+    try db.exec("SET cid.maintenance = 'on'", &diag);
+    inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
+        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/br')", &diag);
+    }
+    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/br'", &diag);
+    try db.exec("RESET cid.maintenance", &diag);
+
+    // Main gets its base: shared.txt and tweak.txt.
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    try producer.dir.writeFile(io, .{ .sub_path = "shared.txt", .data = "base shared" });
+    try producer.dir.writeFile(io, .{ .sub_path = "tweak.txt", .data = "base tweak" });
+    try cid.client.workspace.init(arena, io, producer.dir, "cid@test:test/datasets/br", "g@h:br.git");
+    var pws = try cid.client.workspace.open(arena, io, producer.dir);
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "base", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+
+    // A branch, worked on from a clone.
+    _ = try remote.branchCreate(arena, "cleanup");
+    try std.testing.expectError(error.BranchExists, remote.branchCreate(arena, "cleanup"));
+
+    var worker = std.testing.tmpDir(.{ .iterate = true });
+    defer worker.cleanup();
+    var wcache = std.testing.tmpDir(.{});
+    defer wcache.cleanup();
+    _ = try cid.client.sync.clone(arena, io, worker.dir, wcache.dir, &remote, "cid@test:test/datasets/br", null);
+    var wws = try cid.client.workspace.open(arena, io, worker.dir);
+
+    // Switch to the branch: the base files are all there (composed state).
+    const head_of_branch = (try remote.head(arena, "cleanup")).?;
+    _ = try cid.client.sync.checkout(arena, io, &wws, wcache.dir, &remote, "cleanup", head_of_branch, true);
+    try std.testing.expectEqualSlices(u8, "base shared", try readWholeFile(io, worker.dir, "shared.txt", arena));
+
+    // Branch work: change tweak.txt, add branch-only.txt; push lands on the branch.
+    try worker.dir.writeFile(io, .{ .sub_path = "tweak.txt", .data = "branch tweak" });
+    try worker.dir.writeFile(io, .{ .sub_path = "branch-only.txt", .data = "from the branch" });
+    _ = try cid.client.workspace.add(arena, io, &wws, wcache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &wws, "branch work", "user:worker");
+    const bpush = try cid.client.sync.push(arena, io, &wws, wcache.dir, &remote);
+    try std.testing.expectEqual(@as(u32, 1), bpush.pushed_commits);
+
+    // Branch state composes; main is untouched.
+    const bstate = try remote.state(arena, (try remote.head(arena, "cleanup")).?);
+    try std.testing.expectEqual(@as(usize, 3), bstate.len);
+    const mstate = try remote.state(arena, (try remote.head(arena, "main")).?);
+    try std.testing.expectEqual(@as(usize, 2), mstate.len);
+
+    // Main moves independently on a different file: merge is automatic.
+    try producer.dir.writeFile(io, .{ .sub_path = "main-only.txt", .data = "from main" });
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "main work", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+
+    const merged = try remote.merge(arena, "cleanup", "user:test");
+    try std.testing.expect(merged == .merged);
+    try std.testing.expectEqual(@as(u64, 2), merged.merged.changes); // tweak + branch-only
+
+    const after = try remote.state(arena, (try remote.head(arena, "main")).?);
+    try std.testing.expectEqual(@as(usize, 4), after.len);
+    var mrows = try db.query(
+        "SELECT merge_parent_id::text FROM commits c JOIN datasets d USING (dataset_id) " ++
+            "WHERE d.name = 'test/datasets/br' AND merge_parent_id IS NOT NULL",
+        &.{},
+        &diag,
+    );
+    defer mrows.deinit();
+    try std.testing.expectEqual(@as(usize, 1), mrows.count());
+
+    // The producer pulls the merge; the folder holds all four files.
+    const after_pull = try cid.client.sync.pull(arena, io, &pws, cache.dir, &remote);
+    try std.testing.expect(after_pull == .fast_forwarded);
+    try std.testing.expectEqualSlices(u8, "branch tweak", try readWholeFile(io, producer.dir, "tweak.txt", arena));
+    try std.testing.expectEqualSlices(u8, "from the branch", try readWholeFile(io, producer.dir, "branch-only.txt", arena));
+
+    // A conflicting branch: both sides now change shared.txt differently.
+    _ = try remote.branchCreate(arena, "risky");
+    _ = try cid.client.sync.checkout(arena, io, &wws, wcache.dir, &remote, "risky", (try remote.head(arena, "risky")).?, true);
+    try worker.dir.writeFile(io, .{ .sub_path = "shared.txt", .data = "risky version" });
+    _ = try cid.client.workspace.add(arena, io, &wws, wcache.dir, &.{"shared.txt"});
+    _ = try cid.client.workspace.commit(arena, io, &wws, "risky shared", "user:worker");
+    _ = try cid.client.sync.push(arena, io, &wws, wcache.dir, &remote);
+    try producer.dir.writeFile(io, .{ .sub_path = "shared.txt", .data = "main version" });
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"shared.txt"});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "main shared", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+
+    const conflicted = try remote.merge(arena, "risky", "user:test");
+    try std.testing.expect(conflicted == .conflicts);
+    try std.testing.expectEqual(@as(usize, 1), conflicted.conflicts.len);
+    try std.testing.expectEqualStrings("shared.txt", conflicted.conflicts[0]);
+    // Nothing merged: main still holds its own version.
+    const untouched = try remote.state(arena, (try remote.head(arena, "main")).?);
+    for (untouched) |item| {
+        if (std.mem.eql(u8, item.path, "shared.txt")) {
+            var dgst: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash("main version", &dgst, .{});
+            try std.testing.expectEqualStrings(&std.fmt.bytesToHex(dgst, .lower), item.hash);
+        }
+    }
+
+    try std.testing.expectError(error.NoSuchBranch, remote.merge(arena, "ghost", "user:test"));
 }

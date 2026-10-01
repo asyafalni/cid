@@ -25,8 +25,27 @@ const text =
     \\
 ;
 
+const owner_text =
+    \\
+    \\For dataset owners:
+    \\
+    \\  init <address> --git <git-url>   create a dataset from this folder
+    \\  tag <name>         make a release (never moves again)
+    \\  branch <name>      a draft line of work, starting from main
+    \\  merge <name>       merge a branch into main; conflicts are listed
+    \\
+    \\Rarely needed: 'cid login <server>' for machines without SSH.
+    \\Server administration: 'cid admin'.
+    \\
+;
+
 pub fn print(out: *std.Io.Writer) !void {
     try out.writeAll(text);
+}
+
+pub fn printAll(out: *std.Io.Writer) !void {
+    try out.writeAll(text);
+    try out.writeAll(owner_text);
 }
 
 test "help fits one screen and names every everyday command" {

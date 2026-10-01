@@ -42,7 +42,10 @@ pub const StateRow = struct {
 };
 
 /// State at a commit, sorted by path — the one query both the browse API
-/// and manifests are built from.
+/// and manifests are built from. On a branch: main up to the branch's
+/// start cutoff, plus the branch's own changes (CLAUDE.md, data model);
+/// branch revisions are minted later, so plain rev_id ordering gives them
+/// precedence.
 pub fn stateRows(
     arena: std.mem.Allocator,
     db: *pg.Db,
@@ -59,13 +62,28 @@ pub fn stateRows(
     const branch = arena.dupeZ(u8, commit_rows.get(0, 0)) catch return error.OutOfMemory;
     const cutoff = arena.dupeZ(u8, commit_rows.get(0, 1)) catch return error.OutOfMemory;
 
+    // The branch's base: main as of the start commit's cutoff.
+    var main_cutoff: [:0]const u8 = cutoff;
+    if (!std.mem.eql(u8, branch, "main")) {
+        var start_rows = db.query(
+            "SELECT c.cutoff_rev::text FROM refs r JOIN commits c ON c.commit_id = r.start_commit_id " ++
+                "WHERE r.dataset_id = $1::uuid AND r.name = $2 AND r.kind = 'branch'",
+            &.{ dataset_id, branch },
+            null,
+        ) catch return error.Db;
+        defer start_rows.deinit();
+        if (start_rows.count() == 0) return error.NoSuchCommit;
+        main_cutoff = arena.dupeZ(u8, start_rows.get(0, 0)) catch return error.OutOfMemory;
+    }
+
     var rows = db.query(
         "SELECT path, encode(item_hash, 'hex'), i.size_bytes::text, s.split FROM (" ++
             "  SELECT DISTINCT ON (path) path, op, item_hash, split FROM item_revisions " ++
-            "  WHERE dataset_id = $1::uuid AND branch = $2 AND rev_id <= $3::uuid " ++
+            "  WHERE dataset_id = $1::uuid AND (" ++
+            "    (branch = 'main' AND rev_id <= $4::uuid) OR (branch = $2 AND rev_id <= $3::uuid)) " ++
             "  ORDER BY path, rev_id DESC) s " ++
             "JOIN items i USING (item_hash) WHERE s.op <> 'delete' ORDER BY path",
-        &.{ dataset_id, branch, cutoff },
+        &.{ dataset_id, branch, cutoff, main_cutoff },
         null,
     ) catch return error.Db;
     defer rows.deinit();

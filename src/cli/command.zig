@@ -5,6 +5,7 @@ const std = @import("std");
 
 pub const Parsed = union(enum) {
     help,
+    help_all,
     version,
     init: []const [:0]const u8,
     add: []const [:0]const u8,
@@ -18,6 +19,8 @@ pub const Parsed = union(enum) {
     tag: []const [:0]const u8,
     restore: []const [:0]const u8,
     diff: []const [:0]const u8,
+    branch: []const [:0]const u8,
+    merge: []const [:0]const u8,
     /// `cid admin …`; the payload is everything after `admin`.
     admin: []const [:0]const u8,
     /// sshd-only entry points; never in help.
@@ -32,13 +35,16 @@ pub const Parsed = union(enum) {
 /// Commands the docs promise but this build does not include yet. Saying
 /// "not built yet" beats pretending they are typos.
 const not_yet_commands = [_][]const u8{
-    "branch", "merge", "login",
+    "login",
 };
 
 pub fn parse(args: []const [:0]const u8) Parsed {
     if (args.len == 0) return .help;
     const first = args[0];
-    if (eql(first, "help") or eql(first, "--help") or eql(first, "-h")) return .help;
+    if (eql(first, "help") or eql(first, "--help") or eql(first, "-h")) {
+        if (args.len > 1 and eql(args[1], "--all")) return .help_all;
+        return .help;
+    }
     if (eql(first, "version") or eql(first, "--version")) return .version;
     if (eql(first, "init")) return .{ .init = args[1..] };
     if (eql(first, "add")) return .{ .add = args[1..] };
@@ -52,6 +58,8 @@ pub fn parse(args: []const [:0]const u8) Parsed {
     if (eql(first, "tag")) return .{ .tag = args[1..] };
     if (eql(first, "restore")) return .{ .restore = args[1..] };
     if (eql(first, "diff")) return .{ .diff = args[1..] };
+    if (eql(first, "branch")) return .{ .branch = args[1..] };
+    if (eql(first, "merge")) return .{ .merge = args[1..] };
     if (eql(first, "admin")) return .{ .admin = args[1..] };
     if (eql(first, "ssh-keys")) return .{ .ssh_keys = args[1..] };
     if (eql(first, "ssh-auth")) return .{ .ssh_auth = args[1..] };

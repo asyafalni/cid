@@ -87,6 +87,8 @@ pub const Error = error{
     Stale, // someone pushed since you pulled
     MissingContent, // a file was not in storage; re-run push
     ReleaseExists,
+    BranchExists,
+    NoSuchBranch,
     BadReleaseName,
     NothingToTag,
     OutOfMemory,
@@ -234,6 +236,55 @@ pub const Remote = struct {
         const List = struct { releases: []const Release };
         const parsed = parse(List, arena, res.body) orelse return error.ServerRefused;
         return parsed.releases;
+    }
+
+    pub fn branchCreate(self: *const Remote, arena: std.mem.Allocator, name: []const u8) Error![]const u8 {
+        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .name = name }, .{})});
+        const res = self.t.call(arena, "POST", try self.target(arena, "branch", .{}), body) catch
+            return error.ServerUnreachable;
+        if (res.status == .conflict) return error.BranchExists;
+        if (res.status == .bad_request) return error.BadReleaseName;
+        if (res.status == .unprocessable_entity) return error.NothingToTag;
+        if (res.status == .not_found) return error.NoSuchDataset;
+        if (res.status != .created) return error.ServerRefused;
+        const Created = struct { branch: []const u8, start: []const u8 };
+        const parsed = parse(Created, arena, res.body) orelse return error.ServerRefused;
+        return parsed.start;
+    }
+
+    pub const Branch = struct { name: []const u8, commit: []const u8 };
+
+    pub fn branches(self: *const Remote, arena: std.mem.Allocator) Error![]const Branch {
+        const res = self.t.call(arena, "GET", try self.target(arena, "branches", .{}), "") catch
+            return error.ServerUnreachable;
+        if (res.status == .not_found) return error.NoSuchDataset;
+        if (res.status != .ok) return error.ServerRefused;
+        const List = struct { branches: []const Branch };
+        const parsed = parse(List, arena, res.body) orelse return error.ServerRefused;
+        return parsed.branches;
+    }
+
+    pub const MergeResult = union(enum) {
+        merged: struct { commit: []const u8, changes: u64 },
+        conflicts: []const []const u8,
+        nothing_to_merge,
+    };
+
+    pub fn merge(self: *const Remote, arena: std.mem.Allocator, name: []const u8, author: []const u8) Error!MergeResult {
+        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .name = name, .author = author }, .{})});
+        const res = self.t.call(arena, "POST", try self.target(arena, "merge", .{}), body) catch
+            return error.ServerUnreachable;
+        if (res.status == .conflict) {
+            const C = struct { conflicts: []const []const u8 };
+            const parsed = parse(C, arena, res.body) orelse return error.ServerRefused;
+            return .{ .conflicts = parsed.conflicts };
+        }
+        if (res.status == .unprocessable_entity) return .nothing_to_merge;
+        if (res.status == .not_found) return error.NoSuchBranch;
+        if (res.status != .ok) return error.ServerRefused;
+        const M = struct { merge_commit: []const u8, changes: u64 };
+        const parsed = parse(M, arena, res.body) orelse return error.ServerRefused;
+        return .{ .merged = .{ .commit = parsed.merge_commit, .changes = parsed.changes } };
     }
 
     pub const Download = struct { hash: []const u8, url: []const u8 };

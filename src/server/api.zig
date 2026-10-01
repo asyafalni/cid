@@ -84,7 +84,8 @@ fn handleInner(
 
     // Writes need a write-scoped token for this dataset; reads a read one.
     const needed: token_mod.Level = if (eql(route.action, "push") or
-        eql(route.action, "check-hashes") or eql(route.action, "tag"))
+        eql(route.action, "check-hashes") or eql(route.action, "tag") or
+        eql(route.action, "branch") or eql(route.action, "merge"))
         .write
     else
         .read;
@@ -112,6 +113,12 @@ fn handleInner(
         return tag(arena, deps, ds, body);
     if (eql(method, "GET") and eql(route.action, "releases"))
         return releases(arena, deps, ds);
+    if (eql(method, "POST") and eql(route.action, "branch"))
+        return branchCreate(arena, deps, ds, body);
+    if (eql(method, "GET") and eql(route.action, "branches"))
+        return branches(arena, deps, ds);
+    if (eql(method, "POST") and eql(route.action, "merge"))
+        return merge(arena, deps, ds, body);
 
     return errorResponse(arena, .not_found, "no such route", "Update cid and try again.");
 }
@@ -411,57 +418,9 @@ fn push(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) Ha
             last_rev = rev;
             has_rev = true;
             if (eql(ch.op, "add")) {
-                deps.db.execParams(
-                    "INSERT INTO items (item_hash, size_bytes, media_type) " ++
-                        "VALUES (decode($1, 'hex'), $2::bigint, 'application/octet-stream') " ++
-                        "ON CONFLICT (item_hash) DO NOTHING",
-                    &.{ try arena.dupeZ(u8, ch.hash), try intZ(arena, ch.size) },
-                    &diag,
-                ) catch return error.Db;
-                // Item identity: new path → new item_id; existing path keeps its id.
-                deps.db.execParams(
-                    "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
-                        "SELECT $1::uuid, to_timestamp($2::bigint / 1000.0), $3::uuid, $4, $5, " ++
-                        "  CASE WHEN prev.item_id IS NULL THEN 'add' ELSE 'update' END, " ++
-                        "  COALESCE(prev.item_id, $6::uuid), decode($7, 'hex'), NULL, $8 " ++
-                        "FROM (SELECT 1) one LEFT JOIN LATERAL (" ++
-                        "  SELECT item_id FROM item_revisions " ++
-                        "  WHERE dataset_id = $3::uuid AND branch = $4 AND path = $5 AND op <> 'delete' " ++
-                        "  ORDER BY rev_id DESC LIMIT 1) prev ON true",
-                    &.{
-                        try arena.dupeZ(u8, &rev.toString()),
-                        try intZ(arena, rev.unixMs()),
-                        ds.id,
-                        try arena.dupeZ(u8, req.branch),
-                        try arena.dupeZ(u8, ch.path),
-                        try arena.dupeZ(u8, &Uuid.now(deps.io).toString()),
-                        try arena.dupeZ(u8, ch.hash),
-                        try arena.dupeZ(u8, commit.author),
-                    },
-                    &diag,
-                ) catch return error.Db;
-                // New identities also get their dataset_items row.
-                deps.db.execParams(
-                    "INSERT INTO dataset_items (item_id, dataset_id) " ++
-                        "SELECT r.item_id, $1::uuid FROM item_revisions r WHERE r.rev_id = $2::uuid " ++
-                        "ON CONFLICT (item_id) DO NOTHING",
-                    &.{ ds.id, try arena.dupeZ(u8, &rev.toString()) },
-                    &diag,
-                ) catch return error.Db;
+                try insertAddRevision(arena, deps, &diag, ds, req.branch, rev, ch.path, ch.hash, ch.size, commit.author);
             } else {
-                deps.db.execParams(
-                    "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
-                        "VALUES ($1::uuid, to_timestamp($2::bigint / 1000.0), $3::uuid, $4, $5, 'delete', NULL, NULL, NULL, $6)",
-                    &.{
-                        try arena.dupeZ(u8, &rev.toString()),
-                        try intZ(arena, rev.unixMs()),
-                        ds.id,
-                        try arena.dupeZ(u8, req.branch),
-                        try arena.dupeZ(u8, ch.path),
-                        try arena.dupeZ(u8, commit.author),
-                    },
-                    &diag,
-                ) catch return error.Db;
+                try insertDeleteRevision(arena, deps, &diag, ds, req.branch, rev, ch.path, commit.author);
             }
         }
         if (!has_rev) return error.BadRequest;
@@ -624,6 +583,272 @@ fn downloads(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u
         list[i] = .{ .hash = hash, .url = url };
     }
     return json(arena, .ok, .{ .downloads = list });
+}
+
+fn insertAddRevision(
+    arena: std.mem.Allocator,
+    deps: *Deps,
+    diag: *pg.Diag,
+    ds: Dataset,
+    branch: []const u8,
+    rev: Uuid,
+    path: []const u8,
+    hash: []const u8,
+    size: u64,
+    author: []const u8,
+) HandleError!void {
+    deps.db.execParams(
+        "INSERT INTO items (item_hash, size_bytes, media_type) " ++
+            "VALUES (decode($1, 'hex'), $2::bigint, 'application/octet-stream') " ++
+            "ON CONFLICT (item_hash) DO NOTHING",
+        &.{ try arena.dupeZ(u8, hash), try intZ(arena, size) },
+        diag,
+    ) catch return error.Db;
+    // Item identity: new path → new item_id; existing path keeps its id.
+    // On a branch, the path may live on main as of the branch start.
+    deps.db.execParams(
+        "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
+            "SELECT $1::uuid, to_timestamp($2::bigint / 1000.0), $3::uuid, $4, $5, " ++
+            "  CASE WHEN prev.item_id IS NULL THEN 'add' ELSE 'update' END, " ++
+            "  COALESCE(prev.item_id, $6::uuid), decode($7, 'hex'), NULL, $8 " ++
+            "FROM (SELECT 1) one LEFT JOIN LATERAL (" ++
+            "  SELECT item_id FROM item_revisions " ++
+            "  WHERE dataset_id = $3::uuid AND branch IN ('main', $4) AND path = $5 AND op <> 'delete' " ++
+            "  ORDER BY rev_id DESC LIMIT 1) prev ON true",
+        &.{
+            try arena.dupeZ(u8, &rev.toString()),
+            try intZ(arena, rev.unixMs()),
+            ds.id,
+            try arena.dupeZ(u8, branch),
+            try arena.dupeZ(u8, path),
+            try arena.dupeZ(u8, &Uuid.now(deps.io).toString()),
+            try arena.dupeZ(u8, hash),
+            try arena.dupeZ(u8, author),
+        },
+        diag,
+    ) catch return error.Db;
+    deps.db.execParams(
+        "INSERT INTO dataset_items (item_id, dataset_id) " ++
+            "SELECT r.item_id, $1::uuid FROM item_revisions r WHERE r.rev_id = $2::uuid " ++
+            "ON CONFLICT (item_id) DO NOTHING",
+        &.{ ds.id, try arena.dupeZ(u8, &rev.toString()) },
+        diag,
+    ) catch return error.Db;
+}
+
+fn insertDeleteRevision(
+    arena: std.mem.Allocator,
+    deps: *Deps,
+    diag: *pg.Diag,
+    ds: Dataset,
+    branch: []const u8,
+    rev: Uuid,
+    path: []const u8,
+    author: []const u8,
+) HandleError!void {
+    deps.db.execParams(
+        "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
+            "VALUES ($1::uuid, to_timestamp($2::bigint / 1000.0), $3::uuid, $4, $5, 'delete', NULL, NULL, NULL, $6)",
+        &.{
+            try arena.dupeZ(u8, &rev.toString()),
+            try intZ(arena, rev.unixMs()),
+            ds.id,
+            try arena.dupeZ(u8, branch),
+            try arena.dupeZ(u8, path),
+            try arena.dupeZ(u8, author),
+        },
+        diag,
+    ) catch return error.Db;
+}
+
+const BranchBody = struct { name: []const u8 };
+
+/// `cid branch <name>`: a draft line of work, always starting from main
+/// (invariant 8), recording where it started.
+fn branchCreate(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+    const req = parseBody(BranchBody, arena, body) orelse return error.BadRequest;
+    if (!release_mod.validName(req.name) or eql(req.name, "main"))
+        return errorResponse(arena, .bad_request, "that is not a branch name (letters, digits, dot, dash, underscore; not 'main')", "Pick a name like cleanup and run 'cid branch' again.");
+
+    var existing = deps.db.query(
+        "SELECT 1 FROM refs WHERE dataset_id = $1::uuid AND name = $2",
+        &.{ ds.id, try arena.dupeZ(u8, req.name) },
+        null,
+    ) catch return error.Db;
+    defer existing.deinit();
+    if (existing.count() > 0)
+        return errorResponse(arena, .conflict, "that name is taken", "Run 'cid checkout' to work on it, or pick another name.");
+
+    var head_rows = deps.db.query(
+        "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = 'main' AND kind = 'branch'",
+        &.{ds.id},
+        null,
+    ) catch return error.Db;
+    defer head_rows.deinit();
+    if (head_rows.count() == 0)
+        return errorResponse(arena, .unprocessable_entity, "main has no commits yet", "Run 'cid push' first, then 'cid branch' again.");
+    const main_head = try arena.dupeZ(u8, head_rows.get(0, 0));
+
+    deps.db.execParams(
+        "INSERT INTO refs (dataset_id, name, kind, commit_id, start_commit_id) " ++
+            "VALUES ($1::uuid, $2, 'branch', $3::uuid, $3::uuid)",
+        &.{ ds.id, try arena.dupeZ(u8, req.name), main_head },
+        null,
+    ) catch return error.Db;
+    return json(arena, .created, .{ .branch = req.name, .start = @as([]const u8, main_head) });
+}
+
+fn branches(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!Response {
+    var rows = deps.db.query(
+        "SELECT name, commit_id::text FROM refs WHERE dataset_id = $1::uuid AND kind = 'branch' ORDER BY name",
+        &.{ds.id},
+        null,
+    ) catch return error.Db;
+    defer rows.deinit();
+    const Entry = struct { name: []const u8, commit: []const u8 };
+    const list = try arena.alloc(Entry, rows.count());
+    for (list, 0..) |*e, i| {
+        e.* = .{
+            .name = try arena.dupe(u8, rows.get(i, 0)),
+            .commit = try arena.dupe(u8, rows.get(i, 1)),
+        };
+    }
+    return json(arena, .ok, .{ .branches = list });
+}
+
+const MergeBody = struct { name: []const u8, author: []const u8 = "user:unknown" };
+
+/// `cid merge <name>` into main. Overlapping changes stop the merge and
+/// are listed; nothing is resolved silently (invariant 9).
+fn merge(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+    const req = parseBody(MergeBody, arena, body) orelse return error.BadRequest;
+
+    var branch_rows = deps.db.query(
+        "SELECT commit_id::text, start_commit_id::text FROM refs " ++
+            "WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'branch'",
+        &.{ ds.id, try arena.dupeZ(u8, req.name) },
+        null,
+    ) catch return error.Db;
+    defer branch_rows.deinit();
+    if (branch_rows.count() == 0 or eql(req.name, "main"))
+        return errorResponse(arena, .not_found, "no such branch", "Run 'cid branch <name>' to create one.");
+    const branch_head = try arena.dupeZ(u8, branch_rows.get(0, 0));
+    const branch_start = try arena.dupeZ(u8, branch_rows.get(0, 1));
+    if (eql(branch_head, branch_start))
+        return errorResponse(arena, .unprocessable_entity, "the branch has no commits of its own", "Push commits on the branch first, then merge.");
+
+    var main_rows = deps.db.query(
+        "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = 'main' AND kind = 'branch'",
+        &.{ds.id},
+        null,
+    ) catch return error.Db;
+    defer main_rows.deinit();
+    const main_head = try arena.dupeZ(u8, main_rows.get(0, 0));
+
+    const base = release_mod.stateRows(arena, deps.db, ds.id, branch_start) catch return error.Db;
+    const ours = release_mod.stateRows(arena, deps.db, ds.id, main_head) catch return error.Db;
+    const theirs = release_mod.stateRows(arena, deps.db, ds.id, branch_head) catch return error.Db;
+
+    // The branch's net changes, and main's changed paths, both vs the base.
+    const BranchChange = union(enum) { add: struct { hash: []const u8, size: u64 }, delete };
+    var branch_changes: std.StringArrayHashMapUnmanaged(BranchChange) = .empty;
+    for (theirs) |item| {
+        const in_base = findRow(base, item.path);
+        if (in_base == null or !std.mem.eql(u8, in_base.?.hash_hex, item.hash_hex))
+            try branch_changes.put(arena, item.path, .{ .add = .{ .hash = item.hash_hex, .size = item.size } });
+    }
+    for (base) |item| {
+        if (findRow(theirs, item.path) == null)
+            try branch_changes.put(arena, item.path, .delete);
+    }
+
+    var conflicts: std.ArrayList([]const u8) = .empty;
+    for (branch_changes.keys(), branch_changes.values()) |path, change| {
+        const in_base = findRow(base, path);
+        const in_main = findRow(ours, path);
+        const main_changed = blk: {
+            if (in_base == null) break :blk in_main != null;
+            if (in_main == null) break :blk true;
+            break :blk !std.mem.eql(u8, in_base.?.hash_hex, in_main.?.hash_hex);
+        };
+        if (!main_changed) continue;
+        const same = switch (change) {
+            .add => |a| in_main != null and std.mem.eql(u8, in_main.?.hash_hex, a.hash),
+            .delete => in_main == null,
+        };
+        if (same) {
+            _ = branch_changes.swapRemove(path);
+        } else {
+            try conflicts.append(arena, path);
+        }
+    }
+    if (conflicts.items.len > 0)
+        return json(arena, .conflict, .{ .conflicts = conflicts.items });
+    if (branch_changes.count() == 0)
+        return errorResponse(arena, .unprocessable_entity, "main already has everything from the branch", "Nothing to merge; run 'cid pull' to update your folder.");
+
+    var diag: pg.Diag = .{};
+    deps.db.exec("BEGIN", &diag) catch return error.Db;
+    errdefer deps.db.exec("ROLLBACK", null) catch {};
+    deps.db.execParams(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1 || '/main', 0))",
+        &.{ds.id},
+        &diag,
+    ) catch return error.Db;
+
+    var rev_floor: ?Uuid = null;
+    {
+        var cutoff_rows = deps.db.query(
+            "SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid",
+            &.{main_head},
+            &diag,
+        ) catch return error.Db;
+        defer cutoff_rows.deinit();
+        if (cutoff_rows.count() > 0) rev_floor = Uuid.parse(cutoff_rows.get(0, 0)) catch null;
+    }
+
+    var last_rev: Uuid = undefined;
+    for (branch_changes.keys(), branch_changes.values()) |path, change| {
+        const rev = Uuid.nextAfter(deps.io, rev_floor);
+        rev_floor = rev;
+        last_rev = rev;
+        switch (change) {
+            .add => |a| try insertAddRevision(arena, deps, &diag, ds, "main", rev, path, a.hash, a.size, req.author),
+            .delete => try insertDeleteRevision(arena, deps, &diag, ds, "main", rev, path, req.author),
+        }
+    }
+
+    const merge_id = Uuid.nextAfter(deps.io, Uuid.parse(main_head) catch null);
+    const message = try std.fmt.allocPrint(arena, "Merge branch '{s}'", .{req.name});
+    deps.db.execParams(
+        "INSERT INTO commits (commit_id, dataset_id, branch, parent_id, merge_parent_id, cutoff_rev, message, author, authored_at) " ++
+            "VALUES ($1::uuid, $2::uuid, 'main', $3::uuid, $4::uuid, $5::uuid, $6, $7, now())",
+        &.{
+            try arena.dupeZ(u8, &merge_id.toString()),
+            ds.id,
+            main_head,
+            branch_head,
+            try arena.dupeZ(u8, &last_rev.toString()),
+            try arena.dupeZ(u8, message),
+            try arena.dupeZ(u8, req.author),
+        },
+        &diag,
+    ) catch return error.Db;
+    deps.db.execParams(
+        "UPDATE refs SET commit_id = $2::uuid WHERE dataset_id = $1::uuid AND name = 'main' AND kind = 'branch'",
+        &.{ ds.id, try arena.dupeZ(u8, &merge_id.toString()) },
+        &diag,
+    ) catch return error.Db;
+    deps.db.exec("COMMIT", &diag) catch return error.Db;
+
+    return json(arena, .ok, .{ .merge_commit = &merge_id.toString(), .changes = branch_changes.count() });
+}
+
+fn findRow(rows: []const release_mod.StateRow, path: []const u8) ?release_mod.StateRow {
+    for (rows) |row| {
+        if (std.mem.eql(u8, row.path, path)) return row;
+    }
+    return null;
 }
 
 // ---------------------------------------------------------------------------

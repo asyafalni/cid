@@ -31,6 +31,10 @@ fn run(
             cid.help.print(out) catch break :blk .network;
             break :blk .ok;
         },
+        .help_all => blk: {
+            cid.help.printAll(out) catch break :blk .network;
+            break :blk .ok;
+        },
         .version => blk: {
             cid.version.print(out, is_tty) catch break :blk .network;
             break :blk .ok;
@@ -47,6 +51,8 @@ fn run(
         .tag => |cmd_args| cid.cli_tag.run(&ctx, cmd_args),
         .restore => |cmd_args| cid.cli_restore.run(&ctx, cmd_args),
         .diff => |cmd_args| cid.cli_diff.run(&ctx, cmd_args),
+        .branch => |cmd_args| cid.cli_branch.run(&ctx, cmd_args),
+        .merge => |cmd_args| cid.cli_merge.run(&ctx, cmd_args),
         .admin => |admin_args| cid.admin.run(arena, io, out, env, admin_args),
         .ssh_keys => |ssh_args| cid.cli_ssh.runKeys(arena, io, out, env, ssh_args),
         .ssh_auth => |ssh_args| cid.cli_ssh.runAuth(arena, io, out, env, ssh_args),
