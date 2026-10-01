@@ -18,6 +18,7 @@
 const std = @import("std");
 const pg = @import("../store/pg.zig");
 const s3 = @import("../store/s3.zig");
+const release_mod = @import("../core/release.zig");
 const Uuid = @import("../util/uuid7.zig").Uuid;
 
 pub const Deps = struct {
@@ -91,6 +92,10 @@ fn handleInner(
         return state(arena, deps, ds, route.action["state/".len..]);
     if (eql(method, "POST") and eql(route.action, "downloads"))
         return downloads(arena, deps, ds, body);
+    if (eql(method, "POST") and eql(route.action, "tag"))
+        return tag(arena, deps, ds, body);
+    if (eql(method, "GET") and eql(route.action, "releases"))
+        return releases(arena, deps, ds);
 
     return errorResponse(arena, .not_found, "no such route", "Update cid and try again.");
 }
@@ -342,14 +347,30 @@ fn push(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) Ha
         return errorResponse(arena, .conflict, "someone pushed since you pulled", "Run 'cid pull', then 'cid push' again.");
     }
 
-    // 4. Record: items, revisions, commits; branch head last.
+    // 4. Record: items, revisions, commits; branch head last. Revision ids
+    // are strictly increasing, floored at the current head's cutoff —
+    // plain UUIDv7 is not ordered within a millisecond and a cutoff must
+    // never be undercut (invariant 3).
+    var rev_floor: ?Uuid = null;
+    if (server_head) |h| {
+        var cutoff_rows = deps.db.query(
+            "SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid",
+            &.{try arena.dupeZ(u8, h)},
+            &diag,
+        ) catch return error.Db;
+        defer cutoff_rows.deinit();
+        if (cutoff_rows.count() > 0)
+            rev_floor = Uuid.parse(cutoff_rows.get(0, 0)) catch null;
+    }
+
     var last_commit_id: []const u8 = undefined;
     for (req.commits) |commit| {
         if (Uuid.parse(commit.id) == error.InvalidUuid) return error.BadRequest;
         var last_rev: Uuid = undefined;
         var has_rev = false;
         for (commit.changes) |ch| {
-            const rev = Uuid.now(deps.io);
+            const rev = Uuid.nextAfter(deps.io, rev_floor);
+            rev_floor = rev;
             last_rev = rev;
             has_rev = true;
             if (eql(ch.op, "add")) {
@@ -459,38 +480,81 @@ fn state(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, commit_id: []const 
         return errorResponse(arena, .bad_request, "that is not a commit id", "Run 'cid log' to list commits.");
     const commit_z = try arena.dupeZ(u8, commit_id);
 
-    var commit_rows = deps.db.query(
-        "SELECT branch, cutoff_rev::text FROM commits WHERE commit_id = $1::uuid AND dataset_id = $2::uuid",
-        &.{ commit_z, ds.id },
-        null,
-    ) catch return error.Db;
-    defer commit_rows.deinit();
-    if (commit_rows.count() == 0)
-        return errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits.");
-    const branch = try arena.dupeZ(u8, commit_rows.get(0, 0));
-    const cutoff = try arena.dupeZ(u8, commit_rows.get(0, 1));
+    const rows = release_mod.stateRows(arena, deps.db, ds.id, commit_z) catch |err| switch (err) {
+        error.NoSuchCommit => return errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits."),
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.Db,
+    };
 
+    const Item = struct { path: []const u8, hash: []const u8, size: u64 };
+    const items = try arena.alloc(Item, rows.len);
+    for (items, 0..) |*item, i| {
+        item.* = .{ .path = rows[i].path, .hash = rows[i].hash_hex, .size = rows[i].size };
+    }
+    return json(arena, .ok, .{ .commit = commit_id, .items = items });
+}
+
+const TagBody = struct {
+    name: []const u8,
+    /// Defaults to the branch head.
+    commit: ?[]const u8 = null,
+    branch: []const u8 = "main",
+};
+
+/// `cid tag`: a release never moves once this returns (invariant 5).
+fn tag(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+    const req = parseBody(TagBody, arena, body) orelse return error.BadRequest;
+
+    const commit_id: [:0]const u8 = blk: {
+        if (req.commit) |c| {
+            if (Uuid.parse(c) == error.InvalidUuid) return error.BadRequest;
+            break :blk try arena.dupeZ(u8, c);
+        }
+        var rows = deps.db.query(
+            "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'branch'",
+            &.{ ds.id, try arena.dupeZ(u8, req.branch) },
+            null,
+        ) catch return error.Db;
+        defer rows.deinit();
+        if (rows.count() == 0)
+            return errorResponse(arena, .unprocessable_entity, "nothing to tag: the branch has no commits", "Run 'cid push' first, then 'cid tag' again.");
+        break :blk try arena.dupeZ(u8, rows.get(0, 0));
+    };
+
+    const created = release_mod.create(arena, deps.db, deps.s3, ds.id, req.name, commit_id) catch |err| switch (err) {
+        error.BadName => return errorResponse(arena, .bad_request, "that is not a release name (letters, digits, dot, dash, underscore)", "Pick a name like v1.0.0 and run 'cid tag' again."),
+        error.ReleaseExists => return errorResponse(arena, .conflict, "that release already exists and releases never move", "Pick a new name, e.g. the next version number."),
+        error.NoSuchCommit => return errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits."),
+        error.Storage => return error.Storage,
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Db => return error.Db,
+    };
+    return json(arena, .created, .{
+        .release = created.name,
+        .commit = @as([]const u8, created.commit_id),
+        .manifest_sha256 = &created.manifest_sha256,
+        .items = created.items,
+    });
+}
+
+fn releases(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!Response {
     var rows = deps.db.query(
-        "SELECT path, encode(item_hash, 'hex'), i.size_bytes::text FROM (" ++
-            "  SELECT DISTINCT ON (path) path, op, item_hash FROM item_revisions " ++
-            "  WHERE dataset_id = $1::uuid AND branch = $2 AND rev_id <= $3::uuid " ++
-            "  ORDER BY path, rev_id DESC) s " ++
-            "JOIN items i USING (item_hash) WHERE s.op <> 'delete' ORDER BY path",
-        &.{ ds.id, branch, cutoff },
+        "SELECT name, commit_id::text, encode(manifest_sha256, 'hex') FROM refs " ++
+            "WHERE dataset_id = $1::uuid AND kind = 'release' ORDER BY commit_id DESC",
+        &.{ds.id},
         null,
     ) catch return error.Db;
     defer rows.deinit();
-
-    const Item = struct { path: []const u8, hash: []const u8, size: u64 };
-    const items = try arena.alloc(Item, rows.count());
-    for (items, 0..) |*item, i| {
-        item.* = .{
-            .path = try arena.dupe(u8, rows.get(i, 0)),
-            .hash = try arena.dupe(u8, rows.get(i, 1)),
-            .size = std.fmt.parseInt(u64, rows.get(i, 2), 10) catch 0,
+    const Entry = struct { name: []const u8, commit: []const u8, manifest_sha256: []const u8 };
+    const list = try arena.alloc(Entry, rows.count());
+    for (list, 0..) |*e, i| {
+        e.* = .{
+            .name = try arena.dupe(u8, rows.get(i, 0)),
+            .commit = try arena.dupe(u8, rows.get(i, 1)),
+            .manifest_sha256 = try arena.dupe(u8, rows.get(i, 2)),
         };
     }
-    return json(arena, .ok, .{ .commit = commit_id, .items = items });
+    return json(arena, .ok, .{ .releases = list });
 }
 
 fn downloads(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {

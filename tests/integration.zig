@@ -480,3 +480,102 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     try std.testing.expectError(error.Stale, cid.client.sync.push(arena, io, &pws, producer_cache.dir, &remote));
     try std.testing.expectError(error.UnpushedCommits, cid.client.sync.pull(arena, io, &pws, producer_cache.dir, &remote));
 }
+
+test "releases: tag, immutability, verify green, verify catches corruption" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var diag: cid.pg.Diag = .{};
+    var db = try connect(&diag);
+    defer db.close();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+
+    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .bucket = "cid-test",
+    });
+    defer s3c.deinit();
+    try s3c.createBucket(arena);
+
+    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/rel" };
+
+    // Clean slate.
+    try db.exec("SET cid.maintenance = 'on'", &diag);
+    inline for (.{ "refs", "commits", "item_revisions", "dataset_items" }) |table| {
+        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/rel')", &diag);
+    }
+    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/rel'", &diag);
+    try db.exec("RESET cid.maintenance", &diag);
+
+    // A producer pushes two commits.
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    try producer.dir.writeFile(io, .{ .sub_path = "x.txt", .data = "release content x" });
+    try cid.client.workspace.init(arena, io, producer.dir, "cid@test:test/datasets/rel", "git@example.invalid:rel.git");
+    var pws = try cid.client.workspace.open(arena, io, producer.dir);
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    const c1 = try cid.client.workspace.commit(arena, io, &pws, "first", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    try producer.dir.writeFile(io, .{ .sub_path = "y.txt", .data = "release content y" });
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "second", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+
+    // Tag the head; the same name again must be refused (releases never move).
+    const t1 = try remote.tag(arena, "v1.0.0");
+    try std.testing.expectEqual(@as(u64, 2), t1.items);
+    try std.testing.expectError(error.ReleaseExists, remote.tag(arena, "v1.0.0"));
+    try std.testing.expectError(error.BadReleaseName, remote.tag(arena, "bad name"));
+
+    // Checkout by release name resolves through /-/releases.
+    const list = try remote.releases(arena);
+    try std.testing.expectEqual(@as(usize, 1), list.len);
+    try std.testing.expectEqualStrings("v1.0.0", list[0].name);
+
+    // Verify: green, and repeatable.
+    const ds_id: [:0]const u8 = blk: {
+        var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/rel'", &.{}, &diag);
+        defer rows.deinit();
+        break :blk try arena.dupeZ(u8, rows.get(0, 0));
+    };
+    const v1 = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    try std.testing.expect(v1.ok);
+    try std.testing.expectEqual(@as(usize, 2), v1.items);
+
+    // Corruption A: a revision smuggled UNDER the sealed cutoff (an id older
+    // than c1's, adding a path the release never had) changes recomputed
+    // history → verify must turn red.
+    const old_uuid = cid.uuid7.Uuid.init(c1.id.unixMs() - 10_000, @splat(7));
+    const smuggle = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, author) " ++
+        "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', 'smuggled.txt', 'add', gen_random_uuid(), " ++
+        "decode(repeat('ef', 32), 'hex'), 'user:evil')", .{ &old_uuid.toString(), (old_uuid.unixMs() / 1000), ds_id }, 0);
+    try db.exec("INSERT INTO items (item_hash, size_bytes, media_type) VALUES (decode(repeat('ef', 32), 'hex'), 1, 'application/octet-stream') ON CONFLICT DO NOTHING", &diag);
+    try db.exec(smuggle, &diag);
+    const v2 = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    try std.testing.expect(!v2.ok);
+    try std.testing.expectEqual(cid.release.VerifyProblem.recomputed_hash_differs, v2.problems[0]);
+
+    // Remove the smuggled row (maintenance), verify is green again.
+    try db.exec("SET cid.maintenance = 'on'", &diag);
+    try db.exec("DELETE FROM item_revisions WHERE author = 'user:evil'", &diag);
+    try db.exec("RESET cid.maintenance", &diag);
+    const v3 = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    try std.testing.expect(v3.ok);
+
+    // Corruption B: tamper with the stored manifest object.
+    const commit_for_release = try arena.dupe(u8, list[0].commit);
+    const mkey = try cid.release.manifestKey(arena, ds_id, commit_for_release);
+    try s3c.putObject(arena, mkey, "tampered bytes");
+    const v4 = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    try std.testing.expect(!v4.ok);
+    try std.testing.expectEqual(cid.release.VerifyProblem.stored_manifest_differs, v4.problems[0]);
+}

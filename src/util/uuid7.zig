@@ -75,6 +75,36 @@ pub const Uuid = struct {
     pub fn order(a: Uuid, b: Uuid) std.math.Order {
         return std.mem.order(u8, &a.bytes, &b.bytes);
     }
+
+    /// A fresh id guaranteed to sort after `last`. Plain UUIDv7 randomness
+    /// is NOT ordered within one millisecond, which would let a later
+    /// revision sort under an earlier cutoff; every id sequence that
+    /// cutoffs or logs depend on must come through here.
+    pub fn nextAfter(io: std.Io, last: ?Uuid) Uuid {
+        const candidate = now(io);
+        const floor = last orelse return candidate;
+        if (candidate.order(floor) == .gt) return candidate;
+        return bump(floor);
+    }
+
+    /// The smallest valid UUIDv7 greater than `u`: increments the 62-bit
+    /// random-b field, carrying into rand-a and then the timestamp, and
+    /// keeps the version and variant bits intact.
+    fn bump(u: Uuid) Uuid {
+        var b = u.bytes;
+        const rand_b = std.mem.readInt(u64, b[8..16], .big) & 0x3fff_ffff_ffff_ffff;
+        if (rand_b != 0x3fff_ffff_ffff_ffff) {
+            std.mem.writeInt(u64, b[8..16], (rand_b + 1) | 0x8000_0000_0000_0000, .big);
+            return .{ .bytes = b };
+        }
+        std.mem.writeInt(u64, b[8..16], 0x8000_0000_0000_0000, .big);
+        const rand_a: u12 = @truncate(std.mem.readInt(u16, b[6..8], .big));
+        if (rand_a != 0xfff) {
+            std.mem.writeInt(u16, b[6..8], @as(u16, rand_a + 1) | 0x7000, .big);
+            return .{ .bytes = b };
+        }
+        return init(u.unixMs() + 1, @splat(0));
+    }
 };
 
 test "round trip and field placement" {
@@ -91,6 +121,32 @@ test "later timestamps order later" {
     const a = Uuid.init(1000, @splat(0xff));
     const b = Uuid.init(1001, @splat(0x00));
     try std.testing.expectEqual(std.math.Order.lt, a.order(b));
+}
+
+test "bump produces the next id, through every carry" {
+    // Plain increment of rand-b.
+    const a = Uuid.init(1000, .{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 });
+    const a2 = Uuid.bump(a);
+    try std.testing.expectEqual(std.math.Order.lt, a.order(a2));
+    try std.testing.expectEqual(a.unixMs(), a2.unixMs());
+
+    // rand-b saturated: carries into rand-a, stays in the same millisecond.
+    var sat_b = Uuid.init(1000, @splat(0));
+    @memset(sat_b.bytes[8..16], 0xff);
+    sat_b.bytes[8] = 0xbf; // variant bits kept
+    const carried = Uuid.bump(sat_b);
+    try std.testing.expectEqual(std.math.Order.lt, sat_b.order(carried));
+    try std.testing.expectEqual(sat_b.unixMs(), carried.unixMs());
+    try std.testing.expectEqual(@as(u8, 0x70), carried.bytes[6] & 0xf0); // still v7
+    try std.testing.expectEqual(@as(u8, 0x80), carried.bytes[8] & 0xc0); // still variant 10
+
+    // Everything saturated: moves to the next millisecond.
+    var sat_all = sat_b;
+    sat_all.bytes[6] = 0x7f;
+    sat_all.bytes[7] = 0xff;
+    const next_ms = Uuid.bump(sat_all);
+    try std.testing.expectEqual(std.math.Order.lt, sat_all.order(next_ms));
+    try std.testing.expectEqual(sat_all.unixMs() + 1, next_ms.unixMs());
 }
 
 test "parse rejects malformed input" {

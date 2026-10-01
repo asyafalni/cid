@@ -6,6 +6,7 @@ const pg = @import("../store/pg.zig");
 const s3 = @import("../store/s3.zig");
 const migrate = @import("../core/migrate.zig");
 const api = @import("../server/api.zig");
+const release = @import("../core/release.zig");
 const serve_mod = @import("../server/serve.zig");
 
 const ExitCode = root.ExitCode;
@@ -18,6 +19,7 @@ const admin_help =
     \\  setup      create the database schema (applies all migrations)
     \\  migrate    apply new SQL migrations
     \\  serve      run the cid server (--port <n>, default 7070)
+    \\  verify <dataset> <release>   rebuild a release and check its hash
     \\
     \\All of them read configuration from the environment:
     \\  CID_DB     the TimescaleDB connection (setup, migrate, serve)
@@ -46,6 +48,9 @@ pub fn run(
     }
     if (eql(sub, "serve")) {
         return runServe(arena, io, env, args[1..]);
+    }
+    if (eql(sub, "verify")) {
+        return runVerify(arena, io, out, env, args[1..]);
     }
     return fail(io, .usage, "'cid admin {s}' is not an admin command. Run 'cid admin'.", .{sub});
 }
@@ -129,6 +134,79 @@ fn runServe(
         return fail(io, .network, "the server stopped: {t}. Fix the cause, then run 'cid admin serve' again.", .{err});
     };
     return .ok;
+}
+
+fn runVerify(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+    env: *const std.process.Environ.Map,
+    args: []const [:0]const u8,
+) ExitCode {
+    if (args.len != 2)
+        return fail(io, .usage, "run 'cid admin verify <dataset> <release>'.", .{});
+    const dataset_name = args[0];
+    const release_name = args[1];
+
+    const conninfo_raw = env.get("CID_DB") orelse
+        return fail(io, .usage, "CID_DB is not set.\n  {s}\nThen run 'cid admin verify' again.", .{conninfo_example});
+    const s3_endpoint = env.get("CID_S3_ENDPOINT") orelse return missingEnv(io, "CID_S3_ENDPOINT", "http://127.0.0.1:8333");
+    const s3_access = env.get("CID_S3_ACCESS_KEY") orelse return missingEnv(io, "CID_S3_ACCESS_KEY", "cid");
+    const s3_secret = env.get("CID_S3_SECRET_KEY") orelse return missingEnv(io, "CID_S3_SECRET_KEY", "…");
+    const s3_bucket = env.get("CID_S3_BUCKET") orelse return missingEnv(io, "CID_S3_BUCKET", "cid");
+
+    var diag: pg.Diag = .{};
+    const conninfo = arena.dupeZ(u8, conninfo_raw) catch return .network;
+    var db = pg.Db.connect(conninfo, &diag) catch
+        return fail(io, .network, "cannot connect to the database: {s}\nCheck CID_DB, then run 'cid admin verify' again.", .{diag.message()});
+    defer db.close();
+    var s3_client = s3.Client.init(arena, io, .{
+        .endpoint = s3_endpoint,
+        .access_key = s3_access,
+        .secret_key = s3_secret,
+        .bucket = s3_bucket,
+    }) catch return fail(io, .usage, "CID_S3_ENDPOINT must look like http://host:port.", .{});
+    defer s3_client.deinit();
+
+    // Dataset name → id.
+    const name_z = arena.dupeZ(u8, dataset_name) catch return .network;
+    const dataset_id: [:0]const u8 = blk: {
+        var rows = db.query("SELECT dataset_id::text FROM datasets WHERE name = $1", &.{name_z}, &diag) catch
+            return fail(io, .network, "database error: {s}", .{diag.message()});
+        defer rows.deinit();
+        if (rows.count() == 0)
+            return fail(io, .usage, "no dataset named '{s}'. Check the name.", .{dataset_name});
+        break :blk arena.dupeZ(u8, rows.get(0, 0)) catch return .network;
+    };
+
+    const result = release.verify(arena, &db, &s3_client, dataset_id, release_name) catch |err| switch (err) {
+        error.NoSuchCommit => return fail(io, .usage, "no release '{s}' in '{s}'.", .{ release_name, dataset_name }),
+        else => return fail(io, .network, "verify could not run: {t}. Fix the cause, then run it again.", .{err}),
+    };
+
+    if (result.ok) {
+        out.print("Release {s} of {s} verifies: {d} items, manifest hash reproduced exactly.\n", .{
+            release_name, dataset_name, result.items,
+        }) catch return .network;
+        out.flush() catch return .network;
+        return .ok;
+    }
+    var buf: [1024]u8 = undefined;
+    var stderr_writer = std.Io.File.stderr().writer(io, &buf);
+    const err_w = &stderr_writer.interface;
+    err_w.print("cid: release {s} of {s} FAILS verification:\n", .{ release_name, dataset_name }) catch {};
+    for (result.problems) |p| {
+        const text = switch (p) {
+            .recomputed_hash_differs => "history under the release's cutoff no longer reproduces the manifest (append-only was violated)",
+            .stored_manifest_differs => "the stored manifest object does not match the recorded hash",
+            .stored_manifest_missing => "the stored manifest object is missing",
+            .item_missing_from_storage => "a released item is missing from storage",
+        };
+        err_w.print("  - {s}\n", .{text}) catch {};
+    }
+    err_w.writeAll("Investigate before anything else touches this dataset.\n") catch {};
+    err_w.flush() catch {};
+    return .integrity;
 }
 
 fn missingEnv(io: std.Io, name: []const u8, example: []const u8) ExitCode {

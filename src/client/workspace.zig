@@ -197,7 +197,8 @@ pub fn commit(
         changes[i] = .{ .op = e.op, .path = e.path, .hash_hex = e.hash_hex, .size = e.size };
     }
 
-    const id = Uuid.now(io);
+    // Strictly after the parent, even within the same millisecond.
+    const id = Uuid.nextAfter(io, head.commit);
     const new_commit: local.Commit = .{
         .id = id,
         .parent = head.commit,

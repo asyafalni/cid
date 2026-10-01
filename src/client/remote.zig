@@ -84,6 +84,9 @@ pub const Error = error{
     NoSuchDataset,
     Stale, // someone pushed since you pulled
     MissingContent, // a file was not in storage; re-run push
+    ReleaseExists,
+    BadReleaseName,
+    NothingToTag,
     OutOfMemory,
 };
 
@@ -203,6 +206,32 @@ pub const Remote = struct {
         const State = struct { commit: []const u8, items: []const StateItem };
         const parsed = parse(State, arena, res.body) orelse return error.ServerRefused;
         return parsed.items;
+    }
+
+    pub const TagResult = struct { release: []const u8, commit: []const u8, manifest_sha256: []const u8, items: u64 };
+
+    pub fn tag(self: *const Remote, arena: std.mem.Allocator, name: []const u8) Error!TagResult {
+        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .name = name }, .{})});
+        const res = self.t.call(arena, "POST", try self.target(arena, "tag", .{}), body) catch
+            return error.ServerUnreachable;
+        if (res.status == .conflict) return error.ReleaseExists;
+        if (res.status == .bad_request) return error.BadReleaseName;
+        if (res.status == .unprocessable_entity) return error.NothingToTag;
+        if (res.status == .not_found) return error.NoSuchDataset;
+        if (res.status != .created) return error.ServerRefused;
+        return parse(TagResult, arena, res.body) orelse error.ServerRefused;
+    }
+
+    pub const Release = struct { name: []const u8, commit: []const u8, manifest_sha256: []const u8 };
+
+    pub fn releases(self: *const Remote, arena: std.mem.Allocator) Error![]const Release {
+        const res = self.t.call(arena, "GET", try self.target(arena, "releases", .{}), "") catch
+            return error.ServerUnreachable;
+        if (res.status == .not_found) return error.NoSuchDataset;
+        if (res.status != .ok) return error.ServerRefused;
+        const List = struct { releases: []const Release };
+        const parsed = parse(List, arena, res.body) orelse return error.ServerRefused;
+        return parsed.releases;
     }
 
     pub const Download = struct { hash: []const u8, url: []const u8 };

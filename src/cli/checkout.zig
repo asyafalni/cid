@@ -9,8 +9,8 @@ const sync = @import("../client/sync.zig");
 
 pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCode {
     if (args.len != 1)
-        return common.fail(ctx, .usage, "run 'cid checkout <commit>' with an id from 'cid log'.", .{});
-    const commit_id = args[0];
+        return common.fail(ctx, .usage, "run 'cid checkout <release|commit>' with a name or id from 'cid log'.", .{});
+    const target = args[0];
 
     var ws = common.openWorkspace(ctx) catch
         return common.fail(ctx, .usage, common.not_a_dataset_msg, .{});
@@ -20,6 +20,17 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         return common.fail(ctx, .integrity, ".cid/config.zon holds a broken address. Clone again, or fix it to cid@host:org/path.", .{});
     const remote = common.remoteFor(ctx, name) catch
         return common.fail(ctx, .usage, common.no_server_msg, .{});
+
+    // A release name resolves to its commit; a 36-char id is used as-is.
+    const commit_id: []const u8 = blk: {
+        if (target.len == 36) break :blk target;
+        const list = remote.releases(ctx.arena) catch
+            return common.fail(ctx, .network, "cannot reach the server to resolve '{s}'. Check CID_SERVER, then run 'cid checkout' again.", .{target});
+        for (list) |r| {
+            if (std.mem.eql(u8, r.name, target)) break :blk r.commit;
+        }
+        return common.fail(ctx, .usage, "no release named '{s}'. Run 'cid log' for commits, or ask the owner which releases exist.", .{target});
+    };
 
     const changed = sync.checkout(ctx.arena, ctx.io, &ws, cache_dir, remote, commit_id) catch |err| switch (err) {
         error.LocalChangesInTheWay => return common.fail(ctx, .conflict, "local edits would be overwritten. Commit them ('cid commit -a -m \"...\"') or move them aside, then run 'cid checkout' again.", .{}),
