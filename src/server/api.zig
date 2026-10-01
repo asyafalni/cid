@@ -20,6 +20,7 @@ const pg = @import("../store/pg.zig");
 const s3 = @import("../store/s3.zig");
 const release_mod = @import("../core/release.zig");
 const git_writer = @import("../gitrepo/writer.zig");
+const preview_worker = @import("../preview/worker.zig");
 const token_mod = @import("../access/token.zig");
 const Uuid = @import("../util/uuid7.zig").Uuid;
 
@@ -120,6 +121,8 @@ fn handleInner(
         return state(arena, deps, ds, route.action["state/".len..]);
     if (eql(method, "POST") and eql(route.action, "downloads"))
         return downloads(arena, deps, ds, body);
+    if (eql(method, "POST") and eql(route.action, "thumbs"))
+        return thumbs(arena, deps, ds, body);
     if (eql(method, "POST") and eql(route.action, "tag"))
         return tag(arena, deps, ds, body);
     if (eql(method, "GET") and eql(route.action, "releases"))
@@ -775,6 +778,32 @@ fn releases(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!Resp
         };
     }
     return json(arena, .ok, .{ .releases = list });
+}
+
+/// Presigned URLs for thumbnails that already exist. Never a trigger:
+/// a hash with no finished preview is simply absent from the answer and
+/// the page shows a placeholder (the structural ffmpeg guarantee).
+fn thumbs(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+    _ = ds;
+    const req = parseBody(HashesBody, arena, body) orelse return error.BadRequest;
+    if (req.hashes.len > 1000) return error.BadRequest;
+    const Thumb = struct { hash: []const u8, url: []const u8 };
+    var list: std.ArrayList(Thumb) = .empty;
+    const now = nowEpoch(deps.io);
+    for (req.hashes) |hash| {
+        if (!validHashHex(hash)) return error.BadRequest;
+        var rows = deps.db.query(
+            "SELECT 1 FROM previews WHERE item_hash = decode($1, 'hex') AND status = 'done'",
+            &.{try arena.dupeZ(u8, hash)},
+            null,
+        ) catch return error.Db;
+        defer rows.deinit();
+        if (rows.count() == 0) continue;
+        const key = preview_worker.thumbKey(arena, hash) catch return error.OutOfMemory;
+        const url = deps.s3.presignGet(arena, key, now, presign_secs) catch return error.Storage;
+        try list.append(arena, .{ .hash = hash, .url = url });
+    }
+    return json(arena, .ok, .{ .thumbs = list.items });
 }
 
 fn downloads(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {

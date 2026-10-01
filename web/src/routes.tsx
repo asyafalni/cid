@@ -30,11 +30,22 @@ const homeRoute = createRoute({
 const datasetRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/d/$',
+  // Every view is a link: the tab, the pinned release and the open item
+  // all live in the URL.
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { view?: 'overview' | 'browse'; release?: string; item?: string } => ({
+    view: search.view === 'browse' ? 'browse' : undefined,
+    release: typeof search.release === 'string' ? search.release : undefined,
+    item: typeof search.item === 'string' ? search.item : undefined,
+  }),
   beforeLoad: () => {
     if (!getToken()) throw redirect({ to: '/signin' });
   },
   component: DatasetOverview,
 });
+
+export { datasetRoute };
 
 const routeTree = rootRoute.addChildren([signInRoute, homeRoute, datasetRoute]);
 

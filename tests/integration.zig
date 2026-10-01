@@ -1663,3 +1663,92 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
     try std.testing.expect(std.mem.indexOf(u8, stats, "\"vehicle\": 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, stats, "\"train\": 1") != null);
 }
+
+test "preview worker: builds image thumbs under discipline, skips the rest" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var diag: cid.pg.Diag = .{};
+    var db = try connect(&diag);
+    defer db.close();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .bucket = "cid-test",
+    });
+    defer s3c.deinit();
+    try s3c.createBucket(arena);
+
+    // A real PNG, made by ffmpeg itself.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var png_path_buf: [512]u8 = undefined;
+    const tmp_len = try tmp.dir.realPath(io, &png_path_buf);
+    const png_path = try std.fmt.allocPrint(arena, "{s}/t.png", .{png_path_buf[0..tmp_len]});
+    _ = try std.process.run(arena, io, .{ .argv = &.{
+        "ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=1", "-frames:v", "1", png_path,
+    } });
+    const png = try std.Io.Dir.cwd().readFileAlloc(io, png_path, arena, .limited(1024 * 1024));
+
+    var dg: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(png, &dg, .{});
+    const png_hash = std.fmt.bytesToHex(dg, .lower);
+    const text = "just text, never a thumbnail";
+    std.crypto.hash.sha2.Sha256.hash(text, &dg, .{});
+    const text_hash = std.fmt.bytesToHex(dg, .lower);
+
+    // Earlier tests enqueued their pushes too; park that backlog so this
+    // pass is about our two rows.
+    try db.exec("UPDATE previews SET status = 'skipped', reason = 'test reset' WHERE status = 'pending'", &diag);
+
+    // Reset queue rows and objects from earlier runs.
+    inline for (.{ &png_hash, &text_hash }) |h| {
+        const hz = try arena.dupeZ(u8, h);
+        db.execParams("DELETE FROM previews WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag) catch {};
+        db.execParams("DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag) catch {};
+    }
+    try s3c.deleteObject(arena, try cid.preview.thumbKey(arena, &png_hash));
+
+    // Ingest both platform-style on an existing dataset.
+    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/fmt" };
+    try s3c.putObject(arena, try cid.api.itemKey(arena, &png_hash), png);
+    try s3c.putObject(arena, try cid.api.itemKey(arena, &text_hash), text);
+    try remote.registerItems(arena, &.{
+        .{ .hash = &png_hash, .size = png.len, .media_type = "image/png" },
+        .{ .hash = &text_hash, .size = text.len, .media_type = "text/plain" },
+    });
+
+    // One pass: the image builds, the text is skipped with its reason.
+    const pass = try cid.preview.processPending(arena, io, &db, &s3c, .{});
+    try std.testing.expect(pass.built >= 1);
+    try std.testing.expect(pass.skipped >= 1);
+
+    const thumb = try s3c.getObjectAlloc(arena, try cid.preview.thumbKey(arena, &png_hash), 8 * 1024 * 1024);
+    try std.testing.expect(thumb.len > 100); // a real webp came out
+
+    {
+        const hz = try arena.dupeZ(u8, &text_hash);
+        var rows = try db.query("SELECT status, reason FROM previews WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag);
+        defer rows.deinit();
+        try std.testing.expectEqualStrings("skipped", rows.get(0, 0));
+        try std.testing.expect(std.mem.indexOf(u8, rows.get(0, 1), "not previewable") != null);
+    }
+
+    // A second pass does nothing: one build per content hash, ever.
+    const again = try cid.preview.processPending(arena, io, &db, &s3c, .{});
+    try std.testing.expectEqual(@as(u32, 0), again.built);
+
+    // The thumbs endpoint answers only for finished previews.
+    const body = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\",\"{s}\"]}}", .{ &png_hash, &text_hash });
+    const res = cid.api.handle(arena, &deps, "POST", "/v0/datasets/test/datasets/fmt/-/thumbs", "Bearer test-token", body);
+    try std.testing.expectEqual(std.http.Status.ok, res.status);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, &png_hash) != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.body, &text_hash) == null);
+}

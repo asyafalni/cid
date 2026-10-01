@@ -82,6 +82,62 @@ export function listDatasets(): Promise<{ datasets: DatasetSummary[] }> {
   return request('/v0/datasets');
 }
 
+export type StateItem = {
+  path: string;
+  hash: string;
+  size: number;
+  split: string | null;
+  item_id: string | null;
+  width: number | null;
+  height: number | null;
+};
+
+export type StateAnnotation = {
+  id: string;
+  item_id: string;
+  kind: string | null;
+  class: string | null;
+  geometry: unknown;
+  attrs: unknown;
+  author: string;
+  policy_ver: string;
+};
+
+export function getState(
+  name: string,
+  commit: string,
+): Promise<{ commit: string; items: StateItem[]; annotations?: StateAnnotation[] }> {
+  return request(`/v0/datasets/${name}/-/state/${commit}`);
+}
+
+export function getThumbs(
+  name: string,
+  hashes: string[],
+): Promise<{ thumbs: { hash: string; url: string }[] }> {
+  return post(`/v0/datasets/${name}/-/thumbs`, { hashes });
+}
+
+export function getDownloads(
+  name: string,
+  hashes: string[],
+): Promise<{ downloads: { hash: string; url: string }[] }> {
+  return post(`/v0/datasets/${name}/-/downloads`, { hashes });
+}
+
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const token = getToken();
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new ApiError(res.status, `the server answered ${res.status}`, null);
+  return (await res.json()) as T;
+}
+
 export function ping(): Promise<{ ok: boolean }> {
   return request('/v0/ping');
 }

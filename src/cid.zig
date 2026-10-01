@@ -27,6 +27,7 @@ pub const serve = @import("server/serve.zig");
 pub const migrate = @import("core/migrate.zig");
 pub const release = @import("core/release.zig");
 pub const purge = @import("core/purge.zig");
+pub const preview = @import("preview/worker.zig");
 pub const canonical = @import("manifest/canonical.zig");
 pub const jcs = @import("manifest/jcs.zig");
 pub const exports = struct {

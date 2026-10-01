@@ -11,6 +11,7 @@ const git_writer = @import("../gitrepo/writer.zig");
 const keys_mod = @import("../access/keys.zig");
 const gitlab_sync = @import("../access/gitlab_sync.zig");
 const purge_mod = @import("../core/purge.zig");
+const preview_worker = @import("../preview/worker.zig");
 const serve_mod = @import("../server/serve.zig");
 
 const ExitCode = root.ExitCode;
@@ -53,6 +54,9 @@ pub fn run(
     }
     if (eql(sub, "serve")) {
         return runServe(arena, io, env, args[1..]);
+    }
+    if (eql(sub, "previews")) {
+        return runPreviews(arena, io, out, env);
     }
     if (eql(sub, "verify")) {
         return runVerify(arena, io, out, env, args[1..]);
@@ -164,6 +168,12 @@ fn runServe(
             .io = io,
             .conninfo = conninfo,
             .interval_secs = interval,
+            .s3 = .{
+                .endpoint = s3_endpoint,
+                .access_key = s3_access,
+                .secret_key = s3_secret,
+                .bucket = s3_bucket,
+            },
             .gitlab = if (env.get("CID_GITLAB_TOKEN")) |t| .{
                 .base_url = env.get("CID_GITLAB_URL") orelse "https://gitlab.com",
                 .token = t,
@@ -173,7 +183,8 @@ fn runServe(
                 .server_url = env.get("CID_PUBLIC_URL") orelse "http://127.0.0.1:7070",
             } else null,
         };
-        if (bg.gitlab != null or bg.git != null) {
+        // Previews always drain in the background; gitlab/git only when configured.
+        {
             const thread = std.Thread.spawn(.{}, backgroundLoop, .{bg}) catch |err| {
                 std.log.warn("background loop not started: {t}; use 'cid admin sync-gitlab' and 'cid admin git --resync' by hand", .{err});
                 return fail(io, .network, "could not start the background loop: {t}", .{err});
@@ -517,6 +528,7 @@ const BackgroundConfig = struct {
     interval_secs: u64,
     gitlab: ?gitlab_sync.Config,
     git: ?git_writer.Config,
+    s3: s3.Config,
 };
 
 fn backgroundLoop(bg: BackgroundConfig) void {
@@ -532,6 +544,19 @@ fn backgroundLoop(bg: BackgroundConfig) void {
         };
         defer db.close();
 
+        {
+            var s3_bg = s3.Client.init(arena, bg.io, bg.s3) catch {
+                std.log.warn("background: bad S3 config for previews", .{});
+                continue;
+            };
+            defer s3_bg.deinit();
+            if (preview_worker.processPending(arena, bg.io, &db, &s3_bg, .{})) |outcome| {
+                if (outcome.built > 0 or outcome.skipped > 0)
+                    std.log.info("background: previews {d} built, {d} skipped", .{ outcome.built, outcome.skipped });
+            } else |err| {
+                std.log.warn("background: preview pass failed: {t}", .{err});
+            }
+        }
         if (bg.gitlab) |config| {
             if (gitlab_sync.syncAll(arena, bg.io, &db, config)) |outcome| {
                 if (outcome.members > 0 or outcome.keys > 0 or outcome.access_removed > 0)
@@ -556,6 +581,35 @@ fn backgroundLoop(bg: BackgroundConfig) void {
             }
         }
     }
+}
+
+fn runPreviews(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+    env: *const std.process.Environ.Map,
+) ExitCode {
+    const s3_endpoint = env.get("CID_S3_ENDPOINT") orelse return missingEnv(io, "CID_S3_ENDPOINT", "http://127.0.0.1:8333");
+    const s3_access = env.get("CID_S3_ACCESS_KEY") orelse return missingEnv(io, "CID_S3_ACCESS_KEY", "cid");
+    const s3_secret = env.get("CID_S3_SECRET_KEY") orelse return missingEnv(io, "CID_S3_SECRET_KEY", "…");
+    const s3_bucket = env.get("CID_S3_BUCKET") orelse return missingEnv(io, "CID_S3_BUCKET", "cid");
+    var db = adminDb(arena, io, env, "cid admin previews") orelse return .network;
+    defer db.close();
+    var s3_client = s3.Client.init(arena, io, .{
+        .endpoint = s3_endpoint,
+        .access_key = s3_access,
+        .secret_key = s3_secret,
+        .bucket = s3_bucket,
+    }) catch return fail(io, .usage, "CID_S3_ENDPOINT must look like http://host:port.", .{});
+    defer s3_client.deinit();
+
+    const outcome = preview_worker.processPending(arena, io, &db, &s3_client, .{}) catch |err|
+        return fail(io, .network, "the preview pass could not run: {t}. Fix the cause, then run 'cid admin previews' again.", .{err});
+    out.print("Previews: {d} built, {d} skipped, {d} will retry.\n", .{
+        outcome.built, outcome.skipped, outcome.failed,
+    }) catch return .network;
+    out.flush() catch return .network;
+    return .ok;
 }
 
 fn missingEnv(io: std.Io, name: []const u8, example: []const u8) ExitCode {
