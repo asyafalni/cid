@@ -6,10 +6,23 @@ const std = @import("std");
 pub const Parsed = union(enum) {
     help,
     version,
+    init: []const [:0]const u8,
+    add: []const [:0]const u8,
+    commit: []const [:0]const u8,
+    status,
     /// `cid admin …`; the payload is everything after `admin`.
     admin: []const [:0]const u8,
+    /// A real cid command this build does not include yet.
+    not_yet: []const u8,
     /// Not a cid command; the payload is what the user typed.
     unknown: []const u8,
+};
+
+/// Commands the docs promise but this build does not include yet. Saying
+/// "not built yet" beats pretending they are typos.
+const not_yet_commands = [_][]const u8{
+    "clone", "pull", "checkout", "log",   "diff",  "restore",
+    "push",  "tag",  "branch",   "merge", "login",
 };
 
 pub fn parse(args: []const [:0]const u8) Parsed {
@@ -17,7 +30,14 @@ pub fn parse(args: []const [:0]const u8) Parsed {
     const first = args[0];
     if (eql(first, "help") or eql(first, "--help") or eql(first, "-h")) return .help;
     if (eql(first, "version") or eql(first, "--version")) return .version;
+    if (eql(first, "init")) return .{ .init = args[1..] };
+    if (eql(first, "add")) return .{ .add = args[1..] };
+    if (eql(first, "commit")) return .{ .commit = args[1..] };
+    if (eql(first, "status")) return .status;
     if (eql(first, "admin")) return .{ .admin = args[1..] };
+    for (not_yet_commands) |cmd| {
+        if (eql(first, cmd)) return .{ .not_yet = first };
+    }
     return .{ .unknown = first };
 }
 

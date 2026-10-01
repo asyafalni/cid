@@ -25,6 +25,7 @@ fn run(
     const out = &stdout_writer.interface;
     const is_tty = std.Io.File.stdout().isTty(io) catch false;
 
+    const ctx: cid.common.Context = .{ .arena = arena, .io = io, .out = out, .env = env };
     const code: cid.ExitCode = switch (cid.command.parse(args)) {
         .help => blk: {
             cid.help.print(out) catch break :blk .network;
@@ -34,7 +35,18 @@ fn run(
             cid.version.print(out, is_tty) catch break :blk .network;
             break :blk .ok;
         },
+        .init => |cmd_args| cid.cli_init.run(&ctx, cmd_args),
+        .add => |cmd_args| cid.cli_add.run(&ctx, cmd_args),
+        .commit => |cmd_args| cid.cli_commit.run(&ctx, cmd_args),
+        .status => cid.cli_status.run(&ctx),
         .admin => |admin_args| cid.admin.run(arena, io, out, env, admin_args),
+        .not_yet => |name| {
+            var ebuf: [256]u8 = undefined;
+            var ew = std.Io.File.stderr().writer(io, &ebuf);
+            ew.interface.print("cid: '{s}' is not built yet in this early version. Run 'cid help' for what works today.\n", .{name}) catch {};
+            ew.interface.flush() catch {};
+            return @intFromEnum(cid.ExitCode.usage);
+        },
         .unknown => |name| return fail(io, .usage, name, "cid help"),
     };
     out.flush() catch return @intFromEnum(cid.ExitCode.network);
