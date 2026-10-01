@@ -47,20 +47,66 @@ pub fn openCacheDir(ctx: *const Context) !std.Io.Dir {
     return std.Io.Dir.cwd().createDirPathOpen(ctx.io, path, .{});
 }
 
-/// Where the server is, until the SSH front door lands: CID_SERVER and
-/// CID_TOKEN from the environment. The error text says exactly that.
+/// How commands reach the server: the SSH flow (a short-lived token from
+/// 'ssh cid@host cid-auth <dataset> <level>', like git), or the
+/// CID_SERVER/CID_TOKEN environment override for CI and machines without
+/// SSH. The override wins when both are set.
 pub const no_server_msg =
-    "the server address is not set (the SSH flow is not built yet).\n" ++
-    "Export CID_SERVER (e.g. http://127.0.0.1:7070) and CID_TOKEN, then run the command again.";
+    "cannot reach a cid server: the SSH call failed and no override is set.\n" ++
+    "Check that 'ssh <user@host from the address>' works, or export\n" ++
+    "CID_SERVER and CID_TOKEN, then run the command again.";
 
-pub fn remoteFor(ctx: *const Context, dataset_name: []const u8) !*const remote_mod.Remote {
-    const server = ctx.env.get("CID_SERVER") orelse return error.NoServer;
-    const token = ctx.env.get("CID_TOKEN") orelse return error.NoServer;
+pub fn remoteFor(
+    ctx: *const Context,
+    dataset_name: []const u8,
+    level: remote_mod.TokenLevel,
+    address: ?[]const u8,
+) !*const remote_mod.Remote {
+    var server: []const u8 = undefined;
+    var tok: []const u8 = undefined;
+    if (ctx.env.get("CID_SERVER")) |s| {
+        server = s;
+        tok = ctx.env.get("CID_TOKEN") orelse return error.NoServer;
+    } else {
+        const addr = address orelse return error.NoServer;
+        const grant = sshToken(ctx, addr, dataset_name, level) orelse return error.NoServer;
+        server = grant.url;
+        tok = grant.token;
+    }
     const transport = try ctx.arena.create(remote_mod.HttpTransport);
-    transport.* = remote_mod.HttpTransport.init(ctx.arena, ctx.io, server, token);
+    transport.* = remote_mod.HttpTransport.init(ctx.arena, ctx.io, server, tok);
     const r = try ctx.arena.create(remote_mod.Remote);
     r.* = .{ .t = transport.transport(), .name = dataset_name };
     return r;
+}
+
+const Grant = struct { token: []const u8, url: []const u8 };
+
+/// `ssh cid@host cid-auth <dataset> <read|write>` — the system ssh, exactly
+/// as git uses it, so ~/.ssh/config, agents and hardware keys all work.
+fn sshToken(
+    ctx: *const Context,
+    address: []const u8,
+    dataset_name: []const u8,
+    level: remote_mod.TokenLevel,
+) ?Grant {
+    const colon = std.mem.indexOfScalar(u8, address, ':') orelse return null;
+    const ssh_target = address[0..colon];
+    const result = std.process.run(ctx.arena, ctx.io, .{
+        .argv = &.{ "ssh", ssh_target, "cid-auth", dataset_name, @tagName(level) },
+        .timeout = .{ .duration = .{ .clock = .awake, .raw = .{ .nanoseconds = 30 * std.time.ns_per_s } } },
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(64 * 1024),
+    }) catch return null;
+    if (result.term != .exited or result.term.exited != 0) {
+        if (result.stderr.len > 0)
+            std.log.warn("ssh said: {s}", .{std.mem.trim(u8, result.stderr, " \n")});
+        return null;
+    }
+    const Parsed = struct { token: []const u8, url: []const u8, expires_in_secs: u64 = 0 };
+    const parsed = std.json.parseFromSliceLeaky(Parsed, ctx.arena, result.stdout, .{ .ignore_unknown_fields = true }) catch
+        return null;
+    return .{ .token = parsed.token, .url = parsed.url };
 }
 
 /// 'user:<name>' from the environment; CID_AUTHOR overrides verbatim.

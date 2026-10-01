@@ -20,13 +20,17 @@ const pg = @import("../store/pg.zig");
 const s3 = @import("../store/s3.zig");
 const release_mod = @import("../core/release.zig");
 const git_writer = @import("../gitrepo/writer.zig");
+const token_mod = @import("../access/token.zig");
 const Uuid = @import("../util/uuid7.zig").Uuid;
 
 pub const Deps = struct {
     db: *pg.Db,
     s3: *s3.Client,
     io: std.Io,
+    /// The static full-access token (CI fallback; empty disables it).
     token: []const u8,
+    /// Verifies SSH-issued scoped tokens when set (CID_TOKEN_SECRET).
+    token_secret: ?[]const u8 = null,
     /// When set, releases are written to the dataset repository right
     /// after tagging; otherwise git_writes rows wait for
     /// 'cid admin git <dataset> --resync'.
@@ -70,15 +74,22 @@ fn handleInner(
     if (eql(method, "GET") and eql(target, "/v0/ping"))
         return json(arena, .ok, .{ .ok = true });
 
-    // Everything else needs the token.
-    if (!tokenOk(deps.token, auth_header))
-        return errorResponse(arena, .unauthorized, "missing or wrong token", "Check CID_TOKEN on both sides.");
-
-    if (eql(method, "POST") and eql(target, "/v0/datasets"))
-        return createDataset(arena, deps, body);
+    if (eql(method, "POST") and eql(target, "/v0/datasets")) {
+        // The dataset's name is in the body; createDataset checks scope.
+        return createDataset(arena, deps, auth_header, body);
+    }
 
     const route = parseDatasetRoute(target) orelse
         return errorResponse(arena, .not_found, "no such route", "Update cid and try again.");
+
+    // Writes need a write-scoped token for this dataset; reads a read one.
+    const needed: token_mod.Level = if (eql(route.action, "push") or
+        eql(route.action, "check-hashes") or eql(route.action, "tag"))
+        .write
+    else
+        .read;
+    if (!authorized(arena, deps, auth_header, route.name, needed))
+        return errorResponse(arena, .unauthorized, "missing, wrong or expired token for this dataset", "Run the command again; cid fetches a fresh token over SSH. CI: check CID_TOKEN.");
 
     const ds = lookupDataset(arena, deps, route.name) orelse
         return errorResponse(arena, .not_found, "no such dataset", "Run 'cid init' to create it, or check the address.");
@@ -139,6 +150,7 @@ fn parseDatasetRoute(target: []const u8) ?DatasetRoute {
 }
 
 fn tokenOk(expected: []const u8, auth_header: ?[]const u8) bool {
+    if (expected.len == 0) return false;
     const h = auth_header orelse return false;
     if (!std.mem.startsWith(u8, h, "Bearer ")) return false;
     const got = h["Bearer ".len..];
@@ -146,6 +158,24 @@ fn tokenOk(expected: []const u8, auth_header: ?[]const u8) bool {
     var diff: u8 = 0;
     for (got, expected) |a, b| diff |= a ^ b;
     return diff == 0;
+}
+
+/// Static token: everything. Scoped token: this dataset, this level or
+/// higher, not expired.
+fn authorized(
+    arena: std.mem.Allocator,
+    deps: *Deps,
+    auth_header: ?[]const u8,
+    dataset: []const u8,
+    needed: token_mod.Level,
+) bool {
+    if (tokenOk(deps.token, auth_header)) return true;
+    const secret = deps.token_secret orelse return false;
+    const h = auth_header orelse return false;
+    if (!std.mem.startsWith(u8, h, "Bearer ")) return false;
+    const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(deps.io, .real).toSeconds()));
+    const claims = token_mod.verify(arena, secret, h["Bearer ".len..], now) catch return false;
+    return std.mem.eql(u8, claims.dataset, dataset) and claims.level.covers(needed);
 }
 
 // ---------------------------------------------------------------------------
@@ -178,9 +208,11 @@ const CreateDatasetBody = struct {
     git_url: []const u8,
 };
 
-fn createDataset(arena: std.mem.Allocator, deps: *Deps, body: []const u8) HandleError!Response {
+fn createDataset(arena: std.mem.Allocator, deps: *Deps, auth_header: ?[]const u8, body: []const u8) HandleError!Response {
     const req = parseBody(CreateDatasetBody, arena, body) orelse return error.BadRequest;
     if (req.name.len == 0 or req.git_url.len == 0) return error.BadRequest;
+    if (!authorized(arena, deps, auth_header, req.name, .write))
+        return errorResponse(arena, .unauthorized, "missing, wrong or expired token for this dataset", "Run the command again; cid fetches a fresh token over SSH. CI: check CID_TOKEN.");
     if (!eql(req.kind, "files") and !eql(req.kind, "annotated")) return error.BadRequest;
 
     if (lookupDataset(arena, deps, req.name) != null)

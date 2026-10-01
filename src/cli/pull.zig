@@ -14,7 +14,7 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
         return common.fail(ctx, .network, "cannot open the cache folder (~/.cache/cid). Check HOME, then run 'cid pull' again.", .{});
     const name = workspace.datasetPathOf(ws.config.address) orelse
         return common.fail(ctx, .integrity, ".cid/config.zon holds a broken address. Clone again, or fix it to cid@host:org/path.", .{});
-    const remote = common.remoteFor(ctx, name) catch
+    const remote = common.remoteFor(ctx, name, .read, ws.config.address) catch
         return common.fail(ctx, .usage, common.no_server_msg, .{});
 
     const outcome = sync.pull(ctx.arena, ctx.io, &ws, cache_dir, remote) catch |err| switch (err) {

@@ -747,3 +747,104 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     const v1_at = std.mem.indexOf(u8, changelog, "v1.0.0").?;
     try std.testing.expect(v2_at < v1_at);
 }
+
+test "access: key lookup, forced command, scoped tokens enforced by routes" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var diag: cid.pg.Diag = .{};
+    var db = try connect(&diag);
+    defer db.close();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+
+    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .bucket = "cid-test",
+    });
+    defer s3c.deinit();
+    try s3c.createBucket(arena);
+
+    const secret = "integration-test-secret-0123456789abcdef";
+    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "", .token_secret = secret };
+
+    // Clean slate: account, key, dataset, access.
+    try db.exec("DELETE FROM access WHERE account_id IN ('gitlab:7001', 'gitlab:7002')", &diag);
+    try db.exec("DELETE FROM ssh_keys WHERE account_id IN ('gitlab:7001', 'gitlab:7002')", &diag);
+    try db.exec("DELETE FROM accounts WHERE account_id IN ('gitlab:7001', 'gitlab:7002')", &diag);
+    try db.exec("INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES " ++
+        "('018f0000-0000-7000-8000-00000000ac01', 'test/datasets/access', 'files', 'g@h:a.git') " ++
+        "ON CONFLICT (name) DO NOTHING", &diag);
+    try db.exec("INSERT INTO accounts (account_id, display_name, source) VALUES " ++
+        "('gitlab:7001', 'Reader Rhea', 'dashboard'), ('gitlab:7002', 'Writer Wade', 'dashboard')", &diag);
+    try db.exec("INSERT INTO ssh_keys (fingerprint, account_id, public_key) VALUES " ++
+        "('SHA256:testfp7001', 'gitlab:7001', 'ssh-ed25519 AAAAC3NzaTEST7001 rhea@laptop')", &diag);
+    try db.exec("INSERT INTO access (dataset_id, account_id, level, source) VALUES " ++
+        "('018f0000-0000-7000-8000-00000000ac01', 'gitlab:7001', 'read', 'dashboard'), " ++
+        "('018f0000-0000-7000-8000-00000000ac01', 'gitlab:7002', 'write', 'dashboard')", &diag);
+
+    // AuthorizedKeysCommand: a known key gets the pinned forced command.
+    const line = (try cid.access.auth.authorizedKeysLine(arena, &db, "SHA256:testfp7001")).?;
+    try std.testing.expect(std.mem.startsWith(u8, line, "restrict,command=\"cid ssh-auth --account=gitlab:7001\" ssh-ed25519"));
+    try std.testing.expectEqual(@as(?[]const u8, null), try cid.access.auth.authorizedKeysLine(arena, &db, "SHA256:unknown"));
+
+    // The forced command: read is granted to the reader, write is not.
+    const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
+    const read_req = try cid.access.auth.parseOriginalCommand("cid-auth test/datasets/access read", "gitlab:7001");
+    const read_grant = try cid.access.auth.authorize(arena, &db, secret, "http://127.0.0.1:7070", now, read_req);
+    try std.testing.expect(std.mem.startsWith(u8, read_grant.token, "cid1."));
+
+    const write_req = try cid.access.auth.parseOriginalCommand("cid-auth test/datasets/access write", "gitlab:7001");
+    try std.testing.expectError(error.AccessDenied, cid.access.auth.authorize(arena, &db, secret, "x", now, write_req));
+    const wade_write = try cid.access.auth.parseOriginalCommand("cid-auth test/datasets/access write", "gitlab:7002");
+    const write_grant = try cid.access.auth.authorize(arena, &db, secret, "x", now, wade_write);
+
+    // Both decisions landed in the audit log.
+    var events = try db.query(
+        "SELECT count(*) FILTER (WHERE granted), count(*) FILTER (WHERE NOT granted) FROM auth_events " ++
+            "WHERE account_id IN ('gitlab:7001', 'gitlab:7002') AND ts > now() - interval '1 minute'",
+        &.{},
+        &diag,
+    );
+    defer events.deinit();
+    try std.testing.expect((std.fmt.parseInt(u32, events.get(0, 0), 10) catch 0) >= 2);
+    try std.testing.expect((std.fmt.parseInt(u32, events.get(0, 1), 10) catch 0) >= 1);
+
+    // Routes enforce the scope: read token reads but cannot push; a token
+    // for another dataset is useless here; garbage is refused.
+    const read_auth = try std.fmt.allocPrint(arena, "Bearer {s}", .{read_grant.token});
+    const write_auth = try std.fmt.allocPrint(arena, "Bearer {s}", .{write_grant.token});
+
+    const head_ok = cid.api.handle(arena, &deps, "GET", "/v0/datasets/test/datasets/access/-/head", read_auth, "");
+    try std.testing.expectEqual(std.http.Status.ok, head_ok.status);
+    const push_denied = cid.api.handle(arena, &deps, "POST", "/v0/datasets/test/datasets/access/-/push", read_auth, "{}");
+    try std.testing.expectEqual(std.http.Status.unauthorized, push_denied.status);
+    const check_denied = cid.api.handle(arena, &deps, "POST", "/v0/datasets/test/datasets/access/-/check-hashes", read_auth, "{\"hashes\":[]}");
+    try std.testing.expectEqual(std.http.Status.unauthorized, check_denied.status);
+    const check_ok = cid.api.handle(arena, &deps, "POST", "/v0/datasets/test/datasets/access/-/check-hashes", write_auth, "{\"hashes\":[]}");
+    try std.testing.expectEqual(std.http.Status.ok, check_ok.status);
+
+    const other_ds = cid.api.handle(arena, &deps, "GET", "/v0/datasets/test/datasets/sync/-/head", read_auth, "");
+    try std.testing.expectEqual(std.http.Status.unauthorized, other_ds.status);
+    const garbage = cid.api.handle(arena, &deps, "GET", "/v0/datasets/test/datasets/access/-/head", "Bearer cid1.not.real", "");
+    try std.testing.expectEqual(std.http.Status.unauthorized, garbage.status);
+
+    // An expired token is dead, whatever it once allowed.
+    const expired = try cid.access.token.mint(arena, secret, .{
+        .expiry_unix = now - 1,
+        .level = .write,
+        .account = "gitlab:7002",
+        .dataset = "test/datasets/access",
+    });
+    const expired_auth = try std.fmt.allocPrint(arena, "Bearer {s}", .{expired});
+    const expired_res = cid.api.handle(arena, &deps, "GET", "/v0/datasets/test/datasets/access/-/head", expired_auth, "");
+    try std.testing.expectEqual(std.http.Status.unauthorized, expired_res.status);
+
+    // With no static token configured, the old shared-token style fails.
+    const static_res = cid.api.handle(arena, &deps, "GET", "/v0/datasets/test/datasets/access/-/head", "Bearer test-token", "");
+    try std.testing.expectEqual(std.http.Status.unauthorized, static_res.status);
+}

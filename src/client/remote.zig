@@ -8,6 +8,8 @@ const std = @import("std");
 const local = @import("local.zig");
 const index_mod = @import("index.zig");
 
+pub const TokenLevel = enum { read, write };
+
 pub const Response = struct {
     status: std.http.Status,
     body: []const u8,

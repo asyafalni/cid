@@ -1,0 +1,11 @@
+#!/bin/sh
+# AuthorizedKeysCommand wrapper: sshd passes no environment, so the
+# database address lives in /etc/cid/env (owned root:cid, mode 640):
+#
+#   CID_DB='host=127.0.0.1 port=5432 user=cid password=… dbname=cid'
+#
+# Install as /usr/local/bin/cid-ssh-keys, owned by root, mode 755.
+set -eu
+. /etc/cid/env
+export CID_DB
+exec /usr/local/bin/cid ssh-keys "--fingerprint=$1"

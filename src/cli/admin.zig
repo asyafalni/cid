@@ -57,6 +57,12 @@ pub fn run(
     if (eql(sub, "git")) {
         return runGitAdmin(arena, io, out, env, args[1..]);
     }
+    if (eql(sub, "add-key")) {
+        return runAddKey(arena, io, out, env, args[1..]);
+    }
+    if (eql(sub, "grant")) {
+        return runGrant(arena, io, out, env, args[1..]);
+    }
     return fail(io, .usage, "'cid admin {s}' is not an admin command. Run 'cid admin'.", .{sub});
 }
 
@@ -115,7 +121,10 @@ fn runServe(
     const s3_access = env.get("CID_S3_ACCESS_KEY") orelse return missingEnv(io, "CID_S3_ACCESS_KEY", "cid");
     const s3_secret = env.get("CID_S3_SECRET_KEY") orelse return missingEnv(io, "CID_S3_SECRET_KEY", "…");
     const s3_bucket = env.get("CID_S3_BUCKET") orelse return missingEnv(io, "CID_S3_BUCKET", "cid");
-    const token = env.get("CID_TOKEN") orelse return missingEnv(io, "CID_TOKEN", "a long random string");
+    const token = env.get("CID_TOKEN") orelse "";
+    const token_secret = env.get("CID_TOKEN_SECRET");
+    if (token.len == 0 and token_secret == null)
+        return fail(io, .usage, "set CID_TOKEN_SECRET (SSH-issued tokens) or CID_TOKEN (one static token), then run 'cid admin serve' again.", .{});
 
     const conninfo = arena.dupeZ(u8, conninfo_raw) catch return .network;
     var diag: pg.Diag = .{};
@@ -134,7 +143,7 @@ fn runServe(
     s3_client.createBucket(arena) catch
         return fail(io, .network, "cannot reach storage at {s}. Check SeaweedFS, then run 'cid admin serve' again.", .{s3_endpoint});
 
-    var deps: api.Deps = .{ .db = &db, .s3 = &s3_client, .io = io, .token = token };
+    var deps: api.Deps = .{ .db = &db, .s3 = &s3_client, .io = io, .token = token, .token_secret = token_secret };
     if (env.get("CID_GIT_WORKDIR")) |git_workdir| {
         deps.git = .{
             .workdir = git_workdir,
@@ -282,6 +291,108 @@ fn runGitAdmin(
     }
     if (any_failed)
         out.writeAll("Fix the cause, then run 'cid admin git <dataset> --resync'.\n") catch return .network;
+    out.flush() catch return .network;
+    return .ok;
+}
+
+fn adminDb(arena: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map, next_cmd: []const u8) ?pg.Db {
+    const conninfo_raw = env.get("CID_DB") orelse {
+        _ = fail(io, .usage, "CID_DB is not set.\n  {s}\nThen run '{s}' again.", .{ conninfo_example, next_cmd });
+        return null;
+    };
+    var diag: pg.Diag = .{};
+    const conninfo = arena.dupeZ(u8, conninfo_raw) catch return null;
+    return pg.Db.connect(conninfo, &diag) catch {
+        _ = fail(io, .network, "cannot connect to the database: {s}", .{diag.message()});
+        return null;
+    };
+}
+
+/// SHA256:… fingerprint of an OpenSSH public key line, as OpenSSH prints it.
+fn keyFingerprint(arena: std.mem.Allocator, key_line: []const u8) ?[]const u8 {
+    var it = std.mem.tokenizeScalar(u8, key_line, ' ');
+    _ = it.next() orelse return null; // key type
+    const blob_b64 = it.next() orelse return null;
+    const decoder = std.base64.standard.Decoder;
+    const blob = arena.alloc(u8, decoder.calcSizeForSlice(blob_b64) catch return null) catch return null;
+    decoder.decode(blob, blob_b64) catch return null;
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(blob, &digest, .{});
+    const b64 = std.base64.standard_no_pad.Encoder;
+    const out = arena.alloc(u8, "SHA256:".len + b64.calcSize(32)) catch return null;
+    @memcpy(out[0.."SHA256:".len], "SHA256:");
+    _ = b64.encode(out["SHA256:".len..], &digest);
+    return out;
+}
+
+fn runAddKey(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+    env: *const std.process.Environ.Map,
+    args: []const [:0]const u8,
+) ExitCode {
+    if (args.len != 3)
+        return fail(io, .usage, "run 'cid admin add-key <account> <display-name> <public-key-line>' (quote the key).", .{});
+    const account = args[0];
+    const display = args[1];
+    const key_line = args[2];
+    const fp = keyFingerprint(arena, key_line) orelse
+        return fail(io, .usage, "that does not look like an OpenSSH public key line ('ssh-ed25519 AAAA… comment').", .{});
+
+    var db = adminDb(arena, io, env, "cid admin add-key") orelse return .network;
+    defer db.close();
+    var diag: pg.Diag = .{};
+    const account_z = arena.dupeZ(u8, account) catch return .network;
+    const display_z = arena.dupeZ(u8, display) catch return .network;
+    const fp_z = arena.dupeZ(u8, fp) catch return .network;
+    const key_z = arena.dupeZ(u8, key_line) catch return .network;
+    db.execParams(
+        "INSERT INTO accounts (account_id, display_name, source) VALUES ($1, $2, 'dashboard') " ++
+            "ON CONFLICT (account_id) DO UPDATE SET display_name = excluded.display_name",
+        &.{ account_z, display_z },
+        &diag,
+    ) catch return fail(io, .network, "database error: {s}", .{diag.message()});
+    db.execParams(
+        "INSERT INTO ssh_keys (fingerprint, account_id, public_key) VALUES ($1, $2, $3) " ++
+            "ON CONFLICT (fingerprint) DO UPDATE SET account_id = excluded.account_id, public_key = excluded.public_key",
+        &.{ fp_z, account_z, key_z },
+        &diag,
+    ) catch return fail(io, .network, "database error: {s}", .{diag.message()});
+    out.print("Registered key {s} for {s}.\n", .{ fp, account }) catch return .network;
+    out.flush() catch return .network;
+    return .ok;
+}
+
+fn runGrant(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+    env: *const std.process.Environ.Map,
+    args: []const [:0]const u8,
+) ExitCode {
+    if (args.len != 3)
+        return fail(io, .usage, "run 'cid admin grant <dataset> <account> <read|write|maintain>'.", .{});
+    const dataset = args[0];
+    const account = args[1];
+    const level = args[2];
+    if (!eql(level, "read") and !eql(level, "write") and !eql(level, "maintain"))
+        return fail(io, .usage, "the level is read, write or maintain. Run 'cid admin grant {s} {s} read'.", .{ dataset, account });
+
+    var db = adminDb(arena, io, env, "cid admin grant") orelse return .network;
+    defer db.close();
+    var diag: pg.Diag = .{};
+    const dataset_z = arena.dupeZ(u8, dataset) catch return .network;
+    const account_z = arena.dupeZ(u8, account) catch return .network;
+    const level_z = arena.dupeZ(u8, level) catch return .network;
+    db.execParams(
+        "INSERT INTO access (dataset_id, account_id, level, source) " ++
+            "SELECT d.dataset_id, $2, $3, 'dashboard' FROM datasets d WHERE d.name = $1 " ++
+            "ON CONFLICT (dataset_id, account_id) DO UPDATE SET level = excluded.level",
+        &.{ dataset_z, account_z, level_z },
+        &diag,
+    ) catch return fail(io, .network, "database error: {s}", .{diag.message()});
+    out.print("Granted {s} on {s} to {s}.\n", .{ level, dataset, account }) catch return .network;
     out.flush() catch return .network;
     return .ok;
 }

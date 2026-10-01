@@ -29,6 +29,11 @@ pub const gitrepo = struct {
     pub const writer = @import("gitrepo/writer.zig");
 };
 pub const uuid7 = @import("util/uuid7.zig");
+pub const access = struct {
+    pub const token = @import("access/token.zig");
+    pub const auth = @import("access/auth.zig");
+};
+pub const cli_ssh = @import("cli/sshcmd.zig");
 pub const client = struct {
     pub const index = @import("client/index.zig");
     pub const local = @import("client/local.zig");
@@ -62,6 +67,8 @@ test {
     _ = release;
     _ = canonical;
     _ = gitrepo.render;
+    _ = access.token;
+    _ = access.auth;
     _ = gitrepo.writer;
     _ = uuid7;
     _ = client.index;

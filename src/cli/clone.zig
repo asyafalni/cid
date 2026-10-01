@@ -24,7 +24,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
 
     const cache_dir = common.openCacheDir(ctx) catch
         return common.fail(ctx, .network, "cannot open the cache folder (~/.cache/cid). Check HOME, then run 'cid clone' again.", .{});
-    const remote = common.remoteFor(ctx, name) catch
+    const remote = common.remoteFor(ctx, name, .read, address) catch
         return common.fail(ctx, .usage, common.no_server_msg, .{});
 
     const outcome = sync.clone(ctx.arena, ctx.io, dest_dir, cache_dir, remote, address) catch |err| switch (err) {

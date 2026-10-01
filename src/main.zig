@@ -48,6 +48,8 @@ fn run(
         .restore => |cmd_args| cid.cli_restore.run(&ctx, cmd_args),
         .diff => |cmd_args| cid.cli_diff.run(&ctx, cmd_args),
         .admin => |admin_args| cid.admin.run(arena, io, out, env, admin_args),
+        .ssh_keys => |ssh_args| cid.cli_ssh.runKeys(arena, io, out, env, ssh_args),
+        .ssh_auth => |ssh_args| cid.cli_ssh.runAuth(arena, io, out, env, ssh_args),
         .not_yet => |name| {
             var ebuf: [256]u8 = undefined;
             var ew = std.Io.File.stderr().writer(io, &ebuf);

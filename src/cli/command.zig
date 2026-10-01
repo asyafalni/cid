@@ -20,6 +20,9 @@ pub const Parsed = union(enum) {
     diff: []const [:0]const u8,
     /// `cid admin …`; the payload is everything after `admin`.
     admin: []const [:0]const u8,
+    /// sshd-only entry points; never in help.
+    ssh_keys: []const [:0]const u8,
+    ssh_auth: []const [:0]const u8,
     /// A real cid command this build does not include yet.
     not_yet: []const u8,
     /// Not a cid command; the payload is what the user typed.
@@ -50,6 +53,8 @@ pub fn parse(args: []const [:0]const u8) Parsed {
     if (eql(first, "restore")) return .{ .restore = args[1..] };
     if (eql(first, "diff")) return .{ .diff = args[1..] };
     if (eql(first, "admin")) return .{ .admin = args[1..] };
+    if (eql(first, "ssh-keys")) return .{ .ssh_keys = args[1..] };
+    if (eql(first, "ssh-auth")) return .{ .ssh_auth = args[1..] };
     for (not_yet_commands) |cmd| {
         if (eql(first, cmd)) return .{ .not_yet = first };
     }

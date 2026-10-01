@@ -23,7 +23,7 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
 
     // The server's view, when reachable.
     const name = workspace.datasetPathOf(ws.config.address) orelse "";
-    if (common.remoteFor(ctx, name)) |remote| {
+    if (common.remoteFor(ctx, name, .read, ws.config.address)) |remote| {
         if (remote.log(ctx.arena, "main")) |entries| {
             for (entries) |e| {
                 printRemote(ctx.out, e) catch return .network;
