@@ -1752,3 +1752,92 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     try std.testing.expect(std.mem.indexOf(u8, res.body, &png_hash) != null);
     try std.testing.expect(std.mem.indexOf(u8, res.body, &text_hash) == null);
 }
+
+test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var diag: cid.pg.Diag = .{};
+    var db = try connect(&diag);
+    defer db.close();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .bucket = "cid-test",
+    });
+    defer s3c.deinit();
+    try s3c.createBucket(arena);
+
+    // A real PNG, pushed the CLI way: the server records octet-stream.
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var buf: [512]u8 = undefined;
+    const tlen = try tmp.dir.realPath(io, &buf);
+    const png_path = try std.fmt.allocPrint(arena, "{s}/cli.png", .{buf[0..tlen]});
+    _ = try std.process.run(arena, io, .{ .argv = &.{
+        "ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=96x64:rate=1", "-frames:v", "1", "-y", png_path,
+    } });
+    const png = try std.Io.Dir.cwd().readFileAlloc(io, png_path, arena, .limited(1024 * 1024));
+    var dg: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(png, &dg, .{});
+    const hh = std.fmt.bytesToHex(dg, .lower);
+
+    try db.exec("UPDATE previews SET status = 'skipped', reason = 'test reset' WHERE status = 'pending'", &diag);
+    {
+        const hz = try arena.dupeZ(u8, &hh);
+        db.execParams("DELETE FROM previews WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag) catch {};
+        db.execParams("DELETE FROM items WHERE item_hash = decode($1, 'hex') AND NOT EXISTS (SELECT 1 FROM item_revisions ir WHERE ir.item_hash = decode($1, 'hex'))", &.{hz}, &diag) catch {};
+    }
+    try s3c.deleteObject(arena, try cid.preview.thumbKey(arena, &hh));
+
+    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/sniff" };
+    try db.exec("SET cid.maintenance = 'on'", &diag);
+    inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
+        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/sniff')", &diag);
+    }
+    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/sniff'", &diag);
+    try db.exec("RESET cid.maintenance", &diag);
+    try producer.dir.writeFile(io, .{ .sub_path = "cli.png", .data = png });
+    try cid.client.workspace.init(arena, io, producer.dir, "cid@test:test/datasets/sniff", "g@h:sn.git");
+    var pws = try cid.client.workspace.open(arena, io, producer.dir);
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "a png, pushed blind", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+
+    // Before the worker: an honest octet-stream.
+    {
+        const hz = try arena.dupeZ(u8, &hh);
+        var rows = try db.query("SELECT media_type FROM items WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag);
+        defer rows.deinit();
+        try std.testing.expectEqualStrings("application/octet-stream", rows.get(0, 0));
+    }
+
+    // One worker pass: sniffed, measured, thumbnailed.
+    const pass = try cid.preview.processPending(arena, io, &db, &s3c, .{});
+    try std.testing.expect(pass.built >= 1);
+    {
+        const hz = try arena.dupeZ(u8, &hh);
+        var rows = try db.query(
+            "SELECT media_type, meta->>'width', meta->>'height' FROM items WHERE item_hash = decode($1, 'hex')",
+            &.{hz},
+            &diag,
+        );
+        defer rows.deinit();
+        try std.testing.expectEqualStrings("image/png", rows.get(0, 0));
+        try std.testing.expectEqualStrings("96", rows.get(0, 1));
+        try std.testing.expectEqualStrings("64", rows.get(0, 2));
+    }
+    const thumb = try s3c.getObjectAlloc(arena, try cid.preview.thumbKey(arena, &hh), 8 * 1024 * 1024);
+    try std.testing.expect(thumb.len > 100);
+}

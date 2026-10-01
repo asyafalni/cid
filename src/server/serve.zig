@@ -83,6 +83,8 @@ fn dispatch(deps: *api.Deps, c: *nilo.Ctx) !void {
     const auth: ?[]const u8 = if (c.header("authorization")) |h| h.view() else null;
     const body: []const u8 = if (c.method == .POST) (try c.body()).view() else "";
 
+    deps.lock.lock(deps.io) catch return error.Failed;
     const response = api.handle(arena, deps, @tagName(c.method), target, auth, body);
+    deps.lock.unlock(deps.io);
     try c.send(@intFromEnum(response.status), "application/json", response.body);
 }

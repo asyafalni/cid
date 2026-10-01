@@ -28,6 +28,7 @@ pub const migrate = @import("core/migrate.zig");
 pub const release = @import("core/release.zig");
 pub const purge = @import("core/purge.zig");
 pub const preview = @import("preview/worker.zig");
+pub const media = @import("media/sniff.zig");
 pub const canonical = @import("manifest/canonical.zig");
 pub const jcs = @import("manifest/jcs.zig");
 pub const exports = struct {
@@ -81,6 +82,7 @@ test {
     _ = jcs;
     _ = exports.jsonl;
     _ = exports.yolo;
+    _ = media;
     _ = gitrepo.render;
     _ = access.token;
     _ = access.auth;

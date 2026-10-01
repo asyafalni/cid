@@ -11,6 +11,7 @@
 const std = @import("std");
 const pg = @import("../store/pg.zig");
 const s3_mod = @import("../store/s3.zig");
+const sniff_mod = @import("../media/sniff.zig");
 
 pub const Config = struct {
     /// Scratch space for input/output files; created if missing.
@@ -108,10 +109,10 @@ fn buildOne(
     media_type: []const u8,
     size: u64,
 ) BuildResult {
-    _ = db;
-    const is_image = std.mem.startsWith(u8, media_type, "image/");
-    const is_video = std.mem.startsWith(u8, media_type, "video/");
-    if (!is_image and !is_video)
+    var is_image = std.mem.startsWith(u8, media_type, "image/");
+    var is_video = std.mem.startsWith(u8, media_type, "video/");
+    const unknown = std.mem.eql(u8, media_type, "application/octet-stream");
+    if (!is_image and !is_video and !unknown)
         return .{ .skipped = "not previewable: only images and video get thumbnails today" };
     if (size > config.max_input_bytes)
         return .{ .skipped = "too large to preview; raise the worker's limit to include it" };
@@ -122,6 +123,19 @@ fn buildOne(
     }) catch return .{ .failed = "out of memory" };
     const bytes = s3.getObjectAlloc(arena, item_key, config.max_input_bytes) catch
         return .{ .failed = "could not fetch the item from storage" };
+
+    // The sanctioned look inside (invariant 15): an unknown media type is
+    // sniffed here, where the bytes are already in hand — this is how a
+    // CLI-pushed image earns its preview and its dimensions.
+    if (unknown) {
+        const found = sniff_mod.sniff(bytes) orelse
+            return .{ .skipped = "not previewable: the content is not a known media format" };
+        recordSniff(arena, db, hash, found);
+        is_image = std.mem.startsWith(u8, found.media_type, "image/");
+        is_video = std.mem.startsWith(u8, found.media_type, "video/");
+        if (!is_image and !is_video)
+            return .{ .skipped = "not previewable: only images and video get thumbnails today" };
+    }
 
     const in_path = std.fmt.allocPrint(arena, "{s}/{s}.in", .{ config.tmpdir, hash }) catch
         return .{ .failed = "out of memory" };
@@ -167,6 +181,20 @@ fn buildOne(
     s3.putObject(arena, key, thumb) catch
         return .{ .failed = "could not store the thumbnail" };
     return .built;
+}
+
+fn recordSniff(arena: std.mem.Allocator, db: *pg.Db, hash: []const u8, found: sniff_mod.Sniffed) void {
+    const hash_z = arena.dupeZ(u8, hash) catch return;
+    const type_z = arena.dupeZ(u8, found.media_type) catch return;
+    const meta = std.fmt.allocPrintSentinel(arena, "{f}", .{std.json.fmt(.{
+        .width = found.width,
+        .height = found.height,
+    }, .{ .emit_null_optional_fields = false })}, 0) catch return;
+    db.execParams(
+        "UPDATE items SET media_type = $2, meta = meta || $3::jsonb WHERE item_hash = decode($1, 'hex')",
+        &.{ hash_z, type_z, meta },
+        null,
+    ) catch {};
 }
 
 fn mark(arena: std.mem.Allocator, db: *pg.Db, hash: []const u8, status: []const u8, reason: ?[]const u8) void {

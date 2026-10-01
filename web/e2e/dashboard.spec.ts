@@ -1,0 +1,101 @@
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import { gzipSync } from 'node:zlib';
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const token = 'e2e-dashboard-token';
+
+async function signIn(page: import('@playwright/test').Page) {
+  await page.goto('/signin');
+  await page.getByLabel('Access token').fill(token);
+  await page.getByRole('button', { name: 'Open the dashboard' }).click();
+  await expect(page.getByRole('heading', { name: 'Datasets' })).toBeVisible();
+}
+
+test('sign-in guards the deck and the token opens it', async ({ page }) => {
+  await page.goto('/');
+  await expect(page).toHaveURL(/\/signin/);
+  await signIn(page);
+  await expect(page.getByText('e2e/datasets/demo')).toBeVisible();
+});
+
+test('the overview carries the tape, the card and the paste-ready command', async ({ page }) => {
+  await signIn(page);
+  await page.getByRole('link', { name: 'e2e/datasets/demo' }).click();
+  // The tape: both releases as engraved tags, newest pinned by default.
+  await expect(page.getByRole('button', { name: 'v1.1.0' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'v1.0.0' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'v1.1.0' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  // The engraved count line and the command.
+  await expect(page.getByText(/4 items ·/)).toBeVisible();
+  await expect(page.getByText(/cid clone cid@.*e2e\/datasets\/demo --release v1\.1\.0/)).toBeVisible();
+  // Picking the older release repins and lands in the URL (every view is a link).
+  await page.getByRole('button', { name: 'v1.0.0' }).click();
+  await expect(page).toHaveURL(/release=v1\.0\.0/);
+  await expect(page.getByText(/--release v1\.0\.0/)).toBeVisible();
+});
+
+test('browse shows thumbnails for images and honest tiles for the rest', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/demo?view=browse');
+  // Two image tiles with real thumbnails, one type tile for the text files.
+  await expect(page.locator('.tile img')).toHaveCount(2);
+  await expect(page.locator('.tile-type').first()).toBeVisible();
+  // The drawer: facts, hash chip, annotations absent on a file dataset.
+  await page.getByRole('button', { name: /img-a\.png/ }).click();
+  await expect(page).toHaveURL(/item=img/);
+  await expect(page.getByText('sha-256')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Download the file' })).toBeVisible();
+  // Dimensions arrived through sniffing, not from any client claim.
+  await expect(page.getByText('200×150')).toBeVisible();
+});
+
+test('compare between the two releases reads as a sentence', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/demo?view=releases');
+  await expect(page.getByText(/1 added · 0 modified · 0 deleted/)).toBeVisible();
+  await expect(page.locator('.change-verb--added')).toHaveText('added');
+  await expect(page.getByText('notes.txt')).toBeVisible();
+});
+
+test('the files tab walks the committed tree', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/demo?view=files');
+  await expect(page.getByText('README.txt')).toBeVisible();
+  await expect(page.getByText('img-a.png')).toBeVisible();
+});
+
+test('keyboard: the tape is reachable and Enter pins', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/demo');
+  await page.getByRole('button', { name: 'v1.0.0' }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/release=v1\.0\.0/);
+});
+
+test('accessibility: no serious or critical axe findings', async ({ page }) => {
+  await signIn(page);
+  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse']) {
+    await page.goto(path);
+    await page.waitForLoadState('networkidle');
+    const results = await new AxeBuilder({ page }).analyze();
+    const bad = results.violations.filter(
+      (v) => v.impact === 'serious' || v.impact === 'critical',
+    );
+    expect(bad, `${path}: ${bad.map((v) => v.id).join(', ')}`).toEqual([]);
+  }
+});
+
+test('budget: first-load JS stays under 300 KB gzipped', () => {
+  const assets = resolve(dirname(fileURLToPath(import.meta.url)), '../dist/assets');
+  let total = 0;
+  for (const name of readdirSync(assets)) {
+    if (name.endsWith('.js')) total += gzipSync(readFileSync(resolve(assets, name))).length;
+  }
+  expect(total).toBeLessThan(300 * 1024);
+});

@@ -28,6 +28,11 @@ pub const Deps = struct {
     db: *pg.Db,
     s3: *s3.Client,
     io: std.Io,
+    /// One libpq connection is not thread-safe, and nilo serves across
+    /// many threads: every handler body runs under this lock. The e2e
+    /// harness's parallel workers are what exposed it. A connection pool
+    /// replaces this when throughput asks for it.
+    lock: std.Io.Mutex = .init,
     /// The static full-access token (CI fallback; empty disables it).
     token: []const u8,
     /// Verifies SSH-issued scoped tokens when set (CID_TOKEN_SECRET).
