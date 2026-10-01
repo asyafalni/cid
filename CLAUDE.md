@@ -597,11 +597,13 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
   need a written reason.
 - **HTTP framework: Nilo** (`nevindra/nilo`), server side only. The written reason:
   it is Zig-native (zio fibers), fast, and we have design input into it. Guardrails:
-  depend on it through our fork at a **pinned commit** (it is pre-1.0 and breaks);
-  its `zio` dependency must also be pinned, not `ref=main`; use it for HTTP only —
-  none of its lazy extras (pg.zig, zqlite, llhttp, its TLS fork) may enter the build,
-  and CI checks the dependency tree for that; TLS stays at the reverse proxy. The CLI
-  does not link Nilo.
+  depend on a **pinned commit** (it is pre-1.0 and breaks; the hash in
+  build.zig.zon is the lock, and upstream now hash-pins its own `zio`);
+  use it for HTTP only — the lazy SQL drivers stay unfetched because we
+  never pass `.sql = true`, and nothing client-side imports a nilo module;
+  TLS stays at the reverse proxy. serve.zig keeps `api.handle` as the one
+  dispatcher behind two catch-all routes, so the API stays HTTP-free and
+  directly testable.
 - **External programs allowed:** on the server, `ffmpeg` and `vips` (preview worker),
   `git` (dataset repository writer) and OpenSSH `sshd` (front door, runs as its own
   service). In the CLI, the system `ssh` client, exactly as git uses it, plus the

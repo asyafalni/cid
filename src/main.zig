@@ -5,6 +5,11 @@
 
 const std = @import("std");
 const cid = @import("cid");
+const nilo = @import("nilo_http");
+
+// Nilo's two lines of root wiring (its listen() checks they are here).
+pub const std_options = nilo.std_options;
+pub const std_options_debug_io = nilo.debug_io;
 
 pub fn main(init: std.process.Init) u8 {
     const arena = init.arena.allocator();

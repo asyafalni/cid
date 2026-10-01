@@ -21,6 +21,13 @@ pub fn build(b: *std.Build) void {
         .@"disable-zstd" = true,
     });
 
+    // Nilo (pinned commit; CLAUDE.md, Zig conventions): the server's HTTP
+    // framework. No .sql option, so none of its lazy drivers are fetched.
+    const nilo_dep = b.dependency("nilo", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     // sql/migrations/*.sql, embedded into the binary for `cid admin migrate`.
     const migrations_mod = buildMigrationsModule(b, target, optimize);
 
@@ -32,6 +39,7 @@ pub fn build(b: *std.Build) void {
     });
     lib_mod.addOptions("build_options", options);
     lib_mod.addImport("libpq", libpq_dep.module("libpq"));
+    lib_mod.addImport("nilo_http", nilo_dep.module("nilo_http"));
     lib_mod.addImport("migrations", migrations_mod);
 
     const exe_mod = b.createModule(.{
@@ -40,6 +48,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exe_mod.addImport("cid", lib_mod);
+    exe_mod.addImport("nilo_http", nilo_dep.module("nilo_http"));
 
     const exe = b.addExecutable(.{
         .name = "cid",
