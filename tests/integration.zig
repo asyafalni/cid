@@ -48,6 +48,47 @@ test "seaweedfs s3 is reachable" {
     stream.close(io);
 }
 
+test "s3: put, head, get, presign round trip against SeaweedFS" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var s3 = try cid.s3.Client.init(std.testing.allocator, io, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .bucket = "cid-test",
+    });
+    defer s3.deinit();
+
+    try s3.createBucket(arena);
+    try s3.createBucket(arena); // idempotent
+
+    const key = "items/sha256/ab/abcd-test-object";
+    const body = "cid stores any bytes \x00\x01\x02 exactly";
+
+    try std.testing.expectEqual(@as(?u64, null), try s3.headObject(arena, "items/missing"));
+    try std.testing.expectError(error.NotFound, s3.getObjectAlloc(arena, "items/missing", 1024));
+
+    try s3.putObject(arena, key, body);
+    const got = try s3.getObjectAlloc(arena, key, 1024);
+    try std.testing.expectEqualSlices(u8, body, got);
+
+    // Presigned GET works with a plain HTTP client and no credentials.
+    const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
+    const url = try s3.presignGet(arena, key, now, 300);
+    var plain: std.http.Client = .{ .allocator = std.testing.allocator, .io = io };
+    defer plain.deinit();
+    var aw: std.Io.Writer.Allocating = .init(arena);
+    const res = try plain.fetch(.{ .location = .{ .url = url }, .raw_uri = true, .response_writer = &aw.writer });
+    try std.testing.expectEqual(std.http.Status.ok, res.status);
+    try std.testing.expectEqualSlices(u8, body, aw.writer.buffered());
+
+    try s3.deleteObject(arena, key);
+    try std.testing.expectEqual(@as(?u64, null), try s3.headObject(arena, key));
+}
+
 test "migrations apply from scratch and are idempotent" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
