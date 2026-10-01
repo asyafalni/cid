@@ -20,6 +20,7 @@ pub const Remote = remote_mod.Remote;
 
 pub const Error = error{
     EmptyDataset,
+    NoSuchRelease,
     StagedChanges,
     LocalChangesInTheWay,
     CorruptLocalState,
@@ -94,9 +95,13 @@ pub const CloneOutcome = struct {
     files: u32,
     downloaded: u32,
     head_commit: []const u8,
+    /// The release the folder sits at, when one was used.
+    release: ?[]const u8,
 };
 
-/// Fills an empty folder from the server's branch head and writes `.cid/`.
+/// Fills an empty folder and writes `.cid/`. The default is the newest
+/// release ("defaults that just work"); a dataset without releases gives
+/// the branch head. `want_release` pins a specific one.
 pub fn clone(
     arena: std.mem.Allocator,
     io: std.Io,
@@ -104,10 +109,29 @@ pub fn clone(
     cache_dir: std.Io.Dir,
     remote: *const Remote,
     address: []const u8,
+    want_release: ?[]const u8,
 ) Error!CloneOutcome {
     const info = try remote.info(arena);
     const head_commit = (try remote.head(arena, "main")) orelse return error.EmptyDataset;
-    const items = try remote.state(arena, head_commit);
+
+    var at_commit: []const u8 = head_commit;
+    var at_release: ?[]const u8 = null;
+    const releases = try remote.releases(arena);
+    if (want_release) |wanted| {
+        for (releases) |r| {
+            if (std.mem.eql(u8, r.name, wanted)) {
+                at_commit = r.commit;
+                at_release = r.name;
+                break;
+            }
+        }
+        if (at_release == null) return error.NoSuchRelease;
+    } else if (releases.len > 0) {
+        at_commit = releases[0].commit; // newest first
+        at_release = releases[0].name;
+    }
+
+    const items = try remote.state(arena, at_commit);
 
     workspace.init(arena, io, dest_dir, address, info.git_url) catch
         return error.CorruptLocalState;
@@ -115,9 +139,11 @@ pub fn clone(
 
     const downloaded = try materialize(arena, io, &ws, cache_dir, remote, items);
 
-    try setPosition(io, &ws, head_commit);
+    try setPosition(io, &ws, at_commit);
+    // Server history reaches the branch head even when the folder sits at
+    // an older release; 'cid pull' moves up to it.
     local.writeLastPushed(io, ws.cid_dir, head_commit) catch return error.CorruptLocalState;
-    return .{ .files = @intCast(items.len), .downloaded = downloaded, .head_commit = head_commit };
+    return .{ .files = @intCast(items.len), .downloaded = downloaded, .head_commit = at_commit, .release = at_release };
 }
 
 pub const PullOutcome = union(enum) {

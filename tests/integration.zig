@@ -420,7 +420,7 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     defer reader_dir.cleanup();
     var reader_cache = std.testing.tmpDir(.{});
     defer reader_cache.cleanup();
-    const cloned = try cid.client.sync.clone(arena, io, reader_dir.dir, reader_cache.dir, &remote, "cid@test:test/datasets/sync");
+    const cloned = try cid.client.sync.clone(arena, io, reader_dir.dir, reader_cache.dir, &remote, "cid@test:test/datasets/sync", null);
     try std.testing.expectEqual(@as(u32, 2), cloned.files);
     try std.testing.expectEqual(@as(u32, 2), cloned.downloaded);
     try std.testing.expectEqualSlices(u8, "version one of a\n", try readWholeFile(io, reader_dir.dir, "a.txt", arena));

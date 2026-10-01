@@ -27,7 +27,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         return common.fail(ctx, .usage, common.no_server_msg, .{});
 
     const result = remote.tag(ctx.arena, name) catch |err| switch (err) {
-        error.ReleaseExists => return common.fail(ctx, .conflict, "release '{s}' already exists and releases never move. Pick the next name, e.g. a higher version.", .{name}),
+        error.ReleaseExists => return common.fail(ctx, .conflict, "release '{s}' already exists and releases never move. Run 'cid tag' with the next name, e.g. the next version number.", .{name}),
         error.BadReleaseName => return common.fail(ctx, .usage, "'{s}' is not a release name (letters, digits, dot, dash, underscore). Try something like v1.0.0.", .{name}),
         error.NothingToTag => return common.fail(ctx, .usage, "nothing to tag yet. Run 'cid push' first, then 'cid tag {s}' again.", .{name}),
         error.NoSuchDataset => return common.fail(ctx, .usage, "the dataset is not on the server yet. Run 'cid push' first.", .{}),
