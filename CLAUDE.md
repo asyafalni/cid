@@ -289,8 +289,9 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
 - **SeaweedFS** holds items, manifests and exports. Clients reach it only through
   short-lived presigned URLs handed out by the server, never with their own credentials.
 - **The cid server** is the only thing users talk to: SSH to prove who they are, then
-  HTTPS with a short-lived token for everything else (`docs/access.md`). HTTP serving
-  uses **Nilo** (see Zig conventions); TLS terminates at a reverse proxy (`deploy/`).
+  HTTPS with a short-lived token for everything else (`docs/access.md`). HTTP serving,
+  Postgres and S3 all go through **Nilo** (see Zig conventions); TLS terminates at a
+  reverse proxy (`deploy/`).
 - **DuckDB** (C API, in-process on the server) writes and reads Parquet manifests,
   computes large diffs, and gives row-level diffs of CSV, Parquet and JSONL files.
 - **The dashboard** is served by the cid server. Its browse API queries release
@@ -495,7 +496,8 @@ src/client/local.zig         local commits, HEAD, resumable push state
 src/client/sync.zig          push, pull, replaying unpushed commits, conflict listing
 src/server/                  HTTP API (Nilo), tokens and permissions, presigned URLs, uploads
 src/store/db.zig             TimescaleDB via nilo_sql (pg.zig native driver, pooled)
-src/store/s3.zig             minimal S3: GET, PUT, HEAD, multipart, presign, SigV4
+src/store/s3.zig             S3 via nilo_s3 once the multipart swap lands (see Zig
+                             conventions); today still our minimal SigV4 client
 src/manifest/                canonical rows, RFC 8785 JSON, hashing, Parquet via DuckDB C API
 src/media/                   media type detection and metadata (image size, audio length…)
 src/tabular/                 row-level diff for CSV, Parquet, JSONL via DuckDB (server)
@@ -601,9 +603,9 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
 - **C libraries allowed:** DuckDB only. SHA-256, HMAC, JSON, UUIDv7 and media
   metadata come from the Zig standard library or our own small code. New dependencies
   need a written reason.
-- **HTTP and Postgres: Nilo** (`nevindra/nilo`), server side only. The written reason:
-  it is Zig-native (zio fibers), fast, and we maintain it ourselves. Guardrails:
-  depend on a **pinned commit** (it is pre-1.0 and breaks; the hash in
+- **HTTP, Postgres and S3: Nilo** (`nevindra/nilo`), server side only. The written
+  reason: it is Zig-native (zio fibers), fast, and we maintain it ourselves.
+  Guardrails: depend on a **pinned commit** (it is pre-1.0 and breaks; the hash in
   build.zig.zon is the lock, and upstream now hash-pins its own `zio`);
   `.sql = true` brings nilo_sql — the native pooled Postgres driver all of
   cid queries through (src/store/db.zig; libpq is gone) — and nothing
@@ -611,6 +613,11 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
   serve.zig keeps `api.handle` as the one dispatcher behind two catch-all
   routes, so the API stays HTTP-free and directly testable; handlers take
   the request's Ctx as the query Scope, admin commands and tests a Run.
+  S3 goes through nilo_s3 the same way (a Bucket is a Service; presign,
+  get/put, head, delete, list, and `putMultipart` for files over 64 MB);
+  src/store/s3.zig is deleted when the swap lands — it waits only on the
+  nilo release carrying multipart (nevindra/nilo PR #8). Until then no new
+  code may use src/store/s3.zig for anything nilo_s3 already does.
 - **External programs allowed:** on the server, `ffmpeg` and `vips` (preview worker),
   `git` (dataset repository writer) and OpenSSH `sshd` (front door, runs as its own
   service). In the CLI, the system `ssh` client, exactly as git uses it, plus the
