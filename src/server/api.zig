@@ -106,6 +106,8 @@ fn handleInner(
 
     if (eql(method, "GET") and eql(route.action, "info"))
         return datasetInfo(arena, deps, ds);
+    if (eql(method, "GET") and eql(route.action, "overview"))
+        return overview(arena, deps, ds);
     if (eql(method, "GET") and eql(route.action, "head"))
         return head(arena, deps, ds, route.queryParam("branch") orelse "main");
     if (eql(method, "GET") and eql(route.action, "log"))
@@ -305,6 +307,116 @@ fn datasetInfo(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!R
         .kind = try arena.dupe(u8, rows.get(0, 0)),
         .git_url = try arena.dupe(u8, rows.get(0, 1)),
         .default_format = try arena.dupe(u8, rows.get(0, 2)),
+    });
+}
+
+/// Everything the dashboard's Overview needs in one call: identity, the
+/// commit tape (newest first, releases attached), and the counts of the
+/// current head state. Pinned to main; branch views arrive later.
+fn overview(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!Response {
+    var info_rows = deps.db.query(
+        "SELECT git_url, default_format FROM datasets WHERE dataset_id = $1::uuid",
+        &.{ds.id},
+        null,
+    ) catch return error.Db;
+    defer info_rows.deinit();
+    const git_url = try arena.dupe(u8, info_rows.get(0, 0));
+    const default_format = try arena.dupe(u8, info_rows.get(0, 1));
+
+    const TapeEntry = struct {
+        id: []const u8,
+        message: []const u8,
+        author: []const u8,
+        at_ms: u64,
+        release: ?[]const u8,
+    };
+    var tape_rows = deps.db.query(
+        "SELECT c.commit_id::text, c.message, c.author, " ++
+            "(extract(epoch from c.recorded_at) * 1000)::bigint::text, rel.name " ++
+            "FROM commits c LEFT JOIN LATERAL (" ++
+            "  SELECT name FROM refs r WHERE r.dataset_id = c.dataset_id " ++
+            "  AND r.commit_id = c.commit_id AND r.kind = 'release' ORDER BY name LIMIT 1) rel ON true " ++
+            "WHERE c.dataset_id = $1::uuid AND c.branch = 'main' " ++
+            "ORDER BY c.commit_id DESC LIMIT 100",
+        &.{ds.id},
+        null,
+    ) catch return error.Db;
+    defer tape_rows.deinit();
+    const tape = try arena.alloc(TapeEntry, tape_rows.count());
+    for (tape, 0..) |*e, i| {
+        e.* = .{
+            .id = try arena.dupe(u8, tape_rows.get(i, 0)),
+            .message = try arena.dupe(u8, tape_rows.get(i, 1)),
+            .author = try arena.dupe(u8, tape_rows.get(i, 2)),
+            .at_ms = std.fmt.parseInt(u64, tape_rows.get(i, 3), 10) catch 0,
+            .release = if (tape_rows.isNull(i, 4)) null else try arena.dupe(u8, tape_rows.get(i, 4)),
+        };
+    }
+
+    // Counts at head, when there is one.
+    var items_count: usize = 0;
+    var total_bytes: u64 = 0;
+    const Count = struct { name: []const u8, count: usize };
+    var classes: []const Count = &.{};
+    var splits: []const Count = &.{};
+    if (tape.len > 0) {
+        const head_z = try arena.dupeZ(u8, tape[0].id);
+        const rows = release_mod.stateRows(arena, deps.db, ds.id, head_z) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.Db,
+        };
+        items_count = rows.len;
+        var split_counts: std.StringArrayHashMapUnmanaged(usize) = .empty;
+        for (rows) |row| {
+            total_bytes += row.size;
+            if (row.split) |name| {
+                const gop = try split_counts.getOrPut(arena, name);
+                if (!gop.found_existing) gop.value_ptr.* = 0;
+                gop.value_ptr.* += 1;
+            }
+        }
+        const split_list = try arena.alloc(Count, split_counts.count());
+        for (split_list, split_counts.keys(), split_counts.values()) |*slot, name, count| {
+            slot.* = .{ .name = name, .count = count };
+        }
+        splits = split_list;
+
+        if (eql(ds.kind, "annotated")) {
+            const anns = release_mod.annotationRows(arena, deps.db, ds.id, head_z) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.Db,
+            };
+            var class_counts: std.StringArrayHashMapUnmanaged(usize) = .empty;
+            for (anns) |ann| {
+                const name = ann.class orelse continue;
+                const gop = try class_counts.getOrPut(arena, name);
+                if (!gop.found_existing) gop.value_ptr.* = 0;
+                gop.value_ptr.* += 1;
+            }
+            class_counts.sortUnstable(struct {
+                keys: []const []const u8,
+                pub fn lessThan(self: @This(), a: usize, b: usize) bool {
+                    return std.mem.lessThan(u8, self.keys[a], self.keys[b]);
+                }
+            }{ .keys = class_counts.keys() });
+            const class_list = try arena.alloc(Count, class_counts.count());
+            for (class_list, class_counts.keys(), class_counts.values()) |*slot, name, count| {
+                slot.* = .{ .name = name, .count = count };
+            }
+            classes = class_list;
+        }
+    }
+
+    return json(arena, .ok, .{
+        .name = ds.name,
+        .kind = ds.kind,
+        .git_url = git_url,
+        .default_format = default_format,
+        .commits = tape,
+        .items = items_count,
+        .bytes = total_bytes,
+        .classes = classes,
+        .splits = splits,
     });
 }
 

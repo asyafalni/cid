@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { Link } from '@tanstack/react-router';
 import { ApiError, listDatasets } from '../api';
 
 // Datasets home: the fleet, one row per dataset. Rows, not a card grid —
@@ -43,7 +44,9 @@ export function Home() {
         {datasets.map((d) => (
           <li key={d.name} className="manifest-row panel">
             <div className="manifest-main">
-              <span className="data manifest-name">{d.name}</span>
+              <Link to="/d/$" params={{ _splat: d.name }} className="data manifest-name">
+                {d.name}
+              </Link>
               <span className="manifest-kind">{d.kind === 'annotated' ? 'annotated' : 'files'}</span>
             </div>
             <div className="manifest-side">

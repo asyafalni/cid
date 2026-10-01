@@ -54,6 +54,30 @@ async function request<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+export type TapeCommit = {
+  id: string;
+  message: string;
+  author: string;
+  at_ms: number;
+  release: string | null;
+};
+
+export type Overview = {
+  name: string;
+  kind: 'files' | 'annotated';
+  git_url: string;
+  default_format: string;
+  commits: TapeCommit[]; // newest first
+  items: number;
+  bytes: number;
+  classes: { name: string; count: number }[];
+  splits: { name: string; count: number }[];
+};
+
+export function getOverview(name: string): Promise<Overview> {
+  return request(`/v0/datasets/${name}/-/overview`);
+}
+
 export function listDatasets(): Promise<{ datasets: DatasetSummary[] }> {
   return request('/v0/datasets');
 }

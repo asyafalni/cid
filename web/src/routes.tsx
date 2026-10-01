@@ -7,6 +7,7 @@ import {
 import { Shell } from './Shell';
 import { SignIn } from './pages/SignIn';
 import { Home } from './pages/Home';
+import { DatasetOverview } from './pages/DatasetOverview';
 import { getToken } from './api';
 
 const rootRoute = createRootRoute({ component: Shell });
@@ -26,7 +27,16 @@ const homeRoute = createRoute({
   component: Home,
 });
 
-const routeTree = rootRoute.addChildren([signInRoute, homeRoute]);
+const datasetRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/d/$',
+  beforeLoad: () => {
+    if (!getToken()) throw redirect({ to: '/signin' });
+  },
+  component: DatasetOverview,
+});
+
+const routeTree = rootRoute.addChildren([signInRoute, homeRoute, datasetRoute]);
 
 export const router = createRouter({ routeTree });
 
