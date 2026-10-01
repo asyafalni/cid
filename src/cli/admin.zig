@@ -8,6 +8,8 @@ const migrate = @import("../core/migrate.zig");
 const api = @import("../server/api.zig");
 const release = @import("../core/release.zig");
 const git_writer = @import("../gitrepo/writer.zig");
+const keys_mod = @import("../access/keys.zig");
+const gitlab_sync = @import("../access/gitlab_sync.zig");
 const serve_mod = @import("../server/serve.zig");
 
 const ExitCode = root.ExitCode;
@@ -62,6 +64,9 @@ pub fn run(
     }
     if (eql(sub, "grant")) {
         return runGrant(arena, io, out, env, args[1..]);
+    }
+    if (eql(sub, "sync-gitlab")) {
+        return runSyncGitlab(arena, io, out, env);
     }
     return fail(io, .usage, "'cid admin {s}' is not an admin command. Run 'cid admin'.", .{sub});
 }
@@ -308,23 +313,6 @@ fn adminDb(arena: std.mem.Allocator, io: std.Io, env: *const std.process.Environ
     };
 }
 
-/// SHA256:… fingerprint of an OpenSSH public key line, as OpenSSH prints it.
-fn keyFingerprint(arena: std.mem.Allocator, key_line: []const u8) ?[]const u8 {
-    var it = std.mem.tokenizeScalar(u8, key_line, ' ');
-    _ = it.next() orelse return null; // key type
-    const blob_b64 = it.next() orelse return null;
-    const decoder = std.base64.standard.Decoder;
-    const blob = arena.alloc(u8, decoder.calcSizeForSlice(blob_b64) catch return null) catch return null;
-    decoder.decode(blob, blob_b64) catch return null;
-    var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(blob, &digest, .{});
-    const b64 = std.base64.standard_no_pad.Encoder;
-    const out = arena.alloc(u8, "SHA256:".len + b64.calcSize(32)) catch return null;
-    @memcpy(out[0.."SHA256:".len], "SHA256:");
-    _ = b64.encode(out["SHA256:".len..], &digest);
-    return out;
-}
-
 fn runAddKey(
     arena: std.mem.Allocator,
     io: std.Io,
@@ -337,7 +325,7 @@ fn runAddKey(
     const account = args[0];
     const display = args[1];
     const key_line = args[2];
-    const fp = keyFingerprint(arena, key_line) orelse
+    const fp = keys_mod.fingerprint(arena, key_line) orelse
         return fail(io, .usage, "that does not look like an OpenSSH public key line ('ssh-ed25519 AAAA… comment').", .{});
 
     var db = adminDb(arena, io, env, "cid admin add-key") orelse return .network;
@@ -393,6 +381,35 @@ fn runGrant(
         &diag,
     ) catch return fail(io, .network, "database error: {s}", .{diag.message()});
     out.print("Granted {s} on {s} to {s}.\n", .{ level, dataset, account }) catch return .network;
+    out.flush() catch return .network;
+    return .ok;
+}
+
+fn runSyncGitlab(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+    env: *const std.process.Environ.Map,
+) ExitCode {
+    const token = env.get("CID_GITLAB_TOKEN") orelse
+        return fail(io, .usage, "CID_GITLAB_TOKEN is not set (a token with read_api scope). Export it, then run 'cid admin sync-gitlab' again.", .{});
+    const base_url = env.get("CID_GITLAB_URL") orelse "https://gitlab.com";
+
+    var db = adminDb(arena, io, env, "cid admin sync-gitlab") orelse return .network;
+    defer db.close();
+
+    const outcome = gitlab_sync.syncAll(arena, io, &db, .{ .base_url = base_url, .token = token }) catch |err| switch (err) {
+        error.GitLabUnreachable => return fail(io, .network, "cannot reach {s}. Check the network, then run 'cid admin sync-gitlab' again.", .{base_url}),
+        else => return fail(io, .network, "sync failed: {t}. Check CID_GITLAB_TOKEN has read_api on the datasets group, then run it again.", .{err}),
+    };
+    out.print("Synced {d} dataset{s} from {s}: {d} members ({d} removed), {d} keys ({d} removed).", .{
+        outcome.datasets,     plural(outcome.datasets), base_url,
+        outcome.members,      outcome.access_removed,   outcome.keys,
+        outcome.keys_removed,
+    }) catch return .network;
+    if (outcome.datasets_failed > 0)
+        out.print(" {d} project{s} could not be read (see the log).", .{ outcome.datasets_failed, plural(outcome.datasets_failed) }) catch return .network;
+    out.writeAll("\n") catch return .network;
     out.flush() catch return .network;
     return .ok;
 }

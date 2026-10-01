@@ -32,6 +32,8 @@ pub const uuid7 = @import("util/uuid7.zig");
 pub const access = struct {
     pub const token = @import("access/token.zig");
     pub const auth = @import("access/auth.zig");
+    pub const keys = @import("access/keys.zig");
+    pub const gitlab = @import("access/gitlab_sync.zig");
 };
 pub const cli_ssh = @import("cli/sshcmd.zig");
 pub const client = struct {
@@ -69,6 +71,8 @@ test {
     _ = gitrepo.render;
     _ = access.token;
     _ = access.auth;
+    _ = access.keys;
+    _ = access.gitlab;
     _ = gitrepo.writer;
     _ = uuid7;
     _ = client.index;

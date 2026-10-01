@@ -848,3 +848,77 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
     const static_res = cid.api.handle(arena, &deps, "GET", "/v0/datasets/test/datasets/access/-/head", "Bearer test-token", "");
     try std.testing.expectEqual(std.http.Status.unauthorized, static_res.status);
 }
+
+test "gitlab sync: members and keys applied, removals revoke access" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    _ = io;
+
+    var diag: cid.pg.Diag = .{};
+    var db = try connect(&diag);
+    defer db.close();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+
+    try db.exec("DELETE FROM access WHERE account_id LIKE 'gitlab:91%'", &diag);
+    try db.exec("DELETE FROM ssh_keys WHERE account_id LIKE 'gitlab:91%'", &diag);
+    try db.exec("DELETE FROM accounts WHERE account_id LIKE 'gitlab:91%'", &diag);
+    try db.exec("INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES " ++
+        "('018f0000-0000-7000-8000-000000009d01'::uuid, 'test/datasets/gl', 'files', 'g@h:gl.git') " ++
+        "ON CONFLICT (name) DO NOTHING", &diag);
+
+    // First sync: a reporter, a developer, a guest (ignored).
+    const members1 = try cid.access.gitlab.parseMembers(arena,
+        \\[{"id":9101,"username":"rhea","name":"Rhea R","access_level":20,"state":"active"},
+        \\ {"id":9102,"username":"wade","name":"Wade W","access_level":30,"state":"active"},
+        \\ {"id":9103,"username":"guest","access_level":10,"state":"active"}]
+    );
+    const first = try cid.access.gitlab.applyMembers(arena, &db, "test/datasets/gl", members1);
+    try std.testing.expectEqual(@as(u32, 2), first.upserted);
+
+    var levels = try db.query(
+        "SELECT account_id, level FROM access a JOIN datasets d USING (dataset_id) " ++
+            "WHERE d.name = 'test/datasets/gl' ORDER BY account_id",
+        &.{},
+        &diag,
+    );
+    defer levels.deinit();
+    try std.testing.expectEqual(@as(usize, 2), levels.count());
+    try std.testing.expectEqualStrings("read", levels.get(0, 1)); // 9101
+    try std.testing.expectEqualStrings("write", levels.get(1, 1)); // 9102
+
+    // Keys for the developer: the fixture key gets its real fingerprint.
+    const keys1 = try cid.access.gitlab.parseKeys(arena,
+        \\[{"id":1,"key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFdJMTzwHtTuz5TEIEMRoQ8hWQ8EuaJotFSs/0FCfvS4 fixture@cid"},
+        \\ {"id":2,"key":"garbage not a key"}]
+    );
+    const key_first = try cid.access.gitlab.applyKeys(arena, &db, 9102, keys1);
+    try std.testing.expectEqual(@as(u32, 1), key_first.upserted);
+    try std.testing.expectEqual(@as(u32, 1), key_first.skipped_invalid);
+    const line = (try cid.access.auth.authorizedKeysLine(arena, &db, "SHA256:dFtRBBCbqwbXXQkKRXzbOpi9eJQNbn/SAiaVrdWiLo0")).?;
+    try std.testing.expect(std.mem.indexOf(u8, line, "--account=gitlab:9102") != null);
+
+    // Second sync: Rhea is gone, Wade is demoted to reporter, keys rotated.
+    const members2 = try cid.access.gitlab.parseMembers(arena,
+        \\[{"id":9102,"username":"wade","name":"Wade W","access_level":20,"state":"active"}]
+    );
+    const second = try cid.access.gitlab.applyMembers(arena, &db, "test/datasets/gl", members2);
+    try std.testing.expectEqual(@as(u32, 1), second.removed);
+
+    var levels2 = try db.query(
+        "SELECT account_id, level FROM access a JOIN datasets d USING (dataset_id) " ++
+            "WHERE d.name = 'test/datasets/gl' ORDER BY account_id",
+        &.{},
+        &diag,
+    );
+    defer levels2.deinit();
+    try std.testing.expectEqual(@as(usize, 1), levels2.count());
+    try std.testing.expectEqualStrings("gitlab:9102", levels2.get(0, 0));
+    try std.testing.expectEqualStrings("read", levels2.get(0, 1));
+
+    const key_second = try cid.access.gitlab.applyKeys(arena, &db, 9102, &.{});
+    try std.testing.expectEqual(@as(u32, 1), key_second.removed);
+    try std.testing.expectEqual(@as(?[]const u8, null), try cid.access.auth.authorizedKeysLine(arena, &db, "SHA256:dFtRBBCbqwbXXQkKRXzbOpi9eJQNbn/SAiaVrdWiLo0"));
+}
