@@ -9,6 +9,7 @@ const common = @import("common.zig");
 const workspace = @import("../client/workspace.zig");
 const local = @import("../client/local.zig");
 const remote_mod = @import("../client/remote.zig");
+const jcs = @import("../manifest/jcs.zig");
 
 pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCode {
     var staged = false;
@@ -122,6 +123,69 @@ pub fn diffStates(
     return out.items;
 }
 
+pub const AnnChange = struct {
+    kind: enum { added, removed, changed },
+    ann_kind: ?[]const u8,
+    class: ?[]const u8,
+    item_path: []const u8,
+};
+
+/// Annotations by id across two states: present only in b → added, only
+/// in a → removed, in both with different class/kind/geometry/attrs →
+/// changed (JSON compared in canonical form, so formatting never lies).
+pub fn diffAnnotations(
+    arena: std.mem.Allocator,
+    a: remote_mod.Remote.AnnotatedState,
+    b: remote_mod.Remote.AnnotatedState,
+) ![]const AnnChange {
+    var paths: std.StringArrayHashMapUnmanaged([]const u8) = .empty; // item_id → path
+    for (a.items) |item| {
+        if (item.item_id) |id| try paths.put(arena, id, item.path);
+    }
+    for (b.items) |item| {
+        if (item.item_id) |id| try paths.put(arena, id, item.path);
+    }
+    var a_by_id: std.StringArrayHashMapUnmanaged(remote_mod.Remote.Annotation) = .empty;
+    for (a.annotations) |ann| try a_by_id.put(arena, ann.id, ann);
+
+    var out: std.ArrayList(AnnChange) = .empty;
+    for (b.annotations) |ann| {
+        const path = paths.get(ann.item_id) orelse "?";
+        if (a_by_id.get(ann.id)) |old| {
+            _ = a_by_id.swapRemove(ann.id);
+            if (!annEqual(arena, old, ann))
+                try out.append(arena, .{ .kind = .changed, .ann_kind = ann.kind, .class = ann.class, .item_path = path });
+        } else {
+            try out.append(arena, .{ .kind = .added, .ann_kind = ann.kind, .class = ann.class, .item_path = path });
+        }
+    }
+    for (a_by_id.values()) |old| {
+        try out.append(arena, .{ .kind = .removed, .ann_kind = old.kind, .class = old.class, .item_path = paths.get(old.item_id) orelse "?" });
+    }
+    return out.items;
+}
+
+fn annEqual(arena: std.mem.Allocator, a: remote_mod.Remote.Annotation, b: remote_mod.Remote.Annotation) bool {
+    if (!optEql(a.kind, b.kind) or !optEql(a.class, b.class)) return false;
+    return valueEql(arena, a.geometry, b.geometry) and valueEql(arena, a.attrs, b.attrs);
+}
+
+fn optEql(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a == null and b == null) return true;
+    if (a == null or b == null) return false;
+    return std.mem.eql(u8, a.?, b.?);
+}
+
+fn valueEql(arena: std.mem.Allocator, a: ?std.json.Value, b: ?std.json.Value) bool {
+    if (a == null and b == null) return true;
+    if (a == null or b == null) return false;
+    var ca: std.ArrayList(u8) = .empty;
+    var cb: std.ArrayList(u8) = .empty;
+    jcs.serialize(arena, a.?, &ca) catch return false;
+    jcs.serialize(arena, b.?, &cb) catch return false;
+    return std.mem.eql(u8, ca.items, cb.items);
+}
+
 fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: []const []const u8) common.ExitCode {
     const name = workspace.datasetPathOf(ws.config.address) orelse
         return common.fail(ctx, .integrity, ".cid/config.zon holds a broken address. Clone again, or fix it to cid@host:org/path.", .{});
@@ -149,6 +213,15 @@ fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: [
 
     const changes = diffStates(ctx.arena, state_a, state_b) catch return .network;
     ctx.out.print("Comparing {s} → {s}\n", .{ a_label, b_label }) catch return .network;
+
+    var ann_changes: []const AnnChange = &.{};
+    if (std.mem.eql(u8, ws.config.kind, "annotated")) {
+        const full_a = remote.stateAnnotated(ctx.arena, a_commit) catch
+            return common.fail(ctx, .network, "cannot fetch annotations for '{s}'. Check the connection, then run 'cid diff' again.", .{a_label});
+        const full_b = remote.stateAnnotated(ctx.arena, b_commit) catch
+            return common.fail(ctx, .network, "cannot fetch annotations for '{s}'. Check the connection, then run 'cid diff' again.", .{b_label});
+        ann_changes = diffAnnotations(ctx.arena, full_a, full_b) catch return .network;
+    }
     var added: u32 = 0;
     var modified: u32 = 0;
     var deleted: u32 = 0;
@@ -168,11 +241,38 @@ fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: [
             },
         }
     }
-    if (changes.len == 0) {
+    var ann_added: u32 = 0;
+    var ann_changed: u32 = 0;
+    var ann_removed: u32 = 0;
+    for (ann_changes) |ch| {
+        const verb = switch (ch.kind) {
+            .added => blk: {
+                ann_added += 1;
+                break :blk "added";
+            },
+            .changed => blk: {
+                ann_changed += 1;
+                break :blk "changed";
+            },
+            .removed => blk: {
+                ann_removed += 1;
+                break :blk "removed";
+            },
+        };
+        ctx.out.print("  ann {s: <8} {s} {s} on {s}\n", .{
+            verb, ch.ann_kind orelse "?", ch.class orelse "?", ch.item_path,
+        }) catch return .network;
+    }
+
+    if (changes.len == 0 and ann_changes.len == 0) {
         ctx.out.writeAll("No differences.\n") catch return .network;
-    } else {
+    } else if (ann_changes.len == 0) {
         ctx.out.print("{d} change{s}: {d} added, {d} modified, {d} deleted\n", .{
             changes.len, plural(changes.len), added, modified, deleted,
+        }) catch return .network;
+    } else {
+        ctx.out.print("items: {d} added, {d} modified, {d} deleted · annotations: {d} added, {d} changed, {d} removed\n", .{
+            added, modified, deleted, ann_added, ann_changed, ann_removed,
         }) catch return .network;
     }
     return .ok;
@@ -240,4 +340,56 @@ test "human sizes" {
     var buf: [32]u8 = undefined;
     try std.testing.expectEqualStrings("512 B", humanSize(&buf, 512));
     try std.testing.expectEqualStrings("1.5 KB", humanSize(&buf, 1536));
+}
+
+test "annotation diff: added, changed (canonically compared), removed" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const Item = remote_mod.Remote.StateItem;
+
+    const g1a = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"x\":1.0,\"y\":2}", .{});
+    const g1b = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"y\":2,\"x\":1}", .{}); // same value
+    const g2 = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"x\":9}", .{});
+
+    const items = [_]Item{.{ .path = "a.jpg", .hash = "ab" ** 32, .size = 1, .item_id = "i1" }};
+    const a: remote_mod.Remote.AnnotatedState = .{
+        .items = &items,
+        .annotations = &.{
+            .{ .id = "keep", .item_id = "i1", .kind = "box", .class = "person", .geometry = g1a, .author = "x", .policy_ver = "p" },
+            .{ .id = "move", .item_id = "i1", .kind = "box", .class = "person", .geometry = g1a, .author = "x", .policy_ver = "p" },
+            .{ .id = "gone", .item_id = "i1", .kind = "box", .class = "vehicle", .geometry = g2, .author = "x", .policy_ver = "p" },
+        },
+    };
+    const b: remote_mod.Remote.AnnotatedState = .{
+        .items = &items,
+        .annotations = &.{
+            // Same geometry written differently: NOT a change.
+            .{ .id = "keep", .item_id = "i1", .kind = "box", .class = "person", .geometry = g1b, .author = "y", .policy_ver = "p2" },
+            .{ .id = "move", .item_id = "i1", .kind = "box", .class = "person", .geometry = g2, .author = "x", .policy_ver = "p" },
+            .{ .id = "new", .item_id = "i1", .kind = "box", .class = "bike", .geometry = g2, .author = "x", .policy_ver = "p" },
+        },
+    };
+    const changes = try diffAnnotations(arena, a, b);
+    try std.testing.expectEqual(@as(usize, 3), changes.len);
+    var added: u32 = 0;
+    var changed: u32 = 0;
+    var removed: u32 = 0;
+    for (changes) |ch| {
+        switch (ch.kind) {
+            .added => {
+                added += 1;
+                try std.testing.expectEqualStrings("bike", ch.class.?);
+            },
+            .changed => changed += 1,
+            .removed => {
+                removed += 1;
+                try std.testing.expectEqualStrings("vehicle", ch.class.?);
+            },
+        }
+        try std.testing.expectEqualStrings("a.jpg", ch.item_path);
+    }
+    try std.testing.expectEqual(@as(u32, 1), added);
+    try std.testing.expectEqual(@as(u32, 1), changed);
+    try std.testing.expectEqual(@as(u32, 1), removed);
 }
