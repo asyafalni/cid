@@ -239,7 +239,8 @@ pub fn status(arena: std.mem.Allocator, io: std.Io, ws: *Workspace) !Status {
     const tracked = loadTracked(arena, io, ws) catch return error.CorruptLocalState;
     const head = local.loadHead(arena, io, ws.cid_dir) catch return error.CorruptLocalState;
     const files = scan.scanWorkdir(arena, io, ws.work_dir) catch return error.CorruptLocalState;
-    const commits = local.listLocalCommits(arena, io, ws.cid_dir) catch return error.CorruptLocalState;
+    const last_pushed = local.readLastPushed(arena, io, ws.cid_dir);
+    const commits = local.listUnpushed(arena, io, ws.cid_dir, last_pushed) catch return error.CorruptLocalState;
 
     var unstaged_new: std.ArrayList([]const u8) = .empty;
     var unstaged_modified: std.ArrayList([]const u8) = .empty;
@@ -397,7 +398,7 @@ test "init, add, commit, status: the offline loop" {
     const second = try commit(arena, io, &ws, "second", "user:test");
     try std.testing.expectEqual(@as(u32, 3), second.changes);
 
-    const commits = try local.listLocalCommits(arena, io, ws.cid_dir);
+    const commits = try local.listUnpushed(arena, io, ws.cid_dir, null);
     try std.testing.expectEqual(@as(usize, 2), commits.len);
     try std.testing.expectEqualStrings("second", commits[0].message);
     try std.testing.expectEqualSlices(u8, &first.id.bytes, &commits[0].parent.?.bytes);

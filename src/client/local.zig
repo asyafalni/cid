@@ -18,7 +18,7 @@ const std = @import("std");
 const Uuid = @import("../util/uuid7.zig").Uuid;
 const index_mod = @import("index.zig");
 
-pub const Error = error{CorruptLocalState} || std.mem.Allocator.Error ||
+pub const Error = error{ CorruptLocalState, CommitFileMissing } || std.mem.Allocator.Error ||
     std.Io.File.OpenError || std.Io.File.Reader.Error || std.Io.File.Writer.Error ||
     std.Io.Dir.RenameError || std.Io.Reader.Error || std.Io.Writer.Error;
 
@@ -118,8 +118,10 @@ pub fn saveCommit(arena: std.mem.Allocator, io: std.Io, cid_dir: std.Io.Dir, com
 pub fn loadCommit(arena: std.mem.Allocator, io: std.Io, cid_dir: std.Io.Dir, id: Uuid) Error!Commit {
     var name_buf: [64]u8 = undefined;
     const name = std.fmt.bufPrint(&name_buf, "commits/{s}", .{&id.toString()}) catch unreachable;
-    const text = cid_dir.readFileAlloc(io, name, arena, .limited(64 * 1024 * 1024)) catch
-        return error.CorruptLocalState;
+    const text = cid_dir.readFileAlloc(io, name, arena, .limited(64 * 1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return error.CommitFileMissing,
+        else => return error.CorruptLocalState,
+    };
     return parseCommit(arena, text);
 }
 
@@ -170,13 +172,42 @@ fn parseCommit(arena: std.mem.Allocator, text: []const u8) Error!Commit {
     };
 }
 
-/// Walks the parent chain from HEAD; returns commits newest first.
-pub fn listLocalCommits(arena: std.mem.Allocator, io: std.Io, cid_dir: std.Io.Dir) Error![]Commit {
+/// The newest commit known to be on the server (.cid/last-pushed), set by
+/// push, clone, pull and checkout. Commits below it have no local files:
+/// their history lives on the server.
+pub fn readLastPushed(arena: std.mem.Allocator, io: std.Io, cid_dir: std.Io.Dir) ?[]const u8 {
+    const text = cid_dir.readFileAlloc(io, "last-pushed", arena, .limited(64)) catch return null;
+    const trimmed = std.mem.trim(u8, text, " \n");
+    return if (trimmed.len == 36) trimmed else null;
+}
+
+pub fn writeLastPushed(io: std.Io, cid_dir: std.Io.Dir, commit_id: []const u8) Error!void {
+    try writeFileAtomic(io, cid_dir, "last-pushed", commit_id);
+}
+
+/// Walks the parent chain from HEAD down to (excluding) `last_pushed`;
+/// returns the unpushed commits, newest first. HEAD at `last_pushed`
+/// (right after clone or push) gives an empty list.
+pub fn listUnpushed(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    cid_dir: std.Io.Dir,
+    last_pushed: ?[]const u8,
+) Error![]Commit {
     var out: std.ArrayList(Commit) = .empty;
     const head = try loadHead(arena, io, cid_dir);
     var next_id = head.commit;
     while (next_id) |id| {
-        const commit = try loadCommit(arena, io, cid_dir, id);
+        if (last_pushed) |lp| {
+            if (std.mem.eql(u8, &id.toString(), lp)) break;
+        }
+        // No local file means server history: HEAD sits at (or below) a
+        // commit that was never made here, e.g. after clone or a checkout
+        // to an older commit. Unpushed commits always have local files.
+        const commit = loadCommit(arena, io, cid_dir, id) catch |err| switch (err) {
+            error.CommitFileMissing => break,
+            else => return err,
+        };
         try out.append(arena, commit);
         next_id = commit.parent;
     }

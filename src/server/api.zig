@@ -77,6 +77,8 @@ fn handleInner(
     const ds = lookupDataset(arena, deps, route.name) orelse
         return errorResponse(arena, .not_found, "no such dataset", "Run 'cid init' to create it, or check the address.");
 
+    if (eql(method, "GET") and eql(route.action, "info"))
+        return datasetInfo(arena, deps, ds);
     if (eql(method, "GET") and eql(route.action, "head"))
         return head(arena, deps, ds, route.queryParam("branch") orelse "main");
     if (eql(method, "GET") and eql(route.action, "log"))
@@ -187,6 +189,22 @@ fn createDataset(arena: std.mem.Allocator, deps: *Deps, body: []const u8) Handle
         &diag,
     ) catch return error.Db;
     return json(arena, .created, .{ .name = req.name, .dataset_id = &id });
+}
+
+fn datasetInfo(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!Response {
+    var rows = deps.db.query(
+        "SELECT kind, git_url, default_format FROM datasets WHERE dataset_id = $1::uuid",
+        &.{ds.id},
+        null,
+    ) catch return error.Db;
+    defer rows.deinit();
+    if (rows.count() == 0) return error.Db;
+    return json(arena, .ok, .{
+        .name = ds.name,
+        .kind = try arena.dupe(u8, rows.get(0, 0)),
+        .git_url = try arena.dupe(u8, rows.get(0, 1)),
+        .default_format = try arena.dupe(u8, rows.get(0, 2)),
+    });
 }
 
 fn head(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, branch: []const u8) HandleError!Response {

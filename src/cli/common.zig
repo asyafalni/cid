@@ -5,6 +5,7 @@
 const std = @import("std");
 const root = @import("../cid.zig");
 const workspace = @import("../client/workspace.zig");
+const remote_mod = @import("../client/remote.zig");
 
 pub const ExitCode = root.ExitCode;
 
@@ -44,6 +45,22 @@ pub fn openCacheDir(ctx: *const Context) !std.Io.Dir {
     else
         return error.NoCacheDir;
     return std.Io.Dir.cwd().createDirPathOpen(ctx.io, path, .{});
+}
+
+/// Where the server is, until the SSH front door lands: CID_SERVER and
+/// CID_TOKEN from the environment. The error text says exactly that.
+pub const no_server_msg =
+    "the server address is not set (the SSH flow is not built yet).\n" ++
+    "Export CID_SERVER (e.g. http://127.0.0.1:7070) and CID_TOKEN, then run the command again.";
+
+pub fn remoteFor(ctx: *const Context, dataset_name: []const u8) !*const remote_mod.Remote {
+    const server = ctx.env.get("CID_SERVER") orelse return error.NoServer;
+    const token = ctx.env.get("CID_TOKEN") orelse return error.NoServer;
+    const transport = try ctx.arena.create(remote_mod.HttpTransport);
+    transport.* = remote_mod.HttpTransport.init(ctx.arena, ctx.io, server, token);
+    const r = try ctx.arena.create(remote_mod.Remote);
+    r.* = .{ .t = transport.transport(), .name = dataset_name };
+    return r;
 }
 
 /// 'user:<name>' from the environment; CID_AUTHOR overrides verbatim.

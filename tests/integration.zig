@@ -320,3 +320,163 @@ test "append-only history and immovable releases, enforced by the database" {
     try expectRefused(&db, "INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES (gen_random_uuid(), 'x/y', 'files', 'g')", "permission denied");
     try db.exec("RESET ROLE", &diag);
 }
+
+// ---------------------------------------------------------------------------
+// The milestone test: the whole file-dataset round trip through sync,
+// with the server's handlers plugged in as the transport (no sockets;
+// content still rides real presigned URLs against live SeaweedFS).
+// ---------------------------------------------------------------------------
+
+const DirectTransport = struct {
+    deps: *cid.api.Deps,
+    auth: []const u8,
+
+    fn transport(self: *DirectTransport) cid.client.remote.Transport {
+        return .{ .ctx = self, .call_fn = call };
+    }
+
+    fn call(
+        ctx: *anyopaque,
+        arena: std.mem.Allocator,
+        method: []const u8,
+        target: []const u8,
+        body: []const u8,
+    ) anyerror!cid.client.remote.Response {
+        const self: *DirectTransport = @ptrCast(@alignCast(ctx));
+        const r = cid.api.handle(arena, self.deps, method, target, self.auth, body);
+        return .{ .status = r.status, .body = r.body };
+    }
+};
+
+fn readWholeFile(io: std.Io, dir: std.Io.Dir, path: []const u8, arena: std.mem.Allocator) ![]u8 {
+    return dir.readFileAlloc(io, path, arena, .limited(1024 * 1024));
+}
+
+test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var diag: cid.pg.Diag = .{};
+    var db = try connect(&diag);
+    defer db.close();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+
+    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .bucket = "cid-test",
+    });
+    defer s3c.deinit();
+    try s3c.createBucket(arena);
+
+    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/sync" };
+
+    // Earlier runs may have uploaded this test's contents; purge them so
+    // upload counts are exact.
+    inline for (.{ "version one of a\n", "\x00\x01\x02\xff binary", "version TWO of a\n", "the new file c\n", "my local edit", "d" }) |content| {
+        var content_digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(content, &content_digest, .{});
+        const content_hex = std.fmt.bytesToHex(content_digest, .lower);
+        try s3c.deleteObject(arena, try cid.api.itemKey(arena, &content_hex));
+    }
+
+    // Clean slate for this dataset.
+    try db.exec("SET cid.maintenance = 'on'", &diag);
+    inline for (.{ "refs", "commits", "item_revisions", "dataset_items" }) |table| {
+        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/sync')", &diag);
+    }
+    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/sync'", &diag);
+    try db.exec("RESET cid.maintenance", &diag);
+
+    // Producer folder: two files (one binary), committed offline.
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    var producer_cache = std.testing.tmpDir(.{});
+    defer producer_cache.cleanup();
+    try producer.dir.createDirPath(io, "sub");
+    try producer.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "version one of a\n" });
+    try producer.dir.writeFile(io, .{ .sub_path = "sub/b.bin", .data = "\x00\x01\x02\xff binary" });
+
+    try cid.client.workspace.init(arena, io, producer.dir, "cid@test:test/datasets/sync", "git@example.invalid:sync.git");
+    var pws = try cid.client.workspace.open(arena, io, producer.dir);
+    _ = try cid.client.workspace.add(arena, io, &pws, producer_cache.dir, &.{"."});
+    const first = try cid.client.workspace.commit(arena, io, &pws, "first", "user:producer");
+
+    // Push: creates the dataset server-side, uploads both files, records the commit.
+    const push1 = try cid.client.sync.push(arena, io, &pws, producer_cache.dir, &remote);
+    try std.testing.expectEqual(@as(u32, 1), push1.pushed_commits);
+    try std.testing.expectEqual(@as(u32, 2), push1.uploaded_files);
+    const push_again = try cid.client.sync.push(arena, io, &pws, producer_cache.dir, &remote);
+    try std.testing.expectEqual(@as(u32, 0), push_again.pushed_commits);
+
+    // Clone into a fresh folder with its own cache: every byte verified.
+    var reader_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer reader_dir.cleanup();
+    var reader_cache = std.testing.tmpDir(.{});
+    defer reader_cache.cleanup();
+    const cloned = try cid.client.sync.clone(arena, io, reader_dir.dir, reader_cache.dir, &remote, "cid@test:test/datasets/sync");
+    try std.testing.expectEqual(@as(u32, 2), cloned.files);
+    try std.testing.expectEqual(@as(u32, 2), cloned.downloaded);
+    try std.testing.expectEqualSlices(u8, "version one of a\n", try readWholeFile(io, reader_dir.dir, "a.txt", arena));
+    try std.testing.expectEqualSlices(u8, "\x00\x01\x02\xff binary", try readWholeFile(io, reader_dir.dir, "sub/b.bin", arena));
+
+    var rws = try cid.client.workspace.open(arena, io, reader_dir.dir);
+    const rstatus = try cid.client.workspace.status(arena, io, &rws);
+    try std.testing.expectEqual(@as(usize, 0), rstatus.staged.len);
+    try std.testing.expectEqual(@as(usize, 0), rstatus.unstaged_new.len);
+    try std.testing.expectEqual(@as(usize, 0), rstatus.unstaged_modified.len);
+
+    // Producer iterates: edit, delete, add — then pushes.
+    try producer.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "version TWO of a\n" });
+    try producer.dir.deleteFile(io, "sub/b.bin");
+    try producer.dir.writeFile(io, .{ .sub_path = "c.txt", .data = "the new file c\n" });
+    _ = try cid.client.workspace.add(arena, io, &pws, producer_cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "second", "user:producer");
+    const push2 = try cid.client.sync.push(arena, io, &pws, producer_cache.dir, &remote);
+    try std.testing.expectEqual(@as(u32, 1), push2.pushed_commits);
+
+    // Reader pulls the fast-forward.
+    const pulled = try cid.client.sync.pull(arena, io, &rws, reader_cache.dir, &remote);
+    try std.testing.expect(pulled == .fast_forwarded);
+    try std.testing.expectEqualSlices(u8, "version TWO of a\n", try readWholeFile(io, reader_dir.dir, "a.txt", arena));
+    try std.testing.expectEqualSlices(u8, "the new file c\n", try readWholeFile(io, reader_dir.dir, "c.txt", arena));
+    try std.testing.expectError(error.FileNotFound, reader_dir.dir.openFile(io, "sub/b.bin", .{}));
+    const pulled2 = try cid.client.sync.pull(arena, io, &rws, reader_cache.dir, &remote);
+    try std.testing.expect(pulled2 == .already_up_to_date);
+
+    // Checkout the first commit: the old tree returns, byte for byte.
+    const changed_back = try cid.client.sync.checkout(arena, io, &rws, reader_cache.dir, &remote, &first.id.toString());
+    try std.testing.expect(changed_back >= 2);
+    try std.testing.expectEqualSlices(u8, "version one of a\n", try readWholeFile(io, reader_dir.dir, "a.txt", arena));
+    try std.testing.expectEqualSlices(u8, "\x00\x01\x02\xff binary", try readWholeFile(io, reader_dir.dir, "sub/b.bin", arena));
+    try std.testing.expectError(error.FileNotFound, reader_dir.dir.openFile(io, "c.txt", .{}));
+    _ = try cid.client.sync.pull(arena, io, &rws, reader_cache.dir, &remote); // back to latest
+
+    // Local edits are never overwritten silently.
+    try reader_dir.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "my local edit" });
+    try std.testing.expectError(
+        error.LocalChangesInTheWay,
+        cid.client.sync.checkout(arena, io, &rws, reader_cache.dir, &remote, &first.id.toString()),
+    );
+    // Put it back to the tracked content for the rest of the test.
+    _ = try cid.client.workspace.add(arena, io, &rws, reader_cache.dir, &.{"a.txt"});
+    _ = try cid.client.workspace.commit(arena, io, &rws, "reader edit", "user:reader");
+
+    // Reader pushes (it sits at the server head, so this lands)…
+    const push3 = try cid.client.sync.push(arena, io, &rws, reader_cache.dir, &remote);
+    try std.testing.expectEqual(@as(u32, 1), push3.pushed_commits);
+
+    // …which makes the producer stale: its next push must be refused, and
+    // its pull must refuse to guess while it holds unpushed commits.
+    try producer.dir.writeFile(io, .{ .sub_path = "d.txt", .data = "d" });
+    _ = try cid.client.workspace.add(arena, io, &pws, producer_cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "will be stale", "user:producer");
+    try std.testing.expectError(error.Stale, cid.client.sync.push(arena, io, &pws, producer_cache.dir, &remote));
+    try std.testing.expectError(error.UnpushedCommits, cid.client.sync.pull(arena, io, &pws, producer_cache.dir, &remote));
+}

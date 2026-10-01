@@ -9,6 +9,11 @@ pub const cli_init = @import("cli/init.zig");
 pub const cli_add = @import("cli/add.zig");
 pub const cli_commit = @import("cli/commit.zig");
 pub const cli_status = @import("cli/status.zig");
+pub const cli_push = @import("cli/push.zig");
+pub const cli_pull = @import("cli/pull.zig");
+pub const cli_log = @import("cli/log.zig");
+pub const cli_clone = @import("cli/clone.zig");
+pub const cli_checkout = @import("cli/checkout.zig");
 pub const pg = @import("store/pg.zig");
 pub const s3 = @import("store/s3.zig");
 pub const api = @import("server/api.zig");
@@ -21,6 +26,8 @@ pub const client = struct {
     pub const cache = @import("client/cache.zig");
     pub const scan = @import("client/scan.zig");
     pub const workspace = @import("client/workspace.zig");
+    pub const remote = @import("client/remote.zig");
+    pub const sync = @import("client/sync.zig");
 };
 
 /// CLI exit codes (CLAUDE.md, "Rules for every command").
@@ -49,4 +56,7 @@ test {
     _ = client.cache;
     _ = client.scan;
     _ = client.workspace;
+    _ = client.remote;
+    _ = client.sync;
+    _ = cli_log;
 }

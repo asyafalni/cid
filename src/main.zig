@@ -39,6 +39,11 @@ fn run(
         .add => |cmd_args| cid.cli_add.run(&ctx, cmd_args),
         .commit => |cmd_args| cid.cli_commit.run(&ctx, cmd_args),
         .status => cid.cli_status.run(&ctx),
+        .push => cid.cli_push.run(&ctx),
+        .pull => cid.cli_pull.run(&ctx),
+        .log => cid.cli_log.run(&ctx),
+        .clone => |cmd_args| cid.cli_clone.run(&ctx, cmd_args),
+        .checkout => |cmd_args| cid.cli_checkout.run(&ctx, cmd_args),
         .admin => |admin_args| cid.admin.run(arena, io, out, env, admin_args),
         .not_yet => |name| {
             var ebuf: [256]u8 = undefined;
