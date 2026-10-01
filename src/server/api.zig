@@ -85,7 +85,8 @@ fn handleInner(
     // Writes need a write-scoped token for this dataset; reads a read one.
     const needed: token_mod.Level = if (eql(route.action, "push") or
         eql(route.action, "check-hashes") or eql(route.action, "tag") or
-        eql(route.action, "branch") or eql(route.action, "merge"))
+        eql(route.action, "branch") or eql(route.action, "merge") or
+        eql(route.action, "commit") or eql(route.action, "register-items"))
         .write
     else
         .read;
@@ -119,6 +120,10 @@ fn handleInner(
         return branches(arena, deps, ds);
     if (eql(method, "POST") and eql(route.action, "merge"))
         return merge(arena, deps, ds, body);
+    if (eql(method, "POST") and eql(route.action, "commit"))
+        return serverCommit(arena, deps, ds, body);
+    if (eql(method, "POST") and eql(route.action, "register-items"))
+        return registerItems(arena, deps, ds, body);
 
     return errorResponse(arena, .not_found, "no such route", "Update cid and try again.");
 }
@@ -192,12 +197,13 @@ fn authorized(
 const Dataset = struct {
     id: [:0]const u8, // uuid text
     name: []const u8,
+    kind: []const u8, // 'files' | 'annotated'
 };
 
 fn lookupDataset(arena: std.mem.Allocator, deps: *Deps, name: []const u8) ?Dataset {
     const name_z = arena.dupeZ(u8, name) catch return null;
     var rows = deps.db.query(
-        "SELECT dataset_id::text FROM datasets WHERE name = $1",
+        "SELECT dataset_id::text, kind FROM datasets WHERE name = $1",
         &.{name_z},
         null,
     ) catch return null;
@@ -206,6 +212,7 @@ fn lookupDataset(arena: std.mem.Allocator, deps: *Deps, name: []const u8) ?Datas
     return .{
         .id = arena.dupeZ(u8, rows.get(0, 0)) catch return null,
         .name = name,
+        .kind = arena.dupe(u8, rows.get(0, 1)) catch return null,
     };
 }
 
@@ -491,7 +498,46 @@ fn state(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, commit_id: []const 
     for (items, 0..) |*item, i| {
         item.* = .{ .path = rows[i].path, .hash = rows[i].hash_hex, .size = rows[i].size };
     }
+
+    if (eql(ds.kind, "annotated")) {
+        const anns = release_mod.annotationRows(arena, deps.db, ds.id, commit_z) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.Db,
+        };
+        const WireAnn = struct {
+            id: []const u8,
+            item_id: []const u8,
+            kind: ?[]const u8,
+            class: ?[]const u8,
+            geometry: ?std.json.Value,
+            attrs: ?std.json.Value,
+            author: []const u8,
+            policy_ver: []const u8,
+        };
+        const wire = try arena.alloc(WireAnn, anns.len);
+        for (wire, 0..) |*w, i| {
+            w.* = .{
+                .id = anns[i].annotation_id,
+                .item_id = anns[i].item_id,
+                .kind = anns[i].kind,
+                .class = anns[i].class,
+                .geometry = jsonValue(arena, anns[i].geometry),
+                .attrs = jsonValue(arena, anns[i].attrs),
+                .author = anns[i].author,
+                .policy_ver = anns[i].policy_ver,
+            };
+        }
+        return json(arena, .ok, .{ .commit = commit_id, .items = items, .annotations = wire });
+    }
     return json(arena, .ok, .{ .commit = commit_id, .items = items });
+}
+
+/// Stored jsonb text → a JSON value for the response (never re-encoded as
+/// a string). Unparseable content degrades to null rather than breaking
+/// the whole view (one bad record never breaks a view).
+fn jsonValue(arena: std.mem.Allocator, text: ?[]const u8) ?std.json.Value {
+    const t = text orelse return null;
+    return std.json.parseFromSliceLeaky(std.json.Value, arena, t, .{}) catch null;
 }
 
 const TagBody = struct {
@@ -846,6 +892,134 @@ fn merge(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) H
     deps.db.exec("COMMIT", &diag) catch return error.Db;
 
     return json(arena, .ok, .{ .merge_commit = &merge_id.toString(), .changes = branch_changes.count() });
+}
+
+const RegisterItemsBody = struct {
+    items: []const struct {
+        hash: []const u8,
+        size: u64,
+        media_type: []const u8 = "application/octet-stream",
+    },
+};
+
+/// The platform's item registration: after uploading through the
+/// presigned URLs from check-hashes, this verifies each object is really
+/// in storage with the right size, then records the items row (invariant
+/// 2 keeps one enforcement point: bytes always enter through the server's
+/// upload flow).
+fn registerItems(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+    _ = ds;
+    const req = parseBody(RegisterItemsBody, arena, body) orelse return error.BadRequest;
+    if (req.items.len > 1000) return error.BadRequest;
+    var diag: pg.Diag = .{};
+    for (req.items) |item| {
+        if (!validHashHex(item.hash)) return error.BadRequest;
+        if (try isPurged(arena, deps, item.hash))
+            return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then register again.");
+        const key = itemKey(arena, item.hash) catch return error.OutOfMemory;
+        const stored = deps.s3.headObject(arena, key) catch return error.Storage;
+        const size = stored orelse
+            return errorResponse(arena, .unprocessable_entity, "an item is missing from storage", "Upload it through the check-hashes URLs first, then register again.");
+        if (size != item.size)
+            return errorResponse(arena, .unprocessable_entity, "an item's size does not match what storage holds", "Re-upload the file, then register again.");
+        deps.db.execParams(
+            "INSERT INTO items (item_hash, size_bytes, media_type) VALUES (decode($1, 'hex'), $2::bigint, $3) " ++
+                "ON CONFLICT (item_hash) DO NOTHING",
+            &.{ try arena.dupeZ(u8, item.hash), try intZ(arena, item.size), try arena.dupeZ(u8, item.media_type) },
+            &diag,
+        ) catch return error.Db;
+    }
+    return json(arena, .ok, .{ .registered = req.items.len });
+}
+
+const ServerCommitBody = struct {
+    branch: []const u8 = "main",
+    message: []const u8,
+    author: []const u8,
+};
+
+/// The annotation platform's commit: it has already INSERTed revisions
+/// (items and annotations) with the cid_writer role under the shared
+/// write lock; this seals them — "all changes up to here" — under the
+/// exclusive lock, so no in-flight write can land beneath the cutoff
+/// (invariant 3).
+fn serverCommit(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+    const req = parseBody(ServerCommitBody, arena, body) orelse return error.BadRequest;
+    if (req.message.len == 0 or req.author.len == 0) return error.BadRequest;
+    const branch_z = try arena.dupeZ(u8, req.branch);
+
+    var diag: pg.Diag = .{};
+    deps.db.exec("BEGIN", &diag) catch return error.Db;
+    errdefer deps.db.exec("ROLLBACK", null) catch {};
+    deps.db.execParams(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1 || '/' || $2, 0))",
+        &.{ ds.id, branch_z },
+        &diag,
+    ) catch return error.Db;
+
+    const parent: ?[]const u8 = blk: {
+        var rows = deps.db.query(
+            "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'branch'",
+            &.{ ds.id, branch_z },
+            &diag,
+        ) catch return error.Db;
+        defer rows.deinit();
+        break :blk if (rows.count() == 0) null else try arena.dupe(u8, rows.get(0, 0));
+    };
+    const parent_cutoff: ?[]const u8 = blk: {
+        const p = parent orelse break :blk null;
+        var rows = deps.db.query(
+            "SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid",
+            &.{try arena.dupeZ(u8, p)},
+            &diag,
+        ) catch return error.Db;
+        defer rows.deinit();
+        break :blk if (rows.count() == 0) null else try arena.dupe(u8, rows.get(0, 0));
+    };
+
+    // The cutoff: the newest revision on this branch, item or annotation.
+    const floor_z = try arena.dupeZ(u8, parent_cutoff orelse "00000000-0000-0000-0000-000000000000");
+    var max_rows = deps.db.query(
+        "SELECT rev_id::text FROM (" ++
+            "  SELECT rev_id FROM item_revisions WHERE dataset_id = $1::uuid AND branch = $2 AND rev_id > $3::uuid " ++
+            "  UNION ALL " ++
+            "  SELECT rev_id FROM annotation_revisions WHERE dataset_id = $1::uuid AND branch = $2 AND rev_id > $3::uuid) u " ++
+            "ORDER BY rev_id DESC LIMIT 1",
+        &.{ ds.id, branch_z, floor_z },
+        &diag,
+    ) catch return error.Db;
+    defer max_rows.deinit();
+    if (max_rows.count() == 0 or max_rows.isNull(0, 0)) {
+        deps.db.exec("ROLLBACK", null) catch {};
+        return errorResponse(arena, .unprocessable_entity, "nothing new to commit on this branch", "Write revisions first, then commit again.");
+    }
+    const cutoff = try arena.dupeZ(u8, max_rows.get(0, 0));
+
+    const commit_id = Uuid.nextAfter(deps.io, if (parent) |p| (Uuid.parse(p) catch null) else null);
+    if (parent) |p| {
+        deps.db.execParams(
+            "INSERT INTO commits (commit_id, dataset_id, branch, parent_id, cutoff_rev, message, author, authored_at) " ++
+                "VALUES ($1::uuid, $2::uuid, $3, $4::uuid, $5::uuid, $6, $7, now())",
+            &.{ try arena.dupeZ(u8, &commit_id.toString()), ds.id, branch_z, try arena.dupeZ(u8, p), cutoff, try arena.dupeZ(u8, req.message), try arena.dupeZ(u8, req.author) },
+            &diag,
+        ) catch return error.Db;
+    } else {
+        deps.db.execParams(
+            "INSERT INTO commits (commit_id, dataset_id, branch, parent_id, cutoff_rev, message, author, authored_at) " ++
+                "VALUES ($1::uuid, $2::uuid, $3, NULL, $4::uuid, $5, $6, now())",
+            &.{ try arena.dupeZ(u8, &commit_id.toString()), ds.id, branch_z, cutoff, try arena.dupeZ(u8, req.message), try arena.dupeZ(u8, req.author) },
+            &diag,
+        ) catch return error.Db;
+    }
+    deps.db.execParams(
+        "INSERT INTO refs (dataset_id, name, kind, commit_id) VALUES ($1::uuid, $2, 'branch', $3::uuid) " ++
+            "ON CONFLICT (dataset_id, name) DO UPDATE SET commit_id = excluded.commit_id",
+        &.{ ds.id, branch_z, try arena.dupeZ(u8, &commit_id.toString()) },
+        &diag,
+    ) catch return error.Db;
+    deps.db.exec("COMMIT", &diag) catch return error.Db;
+
+    return json(arena, .created, .{ .commit = &commit_id.toString() });
 }
 
 fn isPurged(arena: std.mem.Allocator, deps: *Deps, hash: []const u8) HandleError!bool {

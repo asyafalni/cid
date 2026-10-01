@@ -108,6 +108,78 @@ fn renderManifest(arena: std.mem.Allocator, rows: []const StateRow) Error!canoni
     return canonical.render(arena, item_rows) catch error.OutOfMemory;
 }
 
+pub const AnnotationRow = struct {
+    annotation_id: []const u8,
+    item_id: []const u8,
+    kind: ?[]const u8,
+    class: ?[]const u8,
+    /// Raw JSON text (or null), exactly as stored.
+    geometry: ?[]const u8,
+    attrs: ?[]const u8,
+    author: []const u8,
+    policy_ver: []const u8,
+};
+
+/// Annotation state at a commit: for each annotation_id, the latest change
+/// up to the cutoff, deletes dropped — composed over main like items.
+/// Sorted by (item_id, annotation_id), the manifest order.
+pub fn annotationRows(
+    arena: std.mem.Allocator,
+    db: *pg.Db,
+    dataset_id: [:0]const u8,
+    commit_id: [:0]const u8,
+) Error![]AnnotationRow {
+    var commit_rows = db.query(
+        "SELECT branch, cutoff_rev::text FROM commits WHERE commit_id = $1::uuid AND dataset_id = $2::uuid",
+        &.{ commit_id, dataset_id },
+        null,
+    ) catch return error.Db;
+    defer commit_rows.deinit();
+    if (commit_rows.count() == 0) return error.NoSuchCommit;
+    const branch = arena.dupeZ(u8, commit_rows.get(0, 0)) catch return error.OutOfMemory;
+    const cutoff = arena.dupeZ(u8, commit_rows.get(0, 1)) catch return error.OutOfMemory;
+
+    var main_cutoff: [:0]const u8 = cutoff;
+    if (!std.mem.eql(u8, branch, "main")) {
+        var start_rows = db.query(
+            "SELECT c.cutoff_rev::text FROM refs r JOIN commits c ON c.commit_id = r.start_commit_id " ++
+                "WHERE r.dataset_id = $1::uuid AND r.name = $2 AND r.kind = 'branch'",
+            &.{ dataset_id, branch },
+            null,
+        ) catch return error.Db;
+        defer start_rows.deinit();
+        if (start_rows.count() == 0) return error.NoSuchCommit;
+        main_cutoff = arena.dupeZ(u8, start_rows.get(0, 0)) catch return error.OutOfMemory;
+    }
+
+    var rows = db.query(
+        "SELECT annotation_id::text, item_id::text, kind, class, geometry::text, attrs::text, author, policy_ver FROM (" ++
+            "  SELECT DISTINCT ON (annotation_id) * FROM annotation_revisions " ++
+            "  WHERE dataset_id = $1::uuid AND (" ++
+            "    (branch = 'main' AND rev_id <= $4::uuid) OR (branch = $2 AND rev_id <= $3::uuid)) " ++
+            "  ORDER BY annotation_id, rev_id DESC) s " ++
+            "WHERE s.op <> 'delete' ORDER BY item_id, annotation_id",
+        &.{ dataset_id, branch, cutoff, main_cutoff },
+        null,
+    ) catch return error.Db;
+    defer rows.deinit();
+
+    const out = arena.alloc(AnnotationRow, rows.count()) catch return error.OutOfMemory;
+    for (out, 0..) |*row, i| {
+        row.* = .{
+            .annotation_id = arena.dupe(u8, rows.get(i, 0)) catch return error.OutOfMemory,
+            .item_id = arena.dupe(u8, rows.get(i, 1)) catch return error.OutOfMemory,
+            .kind = if (rows.isNull(i, 2)) null else arena.dupe(u8, rows.get(i, 2)) catch return error.OutOfMemory,
+            .class = if (rows.isNull(i, 3)) null else arena.dupe(u8, rows.get(i, 3)) catch return error.OutOfMemory,
+            .geometry = if (rows.isNull(i, 4)) null else arena.dupe(u8, rows.get(i, 4)) catch return error.OutOfMemory,
+            .attrs = if (rows.isNull(i, 5)) null else arena.dupe(u8, rows.get(i, 5)) catch return error.OutOfMemory,
+            .author = arena.dupe(u8, rows.get(i, 6)) catch return error.OutOfMemory,
+            .policy_ver = arena.dupe(u8, rows.get(i, 7)) catch return error.OutOfMemory,
+        };
+    }
+    return out;
+}
+
 pub fn manifestKey(arena: std.mem.Allocator, dataset_id: []const u8, commit_id: []const u8) Error![]const u8 {
     return std.fmt.allocPrint(arena, "manifests/{s}/{s}.manifest", .{ dataset_id, commit_id }) catch
         error.OutOfMemory;

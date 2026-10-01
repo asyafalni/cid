@@ -287,6 +287,59 @@ pub const Remote = struct {
         return .{ .merged = .{ .commit = parsed.merge_commit, .changes = parsed.changes } };
     }
 
+    /// The platform-style server commit over directly written revisions.
+    pub fn commitServer(self: *const Remote, arena: std.mem.Allocator, branch: []const u8, message: []const u8, author: []const u8) Error![]const u8 {
+        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .branch = branch, .message = message, .author = author }, .{})});
+        const res = self.t.call(arena, "POST", try self.target(arena, "commit", .{}), body) catch
+            return error.ServerUnreachable;
+        if (res.status == .unprocessable_entity) return error.NothingToTag;
+        if (res.status == .not_found) return error.NoSuchDataset;
+        if (res.status != .created) return error.ServerRefused;
+        const C = struct { commit: []const u8 };
+        const parsed = parse(C, arena, res.body) orelse return error.ServerRefused;
+        return parsed.commit;
+    }
+
+    pub const RegisterItem = struct { hash: []const u8, size: u64, media_type: []const u8 = "application/octet-stream" };
+
+    pub fn registerItems(self: *const Remote, arena: std.mem.Allocator, items: []const RegisterItem) Error!void {
+        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .items = items }, .{})});
+        const res = self.t.call(arena, "POST", try self.target(arena, "register-items", .{}), body) catch
+            return error.ServerUnreachable;
+        if (res.status == .unprocessable_entity) return error.MissingContent;
+        if (res.status != .ok) return error.ServerRefused;
+    }
+
+    pub const Annotation = struct {
+        id: []const u8,
+        item_id: []const u8,
+        kind: ?[]const u8 = null,
+        class: ?[]const u8 = null,
+        geometry: ?std.json.Value = null,
+        attrs: ?std.json.Value = null,
+        author: []const u8,
+        policy_ver: []const u8,
+    };
+
+    pub const AnnotatedState = struct {
+        items: []const StateItem,
+        annotations: []const Annotation,
+    };
+
+    pub fn stateAnnotated(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8) Error!AnnotatedState {
+        const res = self.t.call(arena, "GET", try self.target(arena, "state/{s}", .{commit_id}), "") catch
+            return error.ServerUnreachable;
+        if (res.status == .not_found) return error.NoSuchDataset;
+        if (res.status != .ok) return error.ServerRefused;
+        const State = struct {
+            commit: []const u8,
+            items: []const StateItem,
+            annotations: []const Annotation = &.{},
+        };
+        const parsed = parse(State, arena, res.body) orelse return error.ServerRefused;
+        return .{ .items = parsed.items, .annotations = parsed.annotations };
+    }
+
     pub const Download = struct { hash: []const u8, url: []const u8 };
 
     pub fn downloads(self: *const Remote, arena: std.mem.Allocator, hashes: []const []const u8) Error![]const Download {

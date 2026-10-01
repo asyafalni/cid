@@ -282,11 +282,42 @@ pub const Client = struct {
 
     /// Returns the object's size, or null if it does not exist.
     pub fn headObject(self: *Client, arena: std.mem.Allocator, key: []const u8) Error!?u64 {
-        var size: u64 = 0;
-        const status = try self.simpleRequest(arena, "HEAD", key, "", empty_payload_hash, null, &size);
-        if (status == .not_found) return null;
-        if (status != .ok) return error.RequestFailed;
-        return size;
+        const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(self.http.io, .real).toSeconds()));
+        const date_time = dateTimeFromEpoch(now);
+        const path = self.objectPath(arena, key) catch return error.OutOfMemory;
+        const headers = [_]Header{
+            .{ .name = "host", .value = self.host },
+            .{ .name = "x-amz-content-sha256", .value = empty_payload_hash },
+            .{ .name = "x-amz-date", .value = &date_time },
+        };
+        const auth = authorizationHeader(arena, .{
+            .method = "HEAD",
+            .canonical_path = path,
+            .canonical_query = "",
+            .headers = &headers,
+            .payload_hash = empty_payload_hash,
+            .date_time = &date_time,
+            .region = self.config.region,
+            .service = "s3",
+        }, self.config.access_key, self.config.secret_key) catch return error.OutOfMemory;
+        const url = std.fmt.allocPrint(arena, "{s}{s}", .{ self.config.endpoint, path }) catch
+            return error.OutOfMemory;
+        const uri = std.Uri.parse(url) catch return error.RequestFailed;
+        var req = self.http.request(.HEAD, uri, .{
+            .keep_alive = false,
+            .extra_headers = &.{
+                .{ .name = "x-amz-content-sha256", .value = empty_payload_hash },
+                .{ .name = "x-amz-date", .value = &date_time },
+                .{ .name = "authorization", .value = auth },
+            },
+        }) catch return error.RequestFailed;
+        defer req.deinit();
+        req.sendBodiless() catch return error.RequestFailed;
+        var redirect_buf: [1024]u8 = undefined;
+        const response = req.receiveHead(&redirect_buf) catch return error.RequestFailed;
+        if (response.head.status == .not_found) return null;
+        if (response.head.status != .ok) return error.RequestFailed;
+        return response.head.content_length orelse 0;
     }
 
     pub fn getObjectAlloc(self: *Client, arena: std.mem.Allocator, key: []const u8, limit: usize) Error![]u8 {

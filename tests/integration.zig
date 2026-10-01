@@ -1170,3 +1170,157 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     const refused = cid.api.handle(arena, &deps, "POST", "/v0/datasets/test/datasets/purge/-/check-hashes", "Bearer test-token", check_body);
     try std.testing.expectEqual(std.http.Status.unprocessable_entity, refused.status);
 }
+
+test "annotated: the platform writes revisions, the server commits, state composes" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var diag: cid.pg.Diag = .{};
+    var db = try connect(&diag);
+    defer db.close();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .bucket = "cid-test",
+    });
+    defer s3c.deinit();
+    try s3c.createBucket(arena);
+
+    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/ann" };
+
+    try db.exec("SET cid.maintenance = 'on'", &diag);
+    inline for (.{ "git_writes", "refs", "commits", "item_revisions", "annotation_revisions", "dataset_items" }) |table| {
+        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/ann')", &diag);
+    }
+    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/ann'", &diag);
+    try db.exec("RESET cid.maintenance", &diag);
+
+    // The platform creates an annotated dataset.
+    const created = cid.api.handle(arena, &deps, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/ann\",\"kind\":\"annotated\",\"git_url\":\"g@h:ann.git\"}");
+    try std.testing.expectEqual(std.http.Status.created, created.status);
+    const ds_id: [:0]const u8 = blk: {
+        var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/ann'", &.{}, &diag);
+        defer rows.deinit();
+        break :blk try arena.dupeZ(u8, rows.get(0, 0));
+    };
+
+    // Bytes go up through check-hashes presigns, then register-items
+    // records them (hash-verified against storage).
+    const frame1 = "frame one pixels";
+    const frame2 = "frame two pixels, longer";
+    var dg: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(frame1, &dg, .{});
+    const h1 = std.fmt.bytesToHex(dg, .lower);
+    std.crypto.hash.sha2.Sha256.hash(frame2, &dg, .{});
+    const h2 = std.fmt.bytesToHex(dg, .lower);
+    try s3c.deleteObject(arena, try cid.api.itemKey(arena, &h1));
+    try s3c.deleteObject(arena, try cid.api.itemKey(arena, &h2));
+    {
+        const hz = try arena.dupeZ(u8, &h1);
+        db.execParams("DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag) catch {};
+    }
+
+    const missing = try remote.checkHashes(arena, &.{ &h1, &h2 });
+    try std.testing.expectEqual(@as(usize, 2), missing.len);
+    var plain: std.http.Client = .{ .allocator = std.testing.allocator, .io = io };
+    defer plain.deinit();
+    for (missing) |m| {
+        const content: []const u8 = if (std.mem.eql(u8, m.hash, &h1)) frame1 else frame2;
+        const put = try plain.fetch(.{ .location = .{ .url = m.url }, .method = .PUT, .payload = content, .raw_uri = true, .keep_alive = false });
+        try std.testing.expectEqual(std.http.Status.ok, put.status);
+    }
+    // Registration before upload is refused; after upload it lands.
+    try remote.registerItems(arena, &.{
+        .{ .hash = &h1, .size = frame1.len, .media_type = "image/jpeg" },
+        .{ .hash = &h2, .size = frame2.len, .media_type = "image/jpeg" },
+    });
+
+    // The platform writes revisions directly: cid_writer role, shared
+    // write lock, strictly increasing UUIDv7 ids (the documented contract).
+    var last = cid.uuid7.Uuid.now(io);
+    const aitem1 = cid.uuid7.Uuid.now(io).toString();
+    const aitem2 = cid.uuid7.Uuid.now(io).toString();
+    const ann1_id = cid.uuid7.Uuid.now(io);
+    const ann1 = ann1_id.toString();
+    const ann2 = cid.uuid7.Uuid.nextAfter(io, ann1_id).toString();
+
+    try db.exec("BEGIN", &diag);
+    {
+        const lock = try std.fmt.allocPrintSentinel(arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{ds_id}, 0);
+        try db.exec(lock, &diag);
+    }
+    try db.exec("SET LOCAL ROLE cid_writer", &diag);
+    inline for (.{
+        .{ "frames/0001.jpg", &h1, "train" },
+        .{ "frames/0002.jpg", &h2, "val" },
+    }, 0..) |row, idx| {
+        last = cid.uuid7.Uuid.nextAfter(io, last);
+        const item_id = if (idx == 0) &aitem1 else &aitem2;
+        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
+            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', 'add', '{s}', decode('{s}', 'hex'), '{s}', 'agent:annotator')", .{ &last.toString(), last.unixMs() / 1000, ds_id, row[0], item_id, row[1], row[2] }, 0);
+        try db.exec(sql, &diag);
+    }
+    inline for (.{
+        .{ &ann1, &aitem1, "{\"x\":10,\"y\":20,\"w\":30,\"h\":40}", "person" },
+        .{ &ann2, &aitem1, "{\"x\":50,\"y\":60,\"w\":70,\"h\":80}", "vehicle" },
+    }) |row| {
+        last = cid.uuid7.Uuid.nextAfter(io, last);
+        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'create', 'box', '{s}', '{s}'::jsonb, 'agent:annotator', 'policy-v1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, row[0], row[1], row[3], row[2] }, 0);
+        try db.exec(sql, &diag);
+    }
+    try db.exec("COMMIT", &diag);
+
+    // The server seals the batch.
+    const c1 = try remote.commitServer(arena, "main", "batch one annotated", "agent:annotator");
+    const s1 = try remote.stateAnnotated(arena, c1);
+    try std.testing.expectEqual(@as(usize, 2), s1.items.len);
+    try std.testing.expectEqual(@as(usize, 2), s1.annotations.len);
+    try std.testing.expectEqualStrings("box", s1.annotations[0].kind.?);
+    try std.testing.expectEqualStrings("person", s1.annotations[0].class.?);
+    try std.testing.expectEqual(@as(i64, 10), s1.annotations[0].geometry.?.object.get("x").?.integer);
+    try std.testing.expectEqualStrings("policy-v1", s1.annotations[0].policy_ver);
+
+    // Nothing new → the commit is refused with a reason.
+    try std.testing.expectError(error.NothingToTag, remote.commitServer(arena, "main", "empty", "agent:annotator"));
+
+    // Batch two: move box one, delete box two.
+    try db.exec("BEGIN", &diag);
+    {
+        const lock = try std.fmt.allocPrintSentinel(arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{ds_id}, 0);
+        try db.exec(lock, &diag);
+    }
+    try db.exec("SET LOCAL ROLE cid_writer", &diag);
+    last = cid.uuid7.Uuid.nextAfter(io, last);
+    {
+        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'update', 'box', 'person', '{{\"x\":11,\"y\":21,\"w\":30,\"h\":40}}'::jsonb, 'user:reviewer', 'policy-v1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &ann1, &aitem1 }, 0);
+        try db.exec(sql, &diag);
+    }
+    last = cid.uuid7.Uuid.nextAfter(io, last);
+    {
+        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, author, policy_ver) " ++
+            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'delete', 'user:reviewer', 'policy-v1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &ann2, &aitem1 }, 0);
+        try db.exec(sql, &diag);
+    }
+    try db.exec("COMMIT", &diag);
+
+    const c2 = try remote.commitServer(arena, "main", "review pass", "user:reviewer");
+    const s2 = try remote.stateAnnotated(arena, c2);
+    try std.testing.expectEqual(@as(usize, 2), s2.items.len);
+    try std.testing.expectEqual(@as(usize, 1), s2.annotations.len);
+    try std.testing.expectEqual(@as(i64, 11), s2.annotations[0].geometry.?.object.get("x").?.integer);
+    try std.testing.expectEqualStrings("user:reviewer", s2.annotations[0].author);
+
+    // History is history: the first commit still answers with both boxes.
+    const s1_again = try remote.stateAnnotated(arena, c1);
+    try std.testing.expectEqual(@as(usize, 2), s1_again.annotations.len);
+    try std.testing.expectEqual(@as(i64, 10), s1_again.annotations[0].geometry.?.object.get("x").?.integer);
+}
