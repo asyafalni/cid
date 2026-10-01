@@ -19,6 +19,7 @@ pub const cli_restore = @import("cli/restore.zig");
 pub const cli_diff = @import("cli/diff.zig");
 pub const cli_branch = @import("cli/branch.zig");
 pub const cli_merge = @import("cli/merge.zig");
+pub const cli_login = @import("cli/login.zig");
 pub const pg = @import("store/pg.zig");
 pub const s3 = @import("store/s3.zig");
 pub const api = @import("server/api.zig");

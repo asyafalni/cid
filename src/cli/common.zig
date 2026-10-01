@@ -64,9 +64,15 @@ pub fn remoteFor(
 ) !*const remote_mod.Remote {
     var server: []const u8 = undefined;
     var tok: []const u8 = undefined;
+    const login = @import("login.zig");
     if (ctx.env.get("CID_SERVER")) |s| {
         server = s;
         tok = ctx.env.get("CID_TOKEN") orelse return error.NoServer;
+    } else if (login.load(ctx)) |stored| {
+        // 'cid login' is for machines without SSH; a stored login wins
+        // over trying SSH and failing slowly.
+        server = stored.server;
+        tok = stored.token;
     } else {
         const addr = address orelse return error.NoServer;
         const grant = sshToken(ctx, addr, dataset_name, level) orelse return error.NoServer;
