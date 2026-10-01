@@ -81,7 +81,7 @@ test "s3: put, head, get, presign round trip against SeaweedFS" {
     var plain: std.http.Client = .{ .allocator = std.testing.allocator, .io = io };
     defer plain.deinit();
     var aw: std.Io.Writer.Allocating = .init(arena);
-    const res = try plain.fetch(.{ .location = .{ .url = url }, .raw_uri = true, .response_writer = &aw.writer });
+    const res = try plain.fetch(.{ .location = .{ .url = url }, .raw_uri = true, .keep_alive = false, .response_writer = &aw.writer });
     try std.testing.expectEqual(std.http.Status.ok, res.status);
     try std.testing.expectEqualSlices(u8, body, aw.writer.buffered());
 
@@ -113,6 +113,156 @@ test "migrations apply from scratch and are idempotent" {
 
     const versions = try db.queryInts(arena, "SELECT count(*) FROM schema_migrations", &diag);
     try std.testing.expectEqual(@as(i64, @intCast(first.total)), versions[0]);
+}
+
+test "api: create, check-hashes, push (forward-only), state, downloads, log" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var diag: cid.pg.Diag = .{};
+    var db = try connect(&diag);
+    defer db.close();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+
+    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .bucket = "cid-test",
+    });
+    defer s3c.deinit();
+    try s3c.createBucket(arena);
+
+    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
+    const name = "test/datasets/api";
+
+    // Leftovers from earlier runs go through the maintenance escape.
+    try db.exec("SET cid.maintenance = 'on'", &diag);
+    try db.exec("DELETE FROM refs WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/api')", &diag);
+    try db.exec("DELETE FROM commits WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/api')", &diag);
+    try db.exec("DELETE FROM item_revisions WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/api')", &diag);
+    try db.exec("DELETE FROM dataset_items WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/api')", &diag);
+    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/api'", &diag);
+    try db.exec("RESET cid.maintenance", &diag);
+
+    // Auth is checked before anything else.
+    const unauth = cid.api.handle(arena, &deps, "GET", "/v0/datasets/x/-/head", "Bearer wrong", "");
+    try std.testing.expectEqual(std.http.Status.unauthorized, unauth.status);
+
+    // Create the dataset.
+    const created = cid.api.handle(arena, &deps, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/api\",\"git_url\":\"git@example.invalid:d.git\"}");
+    try std.testing.expectEqual(std.http.Status.created, created.status);
+    const again = cid.api.handle(arena, &deps, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/api\",\"git_url\":\"git@example.invalid:d.git\"}");
+    try std.testing.expectEqual(std.http.Status.conflict, again.status);
+
+    // Two contents; their hex hashes.
+    const content_a = "api test content A";
+    const content_b = "api test content B, longer";
+    var dg: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(content_a, &dg, .{});
+    const hash_a = std.fmt.bytesToHex(dg, .lower);
+    std.crypto.hash.sha2.Sha256.hash(content_b, &dg, .{});
+    const hash_b = std.fmt.bytesToHex(dg, .lower);
+
+    // Earlier runs may have uploaded these; start from a clean slate.
+    try s3c.deleteObject(arena, try cid.api.itemKey(arena, &hash_a));
+    try s3c.deleteObject(arena, try cid.api.itemKey(arena, &hash_b));
+
+    // check-hashes says both are missing and hands out presigned PUTs.
+    const check_body = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\",\"{s}\"]}}", .{ &hash_a, &hash_b });
+    const check1 = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/check-hashes", "Bearer test-token", check_body);
+    try std.testing.expectEqual(std.http.Status.ok, check1.status);
+    const Check = struct { missing: []const struct { hash: []const u8, url: []const u8 } };
+    const check1_parsed = try std.json.parseFromSliceLeaky(Check, arena, check1.body, .{});
+    try std.testing.expectEqual(@as(usize, 2), check1_parsed.missing.len);
+
+    // Upload A through its presigned URL with a plain client — no credentials.
+    var plain: std.http.Client = .{ .allocator = std.testing.allocator, .io = io };
+    defer plain.deinit();
+    for (check1_parsed.missing) |m| {
+        if (std.mem.eql(u8, m.hash, &hash_a)) {
+            const put = try plain.fetch(.{ .location = .{ .url = m.url }, .method = .PUT, .payload = content_a, .raw_uri = true, .keep_alive = false });
+            try std.testing.expectEqual(std.http.Status.ok, put.status);
+        }
+    }
+    const check2 = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/check-hashes", "Bearer test-token", check_body);
+    const check2_parsed = try std.json.parseFromSliceLeaky(Check, arena, check2.body, .{});
+    try std.testing.expectEqual(@as(usize, 1), check2_parsed.missing.len);
+    try std.testing.expectEqualStrings(&hash_b, check2_parsed.missing[0].hash);
+
+    // First push: one commit adding a.txt (content A, already uploaded).
+    const id1 = cid.uuid7.Uuid.now(io).toString();
+    const push1_body = try std.fmt.allocPrint(arena,
+        \\{{"branch":"main","commits":[{{"id":"{s}","parent":null,"message":"first","author":"user:test","authored_at_ms":1760000000000,"changes":[{{"op":"add","path":"a.txt","hash":"{s}","size":18}}]}}]}}
+    , .{ &id1, &hash_a });
+    const push1 = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/push", "Bearer test-token", push1_body);
+    try std.testing.expectEqual(std.http.Status.ok, push1.status);
+
+    // A second root push is stale: forward-only refuses it with the pull hint.
+    const id_stale = cid.uuid7.Uuid.now(io).toString();
+    const stale_body = try std.fmt.allocPrint(arena,
+        \\{{"branch":"main","commits":[{{"id":"{s}","parent":null,"message":"stale","author":"user:test","authored_at_ms":1760000000000,"changes":[{{"op":"add","path":"a.txt","hash":"{s}","size":18}}]}}]}}
+    , .{ &id_stale, &hash_a });
+    const stale = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/push", "Bearer test-token", stale_body);
+    try std.testing.expectEqual(std.http.Status.conflict, stale.status);
+    try std.testing.expect(std.mem.indexOf(u8, stale.body, "cid pull") != null);
+
+    // Pushing content that is not in storage is refused before anything lands.
+    const id2 = cid.uuid7.Uuid.now(io).toString();
+    const push2_body = try std.fmt.allocPrint(arena,
+        \\{{"branch":"main","commits":[{{"id":"{s}","parent":"{s}","message":"second","author":"user:test","authored_at_ms":1760000001000,"changes":[{{"op":"add","path":"b.txt","hash":"{s}","size":26}},{{"op":"delete","path":"a.txt"}}]}}]}}
+    , .{ &id2, &id1, &hash_b });
+    const missing = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/push", "Bearer test-token", push2_body);
+    try std.testing.expectEqual(std.http.Status.unprocessable_entity, missing.status);
+
+    // Upload B, retry: same body now lands.
+    const key_b = try cid.api.itemKey(arena, &hash_b);
+    try s3c.putObject(arena, key_b, content_b);
+    const push2 = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/push", "Bearer test-token", push2_body);
+    try std.testing.expectEqual(std.http.Status.ok, push2.status);
+
+    // head and state: only b.txt remains after the delete.
+    const head_res = cid.api.handle(arena, &deps, "GET", "/v0/datasets/" ++ name ++ "/-/head?branch=main", "Bearer test-token", "");
+    const Head = struct { commit: ?[]const u8 };
+    const head_parsed = try std.json.parseFromSliceLeaky(Head, arena, head_res.body, .{});
+    try std.testing.expectEqualStrings(&id2, head_parsed.commit.?);
+
+    const state_target = try std.fmt.allocPrint(arena, "/v0/datasets/{s}/-/state/{s}", .{ name, &id2 });
+    const state_res = cid.api.handle(arena, &deps, "GET", state_target, "Bearer test-token", "");
+    try std.testing.expectEqual(std.http.Status.ok, state_res.status);
+    const State = struct { commit: []const u8, items: []const struct { path: []const u8, hash: []const u8, size: u64 } };
+    const state_parsed = try std.json.parseFromSliceLeaky(State, arena, state_res.body, .{});
+    try std.testing.expectEqual(@as(usize, 1), state_parsed.items.len);
+    try std.testing.expectEqualStrings("b.txt", state_parsed.items[0].path);
+    try std.testing.expectEqualStrings(&hash_b, state_parsed.items[0].hash);
+    try std.testing.expectEqual(@as(u64, 26), state_parsed.items[0].size);
+
+    // State at the first commit still shows a.txt: history is intact.
+    const state1_target = try std.fmt.allocPrint(arena, "/v0/datasets/{s}/-/state/{s}", .{ name, &id1 });
+    const state1_parsed = try std.json.parseFromSliceLeaky(State, arena, cid.api.handle(arena, &deps, "GET", state1_target, "Bearer test-token", "").body, .{});
+    try std.testing.expectEqual(@as(usize, 1), state1_parsed.items.len);
+    try std.testing.expectEqualStrings("a.txt", state1_parsed.items[0].path);
+
+    // downloads: a presigned GET for B round-trips the bytes.
+    const dl_body = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\"]}}", .{&hash_b});
+    const dl = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/downloads", "Bearer test-token", dl_body);
+    const Dl = struct { downloads: []const struct { hash: []const u8, url: []const u8 } };
+    const dl_parsed = try std.json.parseFromSliceLeaky(Dl, arena, dl.body, .{});
+    var aw: std.Io.Writer.Allocating = .init(arena);
+    const got = try plain.fetch(.{ .location = .{ .url = dl_parsed.downloads[0].url }, .raw_uri = true, .keep_alive = false, .response_writer = &aw.writer });
+    try std.testing.expectEqual(std.http.Status.ok, got.status);
+    try std.testing.expectEqualSlices(u8, content_b, aw.writer.buffered());
+
+    // log: both commits, newest first.
+    const log_res = cid.api.handle(arena, &deps, "GET", "/v0/datasets/" ++ name ++ "/-/log?branch=main", "Bearer test-token", "");
+    const Log = struct { commits: []const struct { id: []const u8, parent: ?[]const u8, message: []const u8, author: []const u8, authored_at_ms: u64 } };
+    const log_parsed = try std.json.parseFromSliceLeaky(Log, arena, log_res.body, .{});
+    try std.testing.expectEqual(@as(usize, 2), log_parsed.commits.len);
+    try std.testing.expectEqualStrings("second", log_parsed.commits[0].message);
+    try std.testing.expectEqualStrings(&id1, log_parsed.commits[0].parent.?);
 }
 
 test "append-only history and immovable releases, enforced by the database" {

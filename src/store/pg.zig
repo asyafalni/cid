@@ -97,11 +97,58 @@ pub const Db = struct {
         return out;
     }
 
+    /// Run a query with text parameters; the caller reads rows and calls
+    /// `deinit`. Values borrow from the result until then.
+    pub fn query(
+        self: *Db,
+        sql: [:0]const u8,
+        params: []const [:0]const u8,
+        diag: ?*Diag,
+    ) Error!Rows {
+        var values: [16][*c]const u8 = undefined;
+        std.debug.assert(params.len <= values.len);
+        for (params, 0..) |p, i| values[i] = p.ptr;
+        const res = c.PQexecParams(
+            self.conn,
+            sql.ptr,
+            @intCast(params.len),
+            null,
+            &values,
+            null,
+            null,
+            0,
+        ) orelse return error.QueryFailed;
+        errdefer c.PQclear(res);
+        try self.checkResult(res, diag);
+        return .{ .res = res };
+    }
+
     fn checkResult(self: *Db, res: *c.PGresult, diag: ?*Diag) Error!void {
         const status = c.PQresultStatus(res);
         if (status == c.PGRES_COMMAND_OK or status == c.PGRES_TUPLES_OK) return;
         if (diag) |d| d.set(c.PQerrorMessage(self.conn));
         return error.QueryFailed;
+    }
+};
+
+pub const Rows = struct {
+    res: *c.PGresult,
+
+    pub fn deinit(self: *Rows) void {
+        c.PQclear(self.res);
+    }
+
+    pub fn count(self: *const Rows) usize {
+        return @intCast(c.PQntuples(self.res));
+    }
+
+    pub fn get(self: *const Rows, row: usize, col: usize) []const u8 {
+        const v = c.PQgetvalue(self.res, @intCast(row), @intCast(col));
+        return std.mem.span(@as([*:0]const u8, @ptrCast(v)));
+    }
+
+    pub fn isNull(self: *const Rows, row: usize, col: usize) bool {
+        return c.PQgetisnull(self.res, @intCast(row), @intCast(col)) != 0;
     }
 };
 

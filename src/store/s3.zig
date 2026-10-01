@@ -322,6 +322,9 @@ pub const Client = struct {
             .method = std.meta.stringToEnum(std.http.Method, method) orelse return error.RequestFailed,
             .payload = payload,
             .raw_uri = true,
+            // One connection per request: reusing pooled connections to
+            // SeaweedFS has produced rare hangs under Zig 0.16's client.
+            .keep_alive = false,
             .response_writer = response_writer,
             .extra_headers = &.{
                 .{ .name = "x-amz-content-sha256", .value = payload_hash },

@@ -11,6 +11,8 @@ pub const cli_commit = @import("cli/commit.zig");
 pub const cli_status = @import("cli/status.zig");
 pub const pg = @import("store/pg.zig");
 pub const s3 = @import("store/s3.zig");
+pub const api = @import("server/api.zig");
+pub const serve = @import("server/serve.zig");
 pub const migrate = @import("core/migrate.zig");
 pub const uuid7 = @import("util/uuid7.zig");
 pub const client = struct {
@@ -38,6 +40,8 @@ test {
     _ = admin;
     _ = pg;
     _ = s3;
+    _ = api;
+    _ = serve;
     _ = migrate;
     _ = uuid7;
     _ = client.index;
