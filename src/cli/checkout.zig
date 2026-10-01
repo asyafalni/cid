@@ -8,6 +8,11 @@ const workspace = @import("../client/workspace.zig");
 const sync = @import("../client/sync.zig");
 
 pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCode {
+    // During a conflicted pull: 'cid checkout --mine|--theirs <path>...'.
+    if (args.len >= 1 and (std.mem.eql(u8, args[0], "--mine") or std.mem.eql(u8, args[0], "--theirs"))) {
+        return decide(ctx, args);
+    }
+
     if (args.len != 1)
         return common.fail(ctx, .usage, "run 'cid checkout <release|commit>' with a name or id from 'cid log'.", .{});
     const target = args[0];
@@ -43,6 +48,32 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     ctx.out.print("Switched to {s}: {d} file{s} changed. 'cid pull' returns to the latest.\n", .{
         commit_id[0..@min(13, commit_id.len)], changed, plural(changed),
     }) catch return .network;
+    return .ok;
+}
+
+fn decide(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCode {
+    const choice: sync.Choice = if (std.mem.eql(u8, args[0], "--mine")) .mine else .theirs;
+    if (args.len < 2)
+        return common.fail(ctx, .usage, "name the file, e.g. 'cid checkout {s} data.csv'.", .{args[0]});
+
+    var ws = common.openWorkspace(ctx) catch
+        return common.fail(ctx, .usage, common.not_a_dataset_msg, .{});
+
+    var remaining: usize = 0;
+    for (args[1..]) |path| {
+        const result = sync.decide(ctx.arena, ctx.io, &ws, path, choice) catch
+            return common.fail(ctx, .integrity, ".cid/ state is unreadable. Run 'cid status' for details.", .{});
+        switch (result) {
+            .no_conflicts => return common.fail(ctx, .usage, "no conflicted pull is in progress. Run 'cid pull'.", .{}),
+            .unknown_path => return common.fail(ctx, .usage, "'{s}' is not one of the conflicted files. Run 'cid pull' to list them.", .{path}),
+            .remaining => |n| remaining = n,
+        }
+    }
+    if (remaining == 0) {
+        ctx.out.writeAll("Every conflict is decided. Run 'cid pull' to finish.\n") catch return .network;
+    } else {
+        ctx.out.print("{d} file{s} still undecided. Run 'cid pull' to list them.\n", .{ remaining, plural(@intCast(remaining)) }) catch return .network;
+    }
     return .ok;
 }
 

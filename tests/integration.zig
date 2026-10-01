@@ -472,13 +472,70 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     const push3 = try cid.client.sync.push(arena, io, &rws, reader_cache.dir, &remote);
     try std.testing.expectEqual(@as(u32, 1), push3.pushed_commits);
 
-    // …which makes the producer stale: its next push must be refused, and
-    // its pull must refuse to guess while it holds unpushed commits.
+    // …which makes the producer stale: its next push must be refused.
     try producer.dir.writeFile(io, .{ .sub_path = "d.txt", .data = "d" });
     _ = try cid.client.workspace.add(arena, io, &pws, producer_cache.dir, &.{"."});
-    _ = try cid.client.workspace.commit(arena, io, &pws, "will be stale", "user:producer");
+    _ = try cid.client.workspace.commit(arena, io, &pws, "add d", "user:producer");
     try std.testing.expectError(error.Stale, cid.client.sync.push(arena, io, &pws, producer_cache.dir, &remote));
-    try std.testing.expectError(error.UnpushedCommits, cid.client.sync.pull(arena, io, &pws, producer_cache.dir, &remote));
+
+    // Different files on each side: pull replays automatically.
+    const replayed = try cid.client.sync.pull(arena, io, &pws, producer_cache.dir, &remote);
+    try std.testing.expect(replayed == .replayed);
+    try std.testing.expectEqual(@as(u32, 1), replayed.replayed.commits);
+    try std.testing.expectEqualSlices(u8, "my local edit", try readWholeFile(io, producer.dir, "a.txt", arena));
+    try std.testing.expectEqualSlices(u8, "d", try readWholeFile(io, producer.dir, "d.txt", arena));
+    const after_replay = try cid.client.sync.push(arena, io, &pws, producer_cache.dir, &remote);
+    try std.testing.expectEqual(@as(u32, 1), after_replay.pushed_commits);
+    // The reader follows; both sit on the same head now.
+    _ = try cid.client.sync.pull(arena, io, &rws, reader_cache.dir, &remote);
+
+    // The same file on both sides: pull lists the conflict and merges nothing.
+    try reader_dir.dir.writeFile(io, .{ .sub_path = "d.txt", .data = "reader version of d" });
+    _ = try cid.client.workspace.add(arena, io, &rws, reader_cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &rws, "reader d", "user:reader");
+    _ = try cid.client.sync.push(arena, io, &rws, reader_cache.dir, &remote);
+    try producer.dir.writeFile(io, .{ .sub_path = "d.txt", .data = "producer version of d" });
+    try producer.dir.writeFile(io, .{ .sub_path = "e.txt", .data = "e is peaceful" });
+    _ = try cid.client.workspace.add(arena, io, &pws, producer_cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "producer d and e", "user:producer");
+
+    const conflicted = try cid.client.sync.pull(arena, io, &pws, producer_cache.dir, &remote);
+    try std.testing.expect(conflicted == .conflicts);
+    try std.testing.expectEqual(@as(usize, 1), conflicted.conflicts.len);
+    try std.testing.expectEqualStrings("d.txt", conflicted.conflicts[0].path);
+    // Nothing merged: the working file still holds the producer's version.
+    try std.testing.expectEqualSlices(u8, "producer version of d", try readWholeFile(io, producer.dir, "d.txt", arena));
+
+    // Take theirs: the local change to d.txt is dropped, e.txt survives.
+    const decided = try cid.client.sync.decide(arena, io, &pws, "d.txt", .theirs);
+    try std.testing.expectEqual(@as(usize, 0), decided.remaining);
+    const resolved = try cid.client.sync.pull(arena, io, &pws, producer_cache.dir, &remote);
+    try std.testing.expect(resolved == .replayed);
+    try std.testing.expectEqualSlices(u8, "reader version of d", try readWholeFile(io, producer.dir, "d.txt", arena));
+    try std.testing.expectEqualSlices(u8, "e is peaceful", try readWholeFile(io, producer.dir, "e.txt", arena));
+    _ = try cid.client.sync.push(arena, io, &pws, producer_cache.dir, &remote);
+
+    // And the mirror case, keeping mine.
+    _ = try cid.client.sync.pull(arena, io, &rws, reader_cache.dir, &remote);
+    try reader_dir.dir.writeFile(io, .{ .sub_path = "e.txt", .data = "reader e" });
+    _ = try cid.client.workspace.add(arena, io, &rws, reader_cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &rws, "reader e", "user:reader");
+    _ = try cid.client.sync.push(arena, io, &rws, reader_cache.dir, &remote);
+    try producer.dir.writeFile(io, .{ .sub_path = "e.txt", .data = "producer e wins" });
+    _ = try cid.client.workspace.add(arena, io, &pws, producer_cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "producer e", "user:producer");
+    const conflicted2 = try cid.client.sync.pull(arena, io, &pws, producer_cache.dir, &remote);
+    try std.testing.expect(conflicted2 == .conflicts);
+    _ = try cid.client.sync.decide(arena, io, &pws, "e.txt", .mine);
+    const resolved2 = try cid.client.sync.pull(arena, io, &pws, producer_cache.dir, &remote);
+    try std.testing.expect(resolved2 == .replayed);
+    try std.testing.expectEqual(@as(u32, 1), resolved2.replayed.commits);
+    try std.testing.expectEqualSlices(u8, "producer e wins", try readWholeFile(io, producer.dir, "e.txt", arena));
+    const final_push = try cid.client.sync.push(arena, io, &pws, producer_cache.dir, &remote);
+    try std.testing.expectEqual(@as(u32, 1), final_push.pushed_commits);
+    const reader_final = try cid.client.sync.pull(arena, io, &rws, reader_cache.dir, &remote);
+    try std.testing.expect(reader_final == .fast_forwarded);
+    try std.testing.expectEqualSlices(u8, "producer e wins", try readWholeFile(io, reader_dir.dir, "e.txt", arena));
 }
 
 test "releases: tag, immutability, verify green, verify catches corruption" {

@@ -3,6 +3,7 @@
 const std = @import("std");
 const common = @import("common.zig");
 const workspace = @import("../client/workspace.zig");
+const sync = @import("../client/sync.zig");
 
 pub fn run(ctx: *const common.Context) common.ExitCode {
     var ws = common.openWorkspace(ctx) catch
@@ -13,6 +14,14 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
 
     const out = ctx.out;
     print(out, st) catch return .network;
+
+    if (sync.pendingConflicts(ctx.arena, ctx.io, &ws)) |conflicts| {
+        var undecided: usize = 0;
+        for (conflicts) |c| {
+            if (c.choice == .undecided) undecided += 1;
+        }
+        out.print("\nA pull is waiting on conflict decisions ({d} of {d} files undecided).\nRun 'cid pull' to list them.\n", .{ undecided, conflicts.len }) catch return .network;
+    }
     return .ok;
 }
 

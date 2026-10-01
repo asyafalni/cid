@@ -2,10 +2,12 @@
 //! local folder and the server. Content rides presigned URLs; history
 //! rides the API. Every downloaded file is hash-verified before it lands.
 //!
-//! v0 limits, stated loudly where they bite: pull cannot yet replay
-//! unpushed local commits onto new server history (it says so and asks
-//! you to push or wait for that slice), and branches beyond the current
-//! one are untouched.
+//! Pull fast-forwards when the folder has nothing unpushed, and otherwise
+//! REPLAYS the unpushed commits onto the server's new history: when both
+//! sides touched different files this is automatic; when the same file
+//! changed on both sides, pull lists the conflicts and a person decides
+//! per path with 'cid checkout --mine|--theirs <path>' (invariant: nothing
+//! is merged silently). Branches beyond the current one are untouched.
 
 const std = @import("std");
 const workspace = @import("workspace.zig");
@@ -18,7 +20,7 @@ pub const Remote = remote_mod.Remote;
 
 pub const Error = error{
     EmptyDataset,
-    UnpushedCommits,
+    StagedChanges,
     LocalChangesInTheWay,
     CorruptLocalState,
 } || remote_mod.Error || remote_mod.TransferError || std.mem.Allocator.Error;
@@ -121,11 +123,17 @@ pub fn clone(
 pub const PullOutcome = union(enum) {
     already_up_to_date,
     fast_forwarded: struct { files_changed: u32, head_commit: []const u8 },
+    replayed: struct { commits: u32, files_changed: u32, head_commit: []const u8 },
+    /// Same files changed on both sides; a person decides per path.
+    conflicts: []const Conflict,
 };
 
-/// Fast-forwards the folder to the server head. Local unstaged edits on
-/// affected paths stop the pull (nothing is overwritten silently), and
-/// unpushed commits stop it too until replay lands.
+pub const Choice = enum { undecided, mine, theirs };
+pub const Conflict = struct { path: []const u8, choice: Choice };
+
+/// Brings the folder up to the server head. With unpushed commits it
+/// replays them on top; overlapping file changes become conflicts that
+/// must each be decided before the pull completes.
 pub fn pull(
     arena: std.mem.Allocator,
     io: std.Io,
@@ -136,19 +144,223 @@ pub fn pull(
     const server_head = (try remote.head(arena, "main")) orelse return error.EmptyDataset;
     const head = local.loadHead(arena, io, ws.cid_dir) catch return error.CorruptLocalState;
     if (head.commit) |c| {
-        if (std.mem.eql(u8, &c.toString(), server_head)) return .already_up_to_date;
+        if (std.mem.eql(u8, &c.toString(), server_head)) {
+            deletePullState(io, ws);
+            return .already_up_to_date;
+        }
     }
+    if (try stagedCount(arena, io, ws) > 0) return error.StagedChanges;
 
     const last_pushed = local.readLastPushed(arena, io, ws.cid_dir);
-    const unpushed = local.listUnpushed(arena, io, ws.cid_dir, last_pushed) catch
+    const unpushed_newest_first = local.listUnpushed(arena, io, ws.cid_dir, last_pushed) catch
         return error.CorruptLocalState;
-    if (unpushed.len > 0) return error.UnpushedCommits;
 
-    const items = try remote.state(arena, server_head);
-    const changed = try materialize(arena, io, ws, cache_dir, remote, items);
-    try setPosition(io, ws, server_head);
+    if (unpushed_newest_first.len == 0) {
+        const items = try remote.state(arena, server_head);
+        const changed = try materialize(arena, io, ws, cache_dir, remote, items);
+        try setPosition(io, ws, server_head);
+        local.writeLastPushed(io, ws.cid_dir, server_head) catch return error.CorruptLocalState;
+        deletePullState(io, ws);
+        return .{ .fast_forwarded = .{ .files_changed = changed, .head_commit = server_head } };
+    }
+
+    // Replay. Oldest first.
+    const unpushed = try arena.alloc(local.Commit, unpushed_newest_first.len);
+    for (unpushed, 0..) |*slot, i| slot.* = unpushed_newest_first[unpushed_newest_first.len - 1 - i];
+
+    const server_state = try remote.state(arena, server_head);
+    const base_state: []const remote_mod.Remote.StateItem = if (last_pushed) |base|
+        try remote.state(arena, base)
+    else
+        &.{};
+
+    // What each side changed since the common base.
+    var server_changed: std.StringArrayHashMapUnmanaged(void) = .empty;
+    for (server_state) |item| {
+        const in_base = findState(base_state, item.path);
+        if (in_base == null or !std.mem.eql(u8, in_base.?.hash, item.hash))
+            try server_changed.put(arena, item.path, {});
+    }
+    for (base_state) |item| {
+        if (findState(server_state, item.path) == null)
+            try server_changed.put(arena, item.path, {});
+    }
+
+    const LocalChange = union(enum) { add: struct { hash_hex: [64]u8, size: u64 }, delete };
+    var local_map: std.StringArrayHashMapUnmanaged(LocalChange) = .empty;
+    for (unpushed) |commit| {
+        for (commit.changes) |ch| {
+            switch (ch.op) {
+                .add => try local_map.put(arena, ch.path, .{ .add = .{ .hash_hex = ch.hash_hex, .size = ch.size } }),
+                .delete => try local_map.put(arena, ch.path, .delete),
+            }
+        }
+    }
+
+    // Conflicts: both sides changed the path, differently. Identical
+    // changes resolve themselves.
+    var conflicts: std.StringArrayHashMapUnmanaged(Choice) = .empty;
+    for (local_map.keys()) |path| {
+        if (server_changed.get(path) == null) continue;
+        const server_item = findState(server_state, path);
+        const same = switch (local_map.get(path).?) {
+            .add => |a| server_item != null and std.mem.eql(u8, server_item.?.hash, &a.hash_hex),
+            .delete => server_item == null,
+        };
+        if (same) {
+            _ = local_map.swapRemove(path);
+        } else {
+            try conflicts.put(arena, path, .undecided);
+        }
+    }
+
+    // Fold in earlier decisions for paths still in conflict.
+    if (loadPullState(arena, io, ws)) |prior| {
+        for (prior) |c| {
+            if (conflicts.getPtr(c.path)) |slot| slot.* = c.choice;
+        }
+    }
+
+    var undecided: usize = 0;
+    for (conflicts.values()) |choice| {
+        if (choice == .undecided) undecided += 1;
+    }
+    if (undecided > 0) {
+        try savePullState(arena, io, ws, conflicts);
+        const out = try arena.alloc(Conflict, conflicts.count());
+        for (out, conflicts.keys(), conflicts.values()) |*slot, path, choice| {
+            slot.* = .{ .path = path, .choice = choice };
+        }
+        return .{ .conflicts = out };
+    }
+
+    // Decided: 'theirs' drops the local change for that path.
+    for (conflicts.keys(), conflicts.values()) |path, choice| {
+        if (choice == .theirs) _ = local_map.swapRemove(path);
+    }
+
+    // Target tree = server state overridden by the surviving local changes.
+    var target: std.StringArrayHashMapUnmanaged(remote_mod.Remote.StateItem) = .empty;
+    for (server_state) |item| try target.put(arena, item.path, item);
+    for (local_map.keys(), local_map.values()) |path, change| {
+        switch (change) {
+            .add => |a| try target.put(arena, path, .{ .path = path, .hash = try arena.dupe(u8, &a.hash_hex), .size = a.size }),
+            .delete => _ = target.swapRemove(path),
+        }
+    }
+    const changed = try materialize(arena, io, ws, cache_dir, remote, target.values());
+
+    // Rewrite the unpushed commits onto the new base: strip dropped paths,
+    // skip commits that became empty, remint ids strictly after the server
+    // head so ordering holds.
+    const Uuid = @import("../util/uuid7.zig").Uuid;
+    var prev = Uuid.parse(server_head) catch return error.CorruptLocalState;
+    var kept: u32 = 0;
+    for (unpushed) |commit| {
+        var kept_changes: std.ArrayList(local.Change) = .empty;
+        for (commit.changes) |ch| {
+            const still_mine = switch (local_map.get(ch.path) orelse continue) {
+                .add => |a| ch.op == .add and std.mem.eql(u8, &a.hash_hex, &ch.hash_hex),
+                .delete => ch.op == .delete,
+            };
+            // Keep only the final surviving change for each path, in the
+            // commit where it was made last.
+            if (still_mine) try kept_changes.append(arena, ch);
+        }
+        deleteCommitFile(io, ws, commit.id);
+        if (kept_changes.items.len == 0) continue;
+        const new_id = Uuid.nextAfter(io, prev);
+        const rewritten: local.Commit = .{
+            .id = new_id,
+            .parent = prev,
+            .branch = commit.branch,
+            .author = commit.author,
+            .authored_at_ms = commit.authored_at_ms,
+            .message = commit.message,
+            .changes = kept_changes.items,
+        };
+        local.saveCommit(arena, io, ws.cid_dir, rewritten) catch return error.CorruptLocalState;
+        prev = new_id;
+        kept += 1;
+    }
+
+    local.saveHead(io, ws.cid_dir, .{ .branch = "main", .commit = prev }) catch
+        return error.CorruptLocalState;
     local.writeLastPushed(io, ws.cid_dir, server_head) catch return error.CorruptLocalState;
-    return .{ .fast_forwarded = .{ .files_changed = changed, .head_commit = server_head } };
+
+    // The replayed commits' changes are part of the folder again: tracked
+    // must reflect them (materialize already wrote the merged tree).
+    deletePullState(io, ws);
+    return .{ .replayed = .{ .commits = kept, .files_changed = changed, .head_commit = server_head } };
+}
+
+/// 'cid checkout --mine|--theirs <path>': records one decision for a
+/// conflicted pull. Returns how many paths are still undecided.
+pub fn decide(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    ws: *workspace.Workspace,
+    path: []const u8,
+    choice: Choice,
+) Error!union(enum) { remaining: usize, no_conflicts, unknown_path } {
+    const prior = loadPullState(arena, io, ws) orelse return .no_conflicts;
+    var map: std.StringArrayHashMapUnmanaged(Choice) = .empty;
+    for (prior) |c| try map.put(arena, c.path, c.choice);
+    const slot = map.getPtr(path) orelse return .unknown_path;
+    slot.* = choice;
+    try savePullState(arena, io, ws, map);
+    var remaining: usize = 0;
+    for (map.values()) |c| {
+        if (c == .undecided) remaining += 1;
+    }
+    return .{ .remaining = remaining };
+}
+
+pub fn pendingConflicts(arena: std.mem.Allocator, io: std.Io, ws: *workspace.Workspace) ?[]const Conflict {
+    return loadPullState(arena, io, ws);
+}
+
+// --- pull-state: .cid/pull-state, one conflict per line -------------------
+
+fn loadPullState(arena: std.mem.Allocator, io: std.Io, ws: *workspace.Workspace) ?[]const Conflict {
+    const text = ws.cid_dir.readFileAlloc(io, "pull-state", arena, .limited(16 * 1024 * 1024)) catch return null;
+    var out: std.ArrayList(Conflict) = .empty;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    const header = lines.next() orelse return null;
+    if (!std.mem.eql(u8, header, "cid-pull 1")) return null;
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const tab = std.mem.indexOfScalar(u8, line, '\t') orelse return null;
+        const choice = std.meta.stringToEnum(Choice, line[0..tab]) orelse return null;
+        out.append(arena, .{ .path = line[tab + 1 ..], .choice = choice }) catch return null;
+    }
+    return out.items;
+}
+
+fn savePullState(arena: std.mem.Allocator, io: std.Io, ws: *workspace.Workspace, map: std.StringArrayHashMapUnmanaged(Choice)) Error!void {
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(arena, "cid-pull 1\n");
+    for (map.keys(), map.values()) |path, choice| {
+        try out.print(arena, "{t}\t{s}\n", .{ choice, path });
+    }
+    local.writeFileAtomic(io, ws.cid_dir, "pull-state", out.items) catch return error.CorruptLocalState;
+}
+
+fn deletePullState(io: std.Io, ws: *workspace.Workspace) void {
+    ws.cid_dir.deleteFile(io, "pull-state") catch {};
+}
+
+fn deleteCommitFile(io: std.Io, ws: *workspace.Workspace, id: anytype) void {
+    var buf: [64]u8 = undefined;
+    const name = std.fmt.bufPrint(&buf, "commits/{s}", .{&id.toString()}) catch return;
+    ws.cid_dir.deleteFile(io, name) catch {};
+}
+
+fn stagedCount(arena: std.mem.Allocator, io: std.Io, ws: *workspace.Workspace) Error!usize {
+    const text = ws.cid_dir.readFileAlloc(io, "index", arena, .limited(256 * 1024 * 1024)) catch
+        return error.CorruptLocalState;
+    const idx = index_mod.Index.parse(arena, text) catch return error.CorruptLocalState;
+    return idx.len();
 }
 
 /// Switches the folder to any commit. The same safety rules as pull.

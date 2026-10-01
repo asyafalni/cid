@@ -18,7 +18,7 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
         return common.fail(ctx, .usage, common.no_server_msg, .{});
 
     const outcome = sync.pull(ctx.arena, ctx.io, &ws, cache_dir, remote) catch |err| switch (err) {
-        error.UnpushedCommits => return common.fail(ctx, .conflict, "you have local commits not pushed. Run 'cid push' first. (Replaying them onto new history is not built yet.)", .{}),
+        error.StagedChanges => return common.fail(ctx, .conflict, "you have staged changes. Commit them ('cid commit -m \"...\"') or unstage ('cid restore --staged'), then run 'cid pull' again.", .{}),
         error.LocalChangesInTheWay => return common.fail(ctx, .conflict, "local edits would be overwritten. Commit them ('cid commit -a -m \"...\"') or move them aside, then run 'cid pull' again.", .{}),
         error.EmptyDataset => return common.fail(ctx, .usage, "the server has nothing for this dataset yet. Run 'cid push' first.", .{}),
         error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server. Check CID_SERVER, then run 'cid pull' again.", .{}),
@@ -31,6 +31,28 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
         .fast_forwarded => |ff| ctx.out.print("Updated to {s}: {d} file{s} changed.\n", .{
             ff.head_commit[0..13], ff.files_changed, plural(ff.files_changed),
         }) catch return .network,
+        .replayed => |r| ctx.out.print("Updated to {s} and replayed {d} local commit{s} on top ({d} file{s} changed). Run 'cid push' when ready.\n", .{
+            r.head_commit[0..13], r.commits, plural(r.commits), r.files_changed, plural(r.files_changed),
+        }) catch return .network,
+        .conflicts => |list| {
+            var buf: [4096]u8 = undefined;
+            var stderr_writer = std.Io.File.stderr().writer(ctx.io, &buf);
+            const err_w = &stderr_writer.interface;
+            err_w.writeAll("cid: you and the server changed the same files; nothing was merged.\n") catch {};
+            for (list) |c| {
+                switch (c.choice) {
+                    .undecided => err_w.print("  both changed  {s}\n", .{c.path}) catch {},
+                    .mine => err_w.print("  keeping yours {s}\n", .{c.path}) catch {},
+                    .theirs => err_w.print("  taking theirs {s}\n", .{c.path}) catch {},
+                }
+            }
+            err_w.writeAll(
+                "Decide each file with 'cid checkout --mine <path>' (keep yours) or\n" ++
+                    "'cid checkout --theirs <path>' (take the server's), then run 'cid pull' again.\n",
+            ) catch {};
+            err_w.flush() catch {};
+            return .conflict;
+        },
     }
     return .ok;
 }
