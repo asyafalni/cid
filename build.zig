@@ -10,17 +10,6 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
 
-    // libpq built from source by the Zig build system (allyourcodebase/libpq,
-    // pinned in build.zig.zon). SSL off: the database is reached over
-    // localhost or a private network behind the reverse proxy.
-    const libpq_dep = b.dependency("libpq", .{
-        .target = target,
-        .optimize = optimize,
-        .ssl = .None,
-        .@"disable-zlib" = true,
-        .@"disable-zstd" = true,
-    });
-
     // Nilo (pinned commit; CLAUDE.md, Zig conventions): the server's HTTP
     // framework, and its native Postgres driver (.sql fetches pg.zig),
     // which is replacing libpq module by module.
@@ -44,7 +33,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     lib_mod.addOptions("build_options", options);
-    lib_mod.addImport("libpq", libpq_dep.module("libpq"));
     lib_mod.addImport("nilo_http", nilo_dep.module("nilo_http"));
     lib_mod.addImport("nilo_sql", nilo_dep.module("nilo_sql"));
     lib_mod.addImport("migrations", migrations_mod);

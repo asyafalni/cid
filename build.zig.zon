@@ -4,10 +4,6 @@
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0x4b30d9c479f4d7dc,
     .dependencies = .{
-        .libpq = .{
-            .url = "git+https://github.com/allyourcodebase/libpq?ref=5.18.4#925fa037a81952343b255f88f795257a8006f27d",
-            .hash = "libpq-5.18.4-QME6ad0UAQBVEzKd7H4tswrfCnTZB_1Kjw09tXeUKQK1",
-        },
         .nilo = .{
             .url = "git+https://github.com/nevindra/nilo#1016ceeddd582591f64e6d043f3861c9a83cd59e",
             .hash = "nilo-0.6.0-5HEqwqoieQCmWzbKOpReqUb60nEMm_T1cO50oZI_BraS",

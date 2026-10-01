@@ -494,7 +494,7 @@ src/client/index.zig         staging area (.cid/index)
 src/client/local.zig         local commits, HEAD, resumable push state
 src/client/sync.zig          push, pull, replaying unpushed commits, conflict listing
 src/server/                  HTTP API (Nilo), tokens and permissions, presigned URLs, uploads
-src/store/pg.zig             TimescaleDB via libpq (C interop)
+src/store/db.zig             TimescaleDB via nilo_sql (pg.zig native driver, pooled)
 src/store/s3.zig             minimal S3: GET, PUT, HEAD, multipart, presign, SigV4
 src/manifest/                canonical rows, RFC 8785 JSON, hashing, Parquet via DuckDB C API
 src/media/                   media type detection and metadata (image size, audio length…)
@@ -598,18 +598,19 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
 - **No global state:** pass a `Context` (allocator, config, logger, db/s3 or client).
 - **Streaming I/O** with bounded buffers; hash files while uploading; batch DB work
   (about 5,000 rows).
-- **C libraries allowed:** libpq and DuckDB only. SHA-256, HMAC, JSON, UUIDv7 and media
+- **C libraries allowed:** DuckDB only. SHA-256, HMAC, JSON, UUIDv7 and media
   metadata come from the Zig standard library or our own small code. New dependencies
   need a written reason.
-- **HTTP framework: Nilo** (`nevindra/nilo`), server side only. The written reason:
-  it is Zig-native (zio fibers), fast, and we have design input into it. Guardrails:
+- **HTTP and Postgres: Nilo** (`nevindra/nilo`), server side only. The written reason:
+  it is Zig-native (zio fibers), fast, and we maintain it ourselves. Guardrails:
   depend on a **pinned commit** (it is pre-1.0 and breaks; the hash in
   build.zig.zon is the lock, and upstream now hash-pins its own `zio`);
-  use it for HTTP only — the lazy SQL drivers stay unfetched because we
-  never pass `.sql = true`, and nothing client-side imports a nilo module;
-  TLS stays at the reverse proxy. serve.zig keeps `api.handle` as the one
-  dispatcher behind two catch-all routes, so the API stays HTTP-free and
-  directly testable.
+  `.sql = true` brings nilo_sql — the native pooled Postgres driver all of
+  cid queries through (src/store/db.zig; libpq is gone) — and nothing
+  client-side imports a nilo module; TLS stays at the reverse proxy.
+  serve.zig keeps `api.handle` as the one dispatcher behind two catch-all
+  routes, so the API stays HTTP-free and directly testable; handlers take
+  the request's Ctx as the query Scope, admin commands and tests a Run.
 - **External programs allowed:** on the server, `ffmpeg` and `vips` (preview worker),
   `git` (dataset repository writer) and OpenSSH `sshd` (front door, runs as its own
   service). In the CLI, the system `ssh` client, exactly as git uses it, plus the

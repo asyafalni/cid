@@ -14,15 +14,29 @@ const rev1 = "018e0000-0000-7000-8000-00000000a001";
 const item1 = "018e0000-0000-7000-8000-00000000b001";
 const commit1 = "018e0000-0000-7000-8000-00000000c001";
 
-fn connect(diag: *cid.pg.Diag) !cid.pg.Db {
-    return cid.pg.Db.connect(conninfo, diag) catch |err| {
+/// The fixture pool each test drives its raw setup SQL through.
+fn openFixture(standalone: *cid.db.Standalone) !void {
+    standalone.open(std.testing.allocator, conninfo) catch |err| {
         std.debug.print(
-            "cid integration: TimescaleDB is not reachable ({s}). " ++
+            "cid integration: TimescaleDB is not reachable ({t}). " ++
                 "Run 'docker compose -f docker-compose.test.yml up -d' first.\n",
-            .{diag.message()},
+            .{err},
         );
         return err;
     };
+    standalone.db.watching(stashProblem);
+}
+
+// nilo's statement watcher is a plain function pointer, and the suite is
+// serial, so the last failure's words land here for expectRefused.
+var problem_buf: [1024]u8 = undefined;
+var problem_len: usize = 0;
+
+fn stashProblem(sent: cid.db.sql.Sent) void {
+    const p = sent.problem orelse return;
+    const n = @min(p.message.len, problem_buf.len);
+    @memcpy(problem_buf[0..n], p.message[0..n]);
+    problem_len = n;
 }
 
 /// Migrations now run through nilo_sql (its own pool, opened and closed
@@ -38,11 +52,14 @@ fn runMigrations() !cid.migrate.Summary {
     return cid.migrate.run(&standalone.db, &scope, &discard.writer);
 }
 
-fn expectRefused(db: *cid.pg.Db, sql: [:0]const u8, needle: []const u8) !void {
-    var diag: cid.pg.Diag = .{};
-    try std.testing.expectError(error.QueryFailed, db.exec(sql, &diag));
-    if (std.mem.indexOf(u8, diag.message(), needle) == null) {
-        std.debug.print("expected error about '{s}', got: {s}\n", .{ needle, diag.message() });
+fn expectRefused(db: *cid.db.sql.Db, scope: anytype, sql: []const u8, needle: []const u8) !void {
+    problem_len = 0;
+    if (db.exec(scope, sql, .{})) |_| {
+        std.debug.print("expected '{s}' to be refused\n", .{sql});
+        return error.NotRefused;
+    } else |_| {}
+    if (std.mem.indexOf(u8, problem_buf[0..problem_len], needle) == null) {
+        std.debug.print("expected error about '{s}', got: {s}\n", .{ needle, problem_buf[0..problem_len] });
         return error.WrongError;
     }
 }
@@ -103,15 +120,14 @@ test "s3: put, head, get, presign round trip against SeaweedFS" {
 }
 
 test "migrations apply from scratch and are idempotent" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
 
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
-
-    try db.exec("DROP SCHEMA public CASCADE; CREATE SCHEMA public", &diag);
+    _ = try db.exec(&fscope, "DROP SCHEMA public CASCADE; CREATE SCHEMA public", .{});
 
     const first = try runMigrations();
     try std.testing.expect(first.total >= 1);
@@ -120,8 +136,8 @@ test "migrations apply from scratch and are idempotent" {
     const second = try runMigrations();
     try std.testing.expectEqual(@as(u32, 0), second.applied);
 
-    const versions = try db.queryInts(arena, "SELECT count(*) FROM schema_migrations", &diag);
-    try std.testing.expectEqual(@as(i64, @intCast(first.total)), versions[0]);
+    const versions = try db.rawExactlyOne(i64, &fscope, "SELECT count(*) FROM schema_migrations", .{});
+    try std.testing.expectEqual(@as(i64, @intCast(first.total)), versions);
 }
 
 test "api: create, check-hashes, push (forward-only), state, downloads, log" {
@@ -130,9 +146,12 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
 
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
     _ = try runMigrations();
 
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
@@ -153,13 +172,13 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     const name = "test/datasets/api";
 
     // Leftovers from earlier runs go through the maintenance escape.
-    try db.exec("SET cid.maintenance = 'on'", &diag);
-    try db.exec("DELETE FROM refs WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/api')", &diag);
-    try db.exec("DELETE FROM commits WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/api')", &diag);
-    try db.exec("DELETE FROM item_revisions WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/api')", &diag);
-    try db.exec("DELETE FROM dataset_items WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/api')", &diag);
-    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/api'", &diag);
-    try db.exec("RESET cid.maintenance", &diag);
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM refs WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/api')", .{});
+    _ = try db.exec(&fscope, "DELETE FROM commits WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/api')", .{});
+    _ = try db.exec(&fscope, "DELETE FROM item_revisions WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/api')", .{});
+    _ = try db.exec(&fscope, "DELETE FROM dataset_items WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/api')", .{});
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/api'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
 
     // Auth is checked before anything else.
     const unauth = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/x/-/head", "Bearer wrong", "");
@@ -279,51 +298,54 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
 }
 
 test "append-only history and immovable releases, enforced by the database" {
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
 
     // Make sure the schema exists (idempotent), then remove this test's
     // leftovers through the maintenance escape hatch.
     _ = try runMigrations();
-    try db.exec("SET cid.maintenance = 'on'", &diag);
-    try db.exec("DELETE FROM refs WHERE dataset_id = '" ++ ds ++ "'", &diag);
-    try db.exec("DELETE FROM commits WHERE dataset_id = '" ++ ds ++ "'", &diag);
-    try db.exec("DELETE FROM item_revisions WHERE dataset_id = '" ++ ds ++ "'", &diag);
-    try db.exec("DELETE FROM datasets WHERE dataset_id = '" ++ ds ++ "'", &diag);
-    try db.exec("RESET cid.maintenance", &diag);
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM refs WHERE dataset_id = '" ++ ds ++ "'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM commits WHERE dataset_id = '" ++ ds ++ "'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM item_revisions WHERE dataset_id = '" ++ ds ++ "'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE dataset_id = '" ++ ds ++ "'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
 
-    try db.exec("INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES ('" ++ ds ++
-        "', 'test/datasets/invariants', 'files', 'git@example.invalid:d.git')", &diag);
-    try db.exec("INSERT INTO item_revisions (rev_id, ts, dataset_id, path, op, item_id, item_hash, author) " ++
+    _ = try db.exec(&fscope, "INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES ('" ++ ds ++
+        "', 'test/datasets/invariants', 'files', 'git@example.invalid:d.git')", .{});
+    _ = try db.exec(&fscope, "INSERT INTO item_revisions (rev_id, ts, dataset_id, path, op, item_id, item_hash, author) " ++
         "VALUES ('" ++ rev1 ++ "', now(), '" ++ ds ++ "', 'a.txt', 'add', '" ++ item1 ++
-        "', decode(repeat('ab', 32), 'hex'), 'user:test')", &diag);
+        "', decode(repeat('ab', 32), 'hex'), 'user:test')", .{});
 
     // Invariant 1: revision history is append-only.
-    try expectRefused(&db, "UPDATE item_revisions SET author = 'evil' WHERE dataset_id = '" ++ ds ++ "'", "append-only");
-    try expectRefused(&db, "DELETE FROM item_revisions WHERE dataset_id = '" ++ ds ++ "'", "append-only");
+    try expectRefused(db, &fscope, "UPDATE item_revisions SET author = 'evil' WHERE dataset_id = '" ++ ds ++ "'", "append-only");
+    try expectRefused(db, &fscope, "DELETE FROM item_revisions WHERE dataset_id = '" ++ ds ++ "'", "append-only");
 
     // Invariant 5: releases never move; branches may.
-    try db.exec("INSERT INTO commits (commit_id, dataset_id, branch, cutoff_rev, message, author, authored_at) " ++
-        "VALUES ('" ++ commit1 ++ "', '" ++ ds ++ "', 'main', '" ++ rev1 ++ "', 'first', 'user:test', now())", &diag);
-    try db.exec("INSERT INTO refs (dataset_id, name, kind, commit_id) VALUES ('" ++ ds ++
-        "', 'v1.0.0', 'release', '" ++ commit1 ++ "')", &diag);
-    try expectRefused(&db, "UPDATE refs SET commit_id = '" ++ commit1 ++ "' WHERE dataset_id = '" ++ ds ++
+    _ = try db.exec(&fscope, "INSERT INTO commits (commit_id, dataset_id, branch, cutoff_rev, message, author, authored_at) " ++
+        "VALUES ('" ++ commit1 ++ "', '" ++ ds ++ "', 'main', '" ++ rev1 ++ "', 'first', 'user:test', now())", .{});
+    _ = try db.exec(&fscope, "INSERT INTO refs (dataset_id, name, kind, commit_id) VALUES ('" ++ ds ++
+        "', 'v1.0.0', 'release', '" ++ commit1 ++ "')", .{});
+    try expectRefused(db, &fscope, "UPDATE refs SET commit_id = '" ++ commit1 ++ "' WHERE dataset_id = '" ++ ds ++
         "' AND name = 'v1.0.0'", "never moves");
-    try expectRefused(&db, "DELETE FROM refs WHERE dataset_id = '" ++ ds ++ "' AND name = 'v1.0.0'", "never moves");
-    try db.exec("INSERT INTO refs (dataset_id, name, kind, commit_id) VALUES ('" ++ ds ++
-        "', 'main', 'branch', '" ++ commit1 ++ "')", &diag);
-    try db.exec("UPDATE refs SET commit_id = '" ++ commit1 ++ "' WHERE dataset_id = '" ++ ds ++
-        "' AND name = 'main'", &diag);
+    try expectRefused(db, &fscope, "DELETE FROM refs WHERE dataset_id = '" ++ ds ++ "' AND name = 'v1.0.0'", "never moves");
+    _ = try db.exec(&fscope, "INSERT INTO refs (dataset_id, name, kind, commit_id) VALUES ('" ++ ds ++
+        "', 'main', 'branch', '" ++ commit1 ++ "')", .{});
+    _ = try db.exec(&fscope, "UPDATE refs SET commit_id = '" ++ commit1 ++ "' WHERE dataset_id = '" ++ ds ++
+        "' AND name = 'main'", .{});
 
     // The platform's role can INSERT revisions and nothing else.
-    try db.exec("SET ROLE cid_writer", &diag);
-    try db.exec("INSERT INTO item_revisions (rev_id, ts, dataset_id, path, op, item_id, item_hash, author) " ++
+    _ = try db.exec(&fscope, "SET ROLE cid_writer", .{});
+    _ = try db.exec(&fscope, "INSERT INTO item_revisions (rev_id, ts, dataset_id, path, op, item_id, item_hash, author) " ++
         "VALUES ('018e0000-0000-7000-8000-00000000a002', now(), '" ++ ds ++ "', 'b.txt', 'add', " ++
-        "'018e0000-0000-7000-8000-00000000b002', decode(repeat('cd', 32), 'hex'), 'agent:annotator')", &diag);
-    try expectRefused(&db, "UPDATE item_revisions SET author = 'evil' WHERE dataset_id = '" ++ ds ++ "'", "permission denied");
-    try expectRefused(&db, "INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES (gen_random_uuid(), 'x/y', 'files', 'g')", "permission denied");
-    try db.exec("RESET ROLE", &diag);
+        "'018e0000-0000-7000-8000-00000000b002', decode(repeat('cd', 32), 'hex'), 'agent:annotator')", .{});
+    try expectRefused(db, &fscope, "UPDATE item_revisions SET author = 'evil' WHERE dataset_id = '" ++ ds ++ "'", "permission denied");
+    try expectRefused(db, &fscope, "INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES (gen_random_uuid(), 'x/y', 'files', 'g')", "permission denied");
+    _ = try db.exec(&fscope, "RESET ROLE", .{});
 }
 
 // ---------------------------------------------------------------------------
@@ -364,9 +386,12 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
 
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
     _ = try runMigrations();
 
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
@@ -397,12 +422,12 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     }
 
     // Clean slate for this dataset.
-    try db.exec("SET cid.maintenance = 'on'", &diag);
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "refs", "commits", "item_revisions", "dataset_items" }) |table| {
-        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/sync')", &diag);
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/sync')", .{});
     }
-    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/sync'", &diag);
-    try db.exec("RESET cid.maintenance", &diag);
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/sync'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
 
     // Producer folder: two files (one binary), committed offline.
     var producer = std.testing.tmpDir(.{ .iterate = true });
@@ -554,9 +579,12 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
 
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
     _ = try runMigrations();
 
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
@@ -578,12 +606,12 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/rel" };
 
     // Clean slate.
-    try db.exec("SET cid.maintenance = 'on'", &diag);
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "refs", "commits", "item_revisions", "dataset_items" }) |table| {
-        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/rel')", &diag);
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/rel')", .{});
     }
-    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/rel'", &diag);
-    try db.exec("RESET cid.maintenance", &diag);
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/rel'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
 
     // A producer pushes two commits.
     var producer = std.testing.tmpDir(.{ .iterate = true });
@@ -614,9 +642,7 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
 
     // Verify: green, and repeatable.
     const ds_id: [:0]const u8 = blk: {
-        var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/rel'", &.{}, &diag);
-        defer rows.deinit();
-        break :blk try arena.dupeZ(u8, rows.get(0, 0));
+        break :blk try arena.dupeZ(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/rel'", .{})).?);
     };
     const v1 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(v1.ok);
@@ -629,16 +655,16 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     const smuggle = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, author) " ++
         "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', 'smuggled.txt', 'add', gen_random_uuid(), " ++
         "decode(repeat('ef', 32), 'hex'), 'user:evil')", .{ &old_uuid.toString(), (old_uuid.unixMs() / 1000), ds_id }, 0);
-    try db.exec("INSERT INTO items (item_hash, size_bytes, media_type) VALUES (decode(repeat('ef', 32), 'hex'), 1, 'application/octet-stream') ON CONFLICT DO NOTHING", &diag);
-    try db.exec(smuggle, &diag);
+    _ = try db.exec(&fscope, "INSERT INTO items (item_hash, size_bytes, media_type) VALUES (decode(repeat('ef', 32), 'hex'), 1, 'application/octet-stream') ON CONFLICT DO NOTHING", .{});
+    _ = try db.exec(&fscope, smuggle, .{});
     const v2 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(!v2.ok);
     try std.testing.expectEqual(cid.release.VerifyProblem.recomputed_hash_differs, v2.problems[0]);
 
     // Remove the smuggled row (maintenance), verify is green again.
-    try db.exec("SET cid.maintenance = 'on'", &diag);
-    try db.exec("DELETE FROM item_revisions WHERE author = 'user:evil'", &diag);
-    try db.exec("RESET cid.maintenance", &diag);
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM item_revisions WHERE author = 'user:evil'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
     const v3 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(v3.ok);
 
@@ -657,9 +683,12 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
 
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
     _ = try runMigrations();
 
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
@@ -698,12 +727,12 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/gitw" };
 
     // Clean slate, then a dataset whose git_url is the bare repo.
-    try db.exec("SET cid.maintenance = 'on'", &diag);
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
-        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/gitw')", &diag);
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/gitw')", .{});
     }
-    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/gitw'", &diag);
-    try db.exec("RESET cid.maintenance", &diag);
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/gitw'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
 
     var producer = std.testing.tmpDir(.{ .iterate = true });
     defer producer.cleanup();
@@ -719,14 +748,9 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     // Tag: with deps.git set, the repository is written immediately.
     _ = try remote.tag(arena, "v1.0.0");
 
-    var rows1 = try db.query(
-        "SELECT status FROM git_writes w JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/gitw'",
-        &.{},
-        &diag,
-    );
-    defer rows1.deinit();
-    try std.testing.expectEqual(@as(usize, 1), rows1.count());
-    try std.testing.expectEqualStrings("done", rows1.get(0, 0));
+    const statuses = try db.raw([]const u8, &fscope, "SELECT status FROM git_writes w JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/gitw'", .{});
+    try std.testing.expectEqual(@as(usize, 1), statuses.len);
+    try std.testing.expectEqualStrings("done", statuses[0]);
 
     // Clone the bare repo and look at what landed.
     _ = try std.process.run(arena, io, .{ .argv = &.{ "git", "clone", bare_url, clone_dir } });
@@ -772,9 +796,12 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
 
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
     _ = try runMigrations();
 
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
@@ -796,19 +823,19 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
     const ndb = &standalone.db;
 
     // Clean slate: account, key, dataset, access.
-    try db.exec("DELETE FROM access WHERE account_id IN ('gitlab:7001', 'gitlab:7002')", &diag);
-    try db.exec("DELETE FROM ssh_keys WHERE account_id IN ('gitlab:7001', 'gitlab:7002')", &diag);
-    try db.exec("DELETE FROM accounts WHERE account_id IN ('gitlab:7001', 'gitlab:7002')", &diag);
-    try db.exec("INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES " ++
+    _ = try db.exec(&fscope, "DELETE FROM access WHERE account_id IN ('gitlab:7001', 'gitlab:7002')", .{});
+    _ = try db.exec(&fscope, "DELETE FROM ssh_keys WHERE account_id IN ('gitlab:7001', 'gitlab:7002')", .{});
+    _ = try db.exec(&fscope, "DELETE FROM accounts WHERE account_id IN ('gitlab:7001', 'gitlab:7002')", .{});
+    _ = try db.exec(&fscope, "INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES " ++
         "('018f0000-0000-7000-8000-00000000ac01', 'test/datasets/access', 'files', 'g@h:a.git') " ++
-        "ON CONFLICT (name) DO NOTHING", &diag);
-    try db.exec("INSERT INTO accounts (account_id, display_name, source) VALUES " ++
-        "('gitlab:7001', 'Reader Rhea', 'dashboard'), ('gitlab:7002', 'Writer Wade', 'dashboard')", &diag);
-    try db.exec("INSERT INTO ssh_keys (fingerprint, account_id, public_key) VALUES " ++
-        "('SHA256:testfp7001', 'gitlab:7001', 'ssh-ed25519 AAAAC3NzaTEST7001 rhea@laptop')", &diag);
-    try db.exec("INSERT INTO access (dataset_id, account_id, level, source) VALUES " ++
+        "ON CONFLICT (name) DO NOTHING", .{});
+    _ = try db.exec(&fscope, "INSERT INTO accounts (account_id, display_name, source) VALUES " ++
+        "('gitlab:7001', 'Reader Rhea', 'dashboard'), ('gitlab:7002', 'Writer Wade', 'dashboard')", .{});
+    _ = try db.exec(&fscope, "INSERT INTO ssh_keys (fingerprint, account_id, public_key) VALUES " ++
+        "('SHA256:testfp7001', 'gitlab:7001', 'ssh-ed25519 AAAAC3NzaTEST7001 rhea@laptop')", .{});
+    _ = try db.exec(&fscope, "INSERT INTO access (dataset_id, account_id, level, source) VALUES " ++
         "('018f0000-0000-7000-8000-00000000ac01', 'gitlab:7001', 'read', 'dashboard'), " ++
-        "('018f0000-0000-7000-8000-00000000ac01', 'gitlab:7002', 'write', 'dashboard')", &diag);
+        "('018f0000-0000-7000-8000-00000000ac01', 'gitlab:7002', 'write', 'dashboard')", .{});
 
     // AuthorizedKeysCommand: a known key gets the pinned forced command.
     const line = (try cid.access.auth.authorizedKeysLine(arena, ndb, &scope, "SHA256:testfp7001")).?;
@@ -827,15 +854,16 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
     const write_grant = try cid.access.auth.authorize(arena, ndb, &scope, secret, "x", now, wade_write);
 
     // Both decisions landed in the audit log.
-    var events = try db.query(
-        "SELECT count(*) FILTER (WHERE granted), count(*) FILTER (WHERE NOT granted) FROM auth_events " ++
-            "WHERE account_id IN ('gitlab:7001', 'gitlab:7002') AND ts > now() - interval '1 minute'",
-        &.{},
-        &diag,
-    );
-    defer events.deinit();
-    try std.testing.expect((std.fmt.parseInt(u32, events.get(0, 0), 10) catch 0) >= 2);
-    try std.testing.expect((std.fmt.parseInt(u32, events.get(0, 1), 10) catch 0) >= 1);
+    const AuditCounts = struct {
+        pub const nilo_table = .projection;
+        granted_n: i64,
+        denied_n: i64,
+    };
+    const events = try db.rawExactlyOne(AuditCounts, &fscope, "SELECT count(*) FILTER (WHERE granted) AS granted_n, " ++
+        "count(*) FILTER (WHERE NOT granted) AS denied_n FROM auth_events " ++
+        "WHERE account_id IN ('gitlab:7001', 'gitlab:7002') AND ts > now() - interval '1 minute'", .{});
+    try std.testing.expect(events.granted_n >= 2);
+    try std.testing.expect(events.denied_n >= 1);
 
     // Routes enforce the scope: read token reads but cannot push; a token
     // for another dataset is useless here; garbage is refused.
@@ -879,17 +907,20 @@ test "gitlab sync: members and keys applied, removals revoke access" {
     const io = std.testing.io;
     _ = io;
 
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
     _ = try runMigrations();
 
-    try db.exec("DELETE FROM access WHERE account_id LIKE 'gitlab:91%'", &diag);
-    try db.exec("DELETE FROM ssh_keys WHERE account_id LIKE 'gitlab:91%'", &diag);
-    try db.exec("DELETE FROM accounts WHERE account_id LIKE 'gitlab:91%'", &diag);
-    try db.exec("INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES " ++
+    _ = try db.exec(&fscope, "DELETE FROM access WHERE account_id LIKE 'gitlab:91%'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM ssh_keys WHERE account_id LIKE 'gitlab:91%'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM accounts WHERE account_id LIKE 'gitlab:91%'", .{});
+    _ = try db.exec(&fscope, "INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES " ++
         "('018f0000-0000-7000-8000-000000009d01'::uuid, 'test/datasets/gl', 'files', 'g@h:gl.git') " ++
-        "ON CONFLICT (name) DO NOTHING", &diag);
+        "ON CONFLICT (name) DO NOTHING", .{});
 
     // First sync: a reporter, a developer, a guest (ignored).
     const members1 = try cid.access.gitlab.parseMembers(arena,
@@ -906,16 +937,16 @@ test "gitlab sync: members and keys applied, removals revoke access" {
     const first = try cid.access.gitlab.applyMembers(arena, ndb, &scope, "test/datasets/gl", members1);
     try std.testing.expectEqual(@as(u32, 2), first.upserted);
 
-    var levels = try db.query(
-        "SELECT account_id, level FROM access a JOIN datasets d USING (dataset_id) " ++
-            "WHERE d.name = 'test/datasets/gl' ORDER BY account_id",
-        &.{},
-        &diag,
-    );
-    defer levels.deinit();
-    try std.testing.expectEqual(@as(usize, 2), levels.count());
-    try std.testing.expectEqualStrings("read", levels.get(0, 1)); // 9101
-    try std.testing.expectEqualStrings("write", levels.get(1, 1)); // 9102
+    const Lvl = struct {
+        pub const nilo_table = .projection;
+        account_id: []const u8,
+        level: []const u8,
+    };
+    const levels = try db.raw(Lvl, &fscope, "SELECT account_id, level FROM access a JOIN datasets d USING (dataset_id) " ++
+        "WHERE d.name = 'test/datasets/gl' ORDER BY account_id", .{});
+    try std.testing.expectEqual(@as(usize, 2), levels.len);
+    try std.testing.expectEqualStrings("read", levels[0].level); // 9101
+    try std.testing.expectEqualStrings("write", levels[1].level); // 9102
 
     // Keys for the developer: the fixture key gets its real fingerprint.
     const keys1 = try cid.access.gitlab.parseKeys(arena,
@@ -935,16 +966,11 @@ test "gitlab sync: members and keys applied, removals revoke access" {
     const second = try cid.access.gitlab.applyMembers(arena, ndb, &scope, "test/datasets/gl", members2);
     try std.testing.expectEqual(@as(u32, 1), second.removed);
 
-    var levels2 = try db.query(
-        "SELECT account_id, level FROM access a JOIN datasets d USING (dataset_id) " ++
-            "WHERE d.name = 'test/datasets/gl' ORDER BY account_id",
-        &.{},
-        &diag,
-    );
-    defer levels2.deinit();
-    try std.testing.expectEqual(@as(usize, 1), levels2.count());
-    try std.testing.expectEqualStrings("gitlab:9102", levels2.get(0, 0));
-    try std.testing.expectEqualStrings("read", levels2.get(0, 1));
+    const levels2 = try db.raw(Lvl, &fscope, "SELECT account_id, level FROM access a JOIN datasets d USING (dataset_id) " ++
+        "WHERE d.name = 'test/datasets/gl' ORDER BY account_id", .{});
+    try std.testing.expectEqual(@as(usize, 1), levels2.len);
+    try std.testing.expectEqualStrings("gitlab:9102", levels2[0].account_id);
+    try std.testing.expectEqualStrings("read", levels2[0].level);
 
     const key_second = try cid.access.gitlab.applyKeys(arena, ndb, &scope, 9102, &.{});
     try std.testing.expectEqual(@as(u32, 1), key_second.removed);
@@ -957,9 +983,12 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
     const arena = arena_state.allocator();
     const io = std.testing.io;
 
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
     _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
@@ -979,12 +1008,12 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/br" };
 
-    try db.exec("SET cid.maintenance = 'on'", &diag);
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
-        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/br')", &diag);
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/br')", .{});
     }
-    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/br'", &diag);
-    try db.exec("RESET cid.maintenance", &diag);
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/br'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
 
     // Main gets its base: shared.txt and tweak.txt.
     var producer = std.testing.tmpDir(.{ .iterate = true });
@@ -1041,14 +1070,9 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
 
     const after = try remote.state(arena, (try remote.head(arena, "main")).?);
     try std.testing.expectEqual(@as(usize, 4), after.len);
-    var mrows = try db.query(
-        "SELECT merge_parent_id::text FROM commits c JOIN datasets d USING (dataset_id) " ++
-            "WHERE d.name = 'test/datasets/br' AND merge_parent_id IS NOT NULL",
-        &.{},
-        &diag,
-    );
-    defer mrows.deinit();
-    try std.testing.expectEqual(@as(usize, 1), mrows.count());
+    const merge_parents = try db.raw([]const u8, &fscope, "SELECT merge_parent_id::text FROM commits c JOIN datasets d USING (dataset_id) " ++
+        "WHERE d.name = 'test/datasets/br' AND merge_parent_id IS NOT NULL", .{});
+    try std.testing.expectEqual(@as(usize, 1), merge_parents.len);
 
     // The producer pulls the merge; the folder holds all four files.
     const after_pull = try cid.client.sync.pull(arena, io, &pws, cache.dir, &remote);
@@ -1121,9 +1145,12 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     const arena = arena_state.allocator();
     const io = std.testing.io;
 
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
     _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
@@ -1143,13 +1170,13 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/purge" };
 
-    try db.exec("SET cid.maintenance = 'on'", &diag);
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
-        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/purge')", &diag);
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/purge')", .{});
     }
-    try db.exec("DELETE FROM purged_items WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/purge')", &diag);
-    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/purge'", &diag);
-    try db.exec("RESET cid.maintenance", &diag);
+    _ = try db.exec(&fscope, "DELETE FROM purged_items WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/purge')", .{});
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/purge'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
 
     const sensitive = "a face image that must be erasable";
     var dg: [32]u8 = undefined;
@@ -1157,7 +1184,7 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     const sensitive_hash = std.fmt.bytesToHex(dg, .lower);
     {
         const hz = try arena.dupeZ(u8, &sensitive_hash);
-        db.execParams("DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag) catch {};
+        _ = db.exec(&fscope, "DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
     }
 
     var producer = std.testing.tmpDir(.{ .iterate = true });
@@ -1174,9 +1201,7 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     _ = try remote.tag(arena, "v1.0.0");
 
     const ds_id: [:0]const u8 = blk: {
-        var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/purge'", &.{}, &diag);
-        defer rows.deinit();
-        break :blk try arena.dupeZ(u8, rows.get(0, 0));
+        break :blk try arena.dupeZ(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/purge'", .{})).?);
     };
 
     // Purge by path; the bytes vanish, the tombstone and audit land.
@@ -1187,13 +1212,8 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     try std.testing.expectEqual(@as(?u64, null), try s3c.headObject(arena, key));
     try std.testing.expectError(error.AlreadyPurged, cid.purge.purge(arena, &standalone.db, &scope, &s3c, "test/datasets/purge", "face.jpg", "again", "user:admin"));
 
-    var audit = try db.query(
-        "SELECT count(*) FROM activity_events WHERE dataset_id = $1::uuid AND action = 'purge'",
-        &.{ds_id},
-        &diag,
-    );
-    defer audit.deinit();
-    try std.testing.expectEqualStrings("1", audit.get(0, 0));
+    const audit = try db.rawExactlyOne(i64, &fscope, "SELECT count(*) FROM activity_events WHERE dataset_id = $1::uuid AND action = 'purge'", .{ds_id});
+    try std.testing.expectEqual(@as(i64, 1), audit);
 
     // History rows untouched; verify is green with the purged item named.
     const v = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
@@ -1213,9 +1233,12 @@ test "annotated: the platform writes revisions, the server commits, state compos
     const arena = arena_state.allocator();
     const io = std.testing.io;
 
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
     _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
@@ -1235,20 +1258,18 @@ test "annotated: the platform writes revisions, the server commits, state compos
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/ann" };
 
-    try db.exec("SET cid.maintenance = 'on'", &diag);
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "annotation_revisions", "dataset_items" }) |table| {
-        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/ann')", &diag);
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/ann')", .{});
     }
-    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/ann'", &diag);
-    try db.exec("RESET cid.maintenance", &diag);
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/ann'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
 
     // The platform creates an annotated dataset.
     const created = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/ann\",\"kind\":\"annotated\",\"git_url\":\"g@h:ann.git\"}");
     try std.testing.expectEqual(std.http.Status.created, created.status);
     const ds_id: [:0]const u8 = blk: {
-        var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/ann'", &.{}, &diag);
-        defer rows.deinit();
-        break :blk try arena.dupeZ(u8, rows.get(0, 0));
+        break :blk try arena.dupeZ(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/ann'", .{})).?);
     };
 
     // Bytes go up through check-hashes presigns, then register-items
@@ -1264,7 +1285,7 @@ test "annotated: the platform writes revisions, the server commits, state compos
     try s3c.deleteObject(arena, try cid.api.itemKey(arena, &h2));
     {
         const hz = try arena.dupeZ(u8, &h1);
-        db.execParams("DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag) catch {};
+        _ = db.exec(&fscope, "DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
     }
 
     const missing = try remote.checkHashes(arena, &.{ &h1, &h2 });
@@ -1291,12 +1312,12 @@ test "annotated: the platform writes revisions, the server commits, state compos
     const ann1 = ann1_id.toString();
     const ann2 = cid.uuid7.Uuid.nextAfter(io, ann1_id).toString();
 
-    try db.exec("BEGIN", &diag);
+    _ = try db.exec(&fscope, "BEGIN", .{});
     {
         const lock = try std.fmt.allocPrintSentinel(arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{ds_id}, 0);
-        try db.exec(lock, &diag);
+        _ = try db.exec(&fscope, lock, .{});
     }
-    try db.exec("SET LOCAL ROLE cid_writer", &diag);
+    _ = try db.exec(&fscope, "SET LOCAL ROLE cid_writer", .{});
     inline for (.{
         .{ "frames/0001.jpg", &h1, "train" },
         .{ "frames/0002.jpg", &h2, "val" },
@@ -1305,7 +1326,7 @@ test "annotated: the platform writes revisions, the server commits, state compos
         const item_id = if (idx == 0) &aitem1 else &aitem2;
         const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
             "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', 'add', '{s}', decode('{s}', 'hex'), '{s}', 'agent:annotator')", .{ &last.toString(), last.unixMs() / 1000, ds_id, row[0], item_id, row[1], row[2] }, 0);
-        try db.exec(sql, &diag);
+        _ = try db.exec(&fscope, sql, .{});
     }
     inline for (.{
         .{ &ann1, &aitem1, "{\"x\":10,\"y\":20,\"w\":30,\"h\":40}", "person" },
@@ -1314,9 +1335,9 @@ test "annotated: the platform writes revisions, the server commits, state compos
         last = cid.uuid7.Uuid.nextAfter(io, last);
         const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
             "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'create', 'box', '{s}', '{s}'::jsonb, 'agent:annotator', 'policy-v1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, row[0], row[1], row[3], row[2] }, 0);
-        try db.exec(sql, &diag);
+        _ = try db.exec(&fscope, sql, .{});
     }
-    try db.exec("COMMIT", &diag);
+    _ = try db.exec(&fscope, "COMMIT", .{});
 
     // The server seals the batch.
     const c1 = try remote.commitServer(arena, "main", "batch one annotated", "agent:annotator");
@@ -1332,25 +1353,25 @@ test "annotated: the platform writes revisions, the server commits, state compos
     try std.testing.expectError(error.NothingToTag, remote.commitServer(arena, "main", "empty", "agent:annotator"));
 
     // Batch two: move box one, delete box two.
-    try db.exec("BEGIN", &diag);
+    _ = try db.exec(&fscope, "BEGIN", .{});
     {
         const lock = try std.fmt.allocPrintSentinel(arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{ds_id}, 0);
-        try db.exec(lock, &diag);
+        _ = try db.exec(&fscope, lock, .{});
     }
-    try db.exec("SET LOCAL ROLE cid_writer", &diag);
+    _ = try db.exec(&fscope, "SET LOCAL ROLE cid_writer", .{});
     last = cid.uuid7.Uuid.nextAfter(io, last);
     {
         const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
             "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'update', 'box', 'person', '{{\"x\":11,\"y\":21,\"w\":30,\"h\":40}}'::jsonb, 'user:reviewer', 'policy-v1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &ann1, &aitem1 }, 0);
-        try db.exec(sql, &diag);
+        _ = try db.exec(&fscope, sql, .{});
     }
     last = cid.uuid7.Uuid.nextAfter(io, last);
     {
         const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, author, policy_ver) " ++
             "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'delete', 'user:reviewer', 'policy-v1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &ann2, &aitem1 }, 0);
-        try db.exec(sql, &diag);
+        _ = try db.exec(&fscope, sql, .{});
     }
-    try db.exec("COMMIT", &diag);
+    _ = try db.exec(&fscope, "COMMIT", .{});
 
     const c2 = try remote.commitServer(arena, "main", "review pass", "user:reviewer");
     const s2 = try remote.stateAnnotated(arena, c2);
@@ -1371,9 +1392,12 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     const arena = arena_state.allocator();
     const io = std.testing.io;
 
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
     _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
@@ -1393,18 +1417,16 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/annrel" };
 
-    try db.exec("SET cid.maintenance = 'on'", &diag);
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "annotation_revisions", "dataset_items" }) |table| {
-        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/annrel')", &diag);
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/annrel')", .{});
     }
-    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/annrel'", &diag);
-    try db.exec("RESET cid.maintenance", &diag);
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/annrel'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
 
     _ = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/annrel\",\"kind\":\"annotated\",\"git_url\":\"g@h:ar.git\"}");
     const ds_id: [:0]const u8 = blk: {
-        var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/annrel'", &.{}, &diag);
-        defer rows.deinit();
-        break :blk try arena.dupeZ(u8, rows.get(0, 0));
+        break :blk try arena.dupeZ(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/annrel'", .{})).?);
     };
 
     // One image with one box, platform-style (bytes + register + revisions).
@@ -1418,16 +1440,16 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     var last = cid.uuid7.Uuid.now(io);
     const item_id = cid.uuid7.Uuid.now(io).toString();
     const box_id = cid.uuid7.Uuid.now(io).toString();
-    try db.exec("BEGIN", &diag);
+    _ = try db.exec(&fscope, "BEGIN", .{});
     {
         const lock = try std.fmt.allocPrintSentinel(arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{ds_id}, 0);
-        try db.exec(lock, &diag);
+        _ = try db.exec(&fscope, lock, .{});
     }
-    try db.exec("SET LOCAL ROLE cid_writer", &diag);
+    _ = try db.exec(&fscope, "SET LOCAL ROLE cid_writer", .{});
     {
         const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
             "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', 'img/a.jpg', 'add', '{s}', decode('{s}', 'hex'), 'train', 'agent:annotator')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &item_id, &hh }, 0);
-        try db.exec(sql, &diag);
+        _ = try db.exec(&fscope, sql, .{});
     }
     last = cid.uuid7.Uuid.nextAfter(io, last);
     {
@@ -1435,9 +1457,9 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
         const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
             "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'create', 'box', 'person', " ++
             "'{{\"y\": 20, \"x\": 10.0, \"w\": 30.5, \"h\": 40}}'::jsonb, 'agent:annotator', 'policy-v1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &box_id, &item_id }, 0);
-        try db.exec(sql, &diag);
+        _ = try db.exec(&fscope, sql, .{});
     }
-    try db.exec("COMMIT", &diag);
+    _ = try db.exec(&fscope, "COMMIT", .{});
     _ = try remote.commitServer(arena, "main", "one box", "agent:annotator");
 
     // Tag: the stored manifest is version 2 with a JCS annotation row.
@@ -1459,14 +1481,14 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     {
         const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
             "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', gen_random_uuid(), '{s}', 'create', 'box', 'smuggled', '{{\"x\":1}}'::jsonb, 'user:evil', 'policy-v1')", .{ &old_uuid.toString(), old_uuid.unixMs() / 1000, ds_id, &item_id }, 0);
-        try db.exec(sql, &diag);
+        _ = try db.exec(&fscope, sql, .{});
     }
     const v2 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(!v2.ok);
     try std.testing.expectEqual(cid.release.VerifyProblem.recomputed_hash_differs, v2.problems[0]);
-    try db.exec("SET cid.maintenance = 'on'", &diag);
-    try db.exec("DELETE FROM annotation_revisions WHERE author = 'user:evil'", &diag);
-    try db.exec("RESET cid.maintenance", &diag);
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM annotation_revisions WHERE author = 'user:evil'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
     const v3 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(v3.ok);
 }
@@ -1477,9 +1499,12 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     const arena = arena_state.allocator();
     const io = std.testing.io;
 
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
     _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
@@ -1499,18 +1524,16 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/fmt" };
 
-    try db.exec("SET cid.maintenance = 'on'", &diag);
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "annotation_revisions", "dataset_items" }) |table| {
-        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/fmt')", &diag);
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/fmt')", .{});
     }
-    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/fmt'", &diag);
-    try db.exec("RESET cid.maintenance", &diag);
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/fmt'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
 
     _ = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/fmt\",\"kind\":\"annotated\",\"git_url\":\"g@h:f.git\"}");
     const ds_id: [:0]const u8 = blk: {
-        var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/fmt'", &.{}, &diag);
-        defer rows.deinit();
-        break :blk try arena.dupeZ(u8, rows.get(0, 0));
+        break :blk try arena.dupeZ(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/fmt'", .{})).?);
     };
 
     // One 640x480 image with one person box, platform-style.
@@ -1526,33 +1549,37 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len, .media_type = "image/jpeg", .width = 640, .height = 480 }});
     {
         const hz = try arena.dupeZ(u8, &hh);
-        var prows = try db.query("SELECT count(*), min(status) FROM previews WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag);
-        defer prows.deinit();
-        try std.testing.expectEqualStrings("1", prows.get(0, 0));
-        try std.testing.expectEqualStrings("pending", prows.get(0, 1));
+        const Queue = struct {
+            pub const nilo_table = .projection;
+            n: i64,
+            status: ?[]const u8,
+        };
+        const prow = try db.rawExactlyOne(Queue, &fscope, "SELECT count(*) AS n, min(status) AS status FROM previews WHERE item_hash = decode($1, 'hex')", .{hz});
+        try std.testing.expectEqual(@as(i64, 1), prow.n);
+        try std.testing.expectEqualStrings("pending", prow.status.?);
     }
 
     var last = cid.uuid7.Uuid.now(io);
     const fitem = cid.uuid7.Uuid.now(io).toString();
     const fbox = cid.uuid7.Uuid.now(io).toString();
-    try db.exec("BEGIN", &diag);
+    _ = try db.exec(&fscope, "BEGIN", .{});
     {
         const lock = try std.fmt.allocPrintSentinel(arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{ds_id}, 0);
-        try db.exec(lock, &diag);
+        _ = try db.exec(&fscope, lock, .{});
     }
-    try db.exec("SET LOCAL ROLE cid_writer", &diag);
+    _ = try db.exec(&fscope, "SET LOCAL ROLE cid_writer", .{});
     {
         const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
             "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', 'img/a.jpg', 'add', '{s}', decode('{s}', 'hex'), 'train', 'agent:annotator')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &fitem, &hh }, 0);
-        try db.exec(sql, &diag);
+        _ = try db.exec(&fscope, sql, .{});
     }
     last = cid.uuid7.Uuid.nextAfter(io, last);
     {
         const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
             "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'create', 'box', 'person', '{{\"x\":32,\"y\":48,\"w\":64,\"h\":96}}'::jsonb, 'agent:annotator', 'p1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &fbox, &fitem }, 0);
-        try db.exec(sql, &diag);
+        _ = try db.exec(&fscope, sql, .{});
     }
-    try db.exec("COMMIT", &diag);
+    _ = try db.exec(&fscope, "COMMIT", .{});
     _ = try remote.commitServer(arena, "main", "one box", "agent:annotator");
 
     // Clone as jsonl: item file plus the sidecar, and a clean status.
@@ -1586,19 +1613,19 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     try std.testing.expect(std.mem.indexOf(u8, yaml, "0: person") != null);
 
     // The platform adds a vehicle box; a pull regenerates the sidecars.
-    try db.exec("BEGIN", &diag);
+    _ = try db.exec(&fscope, "BEGIN", .{});
     {
         const lock = try std.fmt.allocPrintSentinel(arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{ds_id}, 0);
-        try db.exec(lock, &diag);
+        _ = try db.exec(&fscope, lock, .{});
     }
-    try db.exec("SET LOCAL ROLE cid_writer", &diag);
+    _ = try db.exec(&fscope, "SET LOCAL ROLE cid_writer", .{});
     last = cid.uuid7.Uuid.nextAfter(io, last);
     {
         const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
             "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', gen_random_uuid(), '{s}', 'create', 'box', 'vehicle', '{{\"x\":0,\"y\":0,\"w\":320,\"h\":240}}'::jsonb, 'agent:annotator', 'p1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &fitem }, 0);
-        try db.exec(sql, &diag);
+        _ = try db.exec(&fscope, sql, .{});
     }
-    try db.exec("COMMIT", &diag);
+    _ = try db.exec(&fscope, "COMMIT", .{});
     _ = try remote.commitServer(arena, "main", "vehicle too", "agent:annotator");
 
     var yo_ws = try cid.client.workspace.open(arena, io, yo_dir.dir);
@@ -1615,9 +1642,12 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
 
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
     _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
@@ -1653,19 +1683,17 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/anngit" };
 
-    try db.exec("SET cid.maintenance = 'on'", &diag);
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "annotation_revisions", "dataset_items", "policy_versions" }) |table| {
-        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/anngit')", &diag);
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/anngit')", .{});
     }
-    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/anngit'", &diag);
-    try db.exec("RESET cid.maintenance", &diag);
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/anngit'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
 
     const create_body = try std.fmt.allocPrint(arena, "{{\"name\":\"test/datasets/anngit\",\"kind\":\"annotated\",\"git_url\":\"{s}\"}}", .{bare_url});
     _ = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", create_body);
     const ds_id: [:0]const u8 = blk: {
-        var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/anngit'", &.{}, &diag);
-        defer rows.deinit();
-        break :blk try arena.dupeZ(u8, rows.get(0, 0));
+        break :blk try arena.dupeZ(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/anngit'", .{})).?);
     };
 
     // The policy, then one image with a person and a vehicle box.
@@ -1683,20 +1711,20 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
 
     var last = cid.uuid7.Uuid.now(io);
     const gitem = cid.uuid7.Uuid.now(io).toString();
-    try db.exec("BEGIN", &diag);
-    try db.exec("SET LOCAL ROLE cid_writer", &diag);
+    _ = try db.exec(&fscope, "BEGIN", .{});
+    _ = try db.exec(&fscope, "SET LOCAL ROLE cid_writer", .{});
     {
         const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
             "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', 'f.jpg', 'add', '{s}', decode('{s}', 'hex'), 'train', 'agent:a')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &gitem, &hh }, 0);
-        try db.exec(sql, &diag);
+        _ = try db.exec(&fscope, sql, .{});
     }
     inline for (.{ "person", "person", "vehicle" }) |class| {
         last = cid.uuid7.Uuid.nextAfter(io, last);
         const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
             "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', gen_random_uuid(), '{s}', 'create', 'box', '" ++ class ++ "', '{{\"x\":1,\"y\":1,\"w\":2,\"h\":2}}'::jsonb, 'agent:a', 'policy-v3')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &gitem }, 0);
-        try db.exec(sql, &diag);
+        _ = try db.exec(&fscope, sql, .{});
     }
-    try db.exec("COMMIT", &diag);
+    _ = try db.exec(&fscope, "COMMIT", .{});
     _ = try remote.commitServer(arena, "main", "labelled", "agent:a");
     _ = try remote.tag(arena, "v1.0.0");
 
@@ -1722,9 +1750,12 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
 
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
     _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
@@ -1755,13 +1786,13 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
 
     // Earlier tests enqueued their pushes too; park that backlog so this
     // pass is about our two rows.
-    try db.exec("UPDATE previews SET status = 'skipped', reason = 'test reset' WHERE status = 'pending'", &diag);
+    _ = try db.exec(&fscope, "UPDATE previews SET status = 'skipped', reason = 'test reset' WHERE status = 'pending'", .{});
 
     // Reset queue rows and objects from earlier runs.
     inline for (.{ &png_hash, &text_hash }) |h| {
         const hz = try arena.dupeZ(u8, h);
-        db.execParams("DELETE FROM previews WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag) catch {};
-        db.execParams("DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag) catch {};
+        _ = db.exec(&fscope, "DELETE FROM previews WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
+        _ = db.exec(&fscope, "DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
     }
     try s3c.deleteObject(arena, try cid.preview.thumbKey(arena, &png_hash));
 
@@ -1791,10 +1822,14 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
 
     {
         const hz = try arena.dupeZ(u8, &text_hash);
-        var rows = try db.query("SELECT status, reason FROM previews WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag);
-        defer rows.deinit();
-        try std.testing.expectEqualStrings("skipped", rows.get(0, 0));
-        try std.testing.expect(std.mem.indexOf(u8, rows.get(0, 1), "not previewable") != null);
+        const Prev = struct {
+            pub const nilo_table = .projection;
+            status: []const u8,
+            reason: ?[]const u8,
+        };
+        const prev = try db.rawExactlyOne(Prev, &fscope, "SELECT status, reason FROM previews WHERE item_hash = decode($1, 'hex')", .{hz});
+        try std.testing.expectEqualStrings("skipped", prev.status);
+        try std.testing.expect(std.mem.indexOf(u8, prev.reason orelse "", "not previewable") != null);
     }
 
     // A second pass does nothing: one build per content hash, ever.
@@ -1815,9 +1850,12 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
 
-    var diag: cid.pg.Diag = .{};
-    var db = try connect(&diag);
-    defer db.close();
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
     _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
@@ -1842,11 +1880,11 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     std.crypto.hash.sha2.Sha256.hash(png, &dg, .{});
     const hh = std.fmt.bytesToHex(dg, .lower);
 
-    try db.exec("UPDATE previews SET status = 'skipped', reason = 'test reset' WHERE status = 'pending'", &diag);
+    _ = try db.exec(&fscope, "UPDATE previews SET status = 'skipped', reason = 'test reset' WHERE status = 'pending'", .{});
     {
         const hz = try arena.dupeZ(u8, &hh);
-        db.execParams("DELETE FROM previews WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag) catch {};
-        db.execParams("DELETE FROM items WHERE item_hash = decode($1, 'hex') AND NOT EXISTS (SELECT 1 FROM item_revisions ir WHERE ir.item_hash = decode($1, 'hex'))", &.{hz}, &diag) catch {};
+        _ = db.exec(&fscope, "DELETE FROM previews WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
+        _ = db.exec(&fscope, "DELETE FROM items WHERE item_hash = decode($1, 'hex') AND NOT EXISTS (SELECT 1 FROM item_revisions ir WHERE ir.item_hash = decode($1, 'hex'))", .{hz}) catch {};
     }
     try s3c.deleteObject(arena, try cid.preview.thumbKey(arena, &hh));
 
@@ -1862,12 +1900,12 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     defer cache.cleanup();
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/sniff" };
-    try db.exec("SET cid.maintenance = 'on'", &diag);
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
-        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/sniff')", &diag);
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/sniff')", .{});
     }
-    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/sniff'", &diag);
-    try db.exec("RESET cid.maintenance", &diag);
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/sniff'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
     try producer.dir.writeFile(io, .{ .sub_path = "cli.png", .data = png });
     try cid.client.workspace.init(arena, io, producer.dir, "cid@test:test/datasets/sniff", "g@h:sn.git");
     var pws = try cid.client.workspace.open(arena, io, producer.dir);
@@ -1878,9 +1916,8 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     // Before the worker: an honest octet-stream.
     {
         const hz = try arena.dupeZ(u8, &hh);
-        var rows = try db.query("SELECT media_type FROM items WHERE item_hash = decode($1, 'hex')", &.{hz}, &diag);
-        defer rows.deinit();
-        try std.testing.expectEqualStrings("application/octet-stream", rows.get(0, 0));
+        const mt = (try db.rawOne([]const u8, &fscope, "SELECT media_type FROM items WHERE item_hash = decode($1, 'hex')", .{hz})).?;
+        try std.testing.expectEqualStrings("application/octet-stream", mt);
     }
 
     // One worker pass: sniffed, measured, thumbnailed.
@@ -1888,15 +1925,17 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     try std.testing.expect(pass.built >= 1);
     {
         const hz = try arena.dupeZ(u8, &hh);
-        var rows = try db.query(
-            "SELECT media_type, meta->>'width', meta->>'height' FROM items WHERE item_hash = decode($1, 'hex')",
-            &.{hz},
-            &diag,
-        );
-        defer rows.deinit();
-        try std.testing.expectEqualStrings("image/png", rows.get(0, 0));
-        try std.testing.expectEqualStrings("96", rows.get(0, 1));
-        try std.testing.expectEqualStrings("64", rows.get(0, 2));
+        const Sniffed = struct {
+            pub const nilo_table = .projection;
+            media_type: []const u8,
+            width: ?[]const u8,
+            height: ?[]const u8,
+        };
+        const sniffed = try db.rawExactlyOne(Sniffed, &fscope, "SELECT media_type, meta->>'width' AS width, meta->>'height' AS height " ++
+            "FROM items WHERE item_hash = decode($1, 'hex')", .{hz});
+        try std.testing.expectEqualStrings("image/png", sniffed.media_type);
+        try std.testing.expectEqualStrings("96", sniffed.width.?);
+        try std.testing.expectEqualStrings("64", sniffed.height.?);
     }
     const thumb = try s3c.getObjectAlloc(arena, try cid.preview.thumbKey(arena, &hh), 8 * 1024 * 1024);
     try std.testing.expect(thumb.len > 100);
