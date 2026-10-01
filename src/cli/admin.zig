@@ -3,7 +3,6 @@
 const std = @import("std");
 const nilo = @import("nilo_http");
 const root = @import("../cid.zig");
-const pg = @import("../store/pg.zig");
 const dbx = @import("../store/db.zig");
 const s3 = @import("../store/s3.zig");
 const migrate = @import("../core/migrate.zig");
@@ -145,11 +144,11 @@ fn runServe(
         return fail(io, .usage, "set CID_TOKEN_SECRET (SSH-issued tokens) or CID_TOKEN (one static token), then run 'cid admin serve' again.", .{});
 
     const conninfo = arena.dupeZ(u8, conninfo_raw) catch return .network;
-    var diag: pg.Diag = .{};
-    var db = pg.Db.connect(conninfo, &diag) catch {
-        return fail(io, .network, "cannot connect to the database: {s}\nCheck CID_DB, then run 'cid admin serve' again.", .{diag.message()});
-    };
-    defer db.close();
+    // The server's Db is a nilo Service: init records the URL, and
+    // serve()'s listen() opens the pool on the server's own loop.
+    const db_url = dbx.urlFrom(arena, conninfo) catch return .network;
+    var db = dbx.sql.Db.init(arena, db_url, .{ .unchecked = true });
+    defer db.deinit();
 
     var s3_client = s3.Client.init(arena, io, .{
         .endpoint = s3_endpoint,
@@ -237,11 +236,12 @@ fn runVerify(
     const s3_secret = env.get("CID_S3_SECRET_KEY") orelse return missingEnv(io, "CID_S3_SECRET_KEY", "…");
     const s3_bucket = env.get("CID_S3_BUCKET") orelse return missingEnv(io, "CID_S3_BUCKET", "cid");
 
-    var diag: pg.Diag = .{};
-    const conninfo = arena.dupeZ(u8, conninfo_raw) catch return .network;
-    var db = pg.Db.connect(conninfo, &diag) catch
-        return fail(io, .network, "cannot connect to the database: {s}\nCheck CID_DB, then run 'cid admin verify' again.", .{diag.message()});
-    defer db.close();
+    _ = conninfo_raw;
+    var standalone: dbx.Standalone = undefined;
+    adminPool(&standalone, arena, io, env, "cid admin verify") orelse return .network;
+    defer standalone.close();
+    var scope = dbx.Run.init(arena);
+    defer scope.deinit();
     var s3_client = s3.Client.init(arena, io, .{
         .endpoint = s3_endpoint,
         .access_key = s3_access,
@@ -251,17 +251,11 @@ fn runVerify(
     defer s3_client.deinit();
 
     // Dataset name → id.
-    const name_z = arena.dupeZ(u8, dataset_name) catch return .network;
-    const dataset_id: [:0]const u8 = blk: {
-        var rows = db.query("SELECT dataset_id::text FROM datasets WHERE name = $1", &.{name_z}, &diag) catch
-            return fail(io, .network, "database error: {s}", .{diag.message()});
-        defer rows.deinit();
-        if (rows.count() == 0)
-            return fail(io, .usage, "no dataset named '{s}'. Check the name.", .{dataset_name});
-        break :blk arena.dupeZ(u8, rows.get(0, 0)) catch return .network;
-    };
+    const dataset_id = (standalone.db.rawOne([]const u8, &scope, "SELECT dataset_id::text FROM datasets WHERE name = $1", .{@as([]const u8, dataset_name)}) catch
+        return fail(io, .network, "database error: {s}", .{lastDbProblem()})) orelse
+        return fail(io, .usage, "no dataset named '{s}'. Check the name.", .{dataset_name});
 
-    const result = release.verify(arena, &db, &s3_client, dataset_id, release_name) catch |err| switch (err) {
+    const result = release.verify(arena, &standalone.db, &scope, &s3_client, dataset_id, release_name) catch |err| switch (err) {
         error.NoSuchCommit => return fail(io, .usage, "no release '{s}' in '{s}'.", .{ release_name, dataset_name }),
         else => return fail(io, .network, "verify could not run: {t}. Fix the cause, then run it again.", .{err}),
     };
@@ -311,13 +305,11 @@ fn runGitAdmin(
     if (args.len == 2 and !resync)
         return fail(io, .usage, "unknown flag '{s}'. Run 'cid admin git <dataset> [--resync]'.", .{args[1]});
 
-    const conninfo_raw = env.get("CID_DB") orelse
-        return fail(io, .usage, "CID_DB is not set.\n  {s}\nThen run 'cid admin git' again.", .{conninfo_example});
-    var diag: pg.Diag = .{};
-    const conninfo = arena.dupeZ(u8, conninfo_raw) catch return .network;
-    var db = pg.Db.connect(conninfo, &diag) catch
-        return fail(io, .network, "cannot connect to the database: {s}", .{diag.message()});
-    defer db.close();
+    var standalone: dbx.Standalone = undefined;
+    adminPool(&standalone, arena, io, env, "cid admin git") orelse return .network;
+    defer standalone.close();
+    var scope = dbx.Run.init(arena);
+    defer scope.deinit();
 
     if (resync) {
         const workdir = env.get("CID_GIT_WORKDIR") orelse
@@ -326,33 +318,35 @@ fn runGitAdmin(
             .workdir = workdir,
             .server_url = env.get("CID_PUBLIC_URL") orelse "http://127.0.0.1:7070",
         };
-        const outcome = git_writer.processDataset(arena, io, &db, config, dataset_name) catch
+        const outcome = git_writer.processDataset(arena, io, &standalone.db, &scope, config, dataset_name) catch
             return fail(io, .network, "resync could not run. Check the dataset name and the database.", .{});
         out.print("Resync: {d} release{s} written, {d} failed.\n", .{ outcome.processed, plural(outcome.processed), outcome.failed }) catch return .network;
         out.flush() catch return .network;
         return if (outcome.failed == 0) .ok else .network;
     }
 
-    const name_z = arena.dupeZ(u8, dataset_name) catch return .network;
-    var rows = db.query(
-        "SELECT release, status, coalesce(git_commit, '-'), attempts, coalesce(last_error, '') " ++
-            "FROM git_writes w JOIN datasets d USING (dataset_id) WHERE d.name = $1 ORDER BY release",
-        &.{name_z},
-        &diag,
-    ) catch return fail(io, .network, "database error: {s}", .{diag.message()});
-    defer rows.deinit();
-    if (rows.count() == 0) {
+    const WriteRow = struct {
+        pub const nilo_table = .projection;
+        release: []const u8,
+        status: []const u8,
+        git_commit: []const u8,
+        attempts: i32,
+        last_error: []const u8,
+    };
+    const rows = standalone.db.raw(WriteRow, &scope, "SELECT release, status, coalesce(git_commit, '-') AS git_commit, attempts, " ++
+        "coalesce(last_error, '') AS last_error " ++
+        "FROM git_writes w JOIN datasets d USING (dataset_id) WHERE d.name = $1 ORDER BY release", .{@as([]const u8, dataset_name)}) catch
+        return fail(io, .network, "database error: {s}", .{lastDbProblem()});
+    if (rows.len == 0) {
         out.print("No releases queued for {s} yet.\n", .{dataset_name}) catch return .network;
         out.flush() catch return .network;
         return .ok;
     }
     var any_failed = false;
-    var i: usize = 0;
-    while (i < rows.count()) : (i += 1) {
-        const status = rows.get(i, 1);
-        if (eql(status, "failed")) any_failed = true;
-        out.print("{s: <16} {s: <8} {s: <14} attempts={s}", .{ rows.get(i, 0), status, rows.get(i, 2)[0..@min(12, rows.get(i, 2).len)], rows.get(i, 3) }) catch return .network;
-        if (rows.get(i, 4).len > 0) out.print("  ({s})", .{rows.get(i, 4)}) catch return .network;
+    for (rows) |row| {
+        if (eql(row.status, "failed")) any_failed = true;
+        out.print("{s: <16} {s: <8} {s: <14} attempts={d}", .{ row.release, row.status, row.git_commit[0..@min(12, row.git_commit.len)], row.attempts }) catch return .network;
+        if (row.last_error.len > 0) out.print("  ({s})", .{row.last_error}) catch return .network;
         out.writeAll("\n") catch return .network;
     }
     if (any_failed)
@@ -361,17 +355,19 @@ fn runGitAdmin(
     return .ok;
 }
 
-fn adminDb(arena: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map, next_cmd: []const u8) ?pg.Db {
-    const conninfo_raw = env.get("CID_DB") orelse {
+/// Opens a Standalone pool for a one-shot admin command, with the usual
+/// what-to-do-next error messages. The caller owns close().
+fn adminPool(standalone: *dbx.Standalone, arena: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map, next_cmd: []const u8) ?void {
+    const spec = env.get("CID_DB") orelse {
         _ = fail(io, .usage, "CID_DB is not set.\n  {s}\nThen run '{s}' again.", .{ conninfo_example, next_cmd });
         return null;
     };
-    var diag: pg.Diag = .{};
-    const conninfo = arena.dupeZ(u8, conninfo_raw) catch return null;
-    return pg.Db.connect(conninfo, &diag) catch {
-        _ = fail(io, .network, "cannot connect to the database: {s}", .{diag.message()});
+    standalone.open(arena, spec) catch {
+        _ = fail(io, .network, "cannot connect to the database. Check CID_DB, then run '{s}' again.", .{next_cmd});
         return null;
     };
+    standalone.db.watching(stashDbProblem);
+    return {};
 }
 
 fn runAddKey(
@@ -389,25 +385,23 @@ fn runAddKey(
     const fp = keys_mod.fingerprint(arena, key_line) orelse
         return fail(io, .usage, "that does not look like an OpenSSH public key line ('ssh-ed25519 AAAA… comment').", .{});
 
-    var db = adminDb(arena, io, env, "cid admin add-key") orelse return .network;
-    defer db.close();
-    var diag: pg.Diag = .{};
-    const account_z = arena.dupeZ(u8, account) catch return .network;
-    const display_z = arena.dupeZ(u8, display) catch return .network;
-    const fp_z = arena.dupeZ(u8, fp) catch return .network;
-    const key_z = arena.dupeZ(u8, key_line) catch return .network;
-    db.execParams(
+    var standalone: dbx.Standalone = undefined;
+    adminPool(&standalone, arena, io, env, "cid admin add-key") orelse return .network;
+    defer standalone.close();
+    var scope = dbx.Run.init(arena);
+    defer scope.deinit();
+    _ = standalone.db.exec(
+        &scope,
         "INSERT INTO accounts (account_id, display_name, source) VALUES ($1, $2, 'dashboard') " ++
             "ON CONFLICT (account_id) DO UPDATE SET display_name = excluded.display_name",
-        &.{ account_z, display_z },
-        &diag,
-    ) catch return fail(io, .network, "database error: {s}", .{diag.message()});
-    db.execParams(
+        .{ @as([]const u8, account), @as([]const u8, display) },
+    ) catch return fail(io, .network, "database error: {s}", .{lastDbProblem()});
+    _ = standalone.db.exec(
+        &scope,
         "INSERT INTO ssh_keys (fingerprint, account_id, public_key) VALUES ($1, $2, $3) " ++
             "ON CONFLICT (fingerprint) DO UPDATE SET account_id = excluded.account_id, public_key = excluded.public_key",
-        &.{ fp_z, account_z, key_z },
-        &diag,
-    ) catch return fail(io, .network, "database error: {s}", .{diag.message()});
+        .{ fp, @as([]const u8, account), @as([]const u8, key_line) },
+    ) catch return fail(io, .network, "database error: {s}", .{lastDbProblem()});
     out.print("Registered key {s} for {s}.\n", .{ fp, account }) catch return .network;
     out.flush() catch return .network;
     return .ok;
@@ -428,19 +422,18 @@ fn runGrant(
     if (!eql(level, "read") and !eql(level, "write") and !eql(level, "maintain"))
         return fail(io, .usage, "the level is read, write or maintain. Run 'cid admin grant {s} {s} read'.", .{ dataset, account });
 
-    var db = adminDb(arena, io, env, "cid admin grant") orelse return .network;
-    defer db.close();
-    var diag: pg.Diag = .{};
-    const dataset_z = arena.dupeZ(u8, dataset) catch return .network;
-    const account_z = arena.dupeZ(u8, account) catch return .network;
-    const level_z = arena.dupeZ(u8, level) catch return .network;
-    db.execParams(
+    var standalone: dbx.Standalone = undefined;
+    adminPool(&standalone, arena, io, env, "cid admin grant") orelse return .network;
+    defer standalone.close();
+    var scope = dbx.Run.init(arena);
+    defer scope.deinit();
+    _ = standalone.db.exec(
+        &scope,
         "INSERT INTO access (dataset_id, account_id, level, source) " ++
             "SELECT d.dataset_id, $2, $3, 'dashboard' FROM datasets d WHERE d.name = $1 " ++
             "ON CONFLICT (dataset_id, account_id) DO UPDATE SET level = excluded.level",
-        &.{ dataset_z, account_z, level_z },
-        &diag,
-    ) catch return fail(io, .network, "database error: {s}", .{diag.message()});
+        .{ @as([]const u8, dataset), @as([]const u8, account), @as([]const u8, level) },
+    ) catch return fail(io, .network, "database error: {s}", .{lastDbProblem()});
     out.print("Granted {s} on {s} to {s}.\n", .{ level, dataset, account }) catch return .network;
     out.flush() catch return .network;
     return .ok;
@@ -505,8 +498,11 @@ fn runPurge(
     const s3_access = env.get("CID_S3_ACCESS_KEY") orelse return missingEnv(io, "CID_S3_ACCESS_KEY", "cid");
     const s3_secret = env.get("CID_S3_SECRET_KEY") orelse return missingEnv(io, "CID_S3_SECRET_KEY", "…");
     const s3_bucket = env.get("CID_S3_BUCKET") orelse return missingEnv(io, "CID_S3_BUCKET", "cid");
-    var db = adminDb(arena, io, env, "cid admin purge") orelse return .network;
-    defer db.close();
+    var standalone: dbx.Standalone = undefined;
+    adminPool(&standalone, arena, io, env, "cid admin purge") orelse return .network;
+    defer standalone.close();
+    var scope = dbx.Run.init(arena);
+    defer scope.deinit();
     var s3_client = s3.Client.init(arena, io, .{
         .endpoint = s3_endpoint,
         .access_key = s3_access,
@@ -517,7 +513,7 @@ fn runPurge(
 
     const by = env.get("USER") orelse "admin";
     const by_tag = std.fmt.allocPrint(arena, "user:{s}", .{by}) catch return .network;
-    const result = purge_mod.purge(arena, &db, &s3_client, positional.items[0], positional.items[1], reason.?, by_tag) catch |err| switch (err) {
+    const result = purge_mod.purge(arena, &standalone.db, &scope, &s3_client, positional.items[0], positional.items[1], reason.?, by_tag) catch |err| switch (err) {
         error.NoSuchDataset => return fail(io, .usage, "no dataset named '{s}'.", .{positional.items[0]}),
         error.NoSuchItem => return fail(io, .usage, "'{s}' matches no item in {s}. Give a path from the dataset or a 64-hex hash.", .{ positional.items[1], positional.items[0] }),
         error.AlreadyPurged => return fail(io, .usage, "that content is already purged. Nothing to do.", .{}),
@@ -547,11 +543,16 @@ fn backgroundLoop(bg: BackgroundConfig) void {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        var db = pg.Db.connect(bg.conninfo, null) catch {
+        // One pool per tick, so a hiccup never poisons the next tick.
+        var standalone: dbx.Standalone = undefined;
+        standalone.open(arena, bg.conninfo) catch {
             std.log.warn("background: database unreachable; will retry", .{});
             continue;
         };
-        defer db.close();
+        defer standalone.close();
+        const db = &standalone.db;
+        var scope = dbx.Run.init(arena);
+        defer scope.deinit();
 
         {
             var s3_bg = s3.Client.init(arena, bg.io, bg.s3) catch {
@@ -559,7 +560,7 @@ fn backgroundLoop(bg: BackgroundConfig) void {
                 continue;
             };
             defer s3_bg.deinit();
-            if (preview_worker.processPending(arena, bg.io, &db, &s3_bg, .{})) |outcome| {
+            if (preview_worker.processPending(arena, bg.io, db, &scope, &s3_bg, .{})) |outcome| {
                 if (outcome.built > 0 or outcome.skipped > 0)
                     std.log.info("background: previews {d} built, {d} skipped", .{ outcome.built, outcome.skipped });
             } else |err| {
@@ -567,32 +568,17 @@ fn backgroundLoop(bg: BackgroundConfig) void {
             }
         }
         if (bg.gitlab) |config| {
-            var standalone: dbx.Standalone = undefined;
-            if (standalone.open(arena, bg.conninfo)) |_| {
-                defer standalone.close();
-                var scope = dbx.Run.init(arena);
-                defer scope.deinit();
-                if (gitlab_sync.syncAll(arena, bg.io, &standalone.db, &scope, config)) |outcome| {
-                    if (outcome.members > 0 or outcome.keys > 0 or outcome.access_removed > 0)
-                        std.log.info("background: gitlab sync {d} members, {d} keys", .{ outcome.members, outcome.keys });
-                } else |err| {
-                    std.log.warn("background: gitlab sync failed: {t}", .{err});
-                }
-            } else |_| {
-                std.log.warn("background: database unreachable for gitlab sync; will retry", .{});
+            if (gitlab_sync.syncAll(arena, bg.io, db, &scope, config)) |outcome| {
+                if (outcome.members > 0 or outcome.keys > 0 or outcome.access_removed > 0)
+                    std.log.info("background: gitlab sync {d} members, {d} keys", .{ outcome.members, outcome.keys });
+            } else |err| {
+                std.log.warn("background: gitlab sync failed: {t}", .{err});
             }
         }
         if (bg.git) |config| {
-            var names = db.query(
-                "SELECT DISTINCT d.name FROM git_writes w JOIN datasets d USING (dataset_id) WHERE w.status <> 'done'",
-                &.{},
-                null,
-            ) catch continue;
-            defer names.deinit();
-            var i: usize = 0;
-            while (i < names.count()) : (i += 1) {
-                const name = arena.dupe(u8, names.get(i, 0)) catch continue;
-                _ = git_writer.processDataset(arena, bg.io, &db, config, name) catch |err| {
+            const names = db.raw([]const u8, &scope, "SELECT DISTINCT d.name FROM git_writes w JOIN datasets d USING (dataset_id) WHERE w.status <> 'done'", .{}) catch continue;
+            for (names) |name| {
+                _ = git_writer.processDataset(arena, bg.io, db, &scope, config, name) catch |err| {
                     std.log.warn("background: git write for {s} failed: {t}", .{ name, err });
                 };
             }
@@ -610,8 +596,11 @@ fn runPreviews(
     const s3_access = env.get("CID_S3_ACCESS_KEY") orelse return missingEnv(io, "CID_S3_ACCESS_KEY", "cid");
     const s3_secret = env.get("CID_S3_SECRET_KEY") orelse return missingEnv(io, "CID_S3_SECRET_KEY", "…");
     const s3_bucket = env.get("CID_S3_BUCKET") orelse return missingEnv(io, "CID_S3_BUCKET", "cid");
-    var db = adminDb(arena, io, env, "cid admin previews") orelse return .network;
-    defer db.close();
+    var standalone: dbx.Standalone = undefined;
+    adminPool(&standalone, arena, io, env, "cid admin previews") orelse return .network;
+    defer standalone.close();
+    var scope = dbx.Run.init(arena);
+    defer scope.deinit();
     var s3_client = s3.Client.init(arena, io, .{
         .endpoint = s3_endpoint,
         .access_key = s3_access,
@@ -620,7 +609,7 @@ fn runPreviews(
     }) catch return fail(io, .usage, "CID_S3_ENDPOINT must look like http://host:port.", .{});
     defer s3_client.deinit();
 
-    const outcome = preview_worker.processPending(arena, io, &db, &s3_client, .{}) catch |err|
+    const outcome = preview_worker.processPending(arena, io, &standalone.db, &scope, &s3_client, .{}) catch |err|
         return fail(io, .network, "the preview pass could not run: {t}. Fix the cause, then run 'cid admin previews' again.", .{err});
     out.print("Previews: {d} built, {d} skipped, {d} will retry.\n", .{
         outcome.built, outcome.skipped, outcome.failed,

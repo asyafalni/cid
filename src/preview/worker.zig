@@ -9,7 +9,7 @@
 //! land in SeaweedFS at previews/<aa>/<hex>/thumb.webp, immutable.
 
 const std = @import("std");
-const pg = @import("../store/pg.zig");
+const dbx = @import("../store/db.zig");
 const s3_mod = @import("../store/s3.zig");
 const sniff_mod = @import("../media/sniff.zig");
 
@@ -40,50 +40,49 @@ pub fn thumbKey(arena: std.mem.Allocator, hash_hex: []const u8) ![]const u8 {
 /// One pass over the queue. Serial on purpose: the default concurrency
 /// is one ffmpeg in flight; raise it by running more passes in more
 /// processes, never by letting traffic fan out.
+const QueueRow = struct {
+    pub const nilo_table = .projection;
+    hash: []const u8,
+    media_type: []const u8,
+    size_bytes: i64,
+    attempts: i32,
+};
+
 pub fn processPending(
     arena: std.mem.Allocator,
     io: std.Io,
-    db: *pg.Db,
+    db: *dbx.sql.Db,
+    scope: anytype,
     s3: *s3_mod.Client,
     config: Config,
 ) Error!Outcome {
     std.Io.Dir.cwd().createDirPath(io, config.tmpdir) catch return error.Storage;
 
-    const batch_z = std.fmt.allocPrintSentinel(arena, "{d}", .{config.batch}, 0) catch
-        return error.OutOfMemory;
-    var rows = db.query(
-        "SELECT encode(p.item_hash, 'hex'), i.media_type, i.size_bytes::text, p.attempts " ++
-            "FROM previews p JOIN items i USING (item_hash) " ++
-            "WHERE p.status = 'pending' ORDER BY p.updated_at LIMIT $1",
-        &.{batch_z},
-        null,
-    ) catch return error.Db;
-    defer rows.deinit();
+    const rows = db.raw(QueueRow, scope, "SELECT encode(p.item_hash, 'hex') AS hash, i.media_type, i.size_bytes, p.attempts " ++
+        "FROM previews p JOIN items i USING (item_hash) " ++
+        "WHERE p.status = 'pending' ORDER BY p.updated_at LIMIT $1", .{@as(i64, config.batch)}) catch return error.Db;
 
     var outcome: Outcome = .{};
-    var i: usize = 0;
-    while (i < rows.count()) : (i += 1) {
-        const hash = arena.dupe(u8, rows.get(i, 0)) catch return error.OutOfMemory;
-        const media_type = arena.dupe(u8, rows.get(i, 1)) catch return error.OutOfMemory;
-        const size = std.fmt.parseInt(u64, rows.get(i, 2), 10) catch 0;
-        const attempts = std.fmt.parseInt(i32, rows.get(i, 3), 10) catch 0;
+    for (rows) |row| {
+        const hash = row.hash;
+        const size: u64 = @intCast(@max(0, row.size_bytes));
 
-        const result = buildOne(arena, io, db, s3, config, hash, media_type, size);
+        const result = buildOne(arena, io, db, scope, s3, config, hash, row.media_type, size);
         switch (result) {
             .built => {
-                mark(arena, db, hash, "done", null);
+                mark(db, scope, hash, "done", null);
                 outcome.built += 1;
             },
             .skipped => |reason| {
-                mark(arena, db, hash, "skipped", reason);
+                mark(db, scope, hash, "skipped", reason);
                 outcome.skipped += 1;
             },
             .failed => |reason| {
-                if (attempts + 1 >= config.max_attempts) {
-                    mark(arena, db, hash, "skipped", reason);
+                if (row.attempts + 1 >= config.max_attempts) {
+                    mark(db, scope, hash, "skipped", reason);
                     outcome.skipped += 1;
                 } else {
-                    markRetry(arena, db, hash, reason);
+                    markRetry(db, scope, hash, reason);
                     outcome.failed += 1;
                 }
                 std.log.warn("preview {s}: {s}", .{ hash[0..12], reason });
@@ -102,7 +101,8 @@ const BuildResult = union(enum) {
 fn buildOne(
     arena: std.mem.Allocator,
     io: std.Io,
-    db: *pg.Db,
+    db: *dbx.sql.Db,
+    scope: anytype,
     s3: *s3_mod.Client,
     config: Config,
     hash: []const u8,
@@ -130,7 +130,7 @@ fn buildOne(
     if (unknown) {
         const found = sniff_mod.sniff(bytes) orelse
             return .{ .skipped = "not previewable: the content is not a known media format" };
-        recordSniff(arena, db, hash, found);
+        recordSniff(arena, db, scope, hash, found);
         is_image = std.mem.startsWith(u8, found.media_type, "image/");
         is_video = std.mem.startsWith(u8, found.media_type, "video/");
         if (!is_image and !is_video)
@@ -183,48 +183,32 @@ fn buildOne(
     return .built;
 }
 
-fn recordSniff(arena: std.mem.Allocator, db: *pg.Db, hash: []const u8, found: sniff_mod.Sniffed) void {
-    const hash_z = arena.dupeZ(u8, hash) catch return;
-    const type_z = arena.dupeZ(u8, found.media_type) catch return;
-    const meta = std.fmt.allocPrintSentinel(arena, "{f}", .{std.json.fmt(.{
+fn recordSniff(arena: std.mem.Allocator, db: *dbx.sql.Db, scope: anytype, hash: []const u8, found: sniff_mod.Sniffed) void {
+    const meta = std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{
         .width = found.width,
         .height = found.height,
-    }, .{ .emit_null_optional_fields = false })}, 0) catch return;
-    db.execParams(
+    }, .{ .emit_null_optional_fields = false })}) catch return;
+    _ = db.exec(
+        scope,
         "UPDATE items SET media_type = $2, meta = meta || $3::jsonb WHERE item_hash = decode($1, 'hex')",
-        &.{ hash_z, type_z, meta },
-        null,
+        .{ hash, found.media_type, meta },
     ) catch {};
 }
 
-fn mark(arena: std.mem.Allocator, db: *pg.Db, hash: []const u8, status: []const u8, reason: ?[]const u8) void {
-    const hash_z = arena.dupeZ(u8, hash) catch return;
-    const status_z = arena.dupeZ(u8, status) catch return;
-    if (reason) |r| {
-        const reason_z = arena.dupeZ(u8, r) catch return;
-        db.execParams(
-            "UPDATE previews SET status = $2, reason = $3, attempts = attempts + 1, updated_at = now() " ++
-                "WHERE item_hash = decode($1, 'hex')",
-            &.{ hash_z, status_z, reason_z },
-            null,
-        ) catch {};
-    } else {
-        db.execParams(
-            "UPDATE previews SET status = $2, reason = NULL, attempts = attempts + 1, updated_at = now() " ++
-                "WHERE item_hash = decode($1, 'hex')",
-            &.{ hash_z, status_z },
-            null,
-        ) catch {};
-    }
+fn mark(db: *dbx.sql.Db, scope: anytype, hash: []const u8, status: []const u8, reason: ?[]const u8) void {
+    _ = db.exec(
+        scope,
+        "UPDATE previews SET status = $2, reason = $3, attempts = attempts + 1, updated_at = now() " ++
+            "WHERE item_hash = decode($1, 'hex')",
+        .{ hash, status, reason },
+    ) catch {};
 }
 
-fn markRetry(arena: std.mem.Allocator, db: *pg.Db, hash: []const u8, reason: []const u8) void {
-    const hash_z = arena.dupeZ(u8, hash) catch return;
-    const reason_z = arena.dupeZ(u8, reason) catch return;
-    db.execParams(
+fn markRetry(db: *dbx.sql.Db, scope: anytype, hash: []const u8, reason: []const u8) void {
+    _ = db.exec(
+        scope,
         "UPDATE previews SET reason = $2, attempts = attempts + 1, updated_at = now() " ++
             "WHERE item_hash = decode($1, 'hex')",
-        &.{ hash_z, reason_z },
-        null,
+        .{ hash, reason },
     ) catch {};
 }

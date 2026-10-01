@@ -14,9 +14,13 @@
 //!
 //! v0 auth is one bearer token for everything; the SSH front door and
 //! per-dataset scoping replace it (docs/access.md). Not for production.
+//!
+//! Database access is nilo_sql: a pooled Db shared across nilo's threads,
+//! each query under the caller's Scope (the request's Ctx in serve.zig, a
+//! Run in tests and admin commands).
 
 const std = @import("std");
-const pg = @import("../store/pg.zig");
+const dbx = @import("../store/db.zig");
 const s3 = @import("../store/s3.zig");
 const release_mod = @import("../core/release.zig");
 const git_writer = @import("../gitrepo/writer.zig");
@@ -25,14 +29,9 @@ const token_mod = @import("../access/token.zig");
 const Uuid = @import("../util/uuid7.zig").Uuid;
 
 pub const Deps = struct {
-    db: *pg.Db,
+    db: *dbx.sql.Db,
     s3: *s3.Client,
     io: std.Io,
-    /// One libpq connection is not thread-safe, and nilo serves across
-    /// many threads: every handler body runs under this lock. The e2e
-    /// harness's parallel workers are what exposed it. A connection pool
-    /// replaces this when throughput asks for it.
-    lock: std.Io.Mutex = .init,
     /// The static full-access token (CI fallback; empty disables it).
     token: []const u8,
     /// Verifies SSH-issued scoped tokens when set (CID_TOKEN_SECRET).
@@ -54,12 +53,13 @@ const presign_secs = 15 * 60;
 pub fn handle(
     arena: std.mem.Allocator,
     deps: *Deps,
+    scope: anytype,
     method: []const u8,
     target: []const u8,
     auth_header: ?[]const u8,
     body: []const u8,
 ) Response {
-    return handleInner(arena, deps, method, target, auth_header, body) catch |err| switch (err) {
+    return handleInner(arena, deps, scope, method, target, auth_header, body) catch |err| switch (err) {
         error.OutOfMemory => errorResponse(arena, .internal_server_error, "out of memory", "Try again."),
         error.Db => errorResponse(arena, .internal_server_error, "database error", "Check the server logs, then try again."),
         error.Storage => errorResponse(arena, .internal_server_error, "storage error", "Check the server logs, then try again."),
@@ -72,6 +72,7 @@ const HandleError = error{ OutOfMemory, Db, Storage, BadRequest };
 fn handleInner(
     arena: std.mem.Allocator,
     deps: *Deps,
+    scope: anytype,
     method: []const u8,
     target: []const u8,
     auth_header: ?[]const u8,
@@ -82,14 +83,14 @@ fn handleInner(
 
     if (eql(method, "POST") and eql(target, "/v0/datasets")) {
         // The dataset's name is in the body; createDataset checks scope.
-        return createDataset(arena, deps, auth_header, body);
+        return createDataset(arena, deps, scope, auth_header, body);
     }
     if (eql(method, "GET") and eql(target, "/v0/datasets")) {
         // Listing crosses datasets, so a per-dataset token cannot do it:
         // the static token only, until OAuth brings account-level views.
         if (!tokenOk(deps.token, auth_header))
             return errorResponse(arena, .unauthorized, "listing needs the server token", "Sign in with the server token, or browse one dataset by its address.");
-        return listDatasets(arena, deps);
+        return listDatasets(arena, deps, scope);
     }
 
     const route = parseDatasetRoute(target) orelse
@@ -107,45 +108,45 @@ fn handleInner(
     if (!authorized(arena, deps, auth_header, route.name, needed))
         return errorResponse(arena, .unauthorized, "missing, wrong or expired token for this dataset", "Run the command again; cid fetches a fresh token over SSH. CI: check CID_TOKEN.");
 
-    const ds = lookupDataset(arena, deps, route.name) orelse
+    const ds = lookupDataset(arena, deps, scope, route.name) orelse
         return errorResponse(arena, .not_found, "no such dataset", "Run 'cid init' to create it, or check the address.");
 
     if (eql(method, "GET") and eql(route.action, "info"))
-        return datasetInfo(arena, deps, ds);
+        return datasetInfo(arena, deps, scope, ds);
     if (eql(method, "GET") and eql(route.action, "overview"))
-        return overview(arena, deps, ds);
+        return overview(arena, deps, scope, ds);
     if (eql(method, "GET") and eql(route.action, "head"))
-        return head(arena, deps, ds, route.queryParam("branch") orelse "main");
+        return head(arena, deps, scope, ds, route.queryParam("branch") orelse "main");
     if (eql(method, "GET") and eql(route.action, "log"))
-        return log(arena, deps, ds, route.queryParam("branch") orelse "main");
+        return log(arena, deps, scope, ds, route.queryParam("branch") orelse "main");
     if (eql(method, "POST") and eql(route.action, "check-hashes"))
-        return checkHashes(arena, deps, ds, body);
+        return checkHashes(arena, deps, scope, ds, body);
     if (eql(method, "POST") and eql(route.action, "push"))
-        return push(arena, deps, ds, body);
+        return push(arena, deps, scope, ds, body);
     if (eql(method, "GET") and std.mem.startsWith(u8, route.action, "state/"))
-        return state(arena, deps, ds, route.action["state/".len..]);
+        return state(arena, deps, scope, ds, route.action["state/".len..]);
     if (eql(method, "POST") and eql(route.action, "downloads"))
-        return downloads(arena, deps, ds, body);
+        return downloads(arena, deps, scope, ds, body);
     if (eql(method, "POST") and eql(route.action, "thumbs"))
-        return thumbs(arena, deps, ds, body);
+        return thumbs(arena, deps, scope, ds, body);
     if (eql(method, "POST") and eql(route.action, "tag"))
-        return tag(arena, deps, ds, body);
+        return tag(arena, deps, scope, ds, body);
     if (eql(method, "GET") and eql(route.action, "releases"))
-        return releases(arena, deps, ds);
+        return releases(arena, deps, scope, ds);
     if (eql(method, "POST") and eql(route.action, "branch"))
-        return branchCreate(arena, deps, ds, body);
+        return branchCreate(arena, deps, scope, ds, body);
     if (eql(method, "GET") and eql(route.action, "branches"))
-        return branches(arena, deps, ds);
+        return branches(arena, deps, scope, ds);
     if (eql(method, "POST") and eql(route.action, "merge"))
-        return merge(arena, deps, ds, body);
+        return merge(arena, deps, scope, ds, body);
     if (eql(method, "POST") and eql(route.action, "commit"))
-        return serverCommit(arena, deps, ds, body);
+        return serverCommit(arena, deps, scope, ds, body);
     if (eql(method, "POST") and eql(route.action, "register-items"))
-        return registerItems(arena, deps, ds, body);
+        return registerItems(arena, deps, scope, ds, body);
     if (eql(method, "POST") and eql(route.action, "policy"))
-        return policyCreate(arena, deps, ds, body);
+        return policyCreate(arena, deps, scope, ds, body);
     if (eql(method, "GET") and eql(route.action, "policies"))
-        return policies(arena, deps, ds);
+        return policies(arena, deps, scope, ds);
 
     return errorResponse(arena, .not_found, "no such route", "Update cid and try again.");
 }
@@ -217,57 +218,38 @@ fn authorized(
 // ---------------------------------------------------------------------------
 
 const Dataset = struct {
-    id: [:0]const u8, // uuid text
+    id: []const u8, // uuid text
     name: []const u8,
     kind: []const u8, // 'files' | 'annotated'
 };
 
-fn lookupDataset(arena: std.mem.Allocator, deps: *Deps, name: []const u8) ?Dataset {
-    const name_z = arena.dupeZ(u8, name) catch return null;
-    var rows = deps.db.query(
-        "SELECT dataset_id::text, kind FROM datasets WHERE name = $1",
-        &.{name_z},
-        null,
-    ) catch return null;
-    defer rows.deinit();
-    if (rows.count() == 0) return null;
-    return .{
-        .id = arena.dupeZ(u8, rows.get(0, 0)) catch return null,
-        .name = name,
-        .kind = arena.dupe(u8, rows.get(0, 1)) catch return null,
-    };
+const DatasetRow = struct {
+    pub const nilo_table = .projection;
+    dataset_id: []const u8,
+    kind: []const u8,
+};
+
+fn lookupDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, name: []const u8) ?Dataset {
+    _ = arena;
+    const row = (deps.db.rawOne(DatasetRow, scope, "SELECT dataset_id::text AS dataset_id, kind FROM datasets WHERE name = $1", .{name}) catch return null) orelse return null;
+    return .{ .id = row.dataset_id, .name = name, .kind = row.kind };
 }
 
-fn listDatasets(arena: std.mem.Allocator, deps: *Deps) HandleError!Response {
-    var rows = deps.db.query(
-        "SELECT d.name, d.kind, d.default_format, " ++
-            "  (SELECT r.name FROM refs r WHERE r.dataset_id = d.dataset_id AND r.kind = 'release' " ++
-            "   ORDER BY r.commit_id DESC LIMIT 1), " ++
-            "  (SELECT to_char(max(c.recorded_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') " ++
-            "   FROM commits c WHERE c.dataset_id = d.dataset_id) " ++
-            "FROM datasets d ORDER BY d.name",
-        &.{},
-        null,
-    ) catch return error.Db;
-    defer rows.deinit();
-
+fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype) HandleError!Response {
     const Entry = struct {
+        pub const nilo_table = .projection;
         name: []const u8,
         kind: []const u8,
         default_format: []const u8,
         latest_release: ?[]const u8,
         last_push: ?[]const u8,
     };
-    const list = try arena.alloc(Entry, rows.count());
-    for (list, 0..) |*e, i| {
-        e.* = .{
-            .name = try arena.dupe(u8, rows.get(i, 0)),
-            .kind = try arena.dupe(u8, rows.get(i, 1)),
-            .default_format = try arena.dupe(u8, rows.get(i, 2)),
-            .latest_release = if (rows.isNull(i, 3)) null else try arena.dupe(u8, rows.get(i, 3)),
-            .last_push = if (rows.isNull(i, 4)) null else try arena.dupe(u8, rows.get(i, 4)),
-        };
-    }
+    const list = deps.db.raw(Entry, scope, "SELECT d.name, d.kind, d.default_format, " ++
+        "  (SELECT r.name FROM refs r WHERE r.dataset_id = d.dataset_id AND r.kind = 'release' " ++
+        "   ORDER BY r.commit_id DESC LIMIT 1) AS latest_release, " ++
+        "  (SELECT to_char(max(c.recorded_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') " ++
+        "   FROM commits c WHERE c.dataset_id = d.dataset_id) AS last_push " ++
+        "FROM datasets d ORDER BY d.name", .{}) catch return error.Db;
     return json(arena, .ok, .{ .datasets = list });
 }
 
@@ -277,89 +259,63 @@ const CreateDatasetBody = struct {
     git_url: []const u8,
 };
 
-fn createDataset(arena: std.mem.Allocator, deps: *Deps, auth_header: ?[]const u8, body: []const u8) HandleError!Response {
+fn createDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, auth_header: ?[]const u8, body: []const u8) HandleError!Response {
     const req = parseBody(CreateDatasetBody, arena, body) orelse return error.BadRequest;
     if (req.name.len == 0 or req.git_url.len == 0) return error.BadRequest;
     if (!authorized(arena, deps, auth_header, req.name, .write))
         return errorResponse(arena, .unauthorized, "missing, wrong or expired token for this dataset", "Run the command again; cid fetches a fresh token over SSH. CI: check CID_TOKEN.");
     if (!eql(req.kind, "files") and !eql(req.kind, "annotated")) return error.BadRequest;
 
-    if (lookupDataset(arena, deps, req.name) != null)
+    if (lookupDataset(arena, deps, scope, req.name) != null)
         return errorResponse(arena, .conflict, "the dataset already exists", "Run 'cid clone' to work with it.");
 
     const id = Uuid.now(deps.io).toString();
-    var diag: pg.Diag = .{};
-    deps.db.execParams(
-        "INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES ($1, $2, $3, $4)",
-        &.{
-            try arena.dupeZ(u8, &id),
-            try arena.dupeZ(u8, req.name),
-            try arena.dupeZ(u8, req.kind),
-            try arena.dupeZ(u8, req.git_url),
-        },
-        &diag,
+    _ = deps.db.exec(
+        scope,
+        "INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES ($1::uuid, $2, $3, $4)",
+        .{ @as([]const u8, &id), req.name, req.kind, req.git_url },
     ) catch return error.Db;
     return json(arena, .created, .{ .name = req.name, .dataset_id = &id });
 }
 
-fn datasetInfo(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!Response {
-    var rows = deps.db.query(
-        "SELECT kind, git_url, default_format FROM datasets WHERE dataset_id = $1::uuid",
-        &.{ds.id},
-        null,
-    ) catch return error.Db;
-    defer rows.deinit();
-    if (rows.count() == 0) return error.Db;
+const InfoRow = struct {
+    pub const nilo_table = .projection;
+    kind: []const u8,
+    git_url: []const u8,
+    default_format: []const u8,
+};
+
+fn datasetInfo(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) HandleError!Response {
+    const info = (deps.db.rawOne(InfoRow, scope, "SELECT kind, git_url, default_format FROM datasets WHERE dataset_id = $1::uuid", .{ds.id}) catch return error.Db) orelse return error.Db;
     return json(arena, .ok, .{
         .name = ds.name,
-        .kind = try arena.dupe(u8, rows.get(0, 0)),
-        .git_url = try arena.dupe(u8, rows.get(0, 1)),
-        .default_format = try arena.dupe(u8, rows.get(0, 2)),
+        .kind = info.kind,
+        .git_url = info.git_url,
+        .default_format = info.default_format,
     });
 }
 
 /// Everything the dashboard's Overview needs in one call: identity, the
 /// commit tape (newest first, releases attached), and the counts of the
 /// current head state. Pinned to main; branch views arrive later.
-fn overview(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!Response {
-    var info_rows = deps.db.query(
-        "SELECT git_url, default_format FROM datasets WHERE dataset_id = $1::uuid",
-        &.{ds.id},
-        null,
-    ) catch return error.Db;
-    defer info_rows.deinit();
-    const git_url = try arena.dupe(u8, info_rows.get(0, 0));
-    const default_format = try arena.dupe(u8, info_rows.get(0, 1));
+fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) HandleError!Response {
+    const info = (deps.db.rawOne(InfoRow, scope, "SELECT kind, git_url, default_format FROM datasets WHERE dataset_id = $1::uuid", .{ds.id}) catch return error.Db) orelse return error.Db;
 
     const TapeEntry = struct {
+        pub const nilo_table = .projection;
         id: []const u8,
         message: []const u8,
         author: []const u8,
-        at_ms: u64,
+        at_ms: i64,
         release: ?[]const u8,
     };
-    var tape_rows = deps.db.query(
-        "SELECT c.commit_id::text, c.message, c.author, " ++
-            "(extract(epoch from c.recorded_at) * 1000)::bigint::text, rel.name " ++
-            "FROM commits c LEFT JOIN LATERAL (" ++
-            "  SELECT name FROM refs r WHERE r.dataset_id = c.dataset_id " ++
-            "  AND r.commit_id = c.commit_id AND r.kind = 'release' ORDER BY name LIMIT 1) rel ON true " ++
-            "WHERE c.dataset_id = $1::uuid AND c.branch = 'main' " ++
-            "ORDER BY c.commit_id DESC LIMIT 100",
-        &.{ds.id},
-        null,
-    ) catch return error.Db;
-    defer tape_rows.deinit();
-    const tape = try arena.alloc(TapeEntry, tape_rows.count());
-    for (tape, 0..) |*e, i| {
-        e.* = .{
-            .id = try arena.dupe(u8, tape_rows.get(i, 0)),
-            .message = try arena.dupe(u8, tape_rows.get(i, 1)),
-            .author = try arena.dupe(u8, tape_rows.get(i, 2)),
-            .at_ms = std.fmt.parseInt(u64, tape_rows.get(i, 3), 10) catch 0,
-            .release = if (tape_rows.isNull(i, 4)) null else try arena.dupe(u8, tape_rows.get(i, 4)),
-        };
-    }
+    const tape = deps.db.raw(TapeEntry, scope, "SELECT c.commit_id::text AS id, c.message, c.author, " ++
+        "(extract(epoch from c.recorded_at) * 1000)::bigint AS at_ms, rel.name AS release " ++
+        "FROM commits c LEFT JOIN LATERAL (" ++
+        "  SELECT name FROM refs r WHERE r.dataset_id = c.dataset_id " ++
+        "  AND r.commit_id = c.commit_id AND r.kind = 'release' ORDER BY name LIMIT 1) rel ON true " ++
+        "WHERE c.dataset_id = $1::uuid AND c.branch = 'main' " ++
+        "ORDER BY c.commit_id DESC LIMIT 100", .{ds.id}) catch return error.Db;
 
     // Counts at head, when there is one.
     var items_count: usize = 0;
@@ -368,8 +324,7 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!Resp
     var classes: []const Count = &.{};
     var splits: []const Count = &.{};
     if (tape.len > 0) {
-        const head_z = try arena.dupeZ(u8, tape[0].id);
-        const rows = release_mod.stateRows(arena, deps.db, ds.id, head_z) catch |err| switch (err) {
+        const rows = release_mod.stateRows(arena, deps.db, scope, ds.id, tape[0].id) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.Db,
         };
@@ -390,7 +345,7 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!Resp
         splits = split_list;
 
         if (eql(ds.kind, "annotated")) {
-            const anns = release_mod.annotationRows(arena, deps.db, ds.id, head_z) catch |err| switch (err) {
+            const anns = release_mod.annotationRows(arena, deps.db, scope, ds.id, tape[0].id) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return error.Db,
             };
@@ -418,8 +373,8 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!Resp
     return json(arena, .ok, .{
         .name = ds.name,
         .kind = ds.kind,
-        .git_url = git_url,
-        .default_format = default_format,
+        .git_url = info.git_url,
+        .default_format = info.default_format,
         .commits = tape,
         .items = items_count,
         .bytes = total_bytes,
@@ -428,45 +383,24 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!Resp
     });
 }
 
-fn head(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, branch: []const u8) HandleError!Response {
-    var rows = deps.db.query(
-        "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'branch'",
-        &.{ ds.id, try arena.dupeZ(u8, branch) },
-        null,
-    ) catch return error.Db;
-    defer rows.deinit();
-    if (rows.count() == 0) return json(arena, .ok, .{ .commit = null });
-    return json(arena, .ok, .{ .commit = @as(?[]const u8, try arena.dupe(u8, rows.get(0, 0))) });
+fn head(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, branch: []const u8) HandleError!Response {
+    const commit = deps.db.rawOne([]const u8, scope, "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'branch'", .{ ds.id, branch }) catch return error.Db;
+    return json(arena, .ok, .{ .commit = commit });
 }
 
-fn log(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, branch: []const u8) HandleError!Response {
-    var rows = deps.db.query(
-        "SELECT commit_id::text, parent_id::text, message, author, " ++
-            "(extract(epoch from authored_at) * 1000)::bigint::text " ++
-            "FROM commits WHERE dataset_id = $1::uuid AND branch = $2 " ++
-            "ORDER BY commit_id DESC LIMIT 200",
-        &.{ ds.id, try arena.dupeZ(u8, branch) },
-        null,
-    ) catch return error.Db;
-    defer rows.deinit();
-
+fn log(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, branch: []const u8) HandleError!Response {
     const Entry = struct {
+        pub const nilo_table = .projection;
         id: []const u8,
         parent: ?[]const u8,
         message: []const u8,
         author: []const u8,
-        authored_at_ms: u64,
+        authored_at_ms: i64,
     };
-    const list = try arena.alloc(Entry, rows.count());
-    for (list, 0..) |*e, i| {
-        e.* = .{
-            .id = try arena.dupe(u8, rows.get(i, 0)),
-            .parent = if (rows.isNull(i, 1)) null else try arena.dupe(u8, rows.get(i, 1)),
-            .message = try arena.dupe(u8, rows.get(i, 2)),
-            .author = try arena.dupe(u8, rows.get(i, 3)),
-            .authored_at_ms = std.fmt.parseInt(u64, rows.get(i, 4), 10) catch 0,
-        };
-    }
+    const list = deps.db.raw(Entry, scope, "SELECT commit_id::text AS id, parent_id::text AS parent, message, author, " ++
+        "(extract(epoch from authored_at) * 1000)::bigint AS authored_at_ms " ++
+        "FROM commits WHERE dataset_id = $1::uuid AND branch = $2 " ++
+        "ORDER BY commit_id DESC LIMIT 200", .{ ds.id, branch }) catch return error.Db;
     return json(arena, .ok, .{ .commits = list });
 }
 
@@ -475,7 +409,7 @@ const HashesBody = struct { hashes: []const []const u8 };
 /// Which of these hashes must be uploaded, with presigned PUT URLs for them.
 /// v0 answers for everything the single token can see; the per-dataset
 /// dedup-privacy rule (invariant 12) binds when real auth lands.
-fn checkHashes(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+fn checkHashes(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
     _ = ds;
     const req = parseBody(HashesBody, arena, body) orelse return error.BadRequest;
     if (req.hashes.len > 1000) return error.BadRequest;
@@ -485,7 +419,7 @@ fn checkHashes(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const
     const now = nowEpoch(deps.io);
     for (req.hashes) |hash| {
         if (!validHashHex(hash)) return error.BadRequest;
-        if (try isPurged(arena, deps, hash))
+        if (try isPurged(deps.db, scope, hash))
             return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then run 'cid push' again.");
         const key = itemKey(arena, hash) catch return error.OutOfMemory;
         const exists = deps.s3.headObject(arena, key) catch return error.Storage;
@@ -519,7 +453,7 @@ const PushBody = struct {
 /// All-or-nothing (invariant 7 of the push rules): verify every file first,
 /// then record revisions, commits and the branch head in one transaction,
 /// under the per-(dataset, branch) advisory lock (invariant 3).
-fn push(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+fn push(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(PushBody, arena, body) orelse return error.BadRequest;
     if (req.commits.len == 0) return error.BadRequest;
 
@@ -528,7 +462,7 @@ fn push(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) Ha
         for (commit.changes) |ch| {
             if (eql(ch.op, "add")) {
                 if (!validHashHex(ch.hash)) return error.BadRequest;
-                if (try isPurged(arena, deps, ch.hash))
+                if (try isPurged(deps.db, scope, ch.hash))
                     return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then run 'cid push' again.");
                 const key = itemKey(arena, ch.hash) catch return error.OutOfMemory;
                 const exists = deps.s3.headObject(arena, key) catch return error.Storage;
@@ -538,32 +472,22 @@ fn push(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) Ha
         }
     }
 
-    var diag: pg.Diag = .{};
-    deps.db.exec("BEGIN", &diag) catch return error.Db;
-    errdefer deps.db.exec("ROLLBACK", null) catch {};
+    var tx = deps.db.begin(scope, .{}) catch return error.Db;
+    defer tx.deinit(); // rolls back unless committed
 
     // 2. The commit lock: writers shared, commits exclusive (docs/data-model.md).
-    deps.db.execParams(
+    _ = tx.exec(
+        scope,
         "SELECT pg_advisory_xact_lock(hashtextextended($1 || '/' || $2, 0))",
-        &.{ ds.id, try arena.dupeZ(u8, req.branch) },
-        &diag,
+        .{ ds.id, req.branch },
     ) catch return error.Db;
 
     // 3. Forward-only: the first commit's parent must be the branch head.
-    const server_head: ?[]const u8 = blk: {
-        var rows = deps.db.query(
-            "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'branch'",
-            &.{ ds.id, try arena.dupeZ(u8, req.branch) },
-            &diag,
-        ) catch return error.Db;
-        defer rows.deinit();
-        break :blk if (rows.count() == 0) null else try arena.dupe(u8, rows.get(0, 0));
-    };
+    const server_head = tx.rawOne([]const u8, scope, "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'branch'", .{ ds.id, req.branch }) catch return error.Db;
     const claimed_parent = req.commits[0].parent;
     const matches = (server_head == null and claimed_parent == null) or
         (server_head != null and claimed_parent != null and eql(server_head.?, claimed_parent.?));
     if (!matches) {
-        deps.db.exec("ROLLBACK", null) catch {};
         return errorResponse(arena, .conflict, "someone pushed since you pulled", "Run 'cid pull', then 'cid push' again.");
     }
 
@@ -573,14 +497,8 @@ fn push(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) Ha
     // never be undercut (invariant 3).
     var rev_floor: ?Uuid = null;
     if (server_head) |h| {
-        var cutoff_rows = deps.db.query(
-            "SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid",
-            &.{try arena.dupeZ(u8, h)},
-            &diag,
-        ) catch return error.Db;
-        defer cutoff_rows.deinit();
-        if (cutoff_rows.count() > 0)
-            rev_floor = Uuid.parse(cutoff_rows.get(0, 0)) catch null;
+        const cutoff = tx.rawOne([]const u8, scope, "SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid", .{h}) catch return error.Db;
+        if (cutoff) |c| rev_floor = Uuid.parse(c) catch null;
     }
 
     var last_commit_id: []const u8 = undefined;
@@ -594,65 +512,47 @@ fn push(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) Ha
             last_rev = rev;
             has_rev = true;
             if (eql(ch.op, "add")) {
-                try insertAddRevision(arena, deps, &diag, ds, req.branch, rev, ch.path, ch.hash, ch.size, commit.author);
+                try insertAddRevision(&tx, scope, deps.io, ds, req.branch, rev, ch.path, ch.hash, ch.size, commit.author);
             } else {
-                try insertDeleteRevision(arena, deps, &diag, ds, req.branch, rev, ch.path, commit.author);
+                try insertDeleteRevision(&tx, scope, ds, req.branch, rev, ch.path, commit.author);
             }
         }
         if (!has_rev) return error.BadRequest;
 
-        if (commit.parent) |parent| {
-            deps.db.execParams(
-                "INSERT INTO commits (commit_id, dataset_id, branch, parent_id, cutoff_rev, message, author, authored_at) " ++
-                    "VALUES ($1::uuid, $2::uuid, $3, $4::uuid, $5::uuid, $6, $7, to_timestamp($8::bigint / 1000.0))",
-                &.{
-                    try arena.dupeZ(u8, commit.id),
-                    ds.id,
-                    try arena.dupeZ(u8, req.branch),
-                    try arena.dupeZ(u8, parent),
-                    try arena.dupeZ(u8, &last_rev.toString()),
-                    try arena.dupeZ(u8, commit.message),
-                    try arena.dupeZ(u8, commit.author),
-                    try intZ(arena, commit.authored_at_ms),
-                },
-                &diag,
-            ) catch return error.Db;
-        } else {
-            deps.db.execParams(
-                "INSERT INTO commits (commit_id, dataset_id, branch, parent_id, cutoff_rev, message, author, authored_at) " ++
-                    "VALUES ($1::uuid, $2::uuid, $3, NULL, $4::uuid, $5, $6, to_timestamp($7::bigint / 1000.0))",
-                &.{
-                    try arena.dupeZ(u8, commit.id),
-                    ds.id,
-                    try arena.dupeZ(u8, req.branch),
-                    try arena.dupeZ(u8, &last_rev.toString()),
-                    try arena.dupeZ(u8, commit.message),
-                    try arena.dupeZ(u8, commit.author),
-                    try intZ(arena, commit.authored_at_ms),
-                },
-                &diag,
-            ) catch return error.Db;
-        }
+        _ = tx.exec(
+            scope,
+            "INSERT INTO commits (commit_id, dataset_id, branch, parent_id, cutoff_rev, message, author, authored_at) " ++
+                "VALUES ($1::uuid, $2::uuid, $3, $4::uuid, $5::uuid, $6, $7, to_timestamp($8::bigint / 1000.0))",
+            .{
+                commit.id,
+                ds.id,
+                req.branch,
+                commit.parent,
+                @as([]const u8, &last_rev.toString()),
+                commit.message,
+                commit.author,
+                @as(i64, @intCast(commit.authored_at_ms)),
+            },
+        ) catch return error.Db;
         last_commit_id = commit.id;
     }
 
-    deps.db.execParams(
+    _ = tx.exec(
+        scope,
         "INSERT INTO refs (dataset_id, name, kind, commit_id) VALUES ($1::uuid, $2, 'branch', $3::uuid) " ++
             "ON CONFLICT (dataset_id, name) DO UPDATE SET commit_id = excluded.commit_id",
-        &.{ ds.id, try arena.dupeZ(u8, req.branch), try arena.dupeZ(u8, last_commit_id) },
-        &diag,
+        .{ ds.id, req.branch, last_commit_id },
     ) catch return error.Db;
-    deps.db.exec("COMMIT", &diag) catch return error.Db;
+    tx.commit() catch return error.Db;
 
     return json(arena, .ok, .{ .head = last_commit_id, .commits_recorded = req.commits.len });
 }
 
-fn state(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, commit_id: []const u8) HandleError!Response {
+fn state(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit_id: []const u8) HandleError!Response {
     if (Uuid.parse(commit_id) == error.InvalidUuid)
         return errorResponse(arena, .bad_request, "that is not a commit id", "Run 'cid log' to list commits.");
-    const commit_z = try arena.dupeZ(u8, commit_id);
 
-    const rows = release_mod.stateRows(arena, deps.db, ds.id, commit_z) catch |err| switch (err) {
+    const rows = release_mod.stateRows(arena, deps.db, scope, ds.id, commit_id) catch |err| switch (err) {
         error.NoSuchCommit => return errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits."),
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.Db,
@@ -665,7 +565,7 @@ fn state(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, commit_id: []const 
     }
 
     if (eql(ds.kind, "annotated")) {
-        const anns = release_mod.annotationRows(arena, deps.db, ds.id, commit_z) catch |err| switch (err) {
+        const anns = release_mod.annotationRows(arena, deps.db, scope, ds.id, commit_id) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.Db,
         };
@@ -713,26 +613,20 @@ const TagBody = struct {
 };
 
 /// `cid tag`: a release never moves once this returns (invariant 5).
-fn tag(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(TagBody, arena, body) orelse return error.BadRequest;
 
-    const commit_id: [:0]const u8 = blk: {
+    const commit_id: []const u8 = blk: {
         if (req.commit) |c| {
             if (Uuid.parse(c) == error.InvalidUuid) return error.BadRequest;
-            break :blk try arena.dupeZ(u8, c);
+            break :blk c;
         }
-        var rows = deps.db.query(
-            "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'branch'",
-            &.{ ds.id, try arena.dupeZ(u8, req.branch) },
-            null,
-        ) catch return error.Db;
-        defer rows.deinit();
-        if (rows.count() == 0)
+        const head_commit = deps.db.rawOne([]const u8, scope, "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'branch'", .{ ds.id, req.branch }) catch return error.Db;
+        break :blk head_commit orelse
             return errorResponse(arena, .unprocessable_entity, "nothing to tag: the branch has no commits", "Run 'cid push' first, then 'cid tag' again.");
-        break :blk try arena.dupeZ(u8, rows.get(0, 0));
     };
 
-    const created = release_mod.create(arena, deps.db, deps.s3, ds.id, req.name, commit_id) catch |err| switch (err) {
+    const created = release_mod.create(arena, deps.db, scope, deps.s3, ds.id, req.name, commit_id) catch |err| switch (err) {
         error.BadName => return errorResponse(arena, .bad_request, "that is not a release name (letters, digits, dot, dash, underscore)", "Pick a name like v1.0.0 and run 'cid tag' again."),
         error.ReleaseExists => return errorResponse(arena, .conflict, "that release already exists and releases never move", "Pick a new name, e.g. the next version number."),
         error.NoSuchCommit => return errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits."),
@@ -743,15 +637,15 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) Han
     };
     // The release stands; its git copy is queued and attempted right away
     // when configured. A git failure never blocks the release (invariant 21).
-    deps.db.execParams(
+    _ = deps.db.exec(
+        scope,
         "INSERT INTO git_writes (dataset_id, release, status) VALUES ($1::uuid, $2, 'pending') " ++
             "ON CONFLICT (dataset_id, release) DO NOTHING",
-        &.{ ds.id, try arena.dupeZ(u8, created.name) },
-        null,
+        .{ ds.id, created.name },
     ) catch return error.Db;
     var git_status: []const u8 = "pending";
     if (deps.git) |git_config| {
-        const outcome = git_writer.processDataset(arena, deps.io, deps.db, git_config, ds.name) catch
+        const outcome = git_writer.processDataset(arena, deps.io, deps.db, scope, git_config, ds.name) catch
             git_writer.Outcome{ .failed = 1 };
         git_status = if (outcome.failed == 0) "done" else "failed";
     }
@@ -765,30 +659,22 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) Han
     });
 }
 
-fn releases(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!Response {
-    var rows = deps.db.query(
-        "SELECT name, commit_id::text, encode(manifest_sha256, 'hex') FROM refs " ++
-            "WHERE dataset_id = $1::uuid AND kind = 'release' ORDER BY commit_id DESC",
-        &.{ds.id},
-        null,
-    ) catch return error.Db;
-    defer rows.deinit();
-    const Entry = struct { name: []const u8, commit: []const u8, manifest_sha256: []const u8 };
-    const list = try arena.alloc(Entry, rows.count());
-    for (list, 0..) |*e, i| {
-        e.* = .{
-            .name = try arena.dupe(u8, rows.get(i, 0)),
-            .commit = try arena.dupe(u8, rows.get(i, 1)),
-            .manifest_sha256 = try arena.dupe(u8, rows.get(i, 2)),
-        };
-    }
+fn releases(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) HandleError!Response {
+    const Entry = struct {
+        pub const nilo_table = .projection;
+        name: []const u8,
+        commit: []const u8,
+        manifest_sha256: []const u8,
+    };
+    const list = deps.db.raw(Entry, scope, "SELECT name, commit_id::text AS commit, encode(manifest_sha256, 'hex') AS manifest_sha256 FROM refs " ++
+        "WHERE dataset_id = $1::uuid AND kind = 'release' ORDER BY commit_id DESC", .{ds.id}) catch return error.Db;
     return json(arena, .ok, .{ .releases = list });
 }
 
 /// Presigned URLs for thumbnails that already exist. Never a trigger:
 /// a hash with no finished preview is simply absent from the answer and
 /// the page shows a placeholder (the structural ffmpeg guarantee).
-fn thumbs(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+fn thumbs(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
     _ = ds;
     const req = parseBody(HashesBody, arena, body) orelse return error.BadRequest;
     if (req.hashes.len > 1000) return error.BadRequest;
@@ -797,13 +683,8 @@ fn thumbs(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) 
     const now = nowEpoch(deps.io);
     for (req.hashes) |hash| {
         if (!validHashHex(hash)) return error.BadRequest;
-        var rows = deps.db.query(
-            "SELECT 1 FROM previews WHERE item_hash = decode($1, 'hex') AND status = 'done'",
-            &.{try arena.dupeZ(u8, hash)},
-            null,
-        ) catch return error.Db;
-        defer rows.deinit();
-        if (rows.count() == 0) continue;
+        const done = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM previews WHERE item_hash = decode($1, 'hex') AND status = 'done'", .{hash}) catch return error.Db;
+        if (done == null) continue;
         const key = preview_worker.thumbKey(arena, hash) catch return error.OutOfMemory;
         const url = deps.s3.presignGet(arena, key, now, presign_secs) catch return error.Storage;
         try list.append(arena, .{ .hash = hash, .url = url });
@@ -811,8 +692,9 @@ fn thumbs(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) 
     return json(arena, .ok, .{ .thumbs = list.items });
 }
 
-fn downloads(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+fn downloads(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
     _ = ds;
+    _ = scope;
     const req = parseBody(HashesBody, arena, body) orelse return error.BadRequest;
     if (req.hashes.len > 1000) return error.BadRequest;
     const Download = struct { hash: []const u8, url: []const u8 };
@@ -828,9 +710,9 @@ fn downloads(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u
 }
 
 fn insertAddRevision(
-    arena: std.mem.Allocator,
-    deps: *Deps,
-    diag: *pg.Diag,
+    tx: anytype,
+    scope: anytype,
+    io: std.Io,
     ds: Dataset,
     branch: []const u8,
     rev: Uuid,
@@ -839,17 +721,18 @@ fn insertAddRevision(
     size: u64,
     author: []const u8,
 ) HandleError!void {
-    deps.db.execParams(
+    _ = tx.exec(
+        scope,
         "INSERT INTO items (item_hash, size_bytes, media_type) " ++
             "VALUES (decode($1, 'hex'), $2::bigint, 'application/octet-stream') " ++
             "ON CONFLICT (item_hash) DO NOTHING",
-        &.{ try arena.dupeZ(u8, hash), try intZ(arena, size) },
-        diag,
+        .{ hash, @as(i64, @intCast(size)) },
     ) catch return error.Db;
-    try enqueuePreview(arena, deps, hash);
+    try enqueuePreview(tx, scope, hash);
     // Item identity: new path → new item_id; existing path keeps its id.
     // On a branch, the path may live on main as of the branch start.
-    deps.db.execParams(
+    _ = tx.exec(
+        scope,
         "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
             "SELECT $1::uuid, to_timestamp($2::bigint / 1000.0), $3::uuid, $4, $5, " ++
             "  CASE WHEN prev.item_id IS NULL THEN 'add' ELSE 'update' END, " ++
@@ -858,49 +741,47 @@ fn insertAddRevision(
             "  SELECT item_id FROM item_revisions " ++
             "  WHERE dataset_id = $3::uuid AND branch IN ('main', $4) AND path = $5 AND op <> 'delete' " ++
             "  ORDER BY rev_id DESC LIMIT 1) prev ON true",
-        &.{
-            try arena.dupeZ(u8, &rev.toString()),
-            try intZ(arena, rev.unixMs()),
+        .{
+            @as([]const u8, &rev.toString()),
+            @as(i64, @intCast(rev.unixMs())),
             ds.id,
-            try arena.dupeZ(u8, branch),
-            try arena.dupeZ(u8, path),
-            try arena.dupeZ(u8, &Uuid.now(deps.io).toString()),
-            try arena.dupeZ(u8, hash),
-            try arena.dupeZ(u8, author),
+            branch,
+            path,
+            @as([]const u8, &Uuid.now(io).toString()),
+            hash,
+            author,
         },
-        diag,
     ) catch return error.Db;
-    deps.db.execParams(
+    _ = tx.exec(
+        scope,
         "INSERT INTO dataset_items (item_id, dataset_id) " ++
             "SELECT r.item_id, $1::uuid FROM item_revisions r WHERE r.rev_id = $2::uuid " ++
             "ON CONFLICT (item_id) DO NOTHING",
-        &.{ ds.id, try arena.dupeZ(u8, &rev.toString()) },
-        diag,
+        .{ ds.id, @as([]const u8, &rev.toString()) },
     ) catch return error.Db;
 }
 
 fn insertDeleteRevision(
-    arena: std.mem.Allocator,
-    deps: *Deps,
-    diag: *pg.Diag,
+    tx: anytype,
+    scope: anytype,
     ds: Dataset,
     branch: []const u8,
     rev: Uuid,
     path: []const u8,
     author: []const u8,
 ) HandleError!void {
-    deps.db.execParams(
+    _ = tx.exec(
+        scope,
         "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
             "VALUES ($1::uuid, to_timestamp($2::bigint / 1000.0), $3::uuid, $4, $5, 'delete', NULL, NULL, NULL, $6)",
-        &.{
-            try arena.dupeZ(u8, &rev.toString()),
-            try intZ(arena, rev.unixMs()),
+        .{
+            @as([]const u8, &rev.toString()),
+            @as(i64, @intCast(rev.unixMs())),
             ds.id,
-            try arena.dupeZ(u8, branch),
-            try arena.dupeZ(u8, path),
-            try arena.dupeZ(u8, author),
+            branch,
+            path,
+            author,
         },
-        diag,
     ) catch return error.Db;
 }
 
@@ -908,54 +789,34 @@ const BranchBody = struct { name: []const u8 };
 
 /// `cid branch <name>`: a draft line of work, always starting from main
 /// (invariant 8), recording where it started.
-fn branchCreate(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+fn branchCreate(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(BranchBody, arena, body) orelse return error.BadRequest;
     if (!release_mod.validName(req.name) or eql(req.name, "main"))
         return errorResponse(arena, .bad_request, "that is not a branch name (letters, digits, dot, dash, underscore; not 'main')", "Pick a name like cleanup and run 'cid branch' again.");
 
-    var existing = deps.db.query(
-        "SELECT 1 FROM refs WHERE dataset_id = $1::uuid AND name = $2",
-        &.{ ds.id, try arena.dupeZ(u8, req.name) },
-        null,
-    ) catch return error.Db;
-    defer existing.deinit();
-    if (existing.count() > 0)
+    const existing = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM refs WHERE dataset_id = $1::uuid AND name = $2", .{ ds.id, req.name }) catch return error.Db;
+    if (existing != null)
         return errorResponse(arena, .conflict, "that name is taken", "Run 'cid checkout' to work on it, or pick another name.");
 
-    var head_rows = deps.db.query(
-        "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = 'main' AND kind = 'branch'",
-        &.{ds.id},
-        null,
-    ) catch return error.Db;
-    defer head_rows.deinit();
-    if (head_rows.count() == 0)
+    const main_head = (deps.db.rawOne([]const u8, scope, "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = 'main' AND kind = 'branch'", .{ds.id}) catch return error.Db) orelse
         return errorResponse(arena, .unprocessable_entity, "main has no commits yet", "Run 'cid push' first, then 'cid branch' again.");
-    const main_head = try arena.dupeZ(u8, head_rows.get(0, 0));
 
-    deps.db.execParams(
+    _ = deps.db.exec(
+        scope,
         "INSERT INTO refs (dataset_id, name, kind, commit_id, start_commit_id) " ++
             "VALUES ($1::uuid, $2, 'branch', $3::uuid, $3::uuid)",
-        &.{ ds.id, try arena.dupeZ(u8, req.name), main_head },
-        null,
+        .{ ds.id, req.name, main_head },
     ) catch return error.Db;
-    return json(arena, .created, .{ .branch = req.name, .start = @as([]const u8, main_head) });
+    return json(arena, .created, .{ .branch = req.name, .start = main_head });
 }
 
-fn branches(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!Response {
-    var rows = deps.db.query(
-        "SELECT name, commit_id::text FROM refs WHERE dataset_id = $1::uuid AND kind = 'branch' ORDER BY name",
-        &.{ds.id},
-        null,
-    ) catch return error.Db;
-    defer rows.deinit();
-    const Entry = struct { name: []const u8, commit: []const u8 };
-    const list = try arena.alloc(Entry, rows.count());
-    for (list, 0..) |*e, i| {
-        e.* = .{
-            .name = try arena.dupe(u8, rows.get(i, 0)),
-            .commit = try arena.dupe(u8, rows.get(i, 1)),
-        };
-    }
+fn branches(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) HandleError!Response {
+    const Entry = struct {
+        pub const nilo_table = .projection;
+        name: []const u8,
+        commit: []const u8,
+    };
+    const list = deps.db.raw(Entry, scope, "SELECT name, commit_id::text AS commit FROM refs WHERE dataset_id = $1::uuid AND kind = 'branch' ORDER BY name", .{ds.id}) catch return error.Db;
     return json(arena, .ok, .{ .branches = list });
 }
 
@@ -963,34 +824,28 @@ const MergeBody = struct { name: []const u8, author: []const u8 = "user:unknown"
 
 /// `cid merge <name>` into main. Overlapping changes stop the merge and
 /// are listed; nothing is resolved silently (invariant 9).
-fn merge(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+fn merge(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(MergeBody, arena, body) orelse return error.BadRequest;
 
-    var branch_rows = deps.db.query(
-        "SELECT commit_id::text, start_commit_id::text FROM refs " ++
-            "WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'branch'",
-        &.{ ds.id, try arena.dupeZ(u8, req.name) },
-        null,
-    ) catch return error.Db;
-    defer branch_rows.deinit();
-    if (branch_rows.count() == 0 or eql(req.name, "main"))
+    const BranchRef = struct {
+        pub const nilo_table = .projection;
+        commit_id: []const u8,
+        start_commit_id: []const u8,
+    };
+    const branch_ref = deps.db.rawOne(BranchRef, scope, "SELECT commit_id::text AS commit_id, start_commit_id::text AS start_commit_id FROM refs " ++
+        "WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'branch'", .{ ds.id, req.name }) catch return error.Db;
+    if (branch_ref == null or eql(req.name, "main"))
         return errorResponse(arena, .not_found, "no such branch", "Run 'cid branch <name>' to create one.");
-    const branch_head = try arena.dupeZ(u8, branch_rows.get(0, 0));
-    const branch_start = try arena.dupeZ(u8, branch_rows.get(0, 1));
+    const branch_head = branch_ref.?.commit_id;
+    const branch_start = branch_ref.?.start_commit_id;
     if (eql(branch_head, branch_start))
         return errorResponse(arena, .unprocessable_entity, "the branch has no commits of its own", "Push commits on the branch first, then merge.");
 
-    var main_rows = deps.db.query(
-        "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = 'main' AND kind = 'branch'",
-        &.{ds.id},
-        null,
-    ) catch return error.Db;
-    defer main_rows.deinit();
-    const main_head = try arena.dupeZ(u8, main_rows.get(0, 0));
+    const main_head = (deps.db.rawOne([]const u8, scope, "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = 'main' AND kind = 'branch'", .{ds.id}) catch return error.Db) orelse return error.Db;
 
-    const base = release_mod.stateRows(arena, deps.db, ds.id, branch_start) catch return error.Db;
-    const ours = release_mod.stateRows(arena, deps.db, ds.id, main_head) catch return error.Db;
-    const theirs = release_mod.stateRows(arena, deps.db, ds.id, branch_head) catch return error.Db;
+    const base = release_mod.stateRows(arena, deps.db, scope, ds.id, branch_start) catch return error.Db;
+    const ours = release_mod.stateRows(arena, deps.db, scope, ds.id, main_head) catch return error.Db;
+    const theirs = release_mod.stateRows(arena, deps.db, scope, ds.id, branch_head) catch return error.Db;
 
     // The branch's net changes, and main's changed paths, both vs the base.
     const BranchChange = union(enum) { add: struct { hash: []const u8, size: u64 }, delete };
@@ -1030,24 +885,18 @@ fn merge(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) H
     if (branch_changes.count() == 0)
         return errorResponse(arena, .unprocessable_entity, "main already has everything from the branch", "Nothing to merge; run 'cid pull' to update your folder.");
 
-    var diag: pg.Diag = .{};
-    deps.db.exec("BEGIN", &diag) catch return error.Db;
-    errdefer deps.db.exec("ROLLBACK", null) catch {};
-    deps.db.execParams(
+    var tx = deps.db.begin(scope, .{}) catch return error.Db;
+    defer tx.deinit();
+    _ = tx.exec(
+        scope,
         "SELECT pg_advisory_xact_lock(hashtextextended($1 || '/main', 0))",
-        &.{ds.id},
-        &diag,
+        .{ds.id},
     ) catch return error.Db;
 
     var rev_floor: ?Uuid = null;
     {
-        var cutoff_rows = deps.db.query(
-            "SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid",
-            &.{main_head},
-            &diag,
-        ) catch return error.Db;
-        defer cutoff_rows.deinit();
-        if (cutoff_rows.count() > 0) rev_floor = Uuid.parse(cutoff_rows.get(0, 0)) catch null;
+        const cutoff = tx.rawOne([]const u8, scope, "SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid", .{main_head}) catch return error.Db;
+        if (cutoff) |c| rev_floor = Uuid.parse(c) catch null;
     }
 
     var last_rev: Uuid = undefined;
@@ -1056,33 +905,33 @@ fn merge(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) H
         rev_floor = rev;
         last_rev = rev;
         switch (change) {
-            .add => |a| try insertAddRevision(arena, deps, &diag, ds, "main", rev, path, a.hash, a.size, req.author),
-            .delete => try insertDeleteRevision(arena, deps, &diag, ds, "main", rev, path, req.author),
+            .add => |a| try insertAddRevision(&tx, scope, deps.io, ds, "main", rev, path, a.hash, a.size, req.author),
+            .delete => try insertDeleteRevision(&tx, scope, ds, "main", rev, path, req.author),
         }
     }
 
     const merge_id = Uuid.nextAfter(deps.io, Uuid.parse(main_head) catch null);
     const message = try std.fmt.allocPrint(arena, "Merge branch '{s}'", .{req.name});
-    deps.db.execParams(
+    _ = tx.exec(
+        scope,
         "INSERT INTO commits (commit_id, dataset_id, branch, parent_id, merge_parent_id, cutoff_rev, message, author, authored_at) " ++
             "VALUES ($1::uuid, $2::uuid, 'main', $3::uuid, $4::uuid, $5::uuid, $6, $7, now())",
-        &.{
-            try arena.dupeZ(u8, &merge_id.toString()),
+        .{
+            @as([]const u8, &merge_id.toString()),
             ds.id,
             main_head,
             branch_head,
-            try arena.dupeZ(u8, &last_rev.toString()),
-            try arena.dupeZ(u8, message),
-            try arena.dupeZ(u8, req.author),
+            @as([]const u8, &last_rev.toString()),
+            message,
+            req.author,
         },
-        &diag,
     ) catch return error.Db;
-    deps.db.execParams(
+    _ = tx.exec(
+        scope,
         "UPDATE refs SET commit_id = $2::uuid WHERE dataset_id = $1::uuid AND name = 'main' AND kind = 'branch'",
-        &.{ ds.id, try arena.dupeZ(u8, &merge_id.toString()) },
-        &diag,
+        .{ ds.id, @as([]const u8, &merge_id.toString()) },
     ) catch return error.Db;
-    deps.db.exec("COMMIT", &diag) catch return error.Db;
+    tx.commit() catch return error.Db;
 
     return json(arena, .ok, .{ .merge_commit = &merge_id.toString(), .changes = branch_changes.count() });
 }
@@ -1102,14 +951,13 @@ const RegisterItemsBody = struct {
 /// in storage with the right size, then records the items row (invariant
 /// 2 keeps one enforcement point: bytes always enter through the server's
 /// upload flow).
-fn registerItems(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+fn registerItems(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
     _ = ds;
     const req = parseBody(RegisterItemsBody, arena, body) orelse return error.BadRequest;
     if (req.items.len > 1000) return error.BadRequest;
-    var diag: pg.Diag = .{};
     for (req.items) |item| {
         if (!validHashHex(item.hash)) return error.BadRequest;
-        if (try isPurged(arena, deps, item.hash))
+        if (try isPurged(deps.db, scope, item.hash))
             return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then register again.");
         const key = itemKey(arena, item.hash) catch return error.OutOfMemory;
         const stored = deps.s3.headObject(arena, key) catch return error.Storage;
@@ -1117,17 +965,17 @@ fn registerItems(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []con
             return errorResponse(arena, .unprocessable_entity, "an item is missing from storage", "Upload it through the check-hashes URLs first, then register again.");
         if (size != item.size)
             return errorResponse(arena, .unprocessable_entity, "an item's size does not match what storage holds", "Re-upload the file, then register again.");
-        const meta = try std.fmt.allocPrintSentinel(arena, "{f}", .{std.json.fmt(.{
+        const meta = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{
             .width = item.width,
             .height = item.height,
-        }, .{ .emit_null_optional_fields = false })}, 0);
-        deps.db.execParams(
+        }, .{ .emit_null_optional_fields = false })});
+        _ = deps.db.exec(
+            scope,
             "INSERT INTO items (item_hash, size_bytes, media_type, meta) VALUES (decode($1, 'hex'), $2::bigint, $3, $4::jsonb) " ++
                 "ON CONFLICT (item_hash) DO UPDATE SET meta = items.meta || excluded.meta",
-            &.{ try arena.dupeZ(u8, item.hash), try intZ(arena, item.size), try arena.dupeZ(u8, item.media_type), meta },
-            &diag,
+            .{ item.hash, @as(i64, @intCast(item.size)), item.media_type, meta },
         ) catch return error.Db;
-        try enqueuePreview(arena, deps, item.hash);
+        try enqueuePreview(deps.db, scope, item.hash);
     }
     return json(arena, .ok, .{ .registered = req.items.len });
 }
@@ -1140,40 +988,32 @@ const PolicyBody = struct {
 /// Annotated datasets: the platform records each labelling-policy version
 /// here; annotation revisions reference it by name. Versions never change
 /// once written (the policy a box was made under is history).
-fn policyCreate(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+fn policyCreate(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(PolicyBody, arena, body) orelse return error.BadRequest;
     if (req.version.len == 0 or req.version.len > 100) return error.BadRequest;
-    var existing = deps.db.query(
-        "SELECT 1 FROM policy_versions WHERE dataset_id = $1::uuid AND version = $2",
-        &.{ ds.id, try arena.dupeZ(u8, req.version) },
-        null,
-    ) catch return error.Db;
-    defer existing.deinit();
-    if (existing.count() > 0)
+    const existing = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM policy_versions WHERE dataset_id = $1::uuid AND version = $2", .{ ds.id, req.version }) catch return error.Db;
+    if (existing != null)
         return errorResponse(arena, .conflict, "that policy version already exists and never changes", "Record a new version instead.");
-    const body_json = try std.fmt.allocPrintSentinel(arena, "{f}", .{std.json.fmt(req.body, .{})}, 0);
-    deps.db.execParams(
+    const body_json = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(req.body, .{})});
+    _ = deps.db.exec(
+        scope,
         "INSERT INTO policy_versions (dataset_id, version, body) VALUES ($1::uuid, $2, $3::jsonb)",
-        &.{ ds.id, try arena.dupeZ(u8, req.version), body_json },
-        null,
+        .{ ds.id, req.version, body_json },
     ) catch return error.Db;
     return json(arena, .created, .{ .version = req.version });
 }
 
-fn policies(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!Response {
-    var rows = deps.db.query(
-        "SELECT version, body::text FROM policy_versions WHERE dataset_id = $1::uuid ORDER BY created_at",
-        &.{ds.id},
-        null,
-    ) catch return error.Db;
-    defer rows.deinit();
+fn policies(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) HandleError!Response {
+    const Row = struct {
+        pub const nilo_table = .projection;
+        version: []const u8,
+        body: []const u8,
+    };
+    const rows = deps.db.raw(Row, scope, "SELECT version, body::text AS body FROM policy_versions WHERE dataset_id = $1::uuid ORDER BY created_at", .{ds.id}) catch return error.Db;
     const Entry = struct { version: []const u8, body: ?std.json.Value };
-    const list = try arena.alloc(Entry, rows.count());
-    for (list, 0..) |*e, i| {
-        e.* = .{
-            .version = try arena.dupe(u8, rows.get(i, 0)),
-            .body = jsonValue(arena, try arena.dupe(u8, rows.get(i, 1))),
-        };
+    const list = try arena.alloc(Entry, rows.len);
+    for (list, rows) |*e, row| {
+        e.* = .{ .version = row.version, .body = jsonValue(arena, row.body) };
     }
     return json(arena, .ok, .{ .policies = list });
 }
@@ -1189,81 +1029,49 @@ const ServerCommitBody = struct {
 /// write lock; this seals them — "all changes up to here" — under the
 /// exclusive lock, so no in-flight write can land beneath the cutoff
 /// (invariant 3).
-fn serverCommit(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+fn serverCommit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(ServerCommitBody, arena, body) orelse return error.BadRequest;
     if (req.message.len == 0 or req.author.len == 0) return error.BadRequest;
-    const branch_z = try arena.dupeZ(u8, req.branch);
 
-    var diag: pg.Diag = .{};
-    deps.db.exec("BEGIN", &diag) catch return error.Db;
-    errdefer deps.db.exec("ROLLBACK", null) catch {};
-    deps.db.execParams(
+    var tx = deps.db.begin(scope, .{}) catch return error.Db;
+    defer tx.deinit();
+    _ = tx.exec(
+        scope,
         "SELECT pg_advisory_xact_lock(hashtextextended($1 || '/' || $2, 0))",
-        &.{ ds.id, branch_z },
-        &diag,
+        .{ ds.id, req.branch },
     ) catch return error.Db;
 
-    const parent: ?[]const u8 = blk: {
-        var rows = deps.db.query(
-            "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'branch'",
-            &.{ ds.id, branch_z },
-            &diag,
-        ) catch return error.Db;
-        defer rows.deinit();
-        break :blk if (rows.count() == 0) null else try arena.dupe(u8, rows.get(0, 0));
-    };
+    const parent = tx.rawOne([]const u8, scope, "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'branch'", .{ ds.id, req.branch }) catch return error.Db;
     const parent_cutoff: ?[]const u8 = blk: {
         const p = parent orelse break :blk null;
-        var rows = deps.db.query(
-            "SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid",
-            &.{try arena.dupeZ(u8, p)},
-            &diag,
-        ) catch return error.Db;
-        defer rows.deinit();
-        break :blk if (rows.count() == 0) null else try arena.dupe(u8, rows.get(0, 0));
+        break :blk tx.rawOne([]const u8, scope, "SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid", .{p}) catch return error.Db;
     };
 
     // The cutoff: the newest revision on this branch, item or annotation.
-    const floor_z = try arena.dupeZ(u8, parent_cutoff orelse "00000000-0000-0000-0000-000000000000");
-    var max_rows = deps.db.query(
-        "SELECT rev_id::text FROM (" ++
-            "  SELECT rev_id FROM item_revisions WHERE dataset_id = $1::uuid AND branch = $2 AND rev_id > $3::uuid " ++
-            "  UNION ALL " ++
-            "  SELECT rev_id FROM annotation_revisions WHERE dataset_id = $1::uuid AND branch = $2 AND rev_id > $3::uuid) u " ++
-            "ORDER BY rev_id DESC LIMIT 1",
-        &.{ ds.id, branch_z, floor_z },
-        &diag,
-    ) catch return error.Db;
-    defer max_rows.deinit();
-    if (max_rows.count() == 0 or max_rows.isNull(0, 0)) {
-        deps.db.exec("ROLLBACK", null) catch {};
+    const floor = parent_cutoff orelse "00000000-0000-0000-0000-000000000000";
+    const cutoff = tx.rawOne([]const u8, scope, "SELECT rev_id::text FROM (" ++
+        "  SELECT rev_id FROM item_revisions WHERE dataset_id = $1::uuid AND branch = $2 AND rev_id > $3::uuid " ++
+        "  UNION ALL " ++
+        "  SELECT rev_id FROM annotation_revisions WHERE dataset_id = $1::uuid AND branch = $2 AND rev_id > $3::uuid) u " ++
+        "ORDER BY rev_id DESC LIMIT 1", .{ ds.id, req.branch, floor }) catch return error.Db;
+    if (cutoff == null) {
         return errorResponse(arena, .unprocessable_entity, "nothing new to commit on this branch", "Write revisions first, then commit again.");
     }
-    const cutoff = try arena.dupeZ(u8, max_rows.get(0, 0));
 
     const commit_id = Uuid.nextAfter(deps.io, if (parent) |p| (Uuid.parse(p) catch null) else null);
-    if (parent) |p| {
-        deps.db.execParams(
-            "INSERT INTO commits (commit_id, dataset_id, branch, parent_id, cutoff_rev, message, author, authored_at) " ++
-                "VALUES ($1::uuid, $2::uuid, $3, $4::uuid, $5::uuid, $6, $7, now())",
-            &.{ try arena.dupeZ(u8, &commit_id.toString()), ds.id, branch_z, try arena.dupeZ(u8, p), cutoff, try arena.dupeZ(u8, req.message), try arena.dupeZ(u8, req.author) },
-            &diag,
-        ) catch return error.Db;
-    } else {
-        deps.db.execParams(
-            "INSERT INTO commits (commit_id, dataset_id, branch, parent_id, cutoff_rev, message, author, authored_at) " ++
-                "VALUES ($1::uuid, $2::uuid, $3, NULL, $4::uuid, $5, $6, now())",
-            &.{ try arena.dupeZ(u8, &commit_id.toString()), ds.id, branch_z, cutoff, try arena.dupeZ(u8, req.message), try arena.dupeZ(u8, req.author) },
-            &diag,
-        ) catch return error.Db;
-    }
-    deps.db.execParams(
+    _ = tx.exec(
+        scope,
+        "INSERT INTO commits (commit_id, dataset_id, branch, parent_id, cutoff_rev, message, author, authored_at) " ++
+            "VALUES ($1::uuid, $2::uuid, $3, $4::uuid, $5::uuid, $6, $7, now())",
+        .{ @as([]const u8, &commit_id.toString()), ds.id, req.branch, parent, cutoff.?, req.message, req.author },
+    ) catch return error.Db;
+    _ = tx.exec(
+        scope,
         "INSERT INTO refs (dataset_id, name, kind, commit_id) VALUES ($1::uuid, $2, 'branch', $3::uuid) " ++
             "ON CONFLICT (dataset_id, name) DO UPDATE SET commit_id = excluded.commit_id",
-        &.{ ds.id, branch_z, try arena.dupeZ(u8, &commit_id.toString()) },
-        &diag,
+        .{ ds.id, req.branch, @as([]const u8, &commit_id.toString()) },
     ) catch return error.Db;
-    deps.db.exec("COMMIT", &diag) catch return error.Db;
+    tx.commit() catch return error.Db;
 
     return json(arena, .created, .{ .commit = &commit_id.toString() });
 }
@@ -1271,22 +1079,18 @@ fn serverCommit(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []cons
 /// One queue row per content hash, ever (ON CONFLICT DO NOTHING): the
 /// structural guarantee that preview work scales with ingested content
 /// and never with dashboard traffic. No request path builds previews.
-fn enqueuePreview(arena: std.mem.Allocator, deps: *Deps, hash: []const u8) HandleError!void {
-    deps.db.execParams(
+/// `q` is the Db, or the enclosing transaction.
+fn enqueuePreview(q: anytype, scope: anytype, hash: []const u8) HandleError!void {
+    _ = q.exec(
+        scope,
         "INSERT INTO previews (item_hash) VALUES (decode($1, 'hex')) ON CONFLICT (item_hash) DO NOTHING",
-        &.{try arena.dupeZ(u8, hash)},
-        null,
+        .{hash},
     ) catch return error.Db;
 }
 
-fn isPurged(arena: std.mem.Allocator, deps: *Deps, hash: []const u8) HandleError!bool {
-    var rows = deps.db.query(
-        "SELECT 1 FROM purged_items WHERE item_hash = decode($1, 'hex')",
-        &.{try arena.dupeZ(u8, hash)},
-        null,
-    ) catch return error.Db;
-    defer rows.deinit();
-    return rows.count() > 0;
+fn isPurged(db: *dbx.sql.Db, scope: anytype, hash: []const u8) HandleError!bool {
+    const row = db.rawOne(i64, scope, "SELECT 1::bigint FROM purged_items WHERE item_hash = decode($1, 'hex')", .{hash}) catch return error.Db;
+    return row != null;
 }
 
 fn findRow(rows: []const release_mod.StateRow, path: []const u8) ?release_mod.StateRow {
@@ -1299,10 +1103,6 @@ fn findRow(rows: []const release_mod.StateRow, path: []const u8) ?release_mod.St
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
-
-fn intZ(arena: std.mem.Allocator, n: u64) ![:0]const u8 {
-    return std.fmt.allocPrintSentinel(arena, "{d}", .{n}, 0);
-}
 
 /// Storage layout: items/sha256/<aa>/<bb>/<hex>.
 pub fn itemKey(arena: std.mem.Allocator, hash_hex: []const u8) ![]const u8 {

@@ -144,7 +144,12 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     defer s3c.deinit();
     try s3c.createBucket(arena);
 
-    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
     const name = "test/datasets/api";
 
     // Leftovers from earlier runs go through the maintenance escape.
@@ -157,13 +162,13 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     try db.exec("RESET cid.maintenance", &diag);
 
     // Auth is checked before anything else.
-    const unauth = cid.api.handle(arena, &deps, "GET", "/v0/datasets/x/-/head", "Bearer wrong", "");
+    const unauth = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/x/-/head", "Bearer wrong", "");
     try std.testing.expectEqual(std.http.Status.unauthorized, unauth.status);
 
     // Create the dataset.
-    const created = cid.api.handle(arena, &deps, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/api\",\"git_url\":\"git@example.invalid:d.git\"}");
+    const created = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/api\",\"git_url\":\"git@example.invalid:d.git\"}");
     try std.testing.expectEqual(std.http.Status.created, created.status);
-    const again = cid.api.handle(arena, &deps, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/api\",\"git_url\":\"git@example.invalid:d.git\"}");
+    const again = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/api\",\"git_url\":\"git@example.invalid:d.git\"}");
     try std.testing.expectEqual(std.http.Status.conflict, again.status);
 
     // Two contents; their hex hashes.
@@ -181,7 +186,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
 
     // check-hashes says both are missing and hands out presigned PUTs.
     const check_body = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\",\"{s}\"]}}", .{ &hash_a, &hash_b });
-    const check1 = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/check-hashes", "Bearer test-token", check_body);
+    const check1 = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/" ++ name ++ "/-/check-hashes", "Bearer test-token", check_body);
     try std.testing.expectEqual(std.http.Status.ok, check1.status);
     const Check = struct { missing: []const struct { hash: []const u8, url: []const u8 } };
     const check1_parsed = try std.json.parseFromSliceLeaky(Check, arena, check1.body, .{ .ignore_unknown_fields = true });
@@ -196,7 +201,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
             try std.testing.expectEqual(std.http.Status.ok, put.status);
         }
     }
-    const check2 = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/check-hashes", "Bearer test-token", check_body);
+    const check2 = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/" ++ name ++ "/-/check-hashes", "Bearer test-token", check_body);
     const check2_parsed = try std.json.parseFromSliceLeaky(Check, arena, check2.body, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqual(@as(usize, 1), check2_parsed.missing.len);
     try std.testing.expectEqualStrings(&hash_b, check2_parsed.missing[0].hash);
@@ -206,7 +211,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     const push1_body = try std.fmt.allocPrint(arena,
         \\{{"branch":"main","commits":[{{"id":"{s}","parent":null,"message":"first","author":"user:test","authored_at_ms":1760000000000,"changes":[{{"op":"add","path":"a.txt","hash":"{s}","size":18}}]}}]}}
     , .{ &id1, &hash_a });
-    const push1 = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/push", "Bearer test-token", push1_body);
+    const push1 = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/" ++ name ++ "/-/push", "Bearer test-token", push1_body);
     try std.testing.expectEqual(std.http.Status.ok, push1.status);
 
     // A second root push is stale: forward-only refuses it with the pull hint.
@@ -214,7 +219,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     const stale_body = try std.fmt.allocPrint(arena,
         \\{{"branch":"main","commits":[{{"id":"{s}","parent":null,"message":"stale","author":"user:test","authored_at_ms":1760000000000,"changes":[{{"op":"add","path":"a.txt","hash":"{s}","size":18}}]}}]}}
     , .{ &id_stale, &hash_a });
-    const stale = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/push", "Bearer test-token", stale_body);
+    const stale = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/" ++ name ++ "/-/push", "Bearer test-token", stale_body);
     try std.testing.expectEqual(std.http.Status.conflict, stale.status);
     try std.testing.expect(std.mem.indexOf(u8, stale.body, "cid pull") != null);
 
@@ -223,23 +228,23 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     const push2_body = try std.fmt.allocPrint(arena,
         \\{{"branch":"main","commits":[{{"id":"{s}","parent":"{s}","message":"second","author":"user:test","authored_at_ms":1760000001000,"changes":[{{"op":"add","path":"b.txt","hash":"{s}","size":26}},{{"op":"delete","path":"a.txt"}}]}}]}}
     , .{ &id2, &id1, &hash_b });
-    const missing = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/push", "Bearer test-token", push2_body);
+    const missing = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/" ++ name ++ "/-/push", "Bearer test-token", push2_body);
     try std.testing.expectEqual(std.http.Status.unprocessable_entity, missing.status);
 
     // Upload B, retry: same body now lands.
     const key_b = try cid.api.itemKey(arena, &hash_b);
     try s3c.putObject(arena, key_b, content_b);
-    const push2 = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/push", "Bearer test-token", push2_body);
+    const push2 = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/" ++ name ++ "/-/push", "Bearer test-token", push2_body);
     try std.testing.expectEqual(std.http.Status.ok, push2.status);
 
     // head and state: only b.txt remains after the delete.
-    const head_res = cid.api.handle(arena, &deps, "GET", "/v0/datasets/" ++ name ++ "/-/head?branch=main", "Bearer test-token", "");
+    const head_res = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/" ++ name ++ "/-/head?branch=main", "Bearer test-token", "");
     const Head = struct { commit: ?[]const u8 };
     const head_parsed = try std.json.parseFromSliceLeaky(Head, arena, head_res.body, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqualStrings(&id2, head_parsed.commit.?);
 
     const state_target = try std.fmt.allocPrint(arena, "/v0/datasets/{s}/-/state/{s}", .{ name, &id2 });
-    const state_res = cid.api.handle(arena, &deps, "GET", state_target, "Bearer test-token", "");
+    const state_res = cid.api.handle(arena, &deps, &scope, "GET", state_target, "Bearer test-token", "");
     try std.testing.expectEqual(std.http.Status.ok, state_res.status);
     const State = struct { commit: []const u8, items: []const struct { path: []const u8, hash: []const u8, size: u64 } };
     const state_parsed = try std.json.parseFromSliceLeaky(State, arena, state_res.body, .{ .ignore_unknown_fields = true });
@@ -250,13 +255,13 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
 
     // State at the first commit still shows a.txt: history is intact.
     const state1_target = try std.fmt.allocPrint(arena, "/v0/datasets/{s}/-/state/{s}", .{ name, &id1 });
-    const state1_parsed = try std.json.parseFromSliceLeaky(State, arena, cid.api.handle(arena, &deps, "GET", state1_target, "Bearer test-token", "").body, .{ .ignore_unknown_fields = true });
+    const state1_parsed = try std.json.parseFromSliceLeaky(State, arena, cid.api.handle(arena, &deps, &scope, "GET", state1_target, "Bearer test-token", "").body, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqual(@as(usize, 1), state1_parsed.items.len);
     try std.testing.expectEqualStrings("a.txt", state1_parsed.items[0].path);
 
     // downloads: a presigned GET for B round-trips the bytes.
     const dl_body = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\"]}}", .{&hash_b});
-    const dl = cid.api.handle(arena, &deps, "POST", "/v0/datasets/" ++ name ++ "/-/downloads", "Bearer test-token", dl_body);
+    const dl = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/" ++ name ++ "/-/downloads", "Bearer test-token", dl_body);
     const Dl = struct { downloads: []const struct { hash: []const u8, url: []const u8 } };
     const dl_parsed = try std.json.parseFromSliceLeaky(Dl, arena, dl.body, .{ .ignore_unknown_fields = true });
     var aw: std.Io.Writer.Allocating = .init(arena);
@@ -265,7 +270,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     try std.testing.expectEqualSlices(u8, content_b, aw.writer.buffered());
 
     // log: both commits, newest first.
-    const log_res = cid.api.handle(arena, &deps, "GET", "/v0/datasets/" ++ name ++ "/-/log?branch=main", "Bearer test-token", "");
+    const log_res = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/" ++ name ++ "/-/log?branch=main", "Bearer test-token", "");
     const Log = struct { commits: []const struct { id: []const u8, parent: ?[]const u8, message: []const u8, author: []const u8, authored_at_ms: u64 } };
     const log_parsed = try std.json.parseFromSliceLeaky(Log, arena, log_res.body, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqual(@as(usize, 2), log_parsed.commits.len);
@@ -329,6 +334,7 @@ test "append-only history and immovable releases, enforced by the database" {
 
 const DirectTransport = struct {
     deps: *cid.api.Deps,
+    scope: *cid.db.Run,
     auth: []const u8,
 
     fn transport(self: *DirectTransport) cid.client.remote.Transport {
@@ -343,7 +349,7 @@ const DirectTransport = struct {
         body: []const u8,
     ) anyerror!cid.client.remote.Response {
         const self: *DirectTransport = @ptrCast(@alignCast(ctx));
-        const r = cid.api.handle(arena, self.deps, method, target, self.auth, body);
+        const r = cid.api.handle(arena, self.deps, self.scope, method, target, self.auth, body);
         return .{ .status = r.status, .body = r.body };
     }
 };
@@ -372,8 +378,13 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     defer s3c.deinit();
     try s3c.createBucket(arena);
 
-    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
-    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/sync" };
 
     // Earlier runs may have uploaded this test's contents; purge them so
@@ -557,8 +568,13 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     defer s3c.deinit();
     try s3c.createBucket(arena);
 
-    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
-    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/rel" };
 
     // Clean slate.
@@ -602,7 +618,7 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
         defer rows.deinit();
         break :blk try arena.dupeZ(u8, rows.get(0, 0));
     };
-    const v1 = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    const v1 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(v1.ok);
     try std.testing.expectEqual(@as(usize, 2), v1.items);
 
@@ -615,7 +631,7 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
         "decode(repeat('ef', 32), 'hex'), 'user:evil')", .{ &old_uuid.toString(), (old_uuid.unixMs() / 1000), ds_id }, 0);
     try db.exec("INSERT INTO items (item_hash, size_bytes, media_type) VALUES (decode(repeat('ef', 32), 'hex'), 1, 'application/octet-stream') ON CONFLICT DO NOTHING", &diag);
     try db.exec(smuggle, &diag);
-    const v2 = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    const v2 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(!v2.ok);
     try std.testing.expectEqual(cid.release.VerifyProblem.recomputed_hash_differs, v2.problems[0]);
 
@@ -623,14 +639,14 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     try db.exec("SET cid.maintenance = 'on'", &diag);
     try db.exec("DELETE FROM item_revisions WHERE author = 'user:evil'", &diag);
     try db.exec("RESET cid.maintenance", &diag);
-    const v3 = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    const v3 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(v3.ok);
 
     // Corruption B: tamper with the stored manifest object.
     const commit_for_release = try arena.dupe(u8, list[0].commit);
     const mkey = try cid.release.manifestKey(arena, ds_id, commit_for_release);
     try s3c.putObject(arena, mkey, "tampered bytes");
-    const v4 = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    const v4 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(!v4.ok);
     try std.testing.expectEqual(cid.release.VerifyProblem.stored_manifest_differs, v4.problems[0]);
 }
@@ -666,14 +682,19 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     const clone_dir = try std.fmt.allocPrint(arena, "{s}/check", .{root_path});
     _ = try std.process.run(arena, io, .{ .argv = &.{ "git", "init", "--bare", "-b", "main", bare_url } });
 
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
     var deps: cid.api.Deps = .{
-        .db = &db,
+        .db = &standalone.db,
         .s3 = &s3c,
         .io = io,
         .token = "test-token",
         .git = .{ .workdir = work_root, .server_url = "https://cid.example" },
     };
-    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/gitw" };
 
     // Clean slate, then a dataset whose git_url is the bare repo.
@@ -729,7 +750,7 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     _ = try remote.tag(arena, "v2.0.0");
 
     // Re-processing changes nothing: rendering is deterministic.
-    const again = try cid.gitrepo.writer.processDataset(arena, io, &db, deps.git.?, "test/datasets/gitw");
+    const again = try cid.gitrepo.writer.processDataset(arena, io, &standalone.db, &scope, deps.git.?, "test/datasets/gitw");
     try std.testing.expectEqual(@as(u32, 0), again.failed);
 
     const count = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", bare_url, "rev-list", "--count", "main" } });
@@ -766,7 +787,13 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
     try s3c.createBucket(arena);
 
     const secret = "integration-test-secret-0123456789abcdef";
-    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "", .token_secret = secret };
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "", .token_secret = secret };
+    const ndb = &standalone.db;
 
     // Clean slate: account, key, dataset, access.
     try db.exec("DELETE FROM access WHERE account_id IN ('gitlab:7001', 'gitlab:7002')", &diag);
@@ -784,13 +811,6 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
         "('018f0000-0000-7000-8000-00000000ac01', 'gitlab:7002', 'write', 'dashboard')", &diag);
 
     // AuthorizedKeysCommand: a known key gets the pinned forced command.
-    // auth speaks nilo_sql now, so it gets the nilo pool and a Run scope.
-    var standalone: cid.db.Standalone = undefined;
-    try standalone.open(std.testing.allocator, conninfo);
-    defer standalone.close();
-    var scope = cid.db.Run.init(std.testing.allocator);
-    defer scope.deinit();
-    const ndb = &standalone.db;
     const line = (try cid.access.auth.authorizedKeysLine(arena, ndb, &scope, "SHA256:testfp7001")).?;
     try std.testing.expect(std.mem.startsWith(u8, line, "restrict,command=\"cid ssh-auth --account=gitlab:7001\" ssh-ed25519"));
     try std.testing.expectEqual(@as(?[]const u8, null), try cid.access.auth.authorizedKeysLine(arena, ndb, &scope, "SHA256:unknown"));
@@ -822,18 +842,18 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
     const read_auth = try std.fmt.allocPrint(arena, "Bearer {s}", .{read_grant.token});
     const write_auth = try std.fmt.allocPrint(arena, "Bearer {s}", .{write_grant.token});
 
-    const head_ok = cid.api.handle(arena, &deps, "GET", "/v0/datasets/test/datasets/access/-/head", read_auth, "");
+    const head_ok = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/access/-/head", read_auth, "");
     try std.testing.expectEqual(std.http.Status.ok, head_ok.status);
-    const push_denied = cid.api.handle(arena, &deps, "POST", "/v0/datasets/test/datasets/access/-/push", read_auth, "{}");
+    const push_denied = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/access/-/push", read_auth, "{}");
     try std.testing.expectEqual(std.http.Status.unauthorized, push_denied.status);
-    const check_denied = cid.api.handle(arena, &deps, "POST", "/v0/datasets/test/datasets/access/-/check-hashes", read_auth, "{\"hashes\":[]}");
+    const check_denied = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/access/-/check-hashes", read_auth, "{\"hashes\":[]}");
     try std.testing.expectEqual(std.http.Status.unauthorized, check_denied.status);
-    const check_ok = cid.api.handle(arena, &deps, "POST", "/v0/datasets/test/datasets/access/-/check-hashes", write_auth, "{\"hashes\":[]}");
+    const check_ok = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/access/-/check-hashes", write_auth, "{\"hashes\":[]}");
     try std.testing.expectEqual(std.http.Status.ok, check_ok.status);
 
-    const other_ds = cid.api.handle(arena, &deps, "GET", "/v0/datasets/test/datasets/sync/-/head", read_auth, "");
+    const other_ds = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/sync/-/head", read_auth, "");
     try std.testing.expectEqual(std.http.Status.unauthorized, other_ds.status);
-    const garbage = cid.api.handle(arena, &deps, "GET", "/v0/datasets/test/datasets/access/-/head", "Bearer cid1.not.real", "");
+    const garbage = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/access/-/head", "Bearer cid1.not.real", "");
     try std.testing.expectEqual(std.http.Status.unauthorized, garbage.status);
 
     // An expired token is dead, whatever it once allowed.
@@ -844,11 +864,11 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
         .dataset = "test/datasets/access",
     });
     const expired_auth = try std.fmt.allocPrint(arena, "Bearer {s}", .{expired});
-    const expired_res = cid.api.handle(arena, &deps, "GET", "/v0/datasets/test/datasets/access/-/head", expired_auth, "");
+    const expired_res = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/access/-/head", expired_auth, "");
     try std.testing.expectEqual(std.http.Status.unauthorized, expired_res.status);
 
     // With no static token configured, the old shared-token style fails.
-    const static_res = cid.api.handle(arena, &deps, "GET", "/v0/datasets/test/datasets/access/-/head", "Bearer test-token", "");
+    const static_res = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/access/-/head", "Bearer test-token", "");
     try std.testing.expectEqual(std.http.Status.unauthorized, static_res.status);
 }
 
@@ -950,8 +970,13 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
     defer s3c.deinit();
     try s3c.createBucket(arena);
 
-    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
-    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/br" };
 
     try db.exec("SET cid.maintenance = 'on'", &diag);
@@ -1109,8 +1134,13 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     defer s3c.deinit();
     try s3c.createBucket(arena);
 
-    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
-    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/purge" };
 
     try db.exec("SET cid.maintenance = 'on'", &diag);
@@ -1150,12 +1180,12 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     };
 
     // Purge by path; the bytes vanish, the tombstone and audit land.
-    const purged = try cid.purge.purge(arena, &db, &s3c, "test/datasets/purge", "face.jpg", "erasure request #42", "user:admin");
+    const purged = try cid.purge.purge(arena, &standalone.db, &scope, &s3c, "test/datasets/purge", "face.jpg", "erasure request #42", "user:admin");
     try std.testing.expectEqualStrings(&sensitive_hash, purged.hash_hex);
     try std.testing.expectEqual(@as(usize, 1), purged.releases_affected);
     const key = try cid.api.itemKey(arena, &sensitive_hash);
     try std.testing.expectEqual(@as(?u64, null), try s3c.headObject(arena, key));
-    try std.testing.expectError(error.AlreadyPurged, cid.purge.purge(arena, &db, &s3c, "test/datasets/purge", "face.jpg", "again", "user:admin"));
+    try std.testing.expectError(error.AlreadyPurged, cid.purge.purge(arena, &standalone.db, &scope, &s3c, "test/datasets/purge", "face.jpg", "again", "user:admin"));
 
     var audit = try db.query(
         "SELECT count(*) FROM activity_events WHERE dataset_id = $1::uuid AND action = 'purge'",
@@ -1166,14 +1196,14 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     try std.testing.expectEqualStrings("1", audit.get(0, 0));
 
     // History rows untouched; verify is green with the purged item named.
-    const v = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    const v = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(v.ok);
     try std.testing.expectEqual(@as(usize, 1), v.purged);
     try std.testing.expectEqual(@as(usize, 2), v.items);
 
     // The purged content can never come back through push.
     const check_body = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\"]}}", .{&sensitive_hash});
-    const refused = cid.api.handle(arena, &deps, "POST", "/v0/datasets/test/datasets/purge/-/check-hashes", "Bearer test-token", check_body);
+    const refused = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/purge/-/check-hashes", "Bearer test-token", check_body);
     try std.testing.expectEqual(std.http.Status.unprocessable_entity, refused.status);
 }
 
@@ -1196,8 +1226,13 @@ test "annotated: the platform writes revisions, the server commits, state compos
     defer s3c.deinit();
     try s3c.createBucket(arena);
 
-    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
-    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/ann" };
 
     try db.exec("SET cid.maintenance = 'on'", &diag);
@@ -1208,7 +1243,7 @@ test "annotated: the platform writes revisions, the server commits, state compos
     try db.exec("RESET cid.maintenance", &diag);
 
     // The platform creates an annotated dataset.
-    const created = cid.api.handle(arena, &deps, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/ann\",\"kind\":\"annotated\",\"git_url\":\"g@h:ann.git\"}");
+    const created = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/ann\",\"kind\":\"annotated\",\"git_url\":\"g@h:ann.git\"}");
     try std.testing.expectEqual(std.http.Status.created, created.status);
     const ds_id: [:0]const u8 = blk: {
         var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/ann'", &.{}, &diag);
@@ -1349,8 +1384,13 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     defer s3c.deinit();
     try s3c.createBucket(arena);
 
-    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
-    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/annrel" };
 
     try db.exec("SET cid.maintenance = 'on'", &diag);
@@ -1360,7 +1400,7 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/annrel'", &diag);
     try db.exec("RESET cid.maintenance", &diag);
 
-    _ = cid.api.handle(arena, &deps, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/annrel\",\"kind\":\"annotated\",\"git_url\":\"g@h:ar.git\"}");
+    _ = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/annrel\",\"kind\":\"annotated\",\"git_url\":\"g@h:ar.git\"}");
     const ds_id: [:0]const u8 = blk: {
         var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/annrel'", &.{}, &diag);
         defer rows.deinit();
@@ -1411,7 +1451,7 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     try std.testing.expect(std.mem.indexOf(u8, stored, ann_line) != null);
 
     // Verify: green, repeatably.
-    const v1 = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    const v1 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(v1.ok);
 
     // A box smuggled under the sealed cutoff turns verify red.
@@ -1421,13 +1461,13 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
             "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', gen_random_uuid(), '{s}', 'create', 'box', 'smuggled', '{{\"x\":1}}'::jsonb, 'user:evil', 'policy-v1')", .{ &old_uuid.toString(), old_uuid.unixMs() / 1000, ds_id, &item_id }, 0);
         try db.exec(sql, &diag);
     }
-    const v2 = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    const v2 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(!v2.ok);
     try std.testing.expectEqual(cid.release.VerifyProblem.recomputed_hash_differs, v2.problems[0]);
     try db.exec("SET cid.maintenance = 'on'", &diag);
     try db.exec("DELETE FROM annotation_revisions WHERE author = 'user:evil'", &diag);
     try db.exec("RESET cid.maintenance", &diag);
-    const v3 = try cid.release.verify(arena, &db, &s3c, ds_id, "v1.0.0");
+    const v3 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(v3.ok);
 }
 
@@ -1450,8 +1490,13 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     defer s3c.deinit();
     try s3c.createBucket(arena);
 
-    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
-    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/fmt" };
 
     try db.exec("SET cid.maintenance = 'on'", &diag);
@@ -1461,7 +1506,7 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/fmt'", &diag);
     try db.exec("RESET cid.maintenance", &diag);
 
-    _ = cid.api.handle(arena, &deps, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/fmt\",\"kind\":\"annotated\",\"git_url\":\"g@h:f.git\"}");
+    _ = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/fmt\",\"kind\":\"annotated\",\"git_url\":\"g@h:f.git\"}");
     const ds_id: [:0]const u8 = blk: {
         var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/fmt'", &.{}, &diag);
         defer rows.deinit();
@@ -1593,14 +1638,19 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
     const clone_dir = try std.fmt.allocPrint(arena, "{s}/check", .{root_path});
     _ = try std.process.run(arena, io, .{ .argv = &.{ "git", "init", "--bare", "-b", "main", bare_url } });
 
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
     var deps: cid.api.Deps = .{
-        .db = &db,
+        .db = &standalone.db,
         .s3 = &s3c,
         .io = io,
         .token = "test-token",
         .git = .{ .workdir = work_root, .server_url = "https://cid.example" },
     };
-    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/anngit" };
 
     try db.exec("SET cid.maintenance = 'on'", &diag);
@@ -1611,7 +1661,7 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
     try db.exec("RESET cid.maintenance", &diag);
 
     const create_body = try std.fmt.allocPrint(arena, "{{\"name\":\"test/datasets/anngit\",\"kind\":\"annotated\",\"git_url\":\"{s}\"}}", .{bare_url});
-    _ = cid.api.handle(arena, &deps, "POST", "/v0/datasets", "Bearer test-token", create_body);
+    _ = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", create_body);
     const ds_id: [:0]const u8 = blk: {
         var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/anngit'", &.{}, &diag);
         defer rows.deinit();
@@ -1619,9 +1669,9 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
     };
 
     // The policy, then one image with a person and a vehicle box.
-    const pol = cid.api.handle(arena, &deps, "POST", "/v0/datasets/test/datasets/anngit/-/policy", "Bearer test-token", "{\"version\":\"policy-v3\",\"body\":{\"rule\":\"label every visible person\"}}");
+    const pol = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/anngit/-/policy", "Bearer test-token", "{\"version\":\"policy-v3\",\"body\":{\"rule\":\"label every visible person\"}}");
     try std.testing.expectEqual(std.http.Status.created, pol.status);
-    const pol_again = cid.api.handle(arena, &deps, "POST", "/v0/datasets/test/datasets/anngit/-/policy", "Bearer test-token", "{\"version\":\"policy-v3\",\"body\":{}}");
+    const pol_again = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/anngit/-/policy", "Bearer test-token", "{\"version\":\"policy-v3\",\"body\":{}}");
     try std.testing.expectEqual(std.http.Status.conflict, pol_again.status);
 
     const pix = "anngit pixels";
@@ -1716,8 +1766,13 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     try s3c.deleteObject(arena, try cid.preview.thumbKey(arena, &png_hash));
 
     // Ingest both platform-style on an existing dataset.
-    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
-    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/fmt" };
     try s3c.putObject(arena, try cid.api.itemKey(arena, &png_hash), png);
     try s3c.putObject(arena, try cid.api.itemKey(arena, &text_hash), text);
@@ -1727,7 +1782,7 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     });
 
     // One pass: the image builds, the text is skipped with its reason.
-    const pass = try cid.preview.processPending(arena, io, &db, &s3c, .{});
+    const pass = try cid.preview.processPending(arena, io, &standalone.db, &scope, &s3c, .{});
     try std.testing.expect(pass.built >= 1);
     try std.testing.expect(pass.skipped >= 1);
 
@@ -1743,12 +1798,12 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     }
 
     // A second pass does nothing: one build per content hash, ever.
-    const again = try cid.preview.processPending(arena, io, &db, &s3c, .{});
+    const again = try cid.preview.processPending(arena, io, &standalone.db, &scope, &s3c, .{});
     try std.testing.expectEqual(@as(u32, 0), again.built);
 
     // The thumbs endpoint answers only for finished previews.
     const body = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\",\"{s}\"]}}", .{ &png_hash, &text_hash });
-    const res = cid.api.handle(arena, &deps, "POST", "/v0/datasets/test/datasets/fmt/-/thumbs", "Bearer test-token", body);
+    const res = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/fmt/-/thumbs", "Bearer test-token", body);
     try std.testing.expectEqual(std.http.Status.ok, res.status);
     try std.testing.expect(std.mem.indexOf(u8, res.body, &png_hash) != null);
     try std.testing.expect(std.mem.indexOf(u8, res.body, &text_hash) == null);
@@ -1795,12 +1850,17 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     }
     try s3c.deleteObject(arena, try cid.preview.thumbKey(arena, &hh));
 
-    var deps: cid.api.Deps = .{ .db = &db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
     var producer = std.testing.tmpDir(.{ .iterate = true });
     defer producer.cleanup();
     var cache = std.testing.tmpDir(.{});
     defer cache.cleanup();
-    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/sniff" };
     try db.exec("SET cid.maintenance = 'on'", &diag);
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
@@ -1824,7 +1884,7 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     }
 
     // One worker pass: sniffed, measured, thumbnailed.
-    const pass = try cid.preview.processPending(arena, io, &db, &s3c, .{});
+    const pass = try cid.preview.processPending(arena, io, &standalone.db, &scope, &s3c, .{});
     try std.testing.expect(pass.built >= 1);
     {
         const hz = try arena.dupeZ(u8, &hh);

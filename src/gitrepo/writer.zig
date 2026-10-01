@@ -8,7 +8,7 @@
 //! unchanged tree produces no commit, an existing tag is left alone.
 
 const std = @import("std");
-const pg = @import("../store/pg.zig");
+const dbx = @import("../store/db.zig");
 const release_core = @import("../core/release.zig");
 const render = @import("render.zig");
 
@@ -28,41 +28,32 @@ pub const Outcome = struct {
 };
 
 /// Handles every pending or failed git_writes row of one dataset.
+const DatasetRow = struct {
+    pub const nilo_table = .projection;
+    dataset_id: []const u8,
+    git_url: []const u8,
+    kind: []const u8,
+};
+
 pub fn processDataset(
     arena: std.mem.Allocator,
     io: std.Io,
-    db: *pg.Db,
+    db: *dbx.sql.Db,
+    scope: anytype,
     config: Config,
     dataset_name: []const u8,
 ) Error!Outcome {
-    const name_z = arena.dupeZ(u8, dataset_name) catch return error.OutOfMemory;
-    var ds_rows = db.query(
-        "SELECT dataset_id::text, git_url, kind FROM datasets WHERE name = $1",
-        &.{name_z},
-        null,
-    ) catch return error.Db;
-    defer ds_rows.deinit();
-    if (ds_rows.count() == 0) return error.Db;
-    const dataset_id = arena.dupeZ(u8, ds_rows.get(0, 0)) catch return error.OutOfMemory;
-    const git_url = arena.dupe(u8, ds_rows.get(0, 1)) catch return error.OutOfMemory;
-    const kind = arena.dupe(u8, ds_rows.get(0, 2)) catch return error.OutOfMemory;
+    const ds = (db.rawOne(DatasetRow, scope, "SELECT dataset_id::text AS dataset_id, git_url, kind FROM datasets WHERE name = $1", .{dataset_name}) catch return error.Db) orelse return error.Db;
 
-    var pending = db.query(
-        "SELECT release FROM git_writes WHERE dataset_id = $1::uuid AND status <> 'done' ORDER BY release",
-        &.{dataset_id},
-        null,
-    ) catch return error.Db;
-    defer pending.deinit();
+    const pending = db.raw([]const u8, scope, "SELECT release FROM git_writes WHERE dataset_id = $1::uuid AND status <> 'done' ORDER BY release", .{ds.dataset_id}) catch return error.Db;
 
     var outcome: Outcome = .{};
-    var i: usize = 0;
-    while (i < pending.count()) : (i += 1) {
-        const release_name = arena.dupe(u8, pending.get(i, 0)) catch return error.OutOfMemory;
-        if (writeOne(arena, io, db, config, dataset_id, dataset_name, git_url, kind, release_name)) |sha| {
-            markDone(arena, db, dataset_id, release_name, sha);
+    for (pending) |release_name| {
+        if (writeOne(arena, io, db, scope, config, ds.dataset_id, dataset_name, ds.git_url, ds.kind, release_name)) |sha| {
+            markDone(db, scope, ds.dataset_id, release_name, sha);
             outcome.processed += 1;
         } else |err| {
-            markFailed(arena, db, dataset_id, release_name, @errorName(err));
+            markFailed(db, scope, ds.dataset_id, release_name, @errorName(err));
             outcome.failed += 1;
         }
     }
@@ -73,15 +64,16 @@ pub fn processDataset(
 fn writeOne(
     arena: std.mem.Allocator,
     io: std.Io,
-    db: *pg.Db,
+    db: *dbx.sql.Db,
+    scope: anytype,
     config: Config,
-    dataset_id: [:0]const u8,
+    dataset_id: []const u8,
     dataset_name: []const u8,
     git_url: []const u8,
     kind: []const u8,
     release_name: []const u8,
 ) ![]const u8 {
-    const input = try loadInput(arena, db, config, dataset_id, dataset_name, git_url, kind, release_name);
+    const input = try loadInput(arena, db, scope, config, dataset_id, dataset_name, git_url, kind, release_name);
     const files = try render.renderAll(arena, input);
 
     const repo_dir = try std.fmt.allocPrint(arena, "{s}/{s}", .{ config.workdir, dataset_id });
@@ -123,56 +115,60 @@ fn writeOne(
     return std.mem.trim(u8, sha, " \n");
 }
 
+const RefInfo = struct {
+    pub const nilo_table = .projection;
+    commit_id: []const u8,
+    manifest_hex: []const u8,
+    created_ms: i64,
+    message: []const u8,
+};
+
 fn loadInput(
     arena: std.mem.Allocator,
-    db: *pg.Db,
+    db: *dbx.sql.Db,
+    scope: anytype,
     config: Config,
-    dataset_id: [:0]const u8,
+    dataset_id: []const u8,
     dataset_name: []const u8,
     git_url: []const u8,
     kind: []const u8,
     release_name: []const u8,
 ) !render.Input {
-    const name_z = arena.dupeZ(u8, release_name) catch return error.OutOfMemory;
-    var ref_rows = db.query(
-        "SELECT r.commit_id::text, encode(r.manifest_sha256, 'hex'), " ++
-            "(extract(epoch from c.recorded_at) * 1000)::bigint::text, c.message " ++
-            "FROM refs r JOIN commits c ON c.commit_id = r.commit_id " ++
-            "WHERE r.dataset_id = $1::uuid AND r.name = $2 AND r.kind = 'release'",
-        &.{ dataset_id, name_z },
-        null,
-    ) catch return error.Db;
-    defer ref_rows.deinit();
-    if (ref_rows.count() == 0) return error.Db;
-    const commit_id = arena.dupeZ(u8, ref_rows.get(0, 0)) catch return error.OutOfMemory;
-    const manifest_hex = arena.dupe(u8, ref_rows.get(0, 1)) catch return error.OutOfMemory;
-    const created_ms = std.fmt.parseInt(u64, ref_rows.get(0, 2), 10) catch 0;
+    const ref = (db.rawOne(RefInfo, scope, "SELECT r.commit_id::text AS commit_id, encode(r.manifest_sha256, 'hex') AS manifest_hex, " ++
+        "(extract(epoch from c.recorded_at) * 1000)::bigint AS created_ms, c.message " ++
+        "FROM refs r JOIN commits c ON c.commit_id = r.commit_id " ++
+        "WHERE r.dataset_id = $1::uuid AND r.name = $2 AND r.kind = 'release'", .{ dataset_id, release_name }) catch return error.Db) orelse return error.Db;
+    const commit_id = ref.commit_id;
+    const manifest_hex = ref.manifest_hex;
+    const created_ms: u64 = @intCast(@max(0, ref.created_ms));
 
-    const rows = release_core.stateRows(arena, db, dataset_id, commit_id) catch return error.Db;
+    const rows = release_core.stateRows(arena, db, scope, dataset_id, commit_id) catch return error.Db;
     const items = try arena.alloc(render.Item, rows.len);
     for (items, 0..) |*item, i| {
         item.* = .{ .path = rows[i].path, .hash_hex = rows[i].hash_hex, .size = rows[i].size };
     }
 
     // Every release, newest first, with item counts for the changelog.
-    var all = db.query(
-        "SELECT r.name, c.message, (extract(epoch from c.recorded_at) * 1000)::bigint::text, " ++
-            "(SELECT count(*) FROM (SELECT DISTINCT ON (path) op FROM item_revisions ir " ++
-            "  WHERE ir.dataset_id = r.dataset_id AND ir.branch = c.branch AND ir.rev_id <= c.cutoff_rev " ++
-            "  ORDER BY path, rev_id DESC) s WHERE s.op <> 'delete') " ++
-            "FROM refs r JOIN commits c ON c.commit_id = r.commit_id " ++
-            "WHERE r.dataset_id = $1::uuid AND r.kind = 'release' ORDER BY r.commit_id DESC, r.name DESC",
-        &.{dataset_id},
-        null,
-    ) catch return error.Db;
-    defer all.deinit();
-    const releases = try arena.alloc(render.ReleaseInfo, all.count());
-    for (releases, 0..) |*r, i| {
+    const All = struct {
+        pub const nilo_table = .projection;
+        name: []const u8,
+        message: []const u8,
+        created_ms: i64,
+        items: i64,
+    };
+    const all = db.raw(All, scope, "SELECT r.name, c.message, (extract(epoch from c.recorded_at) * 1000)::bigint AS created_ms, " ++
+        "(SELECT count(*) FROM (SELECT DISTINCT ON (path) op FROM item_revisions ir " ++
+        "  WHERE ir.dataset_id = r.dataset_id AND ir.branch = c.branch AND ir.rev_id <= c.cutoff_rev " ++
+        "  ORDER BY path, rev_id DESC) s WHERE s.op <> 'delete') AS items " ++
+        "FROM refs r JOIN commits c ON c.commit_id = r.commit_id " ++
+        "WHERE r.dataset_id = $1::uuid AND r.kind = 'release' ORDER BY r.commit_id DESC, r.name DESC", .{dataset_id}) catch return error.Db;
+    const releases = try arena.alloc(render.ReleaseInfo, all.len);
+    for (releases, all) |*r, row| {
         r.* = .{
-            .name = arena.dupe(u8, all.get(i, 0)) catch return error.OutOfMemory,
-            .message = arena.dupe(u8, all.get(i, 1)) catch return error.OutOfMemory,
-            .created_at_ms = std.fmt.parseInt(u64, all.get(i, 2), 10) catch 0,
-            .items = std.fmt.parseInt(usize, all.get(i, 3), 10) catch 0,
+            .name = row.name,
+            .message = row.message,
+            .created_at_ms = @intCast(@max(0, row.created_ms)),
+            .items = @intCast(@max(0, row.items)),
         };
     }
 
@@ -181,7 +177,7 @@ fn loadInput(
     var splits: []const render.ClassCount = &.{};
     var policy: ?render.Policy = null;
     if (std.mem.eql(u8, kind, "annotated")) {
-        const anns = release_core.annotationRows(arena, db, dataset_id, commit_id) catch return error.Db;
+        const anns = release_core.annotationRows(arena, db, scope, dataset_id, commit_id) catch return error.Db;
         var class_counts: std.StringArrayHashMapUnmanaged(usize) = .empty;
         var newest_policy: ?[]const u8 = null;
         for (anns) |ann| {
@@ -219,18 +215,8 @@ fn loadInput(
         splits = split_list;
 
         if (newest_policy) |version| {
-            var prow = db.query(
-                "SELECT body::text FROM policy_versions WHERE dataset_id = $1::uuid AND version = $2",
-                &.{ dataset_id, arena.dupeZ(u8, version) catch return error.OutOfMemory },
-                null,
-            ) catch return error.Db;
-            defer prow.deinit();
-            if (prow.count() > 0) {
-                policy = .{
-                    .version = version,
-                    .body_json = arena.dupe(u8, prow.get(0, 0)) catch return error.OutOfMemory,
-                };
-            }
+            const body = db.rawOne([]const u8, scope, "SELECT body::text FROM policy_versions WHERE dataset_id = $1::uuid AND version = $2", .{ dataset_id, version }) catch return error.Db;
+            if (body) |b| policy = .{ .version = version, .body_json = b };
         }
     }
 
@@ -251,25 +237,21 @@ fn loadInput(
     };
 }
 
-fn markDone(arena: std.mem.Allocator, db: *pg.Db, dataset_id: [:0]const u8, release_name: []const u8, sha: []const u8) void {
-    const name_z = arena.dupeZ(u8, release_name) catch return;
-    const sha_z = arena.dupeZ(u8, sha) catch return;
-    db.execParams(
+fn markDone(db: *dbx.sql.Db, scope: anytype, dataset_id: []const u8, release_name: []const u8, sha: []const u8) void {
+    _ = db.exec(
+        scope,
         "UPDATE git_writes SET status = 'done', git_commit = $3, attempts = attempts + 1, last_error = NULL, updated_at = now() " ++
             "WHERE dataset_id = $1::uuid AND release = $2",
-        &.{ dataset_id, name_z, sha_z },
-        null,
+        .{ dataset_id, release_name, sha },
     ) catch {};
 }
 
-fn markFailed(arena: std.mem.Allocator, db: *pg.Db, dataset_id: [:0]const u8, release_name: []const u8, err_name: []const u8) void {
-    const name_z = arena.dupeZ(u8, release_name) catch return;
-    const err_z = arena.dupeZ(u8, err_name) catch return;
-    db.execParams(
+fn markFailed(db: *dbx.sql.Db, scope: anytype, dataset_id: []const u8, release_name: []const u8, err_name: []const u8) void {
+    _ = db.exec(
+        scope,
         "UPDATE git_writes SET status = 'failed', attempts = attempts + 1, last_error = $3, updated_at = now() " ++
             "WHERE dataset_id = $1::uuid AND release = $2",
-        &.{ dataset_id, name_z, err_z },
-        null,
+        .{ dataset_id, release_name, err_name },
     ) catch {};
 }
 

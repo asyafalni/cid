@@ -8,7 +8,7 @@
 //! canonical stream either way, so the upgrade cannot break releases.
 
 const std = @import("std");
-const pg = @import("../store/pg.zig");
+const dbx = @import("../store/db.zig");
 const s3_mod = @import("../store/s3.zig");
 const canonical = @import("../manifest/canonical.zig");
 const jcs = @import("../manifest/jcs.zig");
@@ -51,91 +51,116 @@ pub const StateRow = struct {
 /// start cutoff, plus the branch's own changes (CLAUDE.md, data model);
 /// branch revisions are minted later, so plain rev_id ordering gives them
 /// precedence.
+const CommitAt = struct {
+    pub const nilo_table = .projection;
+    branch: []const u8,
+    cutoff_rev: []const u8,
+};
+
+/// The commit's branch and cutoff, plus the main-branch cutoff a branch
+/// composes over (the branch's start commit; on main, the same cutoff).
+fn cutoffsOf(
+    db: *dbx.sql.Db,
+    scope: anytype,
+    dataset_id: []const u8,
+    commit_id: []const u8,
+) Error!struct { branch: []const u8, cutoff: []const u8, main_cutoff: []const u8 } {
+    const commit = (db.rawOne(
+        CommitAt,
+        scope,
+        "SELECT branch, cutoff_rev::text AS cutoff_rev FROM commits " ++
+            "WHERE commit_id = $1::uuid AND dataset_id = $2::uuid",
+        .{ commit_id, dataset_id },
+    ) catch return error.Db) orelse return error.NoSuchCommit;
+
+    if (std.mem.eql(u8, commit.branch, "main"))
+        return .{ .branch = commit.branch, .cutoff = commit.cutoff_rev, .main_cutoff = commit.cutoff_rev };
+
+    const start = (db.rawOne(
+        []const u8,
+        scope,
+        "SELECT c.cutoff_rev::text FROM refs r JOIN commits c ON c.commit_id = r.start_commit_id " ++
+            "WHERE r.dataset_id = $1::uuid AND r.name = $2 AND r.kind = 'branch'",
+        .{ dataset_id, commit.branch },
+    ) catch return error.Db) orelse return error.NoSuchCommit;
+    return .{ .branch = commit.branch, .cutoff = commit.cutoff_rev, .main_cutoff = start };
+}
+
+const RawState = struct {
+    pub const nilo_table = .projection;
+    path: []const u8,
+    hash_hex: []const u8,
+    size_bytes: i64,
+    split: ?[]const u8,
+    width: ?i32,
+    height: ?i32,
+    item_id: ?[]const u8,
+};
+
 pub fn stateRows(
     arena: std.mem.Allocator,
-    db: *pg.Db,
-    dataset_id: [:0]const u8,
-    commit_id: [:0]const u8,
+    db: *dbx.sql.Db,
+    scope: anytype,
+    dataset_id: []const u8,
+    commit_id: []const u8,
 ) Error![]StateRow {
-    var commit_rows = db.query(
-        "SELECT branch, cutoff_rev::text FROM commits WHERE commit_id = $1::uuid AND dataset_id = $2::uuid",
-        &.{ commit_id, dataset_id },
-        null,
-    ) catch return error.Db;
-    defer commit_rows.deinit();
-    if (commit_rows.count() == 0) return error.NoSuchCommit;
-    const branch = arena.dupeZ(u8, commit_rows.get(0, 0)) catch return error.OutOfMemory;
-    const cutoff = arena.dupeZ(u8, commit_rows.get(0, 1)) catch return error.OutOfMemory;
+    const at = try cutoffsOf(db, scope, dataset_id, commit_id);
 
-    // The branch's base: main as of the start commit's cutoff.
-    var main_cutoff: [:0]const u8 = cutoff;
-    if (!std.mem.eql(u8, branch, "main")) {
-        var start_rows = db.query(
-            "SELECT c.cutoff_rev::text FROM refs r JOIN commits c ON c.commit_id = r.start_commit_id " ++
-                "WHERE r.dataset_id = $1::uuid AND r.name = $2 AND r.kind = 'branch'",
-            &.{ dataset_id, branch },
-            null,
-        ) catch return error.Db;
-        defer start_rows.deinit();
-        if (start_rows.count() == 0) return error.NoSuchCommit;
-        main_cutoff = arena.dupeZ(u8, start_rows.get(0, 0)) catch return error.OutOfMemory;
-    }
-
-    var rows = db.query(
-        "SELECT path, encode(item_hash, 'hex'), i.size_bytes::text, s.split, " ++
-            "i.meta->>'width', i.meta->>'height', s.item_id::text FROM (" ++
+    const rows = db.raw(
+        RawState,
+        scope,
+        "SELECT path, encode(item_hash, 'hex') AS hash_hex, i.size_bytes, s.split, " ++
+            "(i.meta->>'width')::int AS width, (i.meta->>'height')::int AS height, " ++
+            "s.item_id::text AS item_id FROM (" ++
             "  SELECT DISTINCT ON (path) path, op, item_hash, split, item_id FROM item_revisions " ++
             "  WHERE dataset_id = $1::uuid AND (" ++
             "    (branch = 'main' AND rev_id <= $4::uuid) OR (branch = $2 AND rev_id <= $3::uuid)) " ++
             "  ORDER BY path, rev_id DESC) s " ++
             "JOIN items i USING (item_hash) WHERE s.op <> 'delete' ORDER BY path",
-        &.{ dataset_id, branch, cutoff, main_cutoff },
-        null,
+        .{ dataset_id, at.branch, at.cutoff, at.main_cutoff },
     ) catch return error.Db;
-    defer rows.deinit();
 
-    const out = arena.alloc(StateRow, rows.count()) catch return error.OutOfMemory;
-    for (out, 0..) |*row, i| {
+    const out = arena.alloc(StateRow, rows.len) catch return error.OutOfMemory;
+    for (out, rows) |*row, raw| {
         row.* = .{
-            .path = arena.dupe(u8, rows.get(i, 0)) catch return error.OutOfMemory,
-            .hash_hex = arena.dupe(u8, rows.get(i, 1)) catch return error.OutOfMemory,
-            .size = std.fmt.parseInt(u64, rows.get(i, 2), 10) catch return error.Db,
-            .split = if (rows.isNull(i, 3)) null else arena.dupe(u8, rows.get(i, 3)) catch return error.OutOfMemory,
-            .width = if (rows.isNull(i, 4)) null else std.fmt.parseInt(u32, rows.get(i, 4), 10) catch null,
-            .height = if (rows.isNull(i, 5)) null else std.fmt.parseInt(u32, rows.get(i, 5), 10) catch null,
-            .item_id = if (rows.isNull(i, 6)) null else arena.dupe(u8, rows.get(i, 6)) catch return error.OutOfMemory,
+            .path = arena.dupe(u8, raw.path) catch return error.OutOfMemory,
+            .hash_hex = arena.dupe(u8, raw.hash_hex) catch return error.OutOfMemory,
+            .size = @intCast(raw.size_bytes),
+            .split = if (raw.split) |v| arena.dupe(u8, v) catch return error.OutOfMemory else null,
+            .width = if (raw.width) |v| @intCast(v) else null,
+            .height = if (raw.height) |v| @intCast(v) else null,
+            .item_id = if (raw.item_id) |v| arena.dupe(u8, v) catch return error.OutOfMemory else null,
         };
     }
     return out;
 }
 
-fn datasetKind(arena: std.mem.Allocator, db: *pg.Db, dataset_id: [:0]const u8) Error![]const u8 {
-    var rows = db.query("SELECT kind FROM datasets WHERE dataset_id = $1::uuid", &.{dataset_id}, null) catch
+fn datasetKind(db: *dbx.sql.Db, scope: anytype, dataset_id: []const u8) Error![]const u8 {
+    const kind = db.rawOne([]const u8, scope, "SELECT kind FROM datasets WHERE dataset_id = $1::uuid", .{dataset_id}) catch
         return error.Db;
-    defer rows.deinit();
-    if (rows.count() == 0) return error.Db;
-    return arena.dupe(u8, rows.get(0, 0)) catch error.OutOfMemory;
+    return kind orelse error.Db;
 }
 
 /// The whole release stream: v1 for file datasets (hashes frozen since the
 /// first release ever), v2 with annotation rows for annotated ones.
 fn renderManifest(
     arena: std.mem.Allocator,
-    db: *pg.Db,
-    dataset_id: [:0]const u8,
-    commit_id: [:0]const u8,
+    db: *dbx.sql.Db,
+    scope: anytype,
+    dataset_id: []const u8,
+    commit_id: []const u8,
     rows: []const StateRow,
 ) Error!canonical.Rendered {
     const item_rows = arena.alloc(canonical.ItemRow, rows.len) catch return error.OutOfMemory;
     for (item_rows, 0..) |*r, i| {
         r.* = .{ .path = rows[i].path, .hash_hex = rows[i].hash_hex, .size = rows[i].size, .split = rows[i].split };
     }
-    const kind = try datasetKind(arena, db, dataset_id);
+    const kind = try datasetKind(db, scope, dataset_id);
     if (!std.mem.eql(u8, kind, "annotated")) {
         return canonical.render(arena, item_rows) catch error.OutOfMemory;
     }
 
-    const anns = try annotationRows(arena, db, dataset_id, commit_id);
+    const anns = try annotationRows(arena, db, scope, dataset_id, commit_id);
     const ann_rows = arena.alloc(canonical.AnnRow, anns.len) catch return error.OutOfMemory;
     for (ann_rows, 0..) |*r, i| {
         r.* = .{
@@ -171,58 +196,51 @@ pub const AnnotationRow = struct {
 /// Annotation state at a commit: for each annotation_id, the latest change
 /// up to the cutoff, deletes dropped — composed over main like items.
 /// Sorted by (item_id, annotation_id), the manifest order.
+const RawAnn = struct {
+    pub const nilo_table = .projection;
+    annotation_id: []const u8,
+    item_id: []const u8,
+    kind: ?[]const u8,
+    class: ?[]const u8,
+    geometry: ?[]const u8,
+    attrs: ?[]const u8,
+    author: []const u8,
+    policy_ver: []const u8,
+};
+
 pub fn annotationRows(
     arena: std.mem.Allocator,
-    db: *pg.Db,
-    dataset_id: [:0]const u8,
-    commit_id: [:0]const u8,
+    db: *dbx.sql.Db,
+    scope: anytype,
+    dataset_id: []const u8,
+    commit_id: []const u8,
 ) Error![]AnnotationRow {
-    var commit_rows = db.query(
-        "SELECT branch, cutoff_rev::text FROM commits WHERE commit_id = $1::uuid AND dataset_id = $2::uuid",
-        &.{ commit_id, dataset_id },
-        null,
-    ) catch return error.Db;
-    defer commit_rows.deinit();
-    if (commit_rows.count() == 0) return error.NoSuchCommit;
-    const branch = arena.dupeZ(u8, commit_rows.get(0, 0)) catch return error.OutOfMemory;
-    const cutoff = arena.dupeZ(u8, commit_rows.get(0, 1)) catch return error.OutOfMemory;
+    const at = try cutoffsOf(db, scope, dataset_id, commit_id);
 
-    var main_cutoff: [:0]const u8 = cutoff;
-    if (!std.mem.eql(u8, branch, "main")) {
-        var start_rows = db.query(
-            "SELECT c.cutoff_rev::text FROM refs r JOIN commits c ON c.commit_id = r.start_commit_id " ++
-                "WHERE r.dataset_id = $1::uuid AND r.name = $2 AND r.kind = 'branch'",
-            &.{ dataset_id, branch },
-            null,
-        ) catch return error.Db;
-        defer start_rows.deinit();
-        if (start_rows.count() == 0) return error.NoSuchCommit;
-        main_cutoff = arena.dupeZ(u8, start_rows.get(0, 0)) catch return error.OutOfMemory;
-    }
-
-    var rows = db.query(
-        "SELECT annotation_id::text, item_id::text, kind, class, geometry::text, attrs::text, author, policy_ver FROM (" ++
+    const rows = db.raw(
+        RawAnn,
+        scope,
+        "SELECT annotation_id::text AS annotation_id, item_id::text AS item_id, kind, class, " ++
+            "geometry::text AS geometry, attrs::text AS attrs, author, policy_ver FROM (" ++
             "  SELECT DISTINCT ON (annotation_id) * FROM annotation_revisions " ++
             "  WHERE dataset_id = $1::uuid AND (" ++
             "    (branch = 'main' AND rev_id <= $4::uuid) OR (branch = $2 AND rev_id <= $3::uuid)) " ++
             "  ORDER BY annotation_id, rev_id DESC) s " ++
             "WHERE s.op <> 'delete' ORDER BY item_id, annotation_id",
-        &.{ dataset_id, branch, cutoff, main_cutoff },
-        null,
+        .{ dataset_id, at.branch, at.cutoff, at.main_cutoff },
     ) catch return error.Db;
-    defer rows.deinit();
 
-    const out = arena.alloc(AnnotationRow, rows.count()) catch return error.OutOfMemory;
-    for (out, 0..) |*row, i| {
+    const out = arena.alloc(AnnotationRow, rows.len) catch return error.OutOfMemory;
+    for (out, rows) |*row, raw| {
         row.* = .{
-            .annotation_id = arena.dupe(u8, rows.get(i, 0)) catch return error.OutOfMemory,
-            .item_id = arena.dupe(u8, rows.get(i, 1)) catch return error.OutOfMemory,
-            .kind = if (rows.isNull(i, 2)) null else arena.dupe(u8, rows.get(i, 2)) catch return error.OutOfMemory,
-            .class = if (rows.isNull(i, 3)) null else arena.dupe(u8, rows.get(i, 3)) catch return error.OutOfMemory,
-            .geometry = if (rows.isNull(i, 4)) null else arena.dupe(u8, rows.get(i, 4)) catch return error.OutOfMemory,
-            .attrs = if (rows.isNull(i, 5)) null else arena.dupe(u8, rows.get(i, 5)) catch return error.OutOfMemory,
-            .author = arena.dupe(u8, rows.get(i, 6)) catch return error.OutOfMemory,
-            .policy_ver = arena.dupe(u8, rows.get(i, 7)) catch return error.OutOfMemory,
+            .annotation_id = arena.dupe(u8, raw.annotation_id) catch return error.OutOfMemory,
+            .item_id = arena.dupe(u8, raw.item_id) catch return error.OutOfMemory,
+            .kind = if (raw.kind) |v| arena.dupe(u8, v) catch return error.OutOfMemory else null,
+            .class = if (raw.class) |v| arena.dupe(u8, v) catch return error.OutOfMemory else null,
+            .geometry = if (raw.geometry) |v| arena.dupe(u8, v) catch return error.OutOfMemory else null,
+            .attrs = if (raw.attrs) |v| arena.dupe(u8, v) catch return error.OutOfMemory else null,
+            .author = arena.dupe(u8, raw.author) catch return error.OutOfMemory,
+            .policy_ver = arena.dupe(u8, raw.policy_ver) catch return error.OutOfMemory,
         };
     }
     return out;
@@ -244,39 +262,29 @@ pub const Created = struct {
 /// then inserts the release ref (which can never move again).
 pub fn create(
     arena: std.mem.Allocator,
-    db: *pg.Db,
+    db: *dbx.sql.Db,
+    scope: anytype,
     s3: *s3_mod.Client,
-    dataset_id: [:0]const u8,
+    dataset_id: []const u8,
     name: []const u8,
-    commit_id: [:0]const u8,
+    commit_id: []const u8,
 ) Error!Created {
     if (!validName(name)) return error.BadName;
 
-    {
-        const name_z = arena.dupeZ(u8, name) catch return error.OutOfMemory;
-        var existing = db.query(
-            "SELECT 1 FROM refs WHERE dataset_id = $1::uuid AND name = $2",
-            &.{ dataset_id, name_z },
-            null,
-        ) catch return error.Db;
-        defer existing.deinit();
-        if (existing.count() > 0) return error.ReleaseExists;
-    }
+    const existing = db.rawOne(i64, scope, "SELECT 1::bigint FROM refs WHERE dataset_id = $1::uuid AND name = $2", .{ dataset_id, name }) catch return error.Db;
+    if (existing != null) return error.ReleaseExists;
 
-    const rows = try stateRows(arena, db, dataset_id, commit_id);
-    const rendered = try renderManifest(arena, db, dataset_id, commit_id, rows);
+    const rows = try stateRows(arena, db, scope, dataset_id, commit_id);
+    const rendered = try renderManifest(arena, db, scope, dataset_id, commit_id, rows);
 
     const key = try manifestKey(arena, dataset_id, commit_id);
     s3.putObject(arena, key, rendered.bytes) catch return error.Storage;
 
-    const name_z = arena.dupeZ(u8, name) catch return error.OutOfMemory;
-    const key_z = arena.dupeZ(u8, key) catch return error.OutOfMemory;
-    const sha_z = arena.dupeZ(u8, &rendered.sha256_hex) catch return error.OutOfMemory;
-    db.execParams(
+    _ = db.exec(
+        scope,
         "INSERT INTO refs (dataset_id, name, kind, commit_id, manifest_path, manifest_sha256) " ++
             "VALUES ($1::uuid, $2, 'release', $3::uuid, $4, decode($5, 'hex'))",
-        &.{ dataset_id, name_z, commit_id, key_z, sha_z },
-        null,
+        .{ dataset_id, name, commit_id, key, @as([]const u8, &rendered.sha256_hex) },
     ) catch return error.Db;
 
     return .{
@@ -306,29 +314,36 @@ pub const VerifyResult = struct {
 /// Rebuilds the release from history and checks everything that must
 /// still match: the recomputed canonical hash against the recorded one,
 /// the stored manifest bytes, and every referenced item's presence.
+const RefRow = struct {
+    pub const nilo_table = .projection;
+    commit_id: []const u8,
+    manifest_path: []const u8,
+    manifest_sha256: []const u8,
+};
+
 pub fn verify(
     arena: std.mem.Allocator,
-    db: *pg.Db,
+    db: *dbx.sql.Db,
+    scope: anytype,
     s3: *s3_mod.Client,
-    dataset_id: [:0]const u8,
+    dataset_id: []const u8,
     release_name: []const u8,
 ) Error!VerifyResult {
-    const name_z = arena.dupeZ(u8, release_name) catch return error.OutOfMemory;
-    var ref_rows = db.query(
-        "SELECT commit_id::text, manifest_path, encode(manifest_sha256, 'hex') FROM refs " ++
+    const ref = (db.rawOne(
+        RefRow,
+        scope,
+        "SELECT commit_id::text AS commit_id, manifest_path, " ++
+            "encode(manifest_sha256, 'hex') AS manifest_sha256 FROM refs " ++
             "WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'release'",
-        &.{ dataset_id, name_z },
-        null,
-    ) catch return error.Db;
-    defer ref_rows.deinit();
-    if (ref_rows.count() == 0) return error.NoSuchCommit;
-    const commit_id = arena.dupeZ(u8, ref_rows.get(0, 0)) catch return error.OutOfMemory;
-    const manifest_path = arena.dupe(u8, ref_rows.get(0, 1)) catch return error.OutOfMemory;
-    const recorded_hash = arena.dupe(u8, ref_rows.get(0, 2)) catch return error.OutOfMemory;
+        .{ dataset_id, release_name },
+    ) catch return error.Db) orelse return error.NoSuchCommit;
+    const commit_id = ref.commit_id;
+    const manifest_path = ref.manifest_path;
+    const recorded_hash = ref.manifest_sha256;
 
     var problems: std.ArrayList(VerifyProblem) = .empty;
-    const rows = try stateRows(arena, db, dataset_id, commit_id);
-    const rendered = try renderManifest(arena, db, dataset_id, commit_id, rows);
+    const rows = try stateRows(arena, db, scope, dataset_id, commit_id);
+    const rendered = try renderManifest(arena, db, scope, dataset_id, commit_id, rows);
 
     if (!std.mem.eql(u8, &rendered.sha256_hex, recorded_hash))
         problems.append(arena, .recomputed_hash_differs) catch return error.OutOfMemory;
@@ -347,11 +362,8 @@ pub fn verify(
         }) catch return error.OutOfMemory;
         const present = s3.headObject(arena, key) catch return error.Storage;
         if (present == null) {
-            const hash_z = arena.dupeZ(u8, row.hash_hex) catch return error.OutOfMemory;
-            var tomb = db.query("SELECT 1 FROM purged_items WHERE item_hash = decode($1, 'hex')", &.{hash_z}, null) catch
-                return error.Db;
-            defer tomb.deinit();
-            if (tomb.count() > 0) {
+            const tomb = db.rawOne(i64, scope, "SELECT 1::bigint FROM purged_items WHERE item_hash = decode($1, 'hex')", .{row.hash_hex}) catch return error.Db;
+            if (tomb != null) {
                 purged += 1;
             } else {
                 problems.append(arena, .item_missing_from_storage) catch return error.OutOfMemory;

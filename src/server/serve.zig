@@ -20,6 +20,9 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
     var app = nilo.App.init(gpa);
     defer app.deinit();
 
+    // The Db is a nilo Service: provided here, its pool is opened by
+    // listen() on the server's own loop, shared by every worker thread.
+    try app.provide(deps.db);
     try app.provide(deps);
     try app.get("/v0/ping", dispatch);
     try app.get("/v0/*", dispatch);
@@ -83,8 +86,9 @@ fn dispatch(deps: *api.Deps, c: *nilo.Ctx) !void {
     const auth: ?[]const u8 = if (c.header("authorization")) |h| h.view() else null;
     const body: []const u8 = if (c.method == .POST) (try c.body()).view() else "";
 
-    deps.lock.lock(deps.io) catch return error.Failed;
-    const response = api.handle(arena, deps, @tagName(c.method), target, auth, body);
-    deps.lock.unlock(deps.io);
+    // The Ctx is the Scope every query runs under; the pool underneath
+    // makes requests genuinely concurrent (the old single-connection
+    // mutex is gone).
+    const response = api.handle(arena, deps, c, @tagName(c.method), target, auth, body);
     try c.send(@intFromEnum(response.status), "application/json", response.body);
 }
