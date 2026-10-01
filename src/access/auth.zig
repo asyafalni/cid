@@ -4,8 +4,14 @@
 //! credentials and nothing else (invariant 22).
 
 const std = @import("std");
-const pg = @import("../store/pg.zig");
+const dbx = @import("../store/db.zig");
 const token_mod = @import("token.zig");
+
+const KeyRow = struct {
+    pub const nilo_table = .projection;
+    account_id: []const u8,
+    public_key: []const u8,
+};
 
 /// `cid ssh-keys --fingerprint=SHA256:…`, run by sshd as
 /// AuthorizedKeysCommand. Prints zero or one authorized_keys line that
@@ -13,24 +19,19 @@ const token_mod = @import("token.zig");
 /// else (no pty, no forwarding — "restrict").
 pub fn authorizedKeysLine(
     arena: std.mem.Allocator,
-    db: *pg.Db,
+    db: *dbx.sql.Db,
+    scope: anytype,
     fingerprint: []const u8,
 ) !?[]const u8 {
-    const fp_z = try arena.dupeZ(u8, fingerprint);
-    var rows = db.query(
-        "SELECT account_id, public_key FROM ssh_keys WHERE fingerprint = $1",
-        &.{fp_z},
-        null,
-    ) catch return error.Db;
-    defer rows.deinit();
-    if (rows.count() == 0) return null;
-    const account = rows.get(0, 0);
-    const public_key = rows.get(0, 1);
-    if (std.mem.indexOfAny(u8, account, "\"\n\r") != null) return error.Db;
+    const found = db.rawOne(KeyRow, scope,
+        \\SELECT account_id, public_key FROM ssh_keys WHERE fingerprint = $1
+    , .{fingerprint}) catch return error.Db;
+    const key = found orelse return null;
+    if (std.mem.indexOfAny(u8, key.account_id, "\"\n\r") != null) return error.Db;
     const line = try std.fmt.allocPrint(
         arena,
         "restrict,command=\"cid ssh-auth --account={s}\" {s}\n",
-        .{ account, std.mem.trim(u8, public_key, " \n") },
+        .{ key.account_id, std.mem.trim(u8, key.public_key, " \n") },
     );
     return line;
 }
@@ -72,31 +73,25 @@ pub const Grant = struct {
 /// auth_events, granted or not.
 pub fn authorize(
     arena: std.mem.Allocator,
-    db: *pg.Db,
+    db: *dbx.sql.Db,
+    scope: anytype,
     secret: []const u8,
     server_url: []const u8,
     now_unix: u64,
     req: AuthRequest,
 ) AuthError!Grant {
-    const account_z = try arena.dupeZ(u8, req.account);
-    const dataset_z = try arena.dupeZ(u8, req.dataset);
-
-    var rows = db.query(
-        "SELECT level FROM access a JOIN datasets d USING (dataset_id) " ++
-            "WHERE d.name = $1 AND a.account_id = $2",
-        &.{ dataset_z, account_z },
-        null,
-    ) catch return error.Db;
-    defer rows.deinit();
+    const have_text = db.rawOne([]const u8, scope,
+        \\SELECT a.level FROM access a JOIN datasets d USING (dataset_id)
+        \\WHERE d.name = $1 AND a.account_id = $2
+    , .{ req.dataset, req.account }) catch return error.Db;
 
     const granted = blk: {
-        if (rows.count() == 0) break :blk false;
-        const have_text = rows.get(0, 0);
+        const text = have_text orelse break :blk false;
         // access levels: read < write < maintain; maintain covers write.
-        const have: token_mod.Level = if (std.mem.eql(u8, have_text, "read")) .read else .write;
+        const have: token_mod.Level = if (std.mem.eql(u8, text, "read")) .read else .write;
         break :blk have.covers(req.level);
     };
-    logAuthEvent(arena, db, req, granted);
+    logAuthEvent(db, scope, req, granted);
     if (!granted) return error.AccessDenied;
 
     const tok = token_mod.mint(arena, secret, .{
@@ -108,17 +103,12 @@ pub fn authorize(
     return .{ .token = tok, .url = server_url, .expires_in_secs = token_mod.default_ttl_secs };
 }
 
-fn logAuthEvent(arena: std.mem.Allocator, db: *pg.Db, req: AuthRequest, granted: bool) void {
-    const account_z = arena.dupeZ(u8, req.account) catch return;
-    const dataset_z = arena.dupeZ(u8, req.dataset) catch return;
-    const level_z = arena.dupeZ(u8, @tagName(req.level)) catch return;
-    db.execParams(
-        "INSERT INTO auth_events (ts, account_id, dataset_id, level, granted) " ++
-            "SELECT now(), $1, d.dataset_id, $2, $3::boolean FROM (SELECT 1) one " ++
-            "LEFT JOIN datasets d ON d.name = $4",
-        &.{ account_z, level_z, if (granted) "true" else "false", dataset_z },
-        null,
-    ) catch {};
+fn logAuthEvent(db: *dbx.sql.Db, scope: anytype, req: AuthRequest, granted: bool) void {
+    _ = db.exec(scope,
+        \\INSERT INTO auth_events (ts, account_id, dataset_id, level, granted)
+        \\SELECT now(), $1, d.dataset_id, $2, $3 FROM (SELECT 1) one
+        \\LEFT JOIN datasets d ON d.name = $4
+    , .{ req.account, @tagName(req.level), granted, req.dataset }) catch {};
 }
 
 test "original command parsing accepts exactly one shape" {

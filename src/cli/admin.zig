@@ -456,10 +456,14 @@ fn runSyncGitlab(
         return fail(io, .usage, "CID_GITLAB_TOKEN is not set (a token with read_api scope). Export it, then run 'cid admin sync-gitlab' again.", .{});
     const base_url = env.get("CID_GITLAB_URL") orelse "https://gitlab.com";
 
-    var db = adminDb(arena, io, env, "cid admin sync-gitlab") orelse return .network;
-    defer db.close();
+    var standalone: dbx.Standalone = undefined;
+    standalone.open(arena, env.get("CID_DB") orelse "") catch
+        return fail(io, .network, "cannot connect to the database. Check CID_DB, then run 'cid admin sync-gitlab' again.", .{});
+    defer standalone.close();
+    var scope = dbx.Run.init(arena);
+    defer scope.deinit();
 
-    const outcome = gitlab_sync.syncAll(arena, io, &db, .{ .base_url = base_url, .token = token }) catch |err| switch (err) {
+    const outcome = gitlab_sync.syncAll(arena, io, &standalone.db, &scope, .{ .base_url = base_url, .token = token }) catch |err| switch (err) {
         error.GitLabUnreachable => return fail(io, .network, "cannot reach {s}. Check the network, then run 'cid admin sync-gitlab' again.", .{base_url}),
         else => return fail(io, .network, "sync failed: {t}. Check CID_GITLAB_TOKEN has read_api on the datasets group, then run it again.", .{err}),
     };
@@ -563,11 +567,19 @@ fn backgroundLoop(bg: BackgroundConfig) void {
             }
         }
         if (bg.gitlab) |config| {
-            if (gitlab_sync.syncAll(arena, bg.io, &db, config)) |outcome| {
-                if (outcome.members > 0 or outcome.keys > 0 or outcome.access_removed > 0)
-                    std.log.info("background: gitlab sync {d} members, {d} keys", .{ outcome.members, outcome.keys });
-            } else |err| {
-                std.log.warn("background: gitlab sync failed: {t}", .{err});
+            var standalone: dbx.Standalone = undefined;
+            if (standalone.open(arena, bg.conninfo)) |_| {
+                defer standalone.close();
+                var scope = dbx.Run.init(arena);
+                defer scope.deinit();
+                if (gitlab_sync.syncAll(arena, bg.io, &standalone.db, &scope, config)) |outcome| {
+                    if (outcome.members > 0 or outcome.keys > 0 or outcome.access_removed > 0)
+                        std.log.info("background: gitlab sync {d} members, {d} keys", .{ outcome.members, outcome.keys });
+                } else |err| {
+                    std.log.warn("background: gitlab sync failed: {t}", .{err});
+                }
+            } else |_| {
+                std.log.warn("background: database unreachable for gitlab sync; will retry", .{});
             }
         }
         if (bg.git) |config| {

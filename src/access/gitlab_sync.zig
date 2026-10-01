@@ -7,7 +7,7 @@
 //! The JSON appliers are pure (fixture-testable); only `fetch` talks HTTP.
 
 const std = @import("std");
-const pg = @import("../store/pg.zig");
+const dbx = @import("../store/db.zig");
 const keys_mod = @import("keys.zig");
 
 pub const Error = error{ Db, GitLabUnreachable, BadResponse, OutOfMemory };
@@ -45,11 +45,11 @@ pub const MemberOutcome = struct {
 /// gitlab-sourced access rows for members no longer present are removed.
 pub fn applyMembers(
     arena: std.mem.Allocator,
-    db: *pg.Db,
+    db: *dbx.sql.Db,
+    scope: anytype,
     dataset_name: []const u8,
     members: []const Member,
 ) Error!MemberOutcome {
-    const dataset_z = arena.dupeZ(u8, dataset_name) catch return error.OutOfMemory;
     var outcome: MemberOutcome = .{};
     var keep_ids: std.ArrayList(u8) = .empty; // comma-joined for the removal query
 
@@ -58,18 +58,18 @@ pub fn applyMembers(
         if (!std.mem.eql(u8, m.state, "active")) continue;
         const account = try accountId(arena, m.id);
         const display = if (m.name.len > 0) m.name else m.username;
-        db.execParams(
+        _ = db.exec(
+            scope,
             "INSERT INTO accounts (account_id, display_name, source, synced_at) VALUES ($1, $2, 'gitlab', now()) " ++
                 "ON CONFLICT (account_id) DO UPDATE SET display_name = excluded.display_name, synced_at = now()",
-            &.{ account, arena.dupeZ(u8, display) catch return error.OutOfMemory },
-            null,
+            .{ account, display },
         ) catch return error.Db;
-        db.execParams(
+        _ = db.exec(
+            scope,
             "INSERT INTO access (dataset_id, account_id, level, source) " ++
                 "SELECT d.dataset_id, $2, $3, 'gitlab' FROM datasets d WHERE d.name = $1 " ++
                 "ON CONFLICT (dataset_id, account_id) DO UPDATE SET level = excluded.level, source = 'gitlab'",
-            &.{ dataset_z, account, arena.dupeZ(u8, level) catch return error.OutOfMemory },
-            null,
+            .{ dataset_name, account, level },
         ) catch return error.Db;
         outcome.upserted += 1;
         if (keep_ids.items.len > 0) try keep_ids.append(arena, ',');
@@ -78,16 +78,14 @@ pub fn applyMembers(
 
     // Removing someone from GitLab removes their cid access at the next
     // sync. Only gitlab-sourced rows: dashboard grants are not GitLab's.
-    const keep_z = arena.dupeZ(u8, keep_ids.items) catch return error.OutOfMemory;
-    var removed = db.query(
+    const removed = db.exec(
+        scope,
         "DELETE FROM access a USING datasets d " ++
             "WHERE a.dataset_id = d.dataset_id AND d.name = $1 AND a.source = 'gitlab' " ++
-            "AND a.account_id <> ALL (string_to_array($2, ',')) RETURNING a.account_id",
-        &.{ dataset_z, keep_z },
-        null,
+            "AND a.account_id <> ALL (string_to_array($2, ','))",
+        .{ dataset_name, keep_ids.items },
     ) catch return error.Db;
-    defer removed.deinit();
-    outcome.removed = @intCast(removed.count());
+    outcome.removed = @intCast(removed);
     return outcome;
 }
 
@@ -101,7 +99,8 @@ pub const KeyOutcome = struct {
 /// gitlab-synced keys for that account removed.
 pub fn applyKeys(
     arena: std.mem.Allocator,
-    db: *pg.Db,
+    db: *dbx.sql.Db,
+    scope: anytype,
     gitlab_user_id: u64,
     user_keys: []const UserKey,
 ) Error!KeyOutcome {
@@ -114,36 +113,30 @@ pub fn applyKeys(
             outcome.skipped_invalid += 1;
             continue;
         };
-        db.execParams(
+        _ = db.exec(
+            scope,
             "INSERT INTO ssh_keys (fingerprint, account_id, public_key, synced_at) VALUES ($1, $2, $3, now()) " ++
                 "ON CONFLICT (fingerprint) DO UPDATE SET account_id = excluded.account_id, " ++
                 "public_key = excluded.public_key, synced_at = now()",
-            &.{
-                arena.dupeZ(u8, fp) catch return error.OutOfMemory,
-                account,
-                arena.dupeZ(u8, k.key) catch return error.OutOfMemory,
-            },
-            null,
+            .{ fp, account, k.key },
         ) catch return error.Db;
         outcome.upserted += 1;
         if (keep.items.len > 0) try keep.append(arena, ',');
         try keep.appendSlice(arena, fp);
     }
 
-    const keep_z = arena.dupeZ(u8, keep.items) catch return error.OutOfMemory;
-    var removed = db.query(
+    const removed = db.exec(
+        scope,
         "DELETE FROM ssh_keys WHERE account_id = $1 " ++
-            "AND fingerprint <> ALL (string_to_array($2, ',')) RETURNING fingerprint",
-        &.{ account, keep_z },
-        null,
+            "AND fingerprint <> ALL (string_to_array($2, ','))",
+        .{ account, keep.items },
     ) catch return error.Db;
-    defer removed.deinit();
-    outcome.removed = @intCast(removed.count());
+    outcome.removed = @intCast(removed);
     return outcome;
 }
 
-fn accountId(arena: std.mem.Allocator, gitlab_user_id: u64) Error![:0]const u8 {
-    return std.fmt.allocPrintSentinel(arena, "gitlab:{d}", .{gitlab_user_id}, 0) catch
+fn accountId(arena: std.mem.Allocator, gitlab_user_id: u64) Error![]const u8 {
+    return std.fmt.allocPrint(arena, "gitlab:{d}", .{gitlab_user_id}) catch
         error.OutOfMemory;
 }
 
@@ -218,18 +211,17 @@ pub const SyncOutcome = struct {
 pub fn syncAll(
     arena: std.mem.Allocator,
     io: std.Io,
-    db: *pg.Db,
+    db: *dbx.sql.Db,
+    scope: anytype,
     config: Config,
 ) Error!SyncOutcome {
-    var names = db.query("SELECT name FROM datasets ORDER BY name", &.{}, null) catch return error.Db;
-    defer names.deinit();
+    const names = db.raw([]const u8, scope, "SELECT name FROM datasets ORDER BY name", .{}) catch
+        return error.Db;
 
     var outcome: SyncOutcome = .{};
     var synced_users: std.ArrayList(u64) = .empty;
 
-    var i: usize = 0;
-    while (i < names.count()) : (i += 1) {
-        const dataset_name = arena.dupe(u8, names.get(i, 0)) catch return error.OutOfMemory;
+    for (names) |dataset_name| {
         const encoded = try urlEncodePath(arena, dataset_name);
         const json = fetchPaged(arena, io, config, "/api/v4/projects/{s}/members/all", .{encoded}) catch {
             std.log.warn("gitlab sync: cannot read members of {s}; skipped", .{dataset_name});
@@ -237,7 +229,7 @@ pub fn syncAll(
             continue;
         };
         const members = try parseMembers(arena, json);
-        const applied = try applyMembers(arena, db, dataset_name, members);
+        const applied = try applyMembers(arena, db, scope, dataset_name, members);
         outcome.datasets += 1;
         outcome.members += applied.upserted;
         outcome.access_removed += applied.removed;
@@ -254,7 +246,7 @@ pub fn syncAll(
             try synced_users.append(arena, m.id);
             const keys_json = fetchPaged(arena, io, config, "/api/v4/users/{d}/keys", .{m.id}) catch continue;
             const user_keys = try parseKeys(arena, keys_json);
-            const key_applied = try applyKeys(arena, db, m.id, user_keys);
+            const key_applied = try applyKeys(arena, db, scope, m.id, user_keys);
             outcome.keys += key_applied.upserted;
             outcome.keys_removed += key_applied.removed;
         }

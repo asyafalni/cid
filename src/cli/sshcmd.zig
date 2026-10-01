@@ -14,7 +14,7 @@
 
 const std = @import("std");
 const root = @import("../cid.zig");
-const pg = @import("../store/pg.zig");
+const dbx = @import("../store/db.zig");
 const auth = @import("../access/auth.zig");
 
 const ExitCode = root.ExitCode;
@@ -32,10 +32,13 @@ pub fn runKeys(
     }
     const fp = fingerprint orelse return quietFail(io, "ssh-keys needs --fingerprint=");
 
-    var db = connectDb(arena, io, env) orelse return .network;
-    defer db.close();
+    var standalone: dbx.Standalone = undefined;
+    connectDb(&standalone, arena, io, env) orelse return .network;
+    defer standalone.close();
+    var scope = dbx.Run.init(arena);
+    defer scope.deinit();
 
-    const line = auth.authorizedKeysLine(arena, &db, fp) catch return .network;
+    const line = auth.authorizedKeysLine(arena, &standalone.db, &scope, fp) catch return .network;
     if (line) |l| out.writeAll(l) catch return .network;
     out.flush() catch return .network;
     return .ok; // no match prints nothing: sshd just refuses the key
@@ -60,13 +63,16 @@ pub fn runAuth(
     const server_url = env.get("CID_PUBLIC_URL") orelse
         return quietFail(io, "server misconfigured (CID_PUBLIC_URL unset); tell the administrator");
 
-    var db = connectDb(arena, io, env) orelse return .network;
-    defer db.close();
+    var standalone: dbx.Standalone = undefined;
+    connectDb(&standalone, arena, io, env) orelse return .network;
+    defer standalone.close();
+    var scope = dbx.Run.init(arena);
+    defer scope.deinit();
 
     const req = auth.parseOriginalCommand(original, acct) catch
         return quietFail(io, "refused. This endpoint only answers: cid-auth <dataset> <read|write>");
     const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
-    const grant = auth.authorize(arena, &db, secret, server_url, now, req) catch |err| switch (err) {
+    const grant = auth.authorize(arena, &standalone.db, &scope, secret, server_url, now, req) catch |err| switch (err) {
         error.AccessDenied => return quietFail(io, "access denied. Ask for access to the dataset's project, then try again."),
         else => return quietFail(io, "the server could not answer; try again or tell the administrator"),
     };
@@ -80,13 +86,17 @@ pub fn runAuth(
     return .ok;
 }
 
-fn connectDb(arena: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map) ?pg.Db {
-    const conninfo_raw = env.get("CID_DB") orelse {
+fn connectDb(
+    standalone: *dbx.Standalone,
+    arena: std.mem.Allocator,
+    io: std.Io,
+    env: *const std.process.Environ.Map,
+) ?void {
+    const spec = env.get("CID_DB") orelse {
         _ = quietFail(io, "server misconfigured (CID_DB unset); tell the administrator");
         return null;
     };
-    const conninfo = arena.dupeZ(u8, conninfo_raw) catch return null;
-    return pg.Db.connect(conninfo, null) catch {
+    standalone.open(arena, spec) catch {
         _ = quietFail(io, "the server database is unreachable; tell the administrator");
         return null;
     };

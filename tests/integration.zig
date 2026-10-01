@@ -784,20 +784,27 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
         "('018f0000-0000-7000-8000-00000000ac01', 'gitlab:7002', 'write', 'dashboard')", &diag);
 
     // AuthorizedKeysCommand: a known key gets the pinned forced command.
-    const line = (try cid.access.auth.authorizedKeysLine(arena, &db, "SHA256:testfp7001")).?;
+    // auth speaks nilo_sql now, so it gets the nilo pool and a Run scope.
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    const ndb = &standalone.db;
+    const line = (try cid.access.auth.authorizedKeysLine(arena, ndb, &scope, "SHA256:testfp7001")).?;
     try std.testing.expect(std.mem.startsWith(u8, line, "restrict,command=\"cid ssh-auth --account=gitlab:7001\" ssh-ed25519"));
-    try std.testing.expectEqual(@as(?[]const u8, null), try cid.access.auth.authorizedKeysLine(arena, &db, "SHA256:unknown"));
+    try std.testing.expectEqual(@as(?[]const u8, null), try cid.access.auth.authorizedKeysLine(arena, ndb, &scope, "SHA256:unknown"));
 
     // The forced command: read is granted to the reader, write is not.
     const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
     const read_req = try cid.access.auth.parseOriginalCommand("cid-auth test/datasets/access read", "gitlab:7001");
-    const read_grant = try cid.access.auth.authorize(arena, &db, secret, "http://127.0.0.1:7070", now, read_req);
+    const read_grant = try cid.access.auth.authorize(arena, ndb, &scope, secret, "http://127.0.0.1:7070", now, read_req);
     try std.testing.expect(std.mem.startsWith(u8, read_grant.token, "cid1."));
 
     const write_req = try cid.access.auth.parseOriginalCommand("cid-auth test/datasets/access write", "gitlab:7001");
-    try std.testing.expectError(error.AccessDenied, cid.access.auth.authorize(arena, &db, secret, "x", now, write_req));
+    try std.testing.expectError(error.AccessDenied, cid.access.auth.authorize(arena, ndb, &scope, secret, "x", now, write_req));
     const wade_write = try cid.access.auth.parseOriginalCommand("cid-auth test/datasets/access write", "gitlab:7002");
-    const write_grant = try cid.access.auth.authorize(arena, &db, secret, "x", now, wade_write);
+    const write_grant = try cid.access.auth.authorize(arena, ndb, &scope, secret, "x", now, wade_write);
 
     // Both decisions landed in the audit log.
     var events = try db.query(
@@ -870,7 +877,13 @@ test "gitlab sync: members and keys applied, removals revoke access" {
         \\ {"id":9102,"username":"wade","name":"Wade W","access_level":30,"state":"active"},
         \\ {"id":9103,"username":"guest","access_level":10,"state":"active"}]
     );
-    const first = try cid.access.gitlab.applyMembers(arena, &db, "test/datasets/gl", members1);
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    const ndb = &standalone.db;
+    const first = try cid.access.gitlab.applyMembers(arena, ndb, &scope, "test/datasets/gl", members1);
     try std.testing.expectEqual(@as(u32, 2), first.upserted);
 
     var levels = try db.query(
@@ -889,17 +902,17 @@ test "gitlab sync: members and keys applied, removals revoke access" {
         \\[{"id":1,"key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFdJMTzwHtTuz5TEIEMRoQ8hWQ8EuaJotFSs/0FCfvS4 fixture@cid"},
         \\ {"id":2,"key":"garbage not a key"}]
     );
-    const key_first = try cid.access.gitlab.applyKeys(arena, &db, 9102, keys1);
+    const key_first = try cid.access.gitlab.applyKeys(arena, ndb, &scope, 9102, keys1);
     try std.testing.expectEqual(@as(u32, 1), key_first.upserted);
     try std.testing.expectEqual(@as(u32, 1), key_first.skipped_invalid);
-    const line = (try cid.access.auth.authorizedKeysLine(arena, &db, "SHA256:dFtRBBCbqwbXXQkKRXzbOpi9eJQNbn/SAiaVrdWiLo0")).?;
+    const line = (try cid.access.auth.authorizedKeysLine(arena, ndb, &scope, "SHA256:dFtRBBCbqwbXXQkKRXzbOpi9eJQNbn/SAiaVrdWiLo0")).?;
     try std.testing.expect(std.mem.indexOf(u8, line, "--account=gitlab:9102") != null);
 
     // Second sync: Rhea is gone, Wade is demoted to reporter, keys rotated.
     const members2 = try cid.access.gitlab.parseMembers(arena,
         \\[{"id":9102,"username":"wade","name":"Wade W","access_level":20,"state":"active"}]
     );
-    const second = try cid.access.gitlab.applyMembers(arena, &db, "test/datasets/gl", members2);
+    const second = try cid.access.gitlab.applyMembers(arena, ndb, &scope, "test/datasets/gl", members2);
     try std.testing.expectEqual(@as(u32, 1), second.removed);
 
     var levels2 = try db.query(
@@ -913,9 +926,9 @@ test "gitlab sync: members and keys applied, removals revoke access" {
     try std.testing.expectEqualStrings("gitlab:9102", levels2.get(0, 0));
     try std.testing.expectEqualStrings("read", levels2.get(0, 1));
 
-    const key_second = try cid.access.gitlab.applyKeys(arena, &db, 9102, &.{});
+    const key_second = try cid.access.gitlab.applyKeys(arena, ndb, &scope, 9102, &.{});
     try std.testing.expectEqual(@as(u32, 1), key_second.removed);
-    try std.testing.expectEqual(@as(?[]const u8, null), try cid.access.auth.authorizedKeysLine(arena, &db, "SHA256:dFtRBBCbqwbXXQkKRXzbOpi9eJQNbn/SAiaVrdWiLo0"));
+    try std.testing.expectEqual(@as(?[]const u8, null), try cid.access.auth.authorizedKeysLine(arena, ndb, &scope, "SHA256:dFtRBBCbqwbXXQkKRXzbOpi9eJQNbn/SAiaVrdWiLo0"));
 }
 
 test "branches: compose from main, push on branch, merge with conflicts listed" {
