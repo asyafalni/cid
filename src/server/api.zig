@@ -78,6 +78,13 @@ fn handleInner(
         // The dataset's name is in the body; createDataset checks scope.
         return createDataset(arena, deps, auth_header, body);
     }
+    if (eql(method, "GET") and eql(target, "/v0/datasets")) {
+        // Listing crosses datasets, so a per-dataset token cannot do it:
+        // the static token only, until OAuth brings account-level views.
+        if (!tokenOk(deps.token, auth_header))
+            return errorResponse(arena, .unauthorized, "listing needs the server token", "Sign in with the server token, or browse one dataset by its address.");
+        return listDatasets(arena, deps);
+    }
 
     const route = parseDatasetRoute(target) orelse
         return errorResponse(arena, .not_found, "no such route", "Update cid and try again.");
@@ -219,6 +226,39 @@ fn lookupDataset(arena: std.mem.Allocator, deps: *Deps, name: []const u8) ?Datas
         .name = name,
         .kind = arena.dupe(u8, rows.get(0, 1)) catch return null,
     };
+}
+
+fn listDatasets(arena: std.mem.Allocator, deps: *Deps) HandleError!Response {
+    var rows = deps.db.query(
+        "SELECT d.name, d.kind, d.default_format, " ++
+            "  (SELECT r.name FROM refs r WHERE r.dataset_id = d.dataset_id AND r.kind = 'release' " ++
+            "   ORDER BY r.commit_id DESC LIMIT 1), " ++
+            "  (SELECT to_char(max(c.recorded_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') " ++
+            "   FROM commits c WHERE c.dataset_id = d.dataset_id) " ++
+            "FROM datasets d ORDER BY d.name",
+        &.{},
+        null,
+    ) catch return error.Db;
+    defer rows.deinit();
+
+    const Entry = struct {
+        name: []const u8,
+        kind: []const u8,
+        default_format: []const u8,
+        latest_release: ?[]const u8,
+        last_push: ?[]const u8,
+    };
+    const list = try arena.alloc(Entry, rows.count());
+    for (list, 0..) |*e, i| {
+        e.* = .{
+            .name = try arena.dupe(u8, rows.get(i, 0)),
+            .kind = try arena.dupe(u8, rows.get(i, 1)),
+            .default_format = try arena.dupe(u8, rows.get(i, 2)),
+            .latest_release = if (rows.isNull(i, 3)) null else try arena.dupe(u8, rows.get(i, 3)),
+            .last_push = if (rows.isNull(i, 4)) null else try arena.dupe(u8, rows.get(i, 4)),
+        };
+    }
+    return json(arena, .ok, .{ .datasets = list });
 }
 
 const CreateDatasetBody = struct {

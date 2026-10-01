@@ -1,0 +1,75 @@
+/* The engineer's airship — starting tokens from docs/dashboard.md §3.3.
+   Two themes: "Night flight" (dark, default) and "Daybreak" (light).
+   Aether = interactive/focus. Brass = releases and crafted details.
+   Neither accent is ever the only carrier of meaning. */
+
+:root {
+  --bg: #0b1020;
+  --panel: #121a30;
+  --panel-raised: #19233f;
+  --line: #26314f;
+  --text: #e8ecf6;
+  --text-muted: #a2acc6;
+  --aether: #5bd8e0;
+  --brass: #d9a845;
+  --sky-1: #1b2a5a;
+  --sky-2: #6b4e8c;
+  --sky-3: #e08a5b;
+  --pass: #4cc38a;
+  --warn: #f2b84b;
+  --fail: #ff7a66;
+
+  --font-display: 'Fraunces', georgia, serif;
+  --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-data: 'JetBrains Mono', ui-monospace, monospace;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  /* Radius scales with hierarchy: chips < panels < the one hero surface. */
+  --radius-chip: 3px;
+  --radius-panel: 6px;
+  --radius-hero: 10px;
+
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--aether);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='night']) {
+    --bg: #f5f2ea;
+    --panel: #ffffff;
+    --panel-raised: #fbf9f4;
+    --line: #d9d3c4;
+    --text: #1a2033;
+    --text-muted: #545b70;
+    --aether: #0e7c86;
+    --brass: #9a6b12;
+    --sky-1: #bfd9f2;
+    --sky-2: #dcd2e4;
+    --sky-3: #f6e3c8;
+    --pass: #1e7f52;
+    --warn: #8a5a00;
+    --fail: #b3261e;
+  }
+}
+
+:root[data-theme='daybreak'] {
+  --bg: #f5f2ea;
+  --panel: #ffffff;
+  --panel-raised: #fbf9f4;
+  --line: #d9d3c4;
+  --text: #1a2033;
+  --text-muted: #545b70;
+  --aether: #0e7c86;
+  --brass: #9a6b12;
+  --sky-1: #bfd9f2;
+  --sky-2: #dcd2e4;
+  --sky-3: #f6e3c8;
+  --pass: #1e7f52;
+  --warn: #8a5a00;
+  --fail: #b3261e;
+}

@@ -1,0 +1,105 @@
+/* Base styles. Data areas are calm: solid panels, no gradients or glow
+   behind content. The sky exists only where there is no data. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+
+h1,
+h2 {
+  font-family: var(--font-display);
+  font-weight: 560;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+a {
+  color: var(--aether);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-chip);
+}
+
+code,
+.data {
+  font-family: var(--font-data);
+  font-size: 0.85em;
+}
+
+/* Hashes, ids, sizes: instrument readouts, always with units, copy on click. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  font-family: var(--font-data);
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  background: var(--panel);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+
+/* A brass border marks a release artifact; nothing else wears it. */
+.panel--release {
+  border-color: color-mix(in srgb, var(--brass) 55%, var(--line));
+}
+
+/* The faint technical grid: empty canvases and the sign-in page only. */
+.blueprint {
+  background-image:
+    linear-gradient(var(--line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: center;
+}
+
+.sky-band {
+  background: linear-gradient(105deg, var(--sky-1), var(--sky-2) 55%, var(--sky-3));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

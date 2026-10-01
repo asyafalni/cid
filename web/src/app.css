@@ -1,0 +1,228 @@
+/* Layout and components for the shell, sign-in and home. */
+
+.shell {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  min-height: 100%;
+}
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: var(--space-6) var(--space-4);
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-size: 1.75rem;
+  color: var(--text);
+  line-height: 1;
+}
+
+.wordmark:hover {
+  text-decoration: none;
+  color: var(--aether);
+}
+
+.tagline {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  margin: var(--space-2) 0 0;
+}
+
+.rail-signout {
+  color: var(--text-muted);
+  padding: 0;
+  font-size: 0.8125rem;
+}
+
+.rail-signout:hover {
+  color: var(--text);
+}
+
+.deck {
+  padding: var(--space-8);
+  max-width: 64rem;
+}
+
+.deck-head {
+  margin-bottom: var(--space-6);
+}
+
+.deck-head h1 {
+  font-size: 1.6rem;
+}
+
+.quiet {
+  color: var(--text-muted);
+  margin: var(--space-1) 0 0;
+}
+
+.notice {
+  padding: var(--space-4);
+}
+
+/* --- the manifest (home) --- */
+
+.manifest {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.manifest-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+}
+
+.manifest-name {
+  font-size: 0.9375rem;
+  color: var(--text);
+}
+
+.manifest-kind {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  margin-left: var(--space-3);
+}
+
+.manifest-side {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+  white-space: nowrap;
+}
+
+/* A release wears brass: border and text together, never color alone. */
+.release-tag {
+  font-family: var(--font-data);
+  font-size: 0.8125rem;
+  color: var(--brass);
+  border: 1px solid color-mix(in srgb, var(--brass) 55%, var(--line));
+  border-radius: var(--radius-chip);
+  padding: 0 var(--space-2);
+}
+
+.empty {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-hero);
+  padding: var(--space-8);
+  text-align: center;
+}
+
+.empty code {
+  display: inline-block;
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+}
+
+/* --- sign-in: the one page that is mostly sky --- */
+
+.signin {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+}
+
+.signin-card {
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid var(--line);
+  border-top: 1px solid color-mix(in srgb, var(--aether) 40%, var(--line));
+  border-radius: var(--radius-hero);
+  padding: var(--space-8);
+  width: min(26rem, 100%);
+}
+
+.signin-wordmark {
+  font-size: 3rem;
+}
+
+.signin form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-6);
+}
+
+.signin label {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.signin input {
+  font-family: var(--font-data);
+  font-size: 0.9375rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  padding: var(--space-2) var(--space-3);
+}
+
+.signin input:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.action {
+  margin-top: var(--space-2);
+  background: var(--aether);
+  color: var(--bg);
+  font-weight: 600;
+  border-radius: var(--radius-chip);
+  padding: var(--space-2) var(--space-4);
+}
+
+.action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.problem {
+  color: var(--fail);
+  margin-top: var(--space-3);
+}
+
+.signin-note {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  margin-top: var(--space-4);
+}
+
+@media (max-width: 640px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+
+  .rail {
+    flex-direction: row;
+    align-items: baseline;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .rail-foot .tagline {
+    display: none;
+  }
+
+  .deck {
+    padding: var(--space-4);
+  }
+
+  .manifest-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-1);
+  }
+}
