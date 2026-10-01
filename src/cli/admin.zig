@@ -1,8 +1,10 @@
 //! `cid admin …`: server administration. Hidden from plain `cid help` (rule 6).
 
 const std = @import("std");
+const nilo = @import("nilo_http");
 const root = @import("../cid.zig");
 const pg = @import("../store/pg.zig");
+const dbx = @import("../store/db.zig");
 const s3 = @import("../store/s3.zig");
 const migrate = @import("../core/migrate.zig");
 const api = @import("../server/api.zig");
@@ -86,19 +88,22 @@ fn runMigrate(
     env: *const std.process.Environ.Map,
     sub: []const u8,
 ) ExitCode {
-    const conninfo_raw = env.get("CID_DB") orelse {
+    const spec = env.get("CID_DB") orelse {
         return fail(io, .usage, "CID_DB is not set.\nSet it to the server database connection, e.g.\n  {s}\nThen run 'cid admin {s}' again.", .{ conninfo_example, sub });
     };
-    const conninfo = arena.dupeZ(u8, conninfo_raw) catch return .network;
 
-    var diag: pg.Diag = .{};
-    var db = pg.Db.connect(conninfo, &diag) catch {
-        return fail(io, .network, "cannot connect to the database: {s}\nCheck the database is running and CID_DB is right, then run 'cid admin {s}' again.", .{ diag.message(), sub });
+    var standalone: dbx.Standalone = undefined;
+    standalone.open(arena, spec) catch {
+        return fail(io, .network, "cannot connect to the database.\nCheck the database is running and CID_DB is right, then run 'cid admin {s}' again.", .{sub});
     };
-    defer db.close();
+    defer standalone.close();
+    standalone.db.watching(stashDbProblem);
 
-    const summary = migrate.run(arena, &db, out, &diag) catch {
-        return fail(io, .network, "migration failed: {s}\nFix the cause, then run 'cid admin {s}' again; the failed migration was rolled back.", .{ diag.message(), sub });
+    var scope = nilo.Run.init(arena);
+    defer scope.deinit();
+
+    const summary = migrate.run(&standalone.db, &scope, out) catch {
+        return fail(io, .network, "migration failed: {s}\nFix the cause, then run 'cid admin {s}' again; the failed migration was rolled back.", .{ lastDbProblem(), sub });
     };
     if (summary.applied == 0) {
         out.print("Nothing to apply. Database is up to date ({d} migration{s}).\n", .{ summary.total, plural(summary.total) }) catch return .network;
@@ -617,6 +622,24 @@ fn missingEnv(io: std.Io, name: []const u8, example: []const u8) ExitCode {
 }
 
 /// Every error ends with the command to run next (already in the formats above).
+/// nilo's statement watcher is a plain function pointer (its ADR 108), so
+/// the database's words about a failure land in this file-scope buffer.
+/// Admin commands are one-shot and single-threaded; this is the one
+/// sanctioned exception to "no globals", and it never leaves this file.
+var db_problem_buf: [512]u8 = undefined;
+var db_problem_len: usize = 0;
+
+fn stashDbProblem(sent: dbx.sql.Sent) void {
+    const p = sent.problem orelse return;
+    const n = @min(p.message.len, db_problem_buf.len);
+    @memcpy(db_problem_buf[0..n], p.message[0..n]);
+    db_problem_len = n;
+}
+
+fn lastDbProblem() []const u8 {
+    return if (db_problem_len == 0) "no details from the database" else db_problem_buf[0..db_problem_len];
+}
+
 fn fail(io: std.Io, code: ExitCode, comptime fmt: []const u8, fmt_args: anytype) ExitCode {
     var buf: [1024]u8 = undefined;
     var stderr_writer = std.Io.File.stderr().writer(io, &buf);

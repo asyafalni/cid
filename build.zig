@@ -22,10 +22,12 @@ pub fn build(b: *std.Build) void {
     });
 
     // Nilo (pinned commit; CLAUDE.md, Zig conventions): the server's HTTP
-    // framework. No .sql option, so none of its lazy drivers are fetched.
+    // framework, and its native Postgres driver (.sql fetches pg.zig),
+    // which is replacing libpq module by module.
     const nilo_dep = b.dependency("nilo", .{
         .target = target,
         .optimize = optimize,
+        .sql = true,
     });
 
     // sql/migrations/*.sql, embedded into the binary for `cid admin migrate`.
@@ -44,6 +46,7 @@ pub fn build(b: *std.Build) void {
     lib_mod.addOptions("build_options", options);
     lib_mod.addImport("libpq", libpq_dep.module("libpq"));
     lib_mod.addImport("nilo_http", nilo_dep.module("nilo_http"));
+    lib_mod.addImport("nilo_sql", nilo_dep.module("nilo_sql"));
     lib_mod.addImport("migrations", migrations_mod);
     lib_mod.addImport("web_assets", assets_mod);
 

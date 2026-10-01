@@ -21,6 +21,7 @@ pub const cli_branch = @import("cli/branch.zig");
 pub const cli_merge = @import("cli/merge.zig");
 pub const cli_login = @import("cli/login.zig");
 pub const pg = @import("store/pg.zig");
+pub const db = @import("store/db.zig");
 pub const s3 = @import("store/s3.zig");
 pub const api = @import("server/api.zig");
 pub const serve = @import("server/serve.zig");
@@ -73,6 +74,7 @@ test {
     _ = version;
     _ = admin;
     _ = pg;
+    _ = db;
     _ = s3;
     _ = api;
     _ = serve;

@@ -25,6 +25,19 @@ fn connect(diag: *cid.pg.Diag) !cid.pg.Db {
     };
 }
 
+/// Migrations now run through nilo_sql (its own pool, opened and closed
+/// here), while the rest of a test still talks libpq until its module is
+/// ported. Two drivers, one database, no interference.
+fn runMigrations() !cid.migrate.Summary {
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    return cid.migrate.run(&standalone.db, &scope, &discard.writer);
+}
+
 fn expectRefused(db: *cid.pg.Db, sql: [:0]const u8, needle: []const u8) !void {
     var diag: cid.pg.Diag = .{};
     try std.testing.expectError(error.QueryFailed, db.exec(sql, &diag));
@@ -100,15 +113,11 @@ test "migrations apply from scratch and are idempotent" {
 
     try db.exec("DROP SCHEMA public CASCADE; CREATE SCHEMA public", &diag);
 
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    const first = cid.migrate.run(arena, &db, &discard.writer, &diag) catch |err| {
-        std.debug.print("migrate failed: {s}\n", .{diag.message()});
-        return err;
-    };
+    const first = try runMigrations();
     try std.testing.expect(first.total >= 1);
     try std.testing.expectEqual(first.total, first.applied);
 
-    const second = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    const second = try runMigrations();
     try std.testing.expectEqual(@as(u32, 0), second.applied);
 
     const versions = try db.queryInts(arena, "SELECT count(*) FROM schema_migrations", &diag);
@@ -124,8 +133,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     var diag: cid.pg.Diag = .{};
     var db = try connect(&diag);
     defer db.close();
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    _ = try runMigrations();
 
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
@@ -266,21 +274,13 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
 }
 
 test "append-only history and immovable releases, enforced by the database" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
     var diag: cid.pg.Diag = .{};
     var db = try connect(&diag);
     defer db.close();
 
     // Make sure the schema exists (idempotent), then remove this test's
     // leftovers through the maintenance escape hatch.
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    _ = cid.migrate.run(arena, &db, &discard.writer, &diag) catch |err| {
-        std.debug.print("migrate failed: {s}\n", .{diag.message()});
-        return err;
-    };
+    _ = try runMigrations();
     try db.exec("SET cid.maintenance = 'on'", &diag);
     try db.exec("DELETE FROM refs WHERE dataset_id = '" ++ ds ++ "'", &diag);
     try db.exec("DELETE FROM commits WHERE dataset_id = '" ++ ds ++ "'", &diag);
@@ -361,8 +361,7 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     var diag: cid.pg.Diag = .{};
     var db = try connect(&diag);
     defer db.close();
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    _ = try runMigrations();
 
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
@@ -547,8 +546,7 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     var diag: cid.pg.Diag = .{};
     var db = try connect(&diag);
     defer db.close();
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    _ = try runMigrations();
 
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
@@ -646,8 +644,7 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     var diag: cid.pg.Diag = .{};
     var db = try connect(&diag);
     defer db.close();
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    _ = try runMigrations();
 
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
@@ -757,8 +754,7 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
     var diag: cid.pg.Diag = .{};
     var db = try connect(&diag);
     defer db.close();
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    _ = try runMigrations();
 
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
@@ -859,8 +855,7 @@ test "gitlab sync: members and keys applied, removals revoke access" {
     var diag: cid.pg.Diag = .{};
     var db = try connect(&diag);
     defer db.close();
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    _ = try runMigrations();
 
     try db.exec("DELETE FROM access WHERE account_id LIKE 'gitlab:91%'", &diag);
     try db.exec("DELETE FROM ssh_keys WHERE account_id LIKE 'gitlab:91%'", &diag);
@@ -932,8 +927,7 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
     var diag: cid.pg.Diag = .{};
     var db = try connect(&diag);
     defer db.close();
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
         .access_key = "cid-test-key",
@@ -1092,8 +1086,7 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     var diag: cid.pg.Diag = .{};
     var db = try connect(&diag);
     defer db.close();
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
         .access_key = "cid-test-key",
@@ -1180,8 +1173,7 @@ test "annotated: the platform writes revisions, the server commits, state compos
     var diag: cid.pg.Diag = .{};
     var db = try connect(&diag);
     defer db.close();
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
         .access_key = "cid-test-key",
@@ -1334,8 +1326,7 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     var diag: cid.pg.Diag = .{};
     var db = try connect(&diag);
     defer db.close();
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
         .access_key = "cid-test-key",
@@ -1436,8 +1427,7 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     var diag: cid.pg.Diag = .{};
     var db = try connect(&diag);
     defer db.close();
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
         .access_key = "cid-test-key",
@@ -1570,8 +1560,7 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
     var diag: cid.pg.Diag = .{};
     var db = try connect(&diag);
     defer db.close();
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
         .access_key = "cid-test-key",
@@ -1673,8 +1662,7 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     var diag: cid.pg.Diag = .{};
     var db = try connect(&diag);
     defer db.close();
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
         .access_key = "cid-test-key",
@@ -1762,8 +1750,7 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     var diag: cid.pg.Diag = .{};
     var db = try connect(&diag);
     defer db.close();
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    _ = try runMigrations();
     var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
         .endpoint = "http://127.0.0.1:8333",
         .access_key = "cid-test-key",
