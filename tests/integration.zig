@@ -52,6 +52,18 @@ fn runMigrations() !cid.migrate.Summary {
     return cid.migrate.run(&standalone.db, &scope, &discard.writer);
 }
 
+/// The blob store, opened on the test's io and started at once: cid's
+/// S3 goes through nilo_s3, and the 'cid' bucket is created by
+/// docker-compose.test.yml (bucket creation is the deployment's job).
+fn openBlobs(client: *cid.blob.Client, io: std.Io) !void {
+    try client.open(std.testing.allocator, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+    });
+    try client.start(io);
+}
+
 fn expectRefused(db: *cid.db.sql.Db, scope: anytype, sql: []const u8, needle: []const u8) !void {
     problem_len = 0;
     if (db.exec(scope, sql, .{})) |_| {
@@ -84,30 +96,24 @@ test "s3: put, head, get, presign round trip against SeaweedFS" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
 
-    var s3 = try cid.s3.Client.init(std.testing.allocator, io, .{
-        .endpoint = "http://127.0.0.1:8333",
-        .access_key = "cid-test-key",
-        .secret_key = "cid-test-secret",
-        .bucket = "cid-test",
-    });
+    var s3: cid.blob.Client = undefined;
+    try openBlobs(&s3, io);
     defer s3.deinit();
-
-    try s3.createBucket(arena);
-    try s3.createBucket(arena); // idempotent
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
 
     const key = "items/sha256/ab/abcd-test-object";
     const body = "cid stores any bytes \x00\x01\x02 exactly";
 
-    try std.testing.expectEqual(@as(?u64, null), try s3.headObject(arena, "items/missing"));
-    try std.testing.expectError(error.NotFound, s3.getObjectAlloc(arena, "items/missing", 1024));
+    try std.testing.expectEqual(@as(?u64, null), try s3.headObject(&scope, "items/missing"));
+    try std.testing.expectError(error.NotFound, s3.getObjectAlloc(&scope, "items/missing"));
 
-    try s3.putObject(arena, key, body);
-    const got = try s3.getObjectAlloc(arena, key, 1024);
+    try s3.putObject(&scope, key, body);
+    const got = try s3.getObjectAlloc(&scope, key);
     try std.testing.expectEqualSlices(u8, body, got);
 
     // Presigned GET works with a plain HTTP client and no credentials.
-    const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
-    const url = try s3.presignGet(arena, key, now, 300);
+    const url = try s3.presignGet(&scope, key, 300);
     var plain: std.http.Client = .{ .allocator = std.testing.allocator, .io = io };
     defer plain.deinit();
     var aw: std.Io.Writer.Allocating = .init(arena);
@@ -115,8 +121,8 @@ test "s3: put, head, get, presign round trip against SeaweedFS" {
     try std.testing.expectEqual(std.http.Status.ok, res.status);
     try std.testing.expectEqualSlices(u8, body, aw.writer.buffered());
 
-    try s3.deleteObject(arena, key);
-    try std.testing.expectEqual(@as(?u64, null), try s3.headObject(arena, key));
+    try s3.deleteObject(&scope, key);
+    try std.testing.expectEqual(@as(?u64, null), try s3.headObject(&scope, key));
 }
 
 test "migrations apply from scratch and are idempotent" {
@@ -154,14 +160,9 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     const db = &fixture.db;
     _ = try runMigrations();
 
-    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
-        .endpoint = "http://127.0.0.1:8333",
-        .access_key = "cid-test-key",
-        .secret_key = "cid-test-secret",
-        .bucket = "cid-test",
-    });
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
     defer s3c.deinit();
-    try s3c.createBucket(arena);
 
     var standalone: cid.db.Standalone = undefined;
     try standalone.open(std.testing.allocator, conninfo);
@@ -200,8 +201,8 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     const hash_b = std.fmt.bytesToHex(dg, .lower);
 
     // Earlier runs may have uploaded these; start from a clean slate.
-    try s3c.deleteObject(arena, try cid.api.itemKey(arena, &hash_a));
-    try s3c.deleteObject(arena, try cid.api.itemKey(arena, &hash_b));
+    try s3c.deleteObject(&scope, try cid.api.itemKey(arena, &hash_a));
+    try s3c.deleteObject(&scope, try cid.api.itemKey(arena, &hash_b));
 
     // check-hashes says both are missing and hands out presigned PUTs.
     const check_body = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\",\"{s}\"]}}", .{ &hash_a, &hash_b });
@@ -252,7 +253,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
 
     // Upload B, retry: same body now lands.
     const key_b = try cid.api.itemKey(arena, &hash_b);
-    try s3c.putObject(arena, key_b, content_b);
+    try s3c.putObject(&scope, key_b, content_b);
     const push2 = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/" ++ name ++ "/-/push", "Bearer test-token", push2_body);
     try std.testing.expectEqual(std.http.Status.ok, push2.status);
 
@@ -394,14 +395,9 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     const db = &fixture.db;
     _ = try runMigrations();
 
-    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
-        .endpoint = "http://127.0.0.1:8333",
-        .access_key = "cid-test-key",
-        .secret_key = "cid-test-secret",
-        .bucket = "cid-test",
-    });
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
     defer s3c.deinit();
-    try s3c.createBucket(arena);
 
     var standalone: cid.db.Standalone = undefined;
     try standalone.open(std.testing.allocator, conninfo);
@@ -418,7 +414,7 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
         var content_digest: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(content, &content_digest, .{});
         const content_hex = std.fmt.bytesToHex(content_digest, .lower);
-        try s3c.deleteObject(arena, try cid.api.itemKey(arena, &content_hex));
+        try s3c.deleteObject(&scope, try cid.api.itemKey(arena, &content_hex));
     }
 
     // Clean slate for this dataset.
@@ -587,14 +583,9 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     const db = &fixture.db;
     _ = try runMigrations();
 
-    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
-        .endpoint = "http://127.0.0.1:8333",
-        .access_key = "cid-test-key",
-        .secret_key = "cid-test-secret",
-        .bucket = "cid-test",
-    });
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
     defer s3c.deinit();
-    try s3c.createBucket(arena);
 
     var standalone: cid.db.Standalone = undefined;
     try standalone.open(std.testing.allocator, conninfo);
@@ -671,7 +662,7 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     // Corruption B: tamper with the stored manifest object.
     const commit_for_release = try arena.dupe(u8, list[0].commit);
     const mkey = try cid.release.manifestKey(arena, ds_id, commit_for_release);
-    try s3c.putObject(arena, mkey, "tampered bytes");
+    try s3c.putObject(&scope, mkey, "tampered bytes");
     const v4 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(!v4.ok);
     try std.testing.expectEqual(cid.release.VerifyProblem.stored_manifest_differs, v4.problems[0]);
@@ -691,14 +682,9 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     const db = &fixture.db;
     _ = try runMigrations();
 
-    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
-        .endpoint = "http://127.0.0.1:8333",
-        .access_key = "cid-test-key",
-        .secret_key = "cid-test-secret",
-        .bucket = "cid-test",
-    });
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
     defer s3c.deinit();
-    try s3c.createBucket(arena);
 
     // A local bare repository stands in for GitLab.
     var git_root = std.testing.tmpDir(.{ .iterate = true });
@@ -804,14 +790,9 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
     const db = &fixture.db;
     _ = try runMigrations();
 
-    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
-        .endpoint = "http://127.0.0.1:8333",
-        .access_key = "cid-test-key",
-        .secret_key = "cid-test-secret",
-        .bucket = "cid-test",
-    });
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
     defer s3c.deinit();
-    try s3c.createBucket(arena);
 
     const secret = "integration-test-secret-0123456789abcdef";
     var standalone: cid.db.Standalone = undefined;
@@ -990,14 +971,9 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
     defer fscope.deinit();
     const db = &fixture.db;
     _ = try runMigrations();
-    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
-        .endpoint = "http://127.0.0.1:8333",
-        .access_key = "cid-test-key",
-        .secret_key = "cid-test-secret",
-        .bucket = "cid-test",
-    });
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
     defer s3c.deinit();
-    try s3c.createBucket(arena);
 
     var standalone: cid.db.Standalone = undefined;
     try standalone.open(std.testing.allocator, conninfo);
@@ -1115,28 +1091,31 @@ test "s3 multipart: a large object goes up in parts and comes back identical" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
 
-    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
+    var s3c: cid.blob.Client = undefined;
+    try s3c.open(std.testing.allocator, .{
         .endpoint = "http://127.0.0.1:8333",
         .access_key = "cid-test-key",
         .secret_key = "cid-test-secret",
-        .bucket = "cid-test",
-        .multipart_threshold = 5 * 1024 * 1024, // S3's minimum part size
+        .multipart_threshold = 6 * 1024 * 1024, // low, so the test is 12 MB not 65
     });
+    try s3c.start(io);
     defer s3c.deinit();
-    try s3c.createBucket(arena);
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
 
-    // 12 MB of varied bytes → 3 parts (5 + 5 + 2).
+    // 12 MB of varied bytes, over the lowered threshold → multipart
+    // (nilo parts of 8 + 4 MB).
     const big = try arena.alloc(u8, 12 * 1024 * 1024);
     for (big, 0..) |*b, i| b.* = @truncate(i *% 31 +% (i >> 8));
 
     const key = "items/sha256/mp/multipart-test-object";
-    try s3c.deleteObject(arena, key);
-    try s3c.putObject(arena, key, big);
+    try s3c.deleteObject(&scope, key);
+    try s3c.putObject(&scope, key, big);
 
-    const got = try s3c.getObjectAlloc(arena, key, 16 * 1024 * 1024);
+    const got = try s3c.getObjectAlloc(&scope, key);
     try std.testing.expectEqual(big.len, got.len);
     try std.testing.expect(std.mem.eql(u8, big, got));
-    try s3c.deleteObject(arena, key);
+    try s3c.deleteObject(&scope, key);
 }
 
 test "purge: bytes gone, history intact, verify says so, content cannot return" {
@@ -1152,14 +1131,9 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     defer fscope.deinit();
     const db = &fixture.db;
     _ = try runMigrations();
-    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
-        .endpoint = "http://127.0.0.1:8333",
-        .access_key = "cid-test-key",
-        .secret_key = "cid-test-secret",
-        .bucket = "cid-test",
-    });
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
     defer s3c.deinit();
-    try s3c.createBucket(arena);
 
     var standalone: cid.db.Standalone = undefined;
     try standalone.open(std.testing.allocator, conninfo);
@@ -1209,7 +1183,7 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     try std.testing.expectEqualStrings(&sensitive_hash, purged.hash_hex);
     try std.testing.expectEqual(@as(usize, 1), purged.releases_affected);
     const key = try cid.api.itemKey(arena, &sensitive_hash);
-    try std.testing.expectEqual(@as(?u64, null), try s3c.headObject(arena, key));
+    try std.testing.expectEqual(@as(?u64, null), try s3c.headObject(&scope, key));
     try std.testing.expectError(error.AlreadyPurged, cid.purge.purge(arena, &standalone.db, &scope, &s3c, "test/datasets/purge", "face.jpg", "again", "user:admin"));
 
     const audit = try db.rawExactlyOne(i64, &fscope, "SELECT count(*) FROM activity_events WHERE dataset_id = $1::uuid AND action = 'purge'", .{ds_id});
@@ -1240,14 +1214,9 @@ test "annotated: the platform writes revisions, the server commits, state compos
     defer fscope.deinit();
     const db = &fixture.db;
     _ = try runMigrations();
-    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
-        .endpoint = "http://127.0.0.1:8333",
-        .access_key = "cid-test-key",
-        .secret_key = "cid-test-secret",
-        .bucket = "cid-test",
-    });
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
     defer s3c.deinit();
-    try s3c.createBucket(arena);
 
     var standalone: cid.db.Standalone = undefined;
     try standalone.open(std.testing.allocator, conninfo);
@@ -1281,8 +1250,8 @@ test "annotated: the platform writes revisions, the server commits, state compos
     const h1 = std.fmt.bytesToHex(dg, .lower);
     std.crypto.hash.sha2.Sha256.hash(frame2, &dg, .{});
     const h2 = std.fmt.bytesToHex(dg, .lower);
-    try s3c.deleteObject(arena, try cid.api.itemKey(arena, &h1));
-    try s3c.deleteObject(arena, try cid.api.itemKey(arena, &h2));
+    try s3c.deleteObject(&scope, try cid.api.itemKey(arena, &h1));
+    try s3c.deleteObject(&scope, try cid.api.itemKey(arena, &h2));
     {
         const hz = try arena.dupeZ(u8, &h1);
         _ = db.exec(&fscope, "DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
@@ -1399,14 +1368,9 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     defer fscope.deinit();
     const db = &fixture.db;
     _ = try runMigrations();
-    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
-        .endpoint = "http://127.0.0.1:8333",
-        .access_key = "cid-test-key",
-        .secret_key = "cid-test-secret",
-        .bucket = "cid-test",
-    });
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
     defer s3c.deinit();
-    try s3c.createBucket(arena);
 
     var standalone: cid.db.Standalone = undefined;
     try standalone.open(std.testing.allocator, conninfo);
@@ -1434,7 +1398,7 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     var dg: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(pix, &dg, .{});
     const hh = std.fmt.bytesToHex(dg, .lower);
-    try s3c.putObject(arena, try cid.api.itemKey(arena, &hh), pix);
+    try s3c.putObject(&scope, try cid.api.itemKey(arena, &hh), pix);
     try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len }});
 
     var last = cid.uuid7.Uuid.now(io);
@@ -1466,7 +1430,7 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     const t = try remote.tag(arena, "v1.0.0");
     try std.testing.expectEqual(@as(u64, 1), t.items);
     const mkey = try cid.release.manifestKey(arena, ds_id, t.commit);
-    const stored = try s3c.getObjectAlloc(arena, mkey, 1024 * 1024);
+    const stored = try s3c.getObjectAlloc(&scope, mkey);
     try std.testing.expect(std.mem.startsWith(u8, stored, "cid-manifest 2\n"));
     try std.testing.expect(std.mem.indexOf(u8, stored, "item\timg/a.jpg\t") != null);
     const ann_line = try std.fmt.allocPrint(arena, "ann\t{s}\t{s}\tbox\tperson\t{{\"h\":40,\"w\":30.5,\"x\":10,\"y\":20}}\t-\tagent:annotator\tpolicy-v1\n", .{ &item_id, &box_id });
@@ -1506,14 +1470,9 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     defer fscope.deinit();
     const db = &fixture.db;
     _ = try runMigrations();
-    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
-        .endpoint = "http://127.0.0.1:8333",
-        .access_key = "cid-test-key",
-        .secret_key = "cid-test-secret",
-        .bucket = "cid-test",
-    });
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
     defer s3c.deinit();
-    try s3c.createBucket(arena);
 
     var standalone: cid.db.Standalone = undefined;
     try standalone.open(std.testing.allocator, conninfo);
@@ -1541,7 +1500,7 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     var dg: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(pix, &dg, .{});
     const hh = std.fmt.bytesToHex(dg, .lower);
-    try s3c.putObject(arena, try cid.api.itemKey(arena, &hh), pix);
+    try s3c.putObject(&scope, try cid.api.itemKey(arena, &hh), pix);
     try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len, .media_type = "image/jpeg", .width = 640, .height = 480 }});
 
     // Registering enqueues exactly one preview per content hash, ever —
@@ -1649,14 +1608,9 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
     defer fscope.deinit();
     const db = &fixture.db;
     _ = try runMigrations();
-    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
-        .endpoint = "http://127.0.0.1:8333",
-        .access_key = "cid-test-key",
-        .secret_key = "cid-test-secret",
-        .bucket = "cid-test",
-    });
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
     defer s3c.deinit();
-    try s3c.createBucket(arena);
 
     var git_root = std.testing.tmpDir(.{ .iterate = true });
     defer git_root.cleanup();
@@ -1706,7 +1660,7 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
     var dg: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(pix, &dg, .{});
     const hh = std.fmt.bytesToHex(dg, .lower);
-    try s3c.putObject(arena, try cid.api.itemKey(arena, &hh), pix);
+    try s3c.putObject(&scope, try cid.api.itemKey(arena, &hh), pix);
     try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len, .width = 100, .height = 100 }});
 
     var last = cid.uuid7.Uuid.now(io);
@@ -1757,14 +1711,9 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     defer fscope.deinit();
     const db = &fixture.db;
     _ = try runMigrations();
-    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
-        .endpoint = "http://127.0.0.1:8333",
-        .access_key = "cid-test-key",
-        .secret_key = "cid-test-secret",
-        .bucket = "cid-test",
-    });
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
     defer s3c.deinit();
-    try s3c.createBucket(arena);
 
     // A real PNG, made by ffmpeg itself.
     var tmp = std.testing.tmpDir(.{});
@@ -1794,7 +1743,7 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
         _ = db.exec(&fscope, "DELETE FROM previews WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
         _ = db.exec(&fscope, "DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
     }
-    try s3c.deleteObject(arena, try cid.preview.thumbKey(arena, &png_hash));
+    try s3c.deleteObject(&fscope, try cid.preview.thumbKey(arena, &png_hash));
 
     // Ingest both platform-style on an existing dataset.
     var standalone: cid.db.Standalone = undefined;
@@ -1805,8 +1754,8 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/fmt" };
-    try s3c.putObject(arena, try cid.api.itemKey(arena, &png_hash), png);
-    try s3c.putObject(arena, try cid.api.itemKey(arena, &text_hash), text);
+    try s3c.putObject(&scope, try cid.api.itemKey(arena, &png_hash), png);
+    try s3c.putObject(&scope, try cid.api.itemKey(arena, &text_hash), text);
     try remote.registerItems(arena, &.{
         .{ .hash = &png_hash, .size = png.len, .media_type = "image/png" },
         .{ .hash = &text_hash, .size = text.len, .media_type = "text/plain" },
@@ -1817,7 +1766,7 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     try std.testing.expect(pass.built >= 1);
     try std.testing.expect(pass.skipped >= 1);
 
-    const thumb = try s3c.getObjectAlloc(arena, try cid.preview.thumbKey(arena, &png_hash), 8 * 1024 * 1024);
+    const thumb = try s3c.getObjectAlloc(&scope, try cid.preview.thumbKey(arena, &png_hash));
     try std.testing.expect(thumb.len > 100); // a real webp came out
 
     {
@@ -1857,14 +1806,9 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     defer fscope.deinit();
     const db = &fixture.db;
     _ = try runMigrations();
-    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
-        .endpoint = "http://127.0.0.1:8333",
-        .access_key = "cid-test-key",
-        .secret_key = "cid-test-secret",
-        .bucket = "cid-test",
-    });
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
     defer s3c.deinit();
-    try s3c.createBucket(arena);
 
     // A real PNG, pushed the CLI way: the server records octet-stream.
     var tmp = std.testing.tmpDir(.{ .iterate = true });
@@ -1886,7 +1830,7 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
         _ = db.exec(&fscope, "DELETE FROM previews WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
         _ = db.exec(&fscope, "DELETE FROM items WHERE item_hash = decode($1, 'hex') AND NOT EXISTS (SELECT 1 FROM item_revisions ir WHERE ir.item_hash = decode($1, 'hex'))", .{hz}) catch {};
     }
-    try s3c.deleteObject(arena, try cid.preview.thumbKey(arena, &hh));
+    try s3c.deleteObject(&fscope, try cid.preview.thumbKey(arena, &hh));
 
     var standalone: cid.db.Standalone = undefined;
     try standalone.open(std.testing.allocator, conninfo);
@@ -1937,6 +1881,6 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
         try std.testing.expectEqualStrings("96", sniffed.width.?);
         try std.testing.expectEqualStrings("64", sniffed.height.?);
     }
-    const thumb = try s3c.getObjectAlloc(arena, try cid.preview.thumbKey(arena, &hh), 8 * 1024 * 1024);
+    const thumb = try s3c.getObjectAlloc(&scope, try cid.preview.thumbKey(arena, &hh));
     try std.testing.expect(thumb.len > 100);
 }

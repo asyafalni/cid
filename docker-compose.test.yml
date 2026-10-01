@@ -25,3 +25,14 @@ services:
       interval: 2s
       timeout: 2s
       retries: 30
+
+  # The 'cid' bucket, created once the store is up: bucket creation is the
+  # deployment's job (nilo_s3 has no CreateBucket, on purpose), and this
+  # service is the reference for how a real deployment does it.
+  seaweedfs-bucket:
+    image: chrislusf/seaweedfs:4.48
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    entrypoint: ["sh", "-c", "echo 's3.bucket.create -name cid' | weed shell -master=seaweedfs:9333 || true"]
+    restart: "no"

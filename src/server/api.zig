@@ -21,7 +21,7 @@
 
 const std = @import("std");
 const dbx = @import("../store/db.zig");
-const s3 = @import("../store/s3.zig");
+const blob = @import("../store/blob.zig");
 const release_mod = @import("../core/release.zig");
 const git_writer = @import("../gitrepo/writer.zig");
 const preview_worker = @import("../preview/worker.zig");
@@ -30,7 +30,7 @@ const Uuid = @import("../util/uuid7.zig").Uuid;
 
 pub const Deps = struct {
     db: *dbx.sql.Db,
-    s3: *s3.Client,
+    s3: *blob.Client,
     io: std.Io,
     /// The static full-access token (CI fallback; empty disables it).
     token: []const u8,
@@ -416,15 +416,14 @@ fn checkHashes(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
 
     const Upload = struct { hash: []const u8, url: []const u8 };
     var missing: std.ArrayList(Upload) = .empty;
-    const now = nowEpoch(deps.io);
     for (req.hashes) |hash| {
         if (!validHashHex(hash)) return error.BadRequest;
         if (try isPurged(deps.db, scope, hash))
             return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then run 'cid push' again.");
         const key = itemKey(arena, hash) catch return error.OutOfMemory;
-        const exists = deps.s3.headObject(arena, key) catch return error.Storage;
+        const exists = deps.s3.headObject(scope, key) catch return error.Storage;
         if (exists == null) {
-            const url = deps.s3.presignPut(arena, key, now, presign_secs) catch return error.Storage;
+            const url = deps.s3.presignPut(scope, key, presign_secs) catch return error.Storage;
             try missing.append(arena, .{ .hash = hash, .url = url });
         }
     }
@@ -465,7 +464,7 @@ fn push(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body
                 if (try isPurged(deps.db, scope, ch.hash))
                     return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then run 'cid push' again.");
                 const key = itemKey(arena, ch.hash) catch return error.OutOfMemory;
-                const exists = deps.s3.headObject(arena, key) catch return error.Storage;
+                const exists = deps.s3.headObject(scope, key) catch return error.Storage;
                 if (exists == null)
                     return errorResponse(arena, .unprocessable_entity, "a file is missing from storage", "Run 'cid push' again; it re-uploads what is missing.");
             } else if (!eql(ch.op, "delete")) return error.BadRequest;
@@ -680,13 +679,12 @@ fn thumbs(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, bo
     if (req.hashes.len > 1000) return error.BadRequest;
     const Thumb = struct { hash: []const u8, url: []const u8 };
     var list: std.ArrayList(Thumb) = .empty;
-    const now = nowEpoch(deps.io);
     for (req.hashes) |hash| {
         if (!validHashHex(hash)) return error.BadRequest;
         const done = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM previews WHERE item_hash = decode($1, 'hex') AND status = 'done'", .{hash}) catch return error.Db;
         if (done == null) continue;
         const key = preview_worker.thumbKey(arena, hash) catch return error.OutOfMemory;
-        const url = deps.s3.presignGet(arena, key, now, presign_secs) catch return error.Storage;
+        const url = deps.s3.presignGet(scope, key, presign_secs) catch return error.Storage;
         try list.append(arena, .{ .hash = hash, .url = url });
     }
     return json(arena, .ok, .{ .thumbs = list.items });
@@ -694,16 +692,14 @@ fn thumbs(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, bo
 
 fn downloads(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
     _ = ds;
-    _ = scope;
     const req = parseBody(HashesBody, arena, body) orelse return error.BadRequest;
     if (req.hashes.len > 1000) return error.BadRequest;
     const Download = struct { hash: []const u8, url: []const u8 };
     const list = try arena.alloc(Download, req.hashes.len);
-    const now = nowEpoch(deps.io);
     for (req.hashes, 0..) |hash, i| {
         if (!validHashHex(hash)) return error.BadRequest;
         const key = itemKey(arena, hash) catch return error.OutOfMemory;
-        const url = deps.s3.presignGet(arena, key, now, presign_secs) catch return error.Storage;
+        const url = deps.s3.presignGet(scope, key, presign_secs) catch return error.Storage;
         list[i] = .{ .hash = hash, .url = url };
     }
     return json(arena, .ok, .{ .downloads = list });
@@ -960,7 +956,7 @@ fn registerItems(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Data
         if (try isPurged(deps.db, scope, item.hash))
             return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then register again.");
         const key = itemKey(arena, item.hash) catch return error.OutOfMemory;
-        const stored = deps.s3.headObject(arena, key) catch return error.Storage;
+        const stored = deps.s3.headObject(scope, key) catch return error.Storage;
         const size = stored orelse
             return errorResponse(arena, .unprocessable_entity, "an item is missing from storage", "Upload it through the check-hashes URLs first, then register again.");
         if (size != item.size)
@@ -1118,10 +1114,6 @@ pub fn validHashHex(hash: []const u8) bool {
         else => return false,
     };
     return true;
-}
-
-fn nowEpoch(io: std.Io) u64 {
-    return @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
 }
 
 fn parseBody(T: type, arena: std.mem.Allocator, body: []const u8) ?T {

@@ -391,9 +391,9 @@ If a change would weaken any of these, stop and ask.
   exports/<dataset_id>/<release>/<format>/…   annotated datasets, rebuildable
 ```
 
-S3 client rules for SeaweedFS: path-style addressing, SigV4, real payload hash, checksum
-headers only when required, multipart for files over 64 MB, SeaweedFS version pinned in
-the test compose file.
+S3 client rules for SeaweedFS: path-style addressing, SigV4, real payload hash,
+multipart for files over 64 MB (all via nilo_s3), the bucket always named `cid` and
+created by the deployment, SeaweedFS version pinned in the test compose file.
 
 Local cache on user machines: `~/.cache/cid/items/<aa>/<hex>`, shared by every clone and
 release. Working folders use hard links, falling back to copies.
@@ -496,8 +496,7 @@ src/client/local.zig         local commits, HEAD, resumable push state
 src/client/sync.zig          push, pull, replaying unpushed commits, conflict listing
 src/server/                  HTTP API (Nilo), tokens and permissions, presigned URLs, uploads
 src/store/db.zig             TimescaleDB via nilo_sql (pg.zig native driver, pooled)
-src/store/s3.zig             S3 via nilo_s3 once the multipart swap lands (see Zig
-                             conventions); today still our minimal SigV4 client
+src/store/blob.zig           S3 via nilo_s3: one Bucket ('cid'), the storage rules
 src/manifest/                canonical rows, RFC 8785 JSON, hashing, Parquet via DuckDB C API
 src/media/                   media type detection and metadata (image size, audio length…)
 src/tabular/                 row-level diff for CSV, Parquet, JSONL via DuckDB (server)
@@ -613,11 +612,15 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
   serve.zig keeps `api.handle` as the one dispatcher behind two catch-all
   routes, so the API stays HTTP-free and directly testable; handlers take
   the request's Ctx as the query Scope, admin commands and tests a Run.
-  S3 goes through nilo_s3 the same way (a Bucket is a Service; presign,
-  get/put, head, delete, list, and `putMultipart` for files over 64 MB);
-  src/store/s3.zig is deleted when the swap lands — it waits only on the
-  nilo release carrying multipart (nevindra/nilo PR #8). Until then no new
-  code may use src/store/s3.zig for anything nilo_s3 already does.
+  S3 goes through nilo_s3 the same way (a Bucket is a Service; presignGet
+  and presignPut for the push flow, get/put, head, delete, list, and
+  `putMultipart` for files over 64 MB), wrapped in src/store/blob.zig.
+  nilo's ADR 059 compiles the bucket name into the type and cid ships one
+  static binary, so **the bucket is always named `cid`**: deployments
+  create it (docker-compose.test.yml shows how; creation is never cid's
+  job), CID_S3_BUCKET does not exist, and CID_S3_REGION is optional
+  (default us-east-1). `cid admin serve` refuses to start without the
+  bucket, naming the fix.
 - **External programs allowed:** on the server, `ffmpeg` and `vips` (preview worker),
   `git` (dataset repository writer) and OpenSSH `sshd` (front door, runs as its own
   service). In the CLI, the system `ssh` client, exactly as git uses it, plus the

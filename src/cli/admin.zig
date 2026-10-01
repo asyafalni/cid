@@ -4,7 +4,7 @@ const std = @import("std");
 const nilo = @import("nilo_http");
 const root = @import("../cid.zig");
 const dbx = @import("../store/db.zig");
-const s3 = @import("../store/s3.zig");
+const blob = @import("../store/blob.zig");
 const migrate = @import("../core/migrate.zig");
 const api = @import("../server/api.zig");
 const release = @import("../core/release.zig");
@@ -31,7 +31,9 @@ const admin_help =
     \\All of them read configuration from the environment:
     \\  CID_DB     the TimescaleDB connection (setup, migrate, serve)
     \\  CID_S3_ENDPOINT, CID_S3_ACCESS_KEY, CID_S3_SECRET_KEY,
-    \\  CID_S3_BUCKET, CID_TOKEN            (serve)
+    \\  CID_S3_REGION (optional), CID_TOKEN    (serve)
+    \\  The bucket is always named 'cid'; create it on the store first
+    \\  (docker-compose.test.yml shows how).
     \\
 ;
 
@@ -137,7 +139,7 @@ fn runServe(
     const s3_endpoint = env.get("CID_S3_ENDPOINT") orelse return missingEnv(io, "CID_S3_ENDPOINT", "http://127.0.0.1:8333");
     const s3_access = env.get("CID_S3_ACCESS_KEY") orelse return missingEnv(io, "CID_S3_ACCESS_KEY", "cid");
     const s3_secret = env.get("CID_S3_SECRET_KEY") orelse return missingEnv(io, "CID_S3_SECRET_KEY", "…");
-    const s3_bucket = env.get("CID_S3_BUCKET") orelse return missingEnv(io, "CID_S3_BUCKET", "cid");
+    const s3_region = env.get("CID_S3_REGION") orelse "us-east-1";
     const token = env.get("CID_TOKEN") orelse "";
     const token_secret = env.get("CID_TOKEN_SECRET");
     if (token.len == 0 and token_secret == null)
@@ -150,15 +152,17 @@ fn runServe(
     var db = dbx.sql.Db.init(arena, db_url, .{ .unchecked = true });
     defer db.deinit();
 
-    var s3_client = s3.Client.init(arena, io, .{
+    // Opened here, started by listen() on the server's own loop, the
+    // same way the Db is; serve() checks the 'cid' bucket exists before
+    // the first request and refuses to start without it.
+    var s3_client: blob.Client = undefined;
+    s3_client.open(arena, .{
         .endpoint = s3_endpoint,
         .access_key = s3_access,
         .secret_key = s3_secret,
-        .bucket = s3_bucket,
+        .region = s3_region,
     }) catch return fail(io, .usage, "CID_S3_ENDPOINT must look like http://host:port. Fix it, then run 'cid admin serve' again.", .{});
     defer s3_client.deinit();
-    s3_client.createBucket(arena) catch
-        return fail(io, .network, "cannot reach storage at {s}. Check SeaweedFS, then run 'cid admin serve' again.", .{s3_endpoint});
 
     // The background loop: GitLab sync and git-write retries, every 10
     // minutes (CID_SYNC_INTERVAL_SECS overrides). Each tick opens its own
@@ -176,7 +180,7 @@ fn runServe(
                 .endpoint = s3_endpoint,
                 .access_key = s3_access,
                 .secret_key = s3_secret,
-                .bucket = s3_bucket,
+                .region = s3_region,
             },
             .gitlab = if (env.get("CID_GITLAB_TOKEN")) |t| .{
                 .base_url = env.get("CID_GITLAB_URL") orelse "https://gitlab.com",
@@ -234,7 +238,7 @@ fn runVerify(
     const s3_endpoint = env.get("CID_S3_ENDPOINT") orelse return missingEnv(io, "CID_S3_ENDPOINT", "http://127.0.0.1:8333");
     const s3_access = env.get("CID_S3_ACCESS_KEY") orelse return missingEnv(io, "CID_S3_ACCESS_KEY", "cid");
     const s3_secret = env.get("CID_S3_SECRET_KEY") orelse return missingEnv(io, "CID_S3_SECRET_KEY", "…");
-    const s3_bucket = env.get("CID_S3_BUCKET") orelse return missingEnv(io, "CID_S3_BUCKET", "cid");
+    const s3_region = env.get("CID_S3_REGION") orelse "us-east-1";
 
     _ = conninfo_raw;
     var standalone: dbx.Standalone = undefined;
@@ -242,13 +246,16 @@ fn runVerify(
     defer standalone.close();
     var scope = dbx.Run.init(arena);
     defer scope.deinit();
-    var s3_client = s3.Client.init(arena, io, .{
+    var s3_client: blob.Client = undefined;
+    s3_client.open(arena, .{
         .endpoint = s3_endpoint,
         .access_key = s3_access,
         .secret_key = s3_secret,
-        .bucket = s3_bucket,
+        .region = s3_region,
     }) catch return fail(io, .usage, "CID_S3_ENDPOINT must look like http://host:port.", .{});
     defer s3_client.deinit();
+    s3_client.start(io) catch
+        return fail(io, .network, "cannot reach storage at {s}. Check SeaweedFS, then run the command again.", .{s3_endpoint});
 
     // Dataset name → id.
     const dataset_id = (standalone.db.rawOne([]const u8, &scope, "SELECT dataset_id::text FROM datasets WHERE name = $1", .{@as([]const u8, dataset_name)}) catch
@@ -497,19 +504,22 @@ fn runPurge(
     const s3_endpoint = env.get("CID_S3_ENDPOINT") orelse return missingEnv(io, "CID_S3_ENDPOINT", "http://127.0.0.1:8333");
     const s3_access = env.get("CID_S3_ACCESS_KEY") orelse return missingEnv(io, "CID_S3_ACCESS_KEY", "cid");
     const s3_secret = env.get("CID_S3_SECRET_KEY") orelse return missingEnv(io, "CID_S3_SECRET_KEY", "…");
-    const s3_bucket = env.get("CID_S3_BUCKET") orelse return missingEnv(io, "CID_S3_BUCKET", "cid");
+    const s3_region = env.get("CID_S3_REGION") orelse "us-east-1";
     var standalone: dbx.Standalone = undefined;
     adminPool(&standalone, arena, io, env, "cid admin purge") orelse return .network;
     defer standalone.close();
     var scope = dbx.Run.init(arena);
     defer scope.deinit();
-    var s3_client = s3.Client.init(arena, io, .{
+    var s3_client: blob.Client = undefined;
+    s3_client.open(arena, .{
         .endpoint = s3_endpoint,
         .access_key = s3_access,
         .secret_key = s3_secret,
-        .bucket = s3_bucket,
+        .region = s3_region,
     }) catch return fail(io, .usage, "CID_S3_ENDPOINT must look like http://host:port.", .{});
     defer s3_client.deinit();
+    s3_client.start(io) catch
+        return fail(io, .network, "cannot reach storage at {s}. Check SeaweedFS, then run the command again.", .{s3_endpoint});
 
     const by = env.get("USER") orelse "admin";
     const by_tag = std.fmt.allocPrint(arena, "user:{s}", .{by}) catch return .network;
@@ -533,7 +543,7 @@ const BackgroundConfig = struct {
     interval_secs: u64,
     gitlab: ?gitlab_sync.Config,
     git: ?git_writer.Config,
-    s3: s3.Config,
+    s3: blob.Config,
 };
 
 fn backgroundLoop(bg: BackgroundConfig) void {
@@ -555,11 +565,16 @@ fn backgroundLoop(bg: BackgroundConfig) void {
         defer scope.deinit();
 
         {
-            var s3_bg = s3.Client.init(arena, bg.io, bg.s3) catch {
+            var s3_bg: blob.Client = undefined;
+            s3_bg.open(arena, bg.s3) catch {
                 std.log.warn("background: bad S3 config for previews", .{});
                 continue;
             };
             defer s3_bg.deinit();
+            s3_bg.start(bg.io) catch {
+                std.log.warn("background: storage unreachable for previews; will retry", .{});
+                continue;
+            };
             if (preview_worker.processPending(arena, bg.io, db, &scope, &s3_bg, .{})) |outcome| {
                 if (outcome.built > 0 or outcome.skipped > 0)
                     std.log.info("background: previews {d} built, {d} skipped", .{ outcome.built, outcome.skipped });
@@ -595,19 +610,22 @@ fn runPreviews(
     const s3_endpoint = env.get("CID_S3_ENDPOINT") orelse return missingEnv(io, "CID_S3_ENDPOINT", "http://127.0.0.1:8333");
     const s3_access = env.get("CID_S3_ACCESS_KEY") orelse return missingEnv(io, "CID_S3_ACCESS_KEY", "cid");
     const s3_secret = env.get("CID_S3_SECRET_KEY") orelse return missingEnv(io, "CID_S3_SECRET_KEY", "…");
-    const s3_bucket = env.get("CID_S3_BUCKET") orelse return missingEnv(io, "CID_S3_BUCKET", "cid");
+    const s3_region = env.get("CID_S3_REGION") orelse "us-east-1";
     var standalone: dbx.Standalone = undefined;
     adminPool(&standalone, arena, io, env, "cid admin previews") orelse return .network;
     defer standalone.close();
     var scope = dbx.Run.init(arena);
     defer scope.deinit();
-    var s3_client = s3.Client.init(arena, io, .{
+    var s3_client: blob.Client = undefined;
+    s3_client.open(arena, .{
         .endpoint = s3_endpoint,
         .access_key = s3_access,
         .secret_key = s3_secret,
-        .bucket = s3_bucket,
+        .region = s3_region,
     }) catch return fail(io, .usage, "CID_S3_ENDPOINT must look like http://host:port.", .{});
     defer s3_client.deinit();
+    s3_client.start(io) catch
+        return fail(io, .network, "cannot reach storage at {s}. Check SeaweedFS, then run the command again.", .{s3_endpoint});
 
     const outcome = preview_worker.processPending(arena, io, &standalone.db, &scope, &s3_client, .{}) catch |err|
         return fail(io, .network, "the preview pass could not run: {t}. Fix the cause, then run 'cid admin previews' again.", .{err});

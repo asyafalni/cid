@@ -5,7 +5,7 @@
 
 const std = @import("std");
 const dbx = @import("../store/db.zig");
-const s3_mod = @import("../store/s3.zig");
+const blob = @import("../store/blob.zig");
 
 pub const Error = error{
     NoSuchDataset,
@@ -27,7 +27,7 @@ pub fn purge(
     arena: std.mem.Allocator,
     db: *dbx.sql.Db,
     scope: anytype,
-    s3: *s3_mod.Client,
+    s3: *blob.Client,
     dataset_name: []const u8,
     target: []const u8,
     reason: []const u8,
@@ -74,7 +74,7 @@ pub fn purge(
     const key = std.fmt.allocPrint(arena, "items/sha256/{s}/{s}/{s}", .{
         hash_hex[0..2], hash_hex[2..4], hash_hex,
     }) catch return error.OutOfMemory;
-    s3.deleteObject(arena, key) catch return error.Storage;
+    s3.deleteObject(scope, key) catch return error.Storage;
 
     const affected = db.rawExactlyOne(i64, scope, "SELECT count(DISTINCT r.name) FROM refs r JOIN commits c ON c.commit_id = r.commit_id " ++
         "JOIN item_revisions ir ON ir.dataset_id = r.dataset_id AND ir.rev_id <= c.cutoff_rev " ++

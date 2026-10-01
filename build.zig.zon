@@ -5,8 +5,10 @@
     .fingerprint = 0x4b30d9c479f4d7dc,
     .dependencies = .{
         .nilo = .{
-            .url = "git+https://github.com/nevindra/nilo#1016ceeddd582591f64e6d043f3861c9a83cd59e",
-            .hash = "nilo-0.6.0-5HEqwqoieQCmWzbKOpReqUb60nEMm_T1cO50oZI_BraS",
+            // TEMP: fork pin carrying presignPut (nevindra/nilo PR #10);
+            // flips to upstream main the moment it merges.
+            .url = "git+https://github.com/asyafalni/nilo#21a9661ff449471b46cf000239bff0a9c8ad4c3a",
+            .hash = "nilo-0.6.0-5HEqwsUGegCWRVQL3p0x2jk6apdAhSTPxRqYauPCnKMg",
         },
     },
     .paths = .{

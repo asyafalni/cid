@@ -7,6 +7,7 @@
 const std = @import("std");
 const nilo = @import("nilo_http");
 const api = @import("api.zig");
+const blob = @import("../store/blob.zig");
 const assets = @import("web_assets");
 
 pub const Options = struct {
@@ -20,10 +21,16 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
     var app = nilo.App.init(gpa);
     defer app.deinit();
 
-    // The Db is a nilo Service: provided here, its pool is opened by
-    // listen() on the server's own loop, shared by every worker thread.
+    // The Db, the S3 Store and its Bucket are nilo Services: provided
+    // here, started by listen() on the server's own loop, shared by
+    // every worker thread.
     try app.provide(deps.db);
+    try app.provide(&deps.s3.store);
+    try app.provide(&deps.s3.items);
     try app.provide(deps);
+    // Refuse to start without the 'cid' bucket, with the fix named,
+    // instead of every upload failing later.
+    try app.before(checkBucket, .{deps.s3});
     try app.get("/v0/ping", dispatch);
     try app.get("/v0/*", dispatch);
     try app.post("/v0/datasets", dispatch);
@@ -40,6 +47,16 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
         .port = options.port,
         .max_body = max_body,
     });
+}
+
+fn checkBucket(run: *nilo.Run, blobs: *blob.Client) !void {
+    if (!blobs.bucketReady(run)) {
+        std.log.err(
+            "the 'cid' bucket does not exist on the S3 store. Create it (docker-compose.test.yml shows how), then run 'cid admin serve' again.",
+            .{},
+        );
+        return error.NoBucket;
+    }
 }
 
 fn serveIndex(c: *nilo.Ctx) !void {

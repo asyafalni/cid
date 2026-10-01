@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const dbx = @import("../store/db.zig");
-const s3_mod = @import("../store/s3.zig");
+const blob = @import("../store/blob.zig");
 const sniff_mod = @import("../media/sniff.zig");
 
 pub const Config = struct {
@@ -53,7 +53,7 @@ pub fn processPending(
     io: std.Io,
     db: *dbx.sql.Db,
     scope: anytype,
-    s3: *s3_mod.Client,
+    s3: *blob.Client,
     config: Config,
 ) Error!Outcome {
     std.Io.Dir.cwd().createDirPath(io, config.tmpdir) catch return error.Storage;
@@ -103,7 +103,7 @@ fn buildOne(
     io: std.Io,
     db: *dbx.sql.Db,
     scope: anytype,
-    s3: *s3_mod.Client,
+    s3: *blob.Client,
     config: Config,
     hash: []const u8,
     media_type: []const u8,
@@ -121,7 +121,7 @@ fn buildOne(
     const item_key = std.fmt.allocPrint(arena, "items/sha256/{s}/{s}/{s}", .{
         hash[0..2], hash[2..4], hash,
     }) catch return .{ .failed = "out of memory" };
-    const bytes = s3.getObjectAlloc(arena, item_key, config.max_input_bytes) catch
+    const bytes = s3.getObjectAlloc(scope, item_key) catch
         return .{ .failed = "could not fetch the item from storage" };
 
     // The sanctioned look inside (invariant 15): an unknown media type is
@@ -178,7 +178,7 @@ fn buildOne(
     const thumb = std.Io.Dir.cwd().readFileAlloc(io, out_path, arena, .limited(8 * 1024 * 1024)) catch
         return .{ .failed = "ffmpeg wrote nothing" };
     const key = thumbKey(arena, hash) catch return .{ .failed = "out of memory" };
-    s3.putObject(arena, key, thumb) catch
+    s3.putObject(scope, key, thumb) catch
         return .{ .failed = "could not store the thumbnail" };
     return .built;
 }

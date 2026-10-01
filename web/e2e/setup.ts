@@ -17,7 +17,6 @@ export default function setup() {
     CID_S3_ENDPOINT: 'http://127.0.0.1:8333',
     CID_S3_ACCESS_KEY: 'cid-test-key',
     CID_S3_SECRET_KEY: 'cid-test-secret',
-    CID_S3_BUCKET: 'cid-test',
     CID_TOKEN: 'e2e-dashboard-token',
     CID_SERVER: 'http://127.0.0.1:7177',
   };

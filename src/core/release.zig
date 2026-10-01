@@ -9,7 +9,7 @@
 
 const std = @import("std");
 const dbx = @import("../store/db.zig");
-const s3_mod = @import("../store/s3.zig");
+const blob = @import("../store/blob.zig");
 const canonical = @import("../manifest/canonical.zig");
 const jcs = @import("../manifest/jcs.zig");
 const Uuid = @import("../util/uuid7.zig").Uuid;
@@ -264,7 +264,7 @@ pub fn create(
     arena: std.mem.Allocator,
     db: *dbx.sql.Db,
     scope: anytype,
-    s3: *s3_mod.Client,
+    s3: *blob.Client,
     dataset_id: []const u8,
     name: []const u8,
     commit_id: []const u8,
@@ -278,7 +278,7 @@ pub fn create(
     const rendered = try renderManifest(arena, db, scope, dataset_id, commit_id, rows);
 
     const key = try manifestKey(arena, dataset_id, commit_id);
-    s3.putObject(arena, key, rendered.bytes) catch return error.Storage;
+    s3.putObject(scope, key, rendered.bytes) catch return error.Storage;
 
     _ = db.exec(
         scope,
@@ -325,7 +325,7 @@ pub fn verify(
     arena: std.mem.Allocator,
     db: *dbx.sql.Db,
     scope: anytype,
-    s3: *s3_mod.Client,
+    s3: *blob.Client,
     dataset_id: []const u8,
     release_name: []const u8,
 ) Error!VerifyResult {
@@ -348,7 +348,7 @@ pub fn verify(
     if (!std.mem.eql(u8, &rendered.sha256_hex, recorded_hash))
         problems.append(arena, .recomputed_hash_differs) catch return error.OutOfMemory;
 
-    if (s3.getObjectAlloc(arena, manifest_path, 1024 * 1024 * 1024)) |stored| {
+    if (s3.getObjectAlloc(scope, manifest_path)) |stored| {
         if (!std.mem.eql(u8, &canonical.hashOf(stored), recorded_hash))
             problems.append(arena, .stored_manifest_differs) catch return error.OutOfMemory;
     } else |_| {
@@ -360,7 +360,7 @@ pub fn verify(
         const key = std.fmt.allocPrint(arena, "items/sha256/{s}/{s}/{s}", .{
             row.hash_hex[0..2], row.hash_hex[2..4], row.hash_hex,
         }) catch return error.OutOfMemory;
-        const present = s3.headObject(arena, key) catch return error.Storage;
+        const present = s3.headObject(scope, key) catch return error.Storage;
         if (present == null) {
             const tomb = db.rawOne(i64, scope, "SELECT 1::bigint FROM purged_items WHERE item_hash = decode($1, 'hex')", .{row.hash_hex}) catch return error.Db;
             if (tomb != null) {

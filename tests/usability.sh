@@ -11,7 +11,7 @@ WORK="$(mktemp -d)"
 PORT=7878
 export CID_DB='host=127.0.0.1 port=5433 user=cid password=cid-test dbname=cid_test'
 export CID_S3_ENDPOINT='http://127.0.0.1:8333'
-export CID_S3_ACCESS_KEY='cid-test-key' CID_S3_SECRET_KEY='cid-test-secret' CID_S3_BUCKET='cid-test'
+export CID_S3_ACCESS_KEY='cid-test-key' CID_S3_SECRET_KEY='cid-test-secret'
 export CID_TOKEN='usability-token' CID_SERVER="http://127.0.0.1:$PORT"
 export CID_AUTHOR='user:usability'
 
