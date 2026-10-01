@@ -1,0 +1,17 @@
+# Zig
+zig-out/
+.zig-cache/
+zig-cache/
+
+# Dashboard
+web/node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/
+
+# Local tool state
+.claude/settings.local.json
+.mcp.json
+
+# OS noise
+.DS_Store
