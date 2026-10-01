@@ -19,6 +19,7 @@ const std = @import("std");
 const pg = @import("../store/pg.zig");
 const s3 = @import("../store/s3.zig");
 const release_mod = @import("../core/release.zig");
+const git_writer = @import("../gitrepo/writer.zig");
 const Uuid = @import("../util/uuid7.zig").Uuid;
 
 pub const Deps = struct {
@@ -26,6 +27,10 @@ pub const Deps = struct {
     s3: *s3.Client,
     io: std.Io,
     token: []const u8,
+    /// When set, releases are written to the dataset repository right
+    /// after tagging; otherwise git_writes rows wait for
+    /// 'cid admin git <dataset> --resync'.
+    git: ?git_writer.Config = null,
 };
 
 pub const Response = struct {
@@ -529,11 +534,27 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) Han
         error.OutOfMemory => return error.OutOfMemory,
         error.Db => return error.Db,
     };
+    // The release stands; its git copy is queued and attempted right away
+    // when configured. A git failure never blocks the release (invariant 21).
+    deps.db.execParams(
+        "INSERT INTO git_writes (dataset_id, release, status) VALUES ($1::uuid, $2, 'pending') " ++
+            "ON CONFLICT (dataset_id, release) DO NOTHING",
+        &.{ ds.id, try arena.dupeZ(u8, created.name) },
+        null,
+    ) catch return error.Db;
+    var git_status: []const u8 = "pending";
+    if (deps.git) |git_config| {
+        const outcome = git_writer.processDataset(arena, deps.io, deps.db, git_config, ds.name) catch
+            git_writer.Outcome{ .failed = 1 };
+        git_status = if (outcome.failed == 0) "done" else "failed";
+    }
+
     return json(arena, .created, .{
         .release = created.name,
         .commit = @as([]const u8, created.commit_id),
         .manifest_sha256 = &created.manifest_sha256,
         .items = created.items,
+        .git = git_status,
     });
 }
 

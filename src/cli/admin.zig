@@ -7,6 +7,7 @@ const s3 = @import("../store/s3.zig");
 const migrate = @import("../core/migrate.zig");
 const api = @import("../server/api.zig");
 const release = @import("../core/release.zig");
+const git_writer = @import("../gitrepo/writer.zig");
 const serve_mod = @import("../server/serve.zig");
 
 const ExitCode = root.ExitCode;
@@ -20,6 +21,7 @@ const admin_help =
     \\  migrate    apply new SQL migrations
     \\  serve      run the cid server (--port <n>, default 7070)
     \\  verify <dataset> <release>   rebuild a release and check its hash
+    \\  git <dataset> [--resync]     dataset repository status; --resync retries
     \\
     \\All of them read configuration from the environment:
     \\  CID_DB     the TimescaleDB connection (setup, migrate, serve)
@@ -51,6 +53,9 @@ pub fn run(
     }
     if (eql(sub, "verify")) {
         return runVerify(arena, io, out, env, args[1..]);
+    }
+    if (eql(sub, "git")) {
+        return runGitAdmin(arena, io, out, env, args[1..]);
     }
     return fail(io, .usage, "'cid admin {s}' is not an admin command. Run 'cid admin'.", .{sub});
 }
@@ -130,6 +135,14 @@ fn runServe(
         return fail(io, .network, "cannot reach storage at {s}. Check SeaweedFS, then run 'cid admin serve' again.", .{s3_endpoint});
 
     var deps: api.Deps = .{ .db = &db, .s3 = &s3_client, .io = io, .token = token };
+    if (env.get("CID_GIT_WORKDIR")) |git_workdir| {
+        deps.git = .{
+            .workdir = git_workdir,
+            .server_url = env.get("CID_PUBLIC_URL") orelse "http://127.0.0.1:7070",
+        };
+    } else {
+        std.log.info("CID_GIT_WORKDIR not set: releases queue their git copy for 'cid admin git --resync'", .{});
+    }
     serve_mod.serve(arena, &deps, .{ .port = port }) catch |err| {
         return fail(io, .network, "the server stopped: {t}. Fix the cause, then run 'cid admin serve' again.", .{err});
     };
@@ -207,6 +220,70 @@ fn runVerify(
     err_w.writeAll("Investigate before anything else touches this dataset.\n") catch {};
     err_w.flush() catch {};
     return .integrity;
+}
+
+fn runGitAdmin(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+    env: *const std.process.Environ.Map,
+    args: []const [:0]const u8,
+) ExitCode {
+    if (args.len < 1 or args.len > 2)
+        return fail(io, .usage, "run 'cid admin git <dataset> [--resync]'.", .{});
+    const dataset_name = args[0];
+    const resync = args.len == 2 and eql(args[1], "--resync");
+    if (args.len == 2 and !resync)
+        return fail(io, .usage, "unknown flag '{s}'. Run 'cid admin git <dataset> [--resync]'.", .{args[1]});
+
+    const conninfo_raw = env.get("CID_DB") orelse
+        return fail(io, .usage, "CID_DB is not set.\n  {s}\nThen run 'cid admin git' again.", .{conninfo_example});
+    var diag: pg.Diag = .{};
+    const conninfo = arena.dupeZ(u8, conninfo_raw) catch return .network;
+    var db = pg.Db.connect(conninfo, &diag) catch
+        return fail(io, .network, "cannot connect to the database: {s}", .{diag.message()});
+    defer db.close();
+
+    if (resync) {
+        const workdir = env.get("CID_GIT_WORKDIR") orelse
+            return fail(io, .usage, "CID_GIT_WORKDIR is not set (where repository clones live). Export it, then run 'cid admin git --resync' again.", .{});
+        const config: git_writer.Config = .{
+            .workdir = workdir,
+            .server_url = env.get("CID_PUBLIC_URL") orelse "http://127.0.0.1:7070",
+        };
+        const outcome = git_writer.processDataset(arena, io, &db, config, dataset_name) catch
+            return fail(io, .network, "resync could not run. Check the dataset name and the database.", .{});
+        out.print("Resync: {d} release{s} written, {d} failed.\n", .{ outcome.processed, plural(outcome.processed), outcome.failed }) catch return .network;
+        out.flush() catch return .network;
+        return if (outcome.failed == 0) .ok else .network;
+    }
+
+    const name_z = arena.dupeZ(u8, dataset_name) catch return .network;
+    var rows = db.query(
+        "SELECT release, status, coalesce(git_commit, '-'), attempts, coalesce(last_error, '') " ++
+            "FROM git_writes w JOIN datasets d USING (dataset_id) WHERE d.name = $1 ORDER BY release",
+        &.{name_z},
+        &diag,
+    ) catch return fail(io, .network, "database error: {s}", .{diag.message()});
+    defer rows.deinit();
+    if (rows.count() == 0) {
+        out.print("No releases queued for {s} yet.\n", .{dataset_name}) catch return .network;
+        out.flush() catch return .network;
+        return .ok;
+    }
+    var any_failed = false;
+    var i: usize = 0;
+    while (i < rows.count()) : (i += 1) {
+        const status = rows.get(i, 1);
+        if (eql(status, "failed")) any_failed = true;
+        out.print("{s: <16} {s: <8} {s: <14} attempts={s}", .{ rows.get(i, 0), status, rows.get(i, 2)[0..@min(12, rows.get(i, 2).len)], rows.get(i, 3) }) catch return .network;
+        if (rows.get(i, 4).len > 0) out.print("  ({s})", .{rows.get(i, 4)}) catch return .network;
+        out.writeAll("\n") catch return .network;
+    }
+    if (any_failed)
+        out.writeAll("Fix the cause, then run 'cid admin git <dataset> --resync'.\n") catch return .network;
+    out.flush() catch return .network;
+    return .ok;
 }
 
 fn missingEnv(io: std.Io, name: []const u8, example: []const u8) ExitCode {

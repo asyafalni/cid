@@ -636,3 +636,114 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     try std.testing.expect(!v4.ok);
     try std.testing.expectEqual(cid.release.VerifyProblem.stored_manifest_differs, v4.problems[0]);
 }
+
+test "git writer: one commit and tag per release, idempotent, resumable" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var diag: cid.pg.Diag = .{};
+    var db = try connect(&diag);
+    defer db.close();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+
+    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .bucket = "cid-test",
+    });
+    defer s3c.deinit();
+    try s3c.createBucket(arena);
+
+    // A local bare repository stands in for GitLab.
+    var git_root = std.testing.tmpDir(.{ .iterate = true });
+    defer git_root.cleanup();
+    var root_path_buf: [512]u8 = undefined;
+    const root_len = try git_root.dir.realPath(io, &root_path_buf);
+    const root_path = root_path_buf[0..root_len];
+    const bare_url = try std.fmt.allocPrint(arena, "{s}/dataset.git", .{root_path});
+    const work_root = try std.fmt.allocPrint(arena, "{s}/work", .{root_path});
+    const clone_dir = try std.fmt.allocPrint(arena, "{s}/check", .{root_path});
+    _ = try std.process.run(arena, io, .{ .argv = &.{ "git", "init", "--bare", "-b", "main", bare_url } });
+
+    var deps: cid.api.Deps = .{
+        .db = &db,
+        .s3 = &s3c,
+        .io = io,
+        .token = "test-token",
+        .git = .{ .workdir = work_root, .server_url = "https://cid.example" },
+    };
+    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/gitw" };
+
+    // Clean slate, then a dataset whose git_url is the bare repo.
+    try db.exec("SET cid.maintenance = 'on'", &diag);
+    inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
+        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/gitw')", &diag);
+    }
+    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/gitw'", &diag);
+    try db.exec("RESET cid.maintenance", &diag);
+
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    try producer.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "git writer content" });
+    try cid.client.workspace.init(arena, io, producer.dir, "cid@test:test/datasets/gitw", bare_url);
+    var pws = try cid.client.workspace.open(arena, io, producer.dir);
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "first release content", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+
+    // Tag: with deps.git set, the repository is written immediately.
+    _ = try remote.tag(arena, "v1.0.0");
+
+    var rows1 = try db.query(
+        "SELECT status FROM git_writes w JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/gitw'",
+        &.{},
+        &diag,
+    );
+    defer rows1.deinit();
+    try std.testing.expectEqual(@as(usize, 1), rows1.count());
+    try std.testing.expectEqualStrings("done", rows1.get(0, 0));
+
+    // Clone the bare repo and look at what landed.
+    _ = try std.process.run(arena, io, .{ .argv = &.{ "git", "clone", bare_url, clone_dir } });
+    var check = try std.Io.Dir.cwd().openDir(io, clone_dir, .{ .iterate = true });
+    defer check.close(io);
+    const readme = try check.readFileAlloc(io, "README.md", arena, .limited(64 * 1024));
+    try std.testing.expect(std.mem.indexOf(u8, readme, "v1.0.0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, readme, "cid clone") != null);
+    const marker = try check.readFileAlloc(io, ".cid", arena, .limited(1024));
+    try std.testing.expect(std.mem.indexOf(u8, marker, "test/datasets/gitw") != null);
+    _ = try check.readFileAlloc(io, "stats.yaml", arena, .limited(64 * 1024));
+    _ = try check.readFileAlloc(io, "files.txt", arena, .limited(64 * 1024));
+    const tags1 = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", clone_dir, "tag" } });
+    try std.testing.expectEqualStrings("v1.0.0\n", tags1.stdout);
+
+    // Second release: exactly one more commit, one more tag.
+    try producer.dir.writeFile(io, .{ .sub_path = "b.txt", .data = "second file" });
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "second release content", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    _ = try remote.tag(arena, "v2.0.0");
+
+    // Re-processing changes nothing: rendering is deterministic.
+    const again = try cid.gitrepo.writer.processDataset(arena, io, &db, deps.git.?, "test/datasets/gitw");
+    try std.testing.expectEqual(@as(u32, 0), again.failed);
+
+    const count = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", bare_url, "rev-list", "--count", "main" } });
+    try std.testing.expectEqualStrings("2\n", count.stdout);
+    const tags2 = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", bare_url, "tag" } });
+    try std.testing.expectEqualStrings("v1.0.0\nv2.0.0\n", tags2.stdout);
+
+    // The CHANGELOG now lists both releases, newest first.
+    _ = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", clone_dir, "pull" } });
+    const changelog = try check.readFileAlloc(io, "CHANGELOG.md", arena, .limited(64 * 1024));
+    const v2_at = std.mem.indexOf(u8, changelog, "v2.0.0").?;
+    const v1_at = std.mem.indexOf(u8, changelog, "v1.0.0").?;
+    try std.testing.expect(v2_at < v1_at);
+}

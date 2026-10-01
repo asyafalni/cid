@@ -24,6 +24,10 @@ pub const serve = @import("server/serve.zig");
 pub const migrate = @import("core/migrate.zig");
 pub const release = @import("core/release.zig");
 pub const canonical = @import("manifest/canonical.zig");
+pub const gitrepo = struct {
+    pub const render = @import("gitrepo/render.zig");
+    pub const writer = @import("gitrepo/writer.zig");
+};
 pub const uuid7 = @import("util/uuid7.zig");
 pub const client = struct {
     pub const index = @import("client/index.zig");
@@ -57,6 +61,8 @@ test {
     _ = migrate;
     _ = release;
     _ = canonical;
+    _ = gitrepo.render;
+    _ = gitrepo.writer;
     _ = uuid7;
     _ = client.index;
     _ = client.local;
