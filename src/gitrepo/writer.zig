@@ -37,7 +37,7 @@ pub fn processDataset(
 ) Error!Outcome {
     const name_z = arena.dupeZ(u8, dataset_name) catch return error.OutOfMemory;
     var ds_rows = db.query(
-        "SELECT dataset_id::text, git_url FROM datasets WHERE name = $1",
+        "SELECT dataset_id::text, git_url, kind FROM datasets WHERE name = $1",
         &.{name_z},
         null,
     ) catch return error.Db;
@@ -45,6 +45,7 @@ pub fn processDataset(
     if (ds_rows.count() == 0) return error.Db;
     const dataset_id = arena.dupeZ(u8, ds_rows.get(0, 0)) catch return error.OutOfMemory;
     const git_url = arena.dupe(u8, ds_rows.get(0, 1)) catch return error.OutOfMemory;
+    const kind = arena.dupe(u8, ds_rows.get(0, 2)) catch return error.OutOfMemory;
 
     var pending = db.query(
         "SELECT release FROM git_writes WHERE dataset_id = $1::uuid AND status <> 'done' ORDER BY release",
@@ -57,7 +58,7 @@ pub fn processDataset(
     var i: usize = 0;
     while (i < pending.count()) : (i += 1) {
         const release_name = arena.dupe(u8, pending.get(i, 0)) catch return error.OutOfMemory;
-        if (writeOne(arena, io, db, config, dataset_id, dataset_name, git_url, release_name)) |sha| {
+        if (writeOne(arena, io, db, config, dataset_id, dataset_name, git_url, kind, release_name)) |sha| {
             markDone(arena, db, dataset_id, release_name, sha);
             outcome.processed += 1;
         } else |err| {
@@ -77,9 +78,10 @@ fn writeOne(
     dataset_id: [:0]const u8,
     dataset_name: []const u8,
     git_url: []const u8,
+    kind: []const u8,
     release_name: []const u8,
 ) ![]const u8 {
-    const input = try loadInput(arena, db, config, dataset_id, dataset_name, git_url, release_name);
+    const input = try loadInput(arena, db, config, dataset_id, dataset_name, git_url, kind, release_name);
     const files = try render.renderAll(arena, input);
 
     const repo_dir = try std.fmt.allocPrint(arena, "{s}/{s}", .{ config.workdir, dataset_id });
@@ -128,6 +130,7 @@ fn loadInput(
     dataset_id: [:0]const u8,
     dataset_name: []const u8,
     git_url: []const u8,
+    kind: []const u8,
     release_name: []const u8,
 ) !render.Input {
     const name_z = arena.dupeZ(u8, release_name) catch return error.OutOfMemory;
@@ -173,8 +176,70 @@ fn loadInput(
         };
     }
 
+    // Annotated extras: class and split counts, the newest policy used.
+    var classes: []const render.ClassCount = &.{};
+    var splits: []const render.ClassCount = &.{};
+    var policy: ?render.Policy = null;
+    if (std.mem.eql(u8, kind, "annotated")) {
+        const anns = release_core.annotationRows(arena, db, dataset_id, commit_id) catch return error.Db;
+        var class_counts: std.StringArrayHashMapUnmanaged(usize) = .empty;
+        var newest_policy: ?[]const u8 = null;
+        for (anns) |ann| {
+            if (ann.class) |c| {
+                const gop = try class_counts.getOrPut(arena, c);
+                if (!gop.found_existing) gop.value_ptr.* = 0;
+                gop.value_ptr.* += 1;
+            }
+            if (newest_policy == null or std.mem.order(u8, ann.policy_ver, newest_policy.?) == .gt)
+                newest_policy = ann.policy_ver;
+        }
+        class_counts.sortUnstable(struct {
+            keys: []const []const u8,
+            pub fn lessThan(self: @This(), a: usize, b: usize) bool {
+                return std.mem.lessThan(u8, self.keys[a], self.keys[b]);
+            }
+        }{ .keys = class_counts.keys() });
+        const class_list = try arena.alloc(render.ClassCount, class_counts.count());
+        for (class_list, class_counts.keys(), class_counts.values()) |*slot, name, count| {
+            slot.* = .{ .name = name, .count = count };
+        }
+        classes = class_list;
+
+        var split_counts: std.StringArrayHashMapUnmanaged(usize) = .empty;
+        for (rows) |row| {
+            const name = row.split orelse continue;
+            const gop = try split_counts.getOrPut(arena, name);
+            if (!gop.found_existing) gop.value_ptr.* = 0;
+            gop.value_ptr.* += 1;
+        }
+        const split_list = try arena.alloc(render.ClassCount, split_counts.count());
+        for (split_list, split_counts.keys(), split_counts.values()) |*slot, name, count| {
+            slot.* = .{ .name = name, .count = count };
+        }
+        splits = split_list;
+
+        if (newest_policy) |version| {
+            var prow = db.query(
+                "SELECT body::text FROM policy_versions WHERE dataset_id = $1::uuid AND version = $2",
+                &.{ dataset_id, arena.dupeZ(u8, version) catch return error.OutOfMemory },
+                null,
+            ) catch return error.Db;
+            defer prow.deinit();
+            if (prow.count() > 0) {
+                policy = .{
+                    .version = version,
+                    .body_json = arena.dupe(u8, prow.get(0, 0)) catch return error.OutOfMemory,
+                };
+            }
+        }
+    }
+
     return .{
         .dataset_name = dataset_name,
+        .kind = kind,
+        .classes = classes,
+        .splits = splits,
+        .policy = policy,
         .git_url = git_url,
         .server_url = config.server_url,
         .release = release_name,

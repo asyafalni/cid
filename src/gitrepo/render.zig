@@ -13,8 +13,17 @@ pub const ReleaseInfo = struct {
     items: usize,
 };
 
+pub const ClassCount = struct { name: []const u8, count: usize };
+pub const Policy = struct { version: []const u8, body_json: []const u8 };
+
 pub const Input = struct {
     dataset_name: []const u8,
+    kind: []const u8 = "files",
+    /// Annotated datasets: classes sorted by name (the yolo index order),
+    /// split counts, and the newest policy used in this release.
+    classes: []const ClassCount = &.{},
+    splits: []const ClassCount = &.{},
+    policy: ?Policy = null,
     git_url: []const u8,
     server_url: []const u8,
     release: []const u8,
@@ -50,6 +59,22 @@ pub fn renderAll(arena: std.mem.Allocator, input: Input) ![]const File {
     try out.append(arena, .{ .path = ".cid", .contents = try marker(arena, input) });
     if (input.items.len < files_txt_limit) {
         try out.append(arena, .{ .path = "files.txt", .contents = try filesTxt(arena, input) });
+    }
+    if (std.mem.eql(u8, input.kind, "annotated")) {
+        try out.append(arena, .{ .path = "classes.yaml", .contents = try classesYaml(arena, input) });
+        if (input.policy) |policy| {
+            const md = try std.fmt.allocPrint(arena, "# Labelling policy {s}\n\nThe policy version this release's annotations were made under.\n\n```json\n{s}\n```\n", .{ policy.version, policy.body_json });
+            try out.append(arena, .{ .path = "policy.md", .contents = md });
+        }
+    }
+    return out.items;
+}
+
+/// index → name, the same order the yolo export numbers classes.
+fn classesYaml(arena: std.mem.Allocator, input: Input) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (input.classes, 0..) |c, i| {
+        try out.print(arena, "{d}: {s}\n", .{ i, c.name });
     }
     return out.items;
 }
@@ -137,6 +162,16 @@ fn statsYaml(arena: std.mem.Allocator, input: Input) ![]const u8 {
     });
     for (exts.keys(), exts.values()) |ext, count| {
         try out.print(arena, "  \"{s}\": {d}\n", .{ ext, count });
+    }
+    if (input.classes.len > 0) {
+        var ann_total: usize = 0;
+        for (input.classes) |c| ann_total += c.count;
+        try out.print(arena, "annotations: {d}\nannotations_by_class:\n", .{ann_total});
+        for (input.classes) |c| try out.print(arena, "  \"{s}\": {d}\n", .{ c.name, c.count });
+    }
+    if (input.splits.len > 0) {
+        try out.appendSlice(arena, "items_by_split:\n");
+        for (input.splits) |sp| try out.print(arena, "  \"{s}\": {d}\n", .{ sp.name, sp.count });
     }
     return out.items;
 }

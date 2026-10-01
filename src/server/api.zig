@@ -86,7 +86,8 @@ fn handleInner(
     const needed: token_mod.Level = if (eql(route.action, "push") or
         eql(route.action, "check-hashes") or eql(route.action, "tag") or
         eql(route.action, "branch") or eql(route.action, "merge") or
-        eql(route.action, "commit") or eql(route.action, "register-items"))
+        eql(route.action, "commit") or eql(route.action, "register-items") or
+        eql(route.action, "policy"))
         .write
     else
         .read;
@@ -124,6 +125,10 @@ fn handleInner(
         return serverCommit(arena, deps, ds, body);
     if (eql(method, "POST") and eql(route.action, "register-items"))
         return registerItems(arena, deps, ds, body);
+    if (eql(method, "POST") and eql(route.action, "policy"))
+        return policyCreate(arena, deps, ds, body);
+    if (eql(method, "GET") and eql(route.action, "policies"))
+        return policies(arena, deps, ds);
 
     return errorResponse(arena, .not_found, "no such route", "Update cid and try again.");
 }
@@ -937,6 +942,52 @@ fn registerItems(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []con
         ) catch return error.Db;
     }
     return json(arena, .ok, .{ .registered = req.items.len });
+}
+
+const PolicyBody = struct {
+    version: []const u8,
+    body: std.json.Value,
+};
+
+/// Annotated datasets: the platform records each labelling-policy version
+/// here; annotation revisions reference it by name. Versions never change
+/// once written (the policy a box was made under is history).
+fn policyCreate(arena: std.mem.Allocator, deps: *Deps, ds: Dataset, body: []const u8) HandleError!Response {
+    const req = parseBody(PolicyBody, arena, body) orelse return error.BadRequest;
+    if (req.version.len == 0 or req.version.len > 100) return error.BadRequest;
+    var existing = deps.db.query(
+        "SELECT 1 FROM policy_versions WHERE dataset_id = $1::uuid AND version = $2",
+        &.{ ds.id, try arena.dupeZ(u8, req.version) },
+        null,
+    ) catch return error.Db;
+    defer existing.deinit();
+    if (existing.count() > 0)
+        return errorResponse(arena, .conflict, "that policy version already exists and never changes", "Record a new version instead.");
+    const body_json = try std.fmt.allocPrintSentinel(arena, "{f}", .{std.json.fmt(req.body, .{})}, 0);
+    deps.db.execParams(
+        "INSERT INTO policy_versions (dataset_id, version, body) VALUES ($1::uuid, $2, $3::jsonb)",
+        &.{ ds.id, try arena.dupeZ(u8, req.version), body_json },
+        null,
+    ) catch return error.Db;
+    return json(arena, .created, .{ .version = req.version });
+}
+
+fn policies(arena: std.mem.Allocator, deps: *Deps, ds: Dataset) HandleError!Response {
+    var rows = deps.db.query(
+        "SELECT version, body::text FROM policy_versions WHERE dataset_id = $1::uuid ORDER BY created_at",
+        &.{ds.id},
+        null,
+    ) catch return error.Db;
+    defer rows.deinit();
+    const Entry = struct { version: []const u8, body: ?std.json.Value };
+    const list = try arena.alloc(Entry, rows.count());
+    for (list, 0..) |*e, i| {
+        e.* = .{
+            .version = try arena.dupe(u8, rows.get(i, 0)),
+            .body = jsonValue(arena, try arena.dupe(u8, rows.get(i, 1))),
+        };
+    }
+    return json(arena, .ok, .{ .policies = list });
 }
 
 const ServerCommitBody = struct {

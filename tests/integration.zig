@@ -1549,3 +1549,106 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     const label2 = try readWholeFile(io, yo_dir.dir, "labels/img/a.txt", arena);
     try std.testing.expect(std.mem.indexOf(u8, label2, "1 0.250000 0.250000 0.500000 0.500000") != null);
 }
+
+test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var diag: cid.pg.Diag = .{};
+    var db = try connect(&diag);
+    defer db.close();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    _ = try cid.migrate.run(arena, &db, &discard.writer, &diag);
+    var s3c = try cid.s3.Client.init(std.testing.allocator, io, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .bucket = "cid-test",
+    });
+    defer s3c.deinit();
+    try s3c.createBucket(arena);
+
+    var git_root = std.testing.tmpDir(.{ .iterate = true });
+    defer git_root.cleanup();
+    var root_path_buf: [512]u8 = undefined;
+    const root_len = try git_root.dir.realPath(io, &root_path_buf);
+    const root_path = root_path_buf[0..root_len];
+    const bare_url = try std.fmt.allocPrint(arena, "{s}/ann.git", .{root_path});
+    const work_root = try std.fmt.allocPrint(arena, "{s}/work", .{root_path});
+    const clone_dir = try std.fmt.allocPrint(arena, "{s}/check", .{root_path});
+    _ = try std.process.run(arena, io, .{ .argv = &.{ "git", "init", "--bare", "-b", "main", bare_url } });
+
+    var deps: cid.api.Deps = .{
+        .db = &db,
+        .s3 = &s3c,
+        .io = io,
+        .token = "test-token",
+        .git = .{ .workdir = work_root, .server_url = "https://cid.example" },
+    };
+    var direct: DirectTransport = .{ .deps = &deps, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/anngit" };
+
+    try db.exec("SET cid.maintenance = 'on'", &diag);
+    inline for (.{ "git_writes", "refs", "commits", "item_revisions", "annotation_revisions", "dataset_items", "policy_versions" }) |table| {
+        try db.exec("DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/anngit')", &diag);
+    }
+    try db.exec("DELETE FROM datasets WHERE name = 'test/datasets/anngit'", &diag);
+    try db.exec("RESET cid.maintenance", &diag);
+
+    const create_body = try std.fmt.allocPrint(arena, "{{\"name\":\"test/datasets/anngit\",\"kind\":\"annotated\",\"git_url\":\"{s}\"}}", .{bare_url});
+    _ = cid.api.handle(arena, &deps, "POST", "/v0/datasets", "Bearer test-token", create_body);
+    const ds_id: [:0]const u8 = blk: {
+        var rows = try db.query("SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/anngit'", &.{}, &diag);
+        defer rows.deinit();
+        break :blk try arena.dupeZ(u8, rows.get(0, 0));
+    };
+
+    // The policy, then one image with a person and a vehicle box.
+    const pol = cid.api.handle(arena, &deps, "POST", "/v0/datasets/test/datasets/anngit/-/policy", "Bearer test-token", "{\"version\":\"policy-v3\",\"body\":{\"rule\":\"label every visible person\"}}");
+    try std.testing.expectEqual(std.http.Status.created, pol.status);
+    const pol_again = cid.api.handle(arena, &deps, "POST", "/v0/datasets/test/datasets/anngit/-/policy", "Bearer test-token", "{\"version\":\"policy-v3\",\"body\":{}}");
+    try std.testing.expectEqual(std.http.Status.conflict, pol_again.status);
+
+    const pix = "anngit pixels";
+    var dg: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(pix, &dg, .{});
+    const hh = std.fmt.bytesToHex(dg, .lower);
+    try s3c.putObject(arena, try cid.api.itemKey(arena, &hh), pix);
+    try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len, .width = 100, .height = 100 }});
+
+    var last = cid.uuid7.Uuid.now(io);
+    const gitem = cid.uuid7.Uuid.now(io).toString();
+    try db.exec("BEGIN", &diag);
+    try db.exec("SET LOCAL ROLE cid_writer", &diag);
+    {
+        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
+            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', 'f.jpg', 'add', '{s}', decode('{s}', 'hex'), 'train', 'agent:a')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &gitem, &hh }, 0);
+        try db.exec(sql, &diag);
+    }
+    inline for (.{ "person", "person", "vehicle" }) |class| {
+        last = cid.uuid7.Uuid.nextAfter(io, last);
+        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', gen_random_uuid(), '{s}', 'create', 'box', '" ++ class ++ "', '{{\"x\":1,\"y\":1,\"w\":2,\"h\":2}}'::jsonb, 'agent:a', 'policy-v3')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &gitem }, 0);
+        try db.exec(sql, &diag);
+    }
+    try db.exec("COMMIT", &diag);
+    _ = try remote.commitServer(arena, "main", "labelled", "agent:a");
+    _ = try remote.tag(arena, "v1.0.0");
+
+    // The git write happened inline (deps.git set); inspect the repo.
+    _ = try std.process.run(arena, io, .{ .argv = &.{ "git", "clone", bare_url, clone_dir } });
+    var check = try std.Io.Dir.cwd().openDir(io, clone_dir, .{ .iterate = true });
+    defer check.close(io);
+    const classes = try check.readFileAlloc(io, "classes.yaml", arena, .limited(4096));
+    try std.testing.expectEqualStrings("0: person\n1: vehicle\n", classes);
+    const policy_md = try check.readFileAlloc(io, "policy.md", arena, .limited(16 * 1024));
+    try std.testing.expect(std.mem.indexOf(u8, policy_md, "policy-v3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, policy_md, "label every visible person") != null);
+    const stats = try check.readFileAlloc(io, "stats.yaml", arena, .limited(16 * 1024));
+    try std.testing.expect(std.mem.indexOf(u8, stats, "annotations: 3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stats, "\"person\": 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stats, "\"vehicle\": 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stats, "\"train\": 1") != null);
+}
