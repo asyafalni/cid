@@ -212,10 +212,21 @@ pub const Remote = struct {
         return parsed.commits;
     }
 
-    pub const Missing = struct { hash: []const u8, url: []const u8 };
+    /// What the server still needs of one file: the whole of it (`url`),
+    /// or the pieces it has not got yet, each `part_size` bytes from the
+    /// start of the file at (n - 1) × part_size (the last one shorter).
+    pub const Missing = struct {
+        hash: []const u8,
+        url: ?[]const u8 = null,
+        part_size: ?u64 = null,
+        parts: ?[]const Piece = null,
+    };
+    pub const Piece = struct { n: u32, url: []const u8 };
 
-    pub fn checkHashes(self: *const Remote, arena: std.mem.Allocator, hashes: []const []const u8) Error![]const Missing {
-        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .hashes = hashes }, .{})});
+    /// `sizes` runs alongside `hashes` (or is empty): files larger than
+    /// the server's piece size are asked for in pieces.
+    pub fn checkHashes(self: *const Remote, arena: std.mem.Allocator, hashes: []const []const u8, sizes: []const u64) Error![]const Missing {
+        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .hashes = hashes, .sizes = sizes }, .{})});
         const res = try self.send(arena, "POST", try self.target(arena, "check-hashes", .{}), body);
         if (res.status != .ok) return error.ServerRefused;
         const Check = struct { missing: []const Missing };
@@ -621,18 +632,19 @@ fn parse(T: type, arena: std.mem.Allocator, body: []const u8) ?T {
 
 pub const TransferError = error{ TransferFailed, CacheDamaged, OutOfMemory };
 
-/// Streams one cached item to a presigned PUT URL, after checking the
-/// cached copy still holds those bytes: a damaged one is removed and
-/// answers `error.CacheDamaged` (the server would refuse it anyway).
+/// Sends one cached item where the server asked for it: whole, or each
+/// missing piece as its byte range of the file. The cached copy is checked
+/// against its hash first: a damaged one is removed and answers
+/// `error.CacheDamaged` (the server would refuse it anyway).
 pub fn uploadFromCache(
     allocator: std.mem.Allocator,
     io: std.Io,
     cache_dir: std.Io.Dir,
-    hash_hex: []const u8,
     size: u64,
-    url: []const u8,
+    missing: Remote.Missing,
 ) TransferError!void {
     var path_buf: [96]u8 = undefined;
+    const hash_hex = missing.hash;
     const cache_path = std.fmt.bufPrint(&path_buf, "items/{s}/{s}", .{ hash_hex[0..2], hash_hex }) catch unreachable;
     const cached = cache_mod.hashFile(io, cache_dir, cache_path) catch return error.CacheDamaged;
     if (cached.size != size or !std.mem.eql(u8, &cached.hash_hex, hash_hex)) {
@@ -644,16 +656,29 @@ pub fn uploadFromCache(
 
     var http: std.http.Client = .{ .allocator = allocator, .io = io };
     defer http.deinit();
+    if (missing.url) |url| return putRange(&http, io, file, 0, size, url);
+    const part_size = missing.part_size orelse return error.TransferFailed;
+    for (missing.parts orelse &.{}) |piece| {
+        if (piece.n == 0 or part_size == 0) return error.TransferFailed;
+        const from = (@as(u64, piece.n) - 1) * part_size;
+        if (from >= size) return error.TransferFailed;
+        try putRange(&http, io, file, from, @min(part_size, size - from), piece.url);
+    }
+}
+
+/// PUTs `len` bytes of `file` from `from` to a presigned URL, streamed.
+fn putRange(http: *std.http.Client, io: std.Io, file: std.Io.File, from: u64, len: u64, url: []const u8) TransferError!void {
     const uri = std.Uri.parse(url) catch return error.TransferFailed;
     var req = http.request(.PUT, uri, .{ .keep_alive = false }) catch return error.TransferFailed;
     defer req.deinit();
-    req.transfer_encoding = .{ .content_length = size };
+    req.transfer_encoding = .{ .content_length = len };
 
     var send_buf: [64 * 1024]u8 = undefined;
     var body = req.sendBody(&send_buf) catch return error.TransferFailed;
     var read_buf: [64 * 1024]u8 = undefined;
     var fr = file.reader(io, &read_buf);
-    _ = fr.interface.streamRemaining(&body.writer) catch return error.TransferFailed;
+    fr.seekTo(from) catch return error.TransferFailed;
+    fr.interface.streamExact64(&body.writer, len) catch return error.TransferFailed;
     body.end() catch return error.TransferFailed;
 
     var redirect_buf: [1024]u8 = undefined;

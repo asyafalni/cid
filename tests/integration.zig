@@ -1599,13 +1599,13 @@ test "annotated: the platform writes revisions, the server commits, state compos
         _ = db.exec(&fscope, "DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
     }
 
-    const missing = try remote.checkHashes(arena, &.{ &h1, &h2 });
+    const missing = try remote.checkHashes(arena, &.{ &h1, &h2 }, &.{});
     try std.testing.expectEqual(@as(usize, 2), missing.len);
     var plain: std.http.Client = .{ .allocator = std.testing.allocator, .io = io };
     defer plain.deinit();
     for (missing) |m| {
         const content: []const u8 = if (std.mem.eql(u8, m.hash, &h1)) frame1 else frame2;
-        const put = try plain.fetch(.{ .location = .{ .url = m.url }, .method = .PUT, .payload = content, .raw_uri = true, .keep_alive = false });
+        const put = try plain.fetch(.{ .location = .{ .url = m.url.? }, .method = .PUT, .payload = content, .raw_uri = true, .keep_alive = false });
         try std.testing.expectEqual(std.http.Status.ok, put.status);
     }
     // Registration before upload is refused; after upload it lands.
@@ -3358,9 +3358,9 @@ test "resume: a push killed halfway finishes on the next run, no file uploaded t
         hashes[i] = try arena.dupe(u8, &stored.hash_hex);
         sizes[i] = stored.size;
     }
-    const first = try remote.checkHashes(arena, &hashes);
+    const first = try remote.checkHashes(arena, &hashes, &sizes);
     try std.testing.expectEqual(@as(usize, 3), first.len);
-    try cid.client.remote.uploadFromCache(arena, io, cache.dir, first[0].hash, sizes[0], first[0].url);
+    try cid.client.remote.uploadFromCache(arena, io, cache.dir, sizes[0], first[0]);
 
     // Run again, and the connection drops while recording: the other two
     // go up, nothing is recorded.
@@ -3380,6 +3380,90 @@ test "resume: a push killed halfway finishes on the next run, no file uploaded t
     try std.testing.expectEqual(@as(?i64, 2), recorded_now);
     const again = try cid.client.sync.push(arena, io, &ws, cache.dir, &remote);
     try std.testing.expectEqual(@as(u32, 0), again.pushed_commits);
+}
+
+test "large files go up in pieces, and a push stopped mid-file carries on from the next piece" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    // 1 MiB pieces, so a 3.5 MiB file is four of them.
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token", .piece_bytes = 1 << 20 };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/pieces", .gpa = std.testing.allocator };
+
+    // Fresh bytes each run, so storage has never seen them.
+    const big = try arena.alloc(u8, (7 << 20) / 2);
+    io.random(big);
+    var dg: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(big, &dg, .{});
+    const hash = std.fmt.bytesToHex(dg, .lower);
+
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    try producer.dir.writeFile(io, .{ .sub_path = "big.bin", .data = big });
+    try producer.dir.writeFile(io, .{ .sub_path = "small.txt", .data = "beside it" });
+    try cid.client.workspace.init(arena, io, producer.dir, "cid@test:test/datasets/pieces", "git@example.invalid:pieces.git");
+    var ws = try cid.client.workspace.open(arena, io, producer.dir);
+    _ = try cid.client.workspace.add(arena, io, &ws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &ws, "a large file", "user:test");
+    try remote.createDataset(arena, "git@example.invalid:pieces.git");
+
+    // Asked for in four pieces; two go up, and the push stops there.
+    const asked = try remote.checkHashes(arena, &.{&hash}, &.{big.len});
+    try std.testing.expectEqual(@as(usize, 1), asked.len);
+    try std.testing.expect(asked[0].url == null);
+    try std.testing.expectEqual(@as(usize, 4), asked[0].parts.?.len);
+    var partial = asked[0];
+    partial.parts = asked[0].parts.?[0..2];
+    try cid.client.remote.uploadFromCache(arena, io, cache.dir, big.len, partial);
+
+    // Asked again, only the two still missing.
+    const again = try remote.checkHashes(arena, &.{&hash}, &.{big.len});
+    try std.testing.expectEqual(@as(usize, 2), again[0].parts.?.len);
+    try std.testing.expectEqual(@as(u32, 3), again[0].parts.?[0].n);
+    try std.testing.expectEqual(@as(u32, 4), again[0].parts.?[1].n);
+
+    // `cid push` carries on: the rest goes up, the server hashes the pieces
+    // in order as one file, stores it, and drops the pieces.
+    const pushed = try cid.client.sync.push(arena, io, &ws, cache.dir, &remote);
+    try std.testing.expectEqual(@as(u32, 1), pushed.pushed_commits);
+    const stored = try s3c.getObjectAlloc(&scope, try cid.api.itemKey(arena, &hash));
+    try std.testing.expectEqualSlices(u8, big, stored);
+    const ds_id = (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/pieces'", .{})).?;
+    for (1..5) |n| try std.testing.expect((try s3c.headObject(&scope, try cid.api.pieceKey(arena, ds_id, &hash, @intCast(n)))) == null);
+
+    // Pieces that do not add up to the file are refused, and nothing lands.
+    const forged = try arena.alloc(u8, (5 << 20) / 2);
+    io.random(forged);
+    std.crypto.hash.sha2.Sha256.hash(forged, &dg, .{});
+    const forged_hash = std.fmt.bytesToHex(dg, .lower);
+    for (1..4) |n| try s3c.putObject(&scope, try cid.api.pieceKey(arena, ds_id, &forged_hash, @intCast(n)), forged[0 .. 1 << 20]);
+    const body = try std.fmt.allocPrint(arena,
+        \\{{"branch":"main","commits":[{{"id":"{s}","parent":"{s}","message":"forged","author":"user:test","authored_at_ms":1760000000000,"changes":[{{"op":"add","path":"forged.bin","hash":"{s}","size":{d}}}]}}]}}
+    , .{ &cid.uuid7.Uuid.now(io).toString(), (try remote.head(arena, "main")).?, &forged_hash, forged.len });
+    const refused = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/pieces/-/push", "Bearer test-token", body);
+    try std.testing.expectEqual(std.http.Status.unprocessable_entity, refused.status);
+    try std.testing.expect((try s3c.headObject(&scope, try cid.api.itemKey(arena, &forged_hash))) == null);
 }
 
 test "gc: never deletes what a release or branch head holds; collected bytes can come back" {

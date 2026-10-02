@@ -450,13 +450,15 @@ Local repository state in each folder's `.cid/`:
   HEAD              current branch, commit or release (like git's HEAD)
   index             staged changes: path, hash, size, mtime (like git's index)
   commits/          local commits not yet pushed, one small file each
-  push-state.zon    progress of an interrupted push, so it can resume
 ```
 
 Files added with `cid add` are hashed and copied into the local cache at `add` time, so
 `cid commit` is instant and works offline. `cid push` uploads only files the server does
-not have (checked by hash, under invariant 12), with resumable multipart uploads, then
-records the commits.
+not have (checked by hash, under invariant 12), then records the commits. A file over
+64 MB goes up in 64 MB pieces, each its own presigned PUT to
+`uploads/<dataset_id>/<hash>.part-NNNNNN`; the server hashes the pieces in order as one
+file when the push is recorded. Resuming needs no local state: re-running `cid push`
+asks the server what it still lacks, whole files and pieces alike, and sends only that.
 
 ---
 

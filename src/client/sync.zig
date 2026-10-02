@@ -83,15 +83,20 @@ pub fn push(
 
     var outcome: PushOutcome = .{};
     if (hashes.items.len > 0) {
-        const missing = try remote.checkHashes(arena, hashes.items);
+        const sizes = try arena.alloc(u64, hashes.items.len);
+        for (sizes, hashes.items) |*sz, h| sz.* = sizeOf(unpushed, h) orelse return error.CorruptLocalState;
+        // Whatever the server already holds, whole files and the pieces of
+        // a large one alike, is not asked for: re-running a push that
+        // stopped half-way through a file carries on from there.
+        const missing = try remote.checkHashes(arena, hashes.items, sizes);
         for (missing) |m| {
             const size = sizeOf(unpushed, m.hash) orelse return error.CorruptLocalState;
-            remote_mod.uploadFromCache(arena, io, cache_dir, m.hash, size, m.url) catch |err| switch (err) {
+            remote_mod.uploadFromCache(arena, io, cache_dir, size, m) catch |err| switch (err) {
                 // The cached copy changed after `cid add`: cache the file
                 // again from the folder, if it still holds those bytes.
                 error.CacheDamaged => {
                     try recache(io, ws, cache_dir, unpushed, m.hash);
-                    try remote_mod.uploadFromCache(arena, io, cache_dir, m.hash, size, m.url);
+                    try remote_mod.uploadFromCache(arena, io, cache_dir, size, m);
                 },
                 else => return err,
             };

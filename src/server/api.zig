@@ -60,6 +60,10 @@ pub const Deps = struct {
     /// Files in flight: a release's manifest on its way to storage, the two
     /// tables a row diff compares (DuckDB is confined to it then).
     work_dir: []const u8 = "/tmp/cid-work",
+    /// Files larger than this go up in pieces of this size, each its own
+    /// presigned PUT, so no file is too large and a push that stops picks
+    /// up at the first missing piece (tests lower it).
+    piece_bytes: u64 = 64 * 1024 * 1024,
     /// One row diff at a time, server-wide: DuckDB work never scales with
     /// requests (each answer is cached, so this is rarely contended).
     rowdiff_busy: std.atomic.Value(bool) = .init(false),
@@ -1479,7 +1483,9 @@ fn log(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, branc
     return json(arena, .ok, .{ .commits = list });
 }
 
-const HashesBody = struct { hashes: []const []const u8 };
+/// `sizes`, when sent, runs alongside `hashes`: a file larger than a piece
+/// is asked for in pieces.
+const HashesBody = struct { hashes: []const []const u8, sizes: []const u64 = &.{} };
 
 /// Which of these hashes must be uploaded, with presigned PUT URLs for them.
 /// v0 answers for everything the single token can see; the per-dataset
@@ -1488,9 +1494,19 @@ fn checkHashes(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
     const req = parseBody(HashesBody, arena, body) orelse return error.BadRequest;
     if (req.hashes.len > 1000) return error.BadRequest;
 
-    const Upload = struct { hash: []const u8, url: []const u8 };
+    if (req.sizes.len != 0 and req.sizes.len != req.hashes.len) return error.BadRequest;
+    const Piece = struct { n: u32, url: []const u8 };
+    const Upload = struct {
+        hash: []const u8,
+        /// The whole file, one PUT…
+        url: ?[]const u8 = null,
+        /// …or the pieces still missing, each `part_size` bytes (the last
+        /// one shorter), numbered from 1.
+        part_size: ?u64 = null,
+        parts: ?[]const Piece = null,
+    };
     var missing: std.ArrayList(Upload) = .empty;
-    for (req.hashes) |hash| {
+    for (req.hashes, 0..) |hash, i| {
         if (!validHashHex(hash)) return error.BadRequest;
         if (try isPurged(deps.db, scope, hash))
             return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then run 'cid push' again.");
@@ -1505,8 +1521,24 @@ fn checkHashes(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
         // asked for again.
         const staged = try stagedKey(arena, ds.id, hash);
         if ((deps.s3.headObject(scope, staged) catch return error.Storage) != null) continue;
-        const url = deps.s3.presignPut(scope, staged, presign_secs) catch return error.Storage;
-        try missing.append(arena, .{ .hash = hash, .url = url });
+        const size = if (req.sizes.len > 0) req.sizes[i] else 0;
+        if (size <= deps.piece_bytes) {
+            const url = deps.s3.presignPut(scope, staged, presign_secs) catch return error.Storage;
+            try missing.append(arena, .{ .hash = hash, .url = url });
+            continue;
+        }
+        // In pieces: those already staged (an earlier push that stopped)
+        // are not asked for again.
+        const count: u32 = @intCast((size + deps.piece_bytes - 1) / deps.piece_bytes);
+        const have = try stagedPieces(arena, deps, scope, ds.id, hash, count);
+        var pieces: std.ArrayList(Piece) = .empty;
+        for (have, 1..) |there, n| {
+            if (there) continue;
+            const url = deps.s3.presignPut(scope, try pieceKey(arena, ds.id, hash, @intCast(n)), presign_secs) catch return error.Storage;
+            try pieces.append(arena, .{ .n = @intCast(n), .url = url });
+        }
+        if (pieces.items.len == 0) continue;
+        try missing.append(arena, .{ .hash = hash, .part_size = deps.piece_bytes, .parts = pieces.items });
     }
     return json(arena, .ok, .{ .missing = missing.items });
 }
@@ -1547,7 +1579,7 @@ fn push(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, d
                 if (admitted.contains(ch.hash)) continue;
                 if (try isPurged(deps.db, scope, ch.hash))
                     return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then run 'cid push' again.");
-                switch (try admit(arena, deps, scope, ds, ch.hash, null)) {
+                switch (try admit(arena, deps, scope, ds, ch.hash, ch.size)) {
                     .admitted => try admitted.put(arena, ch.hash, {}),
                     .missing => return errorResponse(arena, .unprocessable_entity, "a file is missing from storage", "Run 'cid push' again; it re-uploads what is missing."),
                     .mismatch => return errorResponse(arena, .unprocessable_entity, "an uploaded file does not match its hash", "Run 'cid push' again; it re-uploads it. If it persists, check the file is not changing while you push."),
@@ -2465,6 +2497,29 @@ fn enqueuePreview(q: anytype, scope: anytype, hash: []const u8) HandleError!void
     ) catch return error.Db;
 }
 
+/// One piece of a large upload, numbered from 1 (zero-padded, so a listing
+/// of a file's pieces is in order).
+pub fn pieceKey(arena: std.mem.Allocator, dataset_id: []const u8, hash: []const u8, n: u32) error{OutOfMemory}![]const u8 {
+    return std.fmt.allocPrint(arena, "uploads/{s}/{s}.part-{d:0>6}", .{ dataset_id, hash, n });
+}
+
+/// Which of a file's `count` pieces are staged already: one listing (a page
+/// per 1,000 pieces), not a request per piece.
+fn stagedPieces(arena: std.mem.Allocator, deps: *Deps, scope: anytype, dataset_id: []const u8, hash: []const u8, count: u32) HandleError![]bool {
+    const have = try arena.alloc(bool, count);
+    @memset(have, false);
+    const prefix = try std.fmt.allocPrint(arena, "uploads/{s}/{s}.part-", .{ dataset_id, hash });
+    var cursor: ?[]const u8 = null;
+    while (true) {
+        const page = deps.s3.list(scope, prefix, cursor) catch return error.Storage;
+        for (page.objects) |object| {
+            const n = std.fmt.parseInt(u32, object.key.view()[prefix.len..], 10) catch continue;
+            if (n >= 1 and n <= count) have[n - 1] = true;
+        }
+        cursor = if (page.next) |next| try arena.dupe(u8, next.view()) else return have;
+    }
+}
+
 /// Where a dataset's uploads land before the server verifies them.
 pub fn stagedKey(arena: std.mem.Allocator, dataset_id: []const u8, hash: []const u8) error{OutOfMemory}![]const u8 {
     return std.fmt.allocPrint(arena, "uploads/{s}/{s}", .{ dataset_id, hash });
@@ -2498,6 +2553,10 @@ fn admit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, has
     cwd.createDirPath(deps.io, deps.work_dir) catch return error.Storage;
     const path = try std.fmt.allocPrint(arena, "{s}/{s}.upload", .{ deps.work_dir, hash });
     defer cwd.deleteFile(deps.io, path) catch {};
+    // Whole, or in pieces when the file is larger than one (and was not
+    // sent whole): the pieces stream through the hash in order, as one.
+    const whole = (deps.s3.headObject(scope, staged) catch return error.Storage) != null;
+    const count: u32 = if (whole or size == null or size.? <= deps.piece_bytes) 1 else @intCast((size.? + deps.piece_bytes - 1) / deps.piece_bytes);
     const got = blk: {
         var file = cwd.createFile(deps.io, path, .{ .truncate = true }) catch return error.Storage;
         defer file.close(deps.io);
@@ -2505,14 +2564,23 @@ fn admit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, has
         var fw = file.writer(deps.io, &buf);
         var hbuf: [64 * 1024]u8 = undefined;
         var hashed = fw.interface.hashed(std.crypto.hash.sha2.Sha256.init(.{}), &hbuf);
-        const n = deps.s3.streamTo(scope, staged, &hashed.writer) catch return .missing;
+        var n: u64 = 0;
+        if (count == 1) {
+            n = deps.s3.streamTo(scope, staged, &hashed.writer) catch return .missing;
+        } else for (1..count + 1) |piece| {
+            n += deps.s3.streamTo(scope, try pieceKey(arena, ds.id, hash, @intCast(piece)), &hashed.writer) catch return .missing;
+        }
         hashed.writer.flush() catch return error.Storage;
         fw.interface.flush() catch return error.Storage;
         var digest: [32]u8 = undefined;
         hashed.hasher.final(&digest);
         break :blk .{ n, std.fmt.bytesToHex(digest, .lower) };
     };
-    defer deps.s3.deleteObject(scope, staged) catch {};
+    defer if (count == 1) {
+        deps.s3.deleteObject(scope, staged) catch {};
+    } else for (1..count + 1) |piece| {
+        deps.s3.deleteObject(scope, pieceKey(arena, ds.id, hash, @intCast(piece)) catch continue) catch {};
+    };
     if (!eql(&got[1], hash) or (size != null and size.? != got[0])) return .mismatch;
     const key = itemKey(arena, hash) catch return error.OutOfMemory;
     // Stored only if absent, never overwritten (invariant 2), except bytes
