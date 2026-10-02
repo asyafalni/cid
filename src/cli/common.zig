@@ -15,6 +15,9 @@ pub const Context = struct {
     /// For memory reused and freed while a command streams (a line
     /// buffer, per-file scratch): never the arena, which cannot free.
     gpa: std.mem.Allocator,
+    /// `--json`: results as one JSON document on stdout; errors as
+    /// {"error", "exit"} on stderr. Text is unchanged without it.
+    json: bool = false,
     io: std.Io,
     out: *std.Io.Writer,
     env: *const std.process.Environ.Map,
@@ -32,9 +35,22 @@ pub fn fail(ctx: *const Context, code: ExitCode, comptime fmt: []const u8, args:
     var buf: [2048]u8 = undefined;
     var stderr_writer = std.Io.File.stderr().writer(ctx.io, &buf);
     const err = &stderr_writer.interface;
-    err.print("cid: " ++ fmt ++ "\n", args) catch {};
+    if (ctx.json) {
+        const text = std.fmt.allocPrint(ctx.arena, fmt, args) catch "out of memory";
+        err.print("{f}\n", .{std.json.fmt(.{ .@"error" = text, .exit = @intFromEnum(code) }, .{})}) catch {};
+    } else {
+        err.print("cid: " ++ fmt ++ "\n", args) catch {};
+    }
     err.flush() catch {};
     return code;
+}
+
+/// With `--json`, prints `value` as the command's result and answers true;
+/// the caller then skips its text.
+pub fn emitJson(ctx: *const Context, value: anytype) bool {
+    if (!ctx.json) return false;
+    ctx.out.print("{f}\n", .{std.json.fmt(value, .{})}) catch {};
+    return true;
 }
 
 pub fn openWorkspace(ctx: *const Context) workspace.OpenError!workspace.Workspace {

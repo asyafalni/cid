@@ -4,6 +4,7 @@
 const std = @import("std");
 const common = @import("common.zig");
 const workspace = @import("../client/workspace.zig");
+const local = @import("../client/local.zig");
 
 pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCode {
     var message: ?[]const u8 = null;
@@ -55,8 +56,11 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     const first_line = firstLine(msg);
     // 13 chars covers the whole UUIDv7 millisecond timestamp; a shorter,
     // git-style prefix would look identical for commits made close together.
+    if (common.emitJson(ctx, .{ .commit = &id, .changes = summary.changes, .message = msg })) return .ok;
+    // The folder's branch, as git prints it (not always main).
+    const branch = if (local.loadHead(ctx.arena, ctx.io, ws.cid_dir)) |h| h.branch else |_| "main";
     ctx.out.print("[{s} {s}] {s}\n {d} change{s}\n", .{
-        "main", id[0..13], first_line, summary.changes, plural(summary.changes),
+        branch, id[0..13], first_line, summary.changes, plural(summary.changes),
     }) catch return .network;
     return .ok;
 }

@@ -31,8 +31,14 @@ fn run(
     const out = &stdout_writer.interface;
     const is_tty = std.Io.File.stdout().isTty(io) catch false;
 
-    const ctx: cid.common.Context = .{ .arena = arena, .gpa = gpa, .io = io, .out = out, .env = env };
-    const code: cid.ExitCode = switch (cid.command.parse(args)) {
+    // `--json` anywhere: machine output, one JSON document on stdout.
+    var json = false;
+    var rest: std.ArrayList([:0]const u8) = .empty;
+    for (args) |a| {
+        if (std.mem.eql(u8, a, "--json")) json = true else rest.append(arena, a) catch return @intFromEnum(cid.ExitCode.network);
+    }
+    const ctx: cid.common.Context = .{ .arena = arena, .gpa = gpa, .io = io, .out = out, .env = env, .json = json };
+    const code: cid.ExitCode = switch (cid.command.parse(rest.items)) {
         .help => blk: {
             cid.help.print(out) catch break :blk .network;
             break :blk .ok;

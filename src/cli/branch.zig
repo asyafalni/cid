@@ -32,6 +32,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server. Check the connection, then run 'cid branch' again.", .{}),
         else => return common.fail(ctx, .network, "the server refused. Check the server logs, then run 'cid branch' again.", .{}),
     };
+    if (common.emitJson(ctx, .{ .branch = name })) return .ok;
     ctx.out.print("Branch '{s}' created from main. Run 'cid checkout {s}' to work on it.\n", .{ name, name }) catch return .network;
     return .ok;
 }

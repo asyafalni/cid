@@ -25,6 +25,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
             error.PathspecUnmatched => return common.fail(ctx, .usage, "nothing staged matches. Run 'cid status' to see what is staged.", .{}),
             else => return common.fail(ctx, .integrity, ".cid/ state is unreadable. Run 'cid status' for details.", .{}),
         };
+        if (common.emitJson(ctx, .{ .unstaged = removed })) return .ok;
         ctx.out.print("Unstaged {d} change{s}. Run 'cid status' to review.\n", .{ removed, plural(removed) }) catch return .network;
         return .ok;
     }
@@ -36,6 +37,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         error.StoreFailed => return common.fail(ctx, .integrity, "a file's content is missing from the local cache. Run 'cid pull' to refetch, then 'cid restore' again.", .{}),
         else => return common.fail(ctx, .integrity, ".cid/ state is unreadable. Run 'cid status' for details.", .{}),
     };
+    if (common.emitJson(ctx, summary)) return .ok;
     if (summary.restored == 0 and summary.skipped_untracked > 0) {
         ctx.out.print("Nothing restored: {d} file{s} here {s} never added to cid, so there is nothing to go back to. Delete them by hand if unwanted.\n", .{
             summary.skipped_untracked, plural(summary.skipped_untracked), wasWere(summary.skipped_untracked),

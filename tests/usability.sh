@@ -299,6 +299,18 @@ expect_ok   "Bob pulls the merge"                "$CID" pull
 if [ "$(cat shared.txt)" = "from the branch" ]; then say "ok: main holds the branch's shared.txt"
 else say "FAIL: main holds '$(cat shared.txt)' after the merge"; fails=$((fails+1)); fi
 
+# --- --json: machine output that parses, errors with their exit code ---------
+cd "$WORK/bob"
+for cmd in "status" "log" "diff" "pull" "push"; do
+    if "$CID" $cmd --json 2>/dev/null | tail -1 | jq -e . >/dev/null; then say "ok: '$cmd --json' is JSON"
+    else say "FAIL: '$cmd --json' is not JSON: $("$CID" $cmd --json 2>&1 | head -3)"; fails=$((fails+1)); fi
+done
+if "$CID" status --json | jq -e '.status.branch == "main"' >/dev/null; then say "ok: status --json carries the branch"
+else say "FAIL: status --json lacks .status.branch"; fails=$((fails+1)); fi
+err=$("$CID" checkout v0.0.0-none --json 2>&1 >/dev/null); code=$?
+if [ "$code" -eq 1 ] && printf '%s' "$err" | jq -e '.exit == 1 and (.error | test("cid log"))' >/dev/null; then say "ok: an error under --json is JSON with its exit code and next step"
+else say "FAIL: error under --json (exit $code): $err"; fails=$((fails+1)); fi
+
 # --- piped --version is one parseable line ----------------------------------
 lines=$("$CID" --version | wc -l)
 if [ "$lines" -eq 1 ]; then say "ok: piped --version is one line"; else say "FAIL: piped --version"; fails=$((fails+1)); fi

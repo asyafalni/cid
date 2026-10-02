@@ -50,12 +50,14 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     switch (result) {
         .merged => |m| {
             sync.finishMerge(ctx.io, &ws);
+            if (common.emitJson(ctx, .{ .merged = name, .commit = m.commit, .changes = m.changes })) return .ok;
             ctx.out.print("Merged '{s}' into main as {s} ({d} change{s}). Run 'cid checkout main' then 'cid pull' to see it.\n", .{
                 name, m.commit[0..13], m.changes, plural(m.changes),
             }) catch return .network;
         },
         .nothing_to_merge => {
             sync.finishMerge(ctx.io, &ws);
+            if (common.emitJson(ctx, .{ .merged = name, .changes = 0 })) return .ok;
             ctx.out.writeAll("Main already has everything from that branch. Nothing to do.\n") catch return .network;
         },
         .conflicts => |paths| {

@@ -36,6 +36,10 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     };
 
     switch (outcome) {
+        .conflicts => {},
+        inline else => |v, tag| if (common.emitJson(ctx, .{ .result = @tagName(tag), .details = v })) return .ok,
+    }
+    switch (outcome) {
         .already_up_to_date => ctx.out.writeAll("Already up to date.\n") catch return .network,
         .fast_forwarded => |ff| ctx.out.print("Updated to {s}: {d} file{s} changed.\n", .{
             ff.head_commit[0..13], ff.files_changed, plural(ff.files_changed),

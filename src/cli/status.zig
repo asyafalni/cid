@@ -13,6 +13,16 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
         return common.fail(ctx, .integrity, ".cid/ state is unreadable. If this folder matters, keep it and report the problem; otherwise clone again.", .{});
 
     const out = ctx.out;
+    if (ctx.json) {
+        const subset = workspace.Subset.of(ws.config);
+        _ = common.emitJson(ctx, .{
+            .status = st,
+            .subset = if (subset.active()) subset.describe(ctx.arena) catch null else null,
+            .pull_conflicts = sync.pendingConflicts(ctx.arena, ctx.io, &ws),
+            .merge = sync.loadMerge(ctx.arena, ctx.io, &ws),
+        });
+        return .ok;
+    }
     print(out, st) catch return .network;
     const subset = workspace.Subset.of(ws.config);
     if (subset.active()) {

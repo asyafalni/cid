@@ -68,6 +68,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         else => return common.fail(ctx, .integrity, ".cid/ state is unreadable. Run 'cid status' for details.", .{}),
     };
 
+    if (common.emitJson(ctx, .{ .commit = commit_id, .files_changed = changed })) return .ok;
     ctx.out.print("Switched to {s}: {d} file{s} changed. 'cid pull' returns to the latest.\n", .{
         commit_id[0..@min(13, commit_id.len)], changed, plural(changed),
     }) catch return .network;
@@ -97,6 +98,7 @@ fn decide(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCod
             .remaining => |n| remaining = n,
         }
     }
+    if (common.emitJson(ctx, .{ .undecided = remaining, .next = next })) return .ok;
     if (remaining == 0) {
         ctx.out.print("Every conflict is decided. Run '{s}' to finish.\n", .{next}) catch return .network;
     } else {

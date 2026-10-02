@@ -25,6 +25,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     };
 
     const total = summary.staged_adds + summary.staged_deletes;
+    if (common.emitJson(ctx, summary)) return .ok;
     if (total == 0) {
         ctx.out.writeAll("Nothing new to stage.\n") catch return .network;
     } else {

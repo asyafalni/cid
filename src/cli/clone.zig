@@ -73,6 +73,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         return cloneFailed(ctx, err, name, release, format, subset);
     };
 
+    if (common.emitJson(ctx, .{ .dataset = name, .folder = dest, .release = outcome.release, .files = outcome.files, .changed = outcome.downloaded })) return .ok;
     if (subset.active()) {
         const what = subset.describe(ctx.arena) catch return .network;
         ctx.out.print("Cloned {s}{s}{s} into {s}/: {d} of {d} item{s} ({s}), {d} downloaded, the rest from the local cache.\n", .{

@@ -15,6 +15,19 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
     const locals = local.listUnpushed(ctx.arena, ctx.io, ws.cid_dir, last_pushed) catch
         return common.fail(ctx, .integrity, ".cid/ state is unreadable. Run 'cid status' for details.", .{});
 
+    if (ctx.json) {
+        // Local commits, then the server's (null when it cannot be reached).
+        const name_j = workspace.datasetPathOf(ws.config.address) orelse "";
+        const server: ?[]const remote_mod.Remote.LogEntry = if (common.remoteFor(ctx, name_j, .read, ws.config.address)) |remote|
+            remote.log(ctx.arena, "main") catch null
+        else |_|
+            null;
+        const Local = struct { id: []const u8, message: []const u8, author: []const u8, authored_at_ms: u64 };
+        const list = ctx.arena.alloc(Local, locals.len) catch return .network;
+        for (list, locals) |*l, c| l.* = .{ .id = ctx.arena.dupe(u8, &c.id.toString()) catch return .network, .message = c.message, .author = c.author, .authored_at_ms = c.authored_at_ms };
+        _ = common.emitJson(ctx, .{ .unpushed = list, .server = server });
+        return .ok;
+    }
     var printed: usize = 0;
     for (locals) |commit| {
         printLocal(ctx.out, commit, " (not pushed)") catch return .network;

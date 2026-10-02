@@ -27,6 +27,7 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
         else => return common.fail(ctx, .integrity, ".cid/ state is unreadable ({t}). Run 'cid status' for details.", .{err}),
     };
 
+    if (common.emitJson(ctx, .{ .pushed_commits = outcome.pushed_commits, .uploaded_files = outcome.uploaded_files, .address = ws.config.address })) return .ok;
     if (outcome.pushed_commits == 0) {
         ctx.out.writeAll("Everything up to date.\n") catch return .network;
     } else {

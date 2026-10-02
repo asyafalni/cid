@@ -36,6 +36,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         else => return common.fail(ctx, .network, "the server refused the tag. Check the server logs, then run 'cid tag' again.", .{}),
     };
 
+    if (common.emitJson(ctx, result)) return .ok;
     ctx.out.print("Release {s} created at {s}: {d} item{s}, manifest sha256 {s}…\n", .{
         result.release, result.commit[0..13], result.items, plural(result.items), result.manifest_sha256[0..12],
     }) catch return .network;

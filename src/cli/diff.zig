@@ -51,6 +51,7 @@ fn localDiff(ctx: *const common.Context, ws: *workspace.Workspace, staged: bool)
             }
             lines += 1;
         }
+        if (common.emitJson(ctx, .{ .summary = .{ .changes = lines } })) return .ok;
         if (lines == 0)
             ctx.out.writeAll("Nothing staged. Run 'cid add <path>' to stage changes.\n") catch return .network;
         return .ok;
@@ -68,6 +69,9 @@ fn localDiff(ctx: *const common.Context, ws: *workspace.Workspace, staged: bool)
         printLine(ctx, "deleted", p, null) catch return .network;
         lines += 1;
     }
+    // Under --json the change lines end with a summary line, always: an
+    // empty diff is still a JSON answer.
+    if (common.emitJson(ctx, .{ .summary = .{ .changes = lines } })) return .ok;
     if (lines == 0)
         ctx.out.writeAll("No unstaged changes.\n") catch return .network;
     return .ok;
@@ -102,7 +106,7 @@ fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: [
 
     // The server compares (core/version.zig) and the changes stream in,
     // printed as they arrive: a million-item diff holds one line at a time.
-    ctx.out.print("Comparing {s} → {s}\n", .{ a_label, b_label }) catch return .network;
+    if (!ctx.json) ctx.out.print("Comparing {s} → {s}\n", .{ a_label, b_label }) catch return .network;
     var printer: Printer = .{ .ctx = ctx, .remote = remote };
     const sum = remote.compare(ctx.arena, a_commit, b_commit, .{ .ctx = &printer, .visit = Printer.visit }) catch |err| switch (err) {
         error.Corrupt => return common.fail(ctx, .integrity, "the diff from the server failed its check; the lines above are void. Run 'cid diff' again.", .{}),
@@ -111,6 +115,7 @@ fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: [
     };
     if (printer.failed) return .network;
 
+    if (common.emitJson(ctx, .{ .summary = sum })) return .ok;
     const items = sum.added + sum.modified + sum.deleted;
     const anns = sum.ann_added + sum.ann_changed + sum.ann_removed;
     if (items == 0 and anns == 0) {
@@ -144,6 +149,7 @@ const Printer = struct {
 
     fn print(self: *Printer, line: remote_mod.Remote.DiffLine) !void {
         const ctx = self.ctx;
+        if (ctx.json) return ctx.out.print("{f}\n", .{std.json.fmt(line, .{})});
         if (line.change) |change| {
             const path = line.path orelse return;
             if (std.mem.eql(u8, change, "deleted")) {
@@ -227,6 +233,8 @@ fn resolve(ctx: *const common.Context, remote: *const remote_mod.Remote, label: 
 }
 
 fn printLine(ctx: *const common.Context, verb: []const u8, path: []const u8, size: ?u64) !void {
+    // --json: one object a line, so a long diff streams as JSON lines too.
+    if (ctx.json) return ctx.out.print("{f}\n", .{std.json.fmt(.{ .change = verb, .path = path, .size = size }, .{})});
     if (size) |n| {
         var buf: [32]u8 = undefined;
         try ctx.out.print("  {s: <9} {s}  ({s})\n", .{ verb, path, humanSize(&buf, n) });
