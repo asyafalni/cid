@@ -13,6 +13,7 @@ export CID_DB='host=127.0.0.1 port=5433 user=cid password=cid-test dbname=cid_te
 export CID_S3_ENDPOINT='http://127.0.0.1:8333'
 export CID_S3_ACCESS_KEY='cid-test-key' CID_S3_SECRET_KEY='cid-test-secret'
 export CID_TOKEN='usability-token' CID_SERVER="http://127.0.0.1:$PORT"
+export CID_TOKEN_SECRET='usability-secret-usability-secret-0123'
 export CID_AUTHOR='user:usability'
 # The server writes each release to the dataset's git repository: here a
 # local bare repository stands in for GitLab.
@@ -67,8 +68,13 @@ expect_ok() {
 
 "$CID" admin serve --port "$PORT" >"$WORK/serve.log" 2>&1 &
 SERVE_PID=$!
-trap 'kill $SERVE_PID 2>/dev/null; chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
-sleep 1
+# Wait for the server to be gone on exit, so a run right after this one
+# never meets it on the same port; and for it to answer before starting.
+trap 'kill $SERVE_PID 2>/dev/null; wait $SERVE_PID 2>/dev/null; chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    curl -sf "$CID_SERVER/v0/ping" >/dev/null 2>&1 && break
+    sleep 0.5
+done
 
 cd "$WORK" && mkdir producer && cd producer
 echo "hello" > a.txt
@@ -145,6 +151,39 @@ else say "FAIL: in-place edit changed the cached copy"; fails=$((fails+1)); fi
 expect_ok   "stage the edit" "$CID" add a.txt
 expect_hint "pull over staged changes"        "$CID" pull
 
+# --- SSH keys are the identity ---------------------------------------------
+# A stand-in for ssh and the cid host's sshd together: it finds the key
+# through cid's AuthorizedKeysCommand, exactly as sshd does, and runs the
+# forced command that answers, with the requested command as
+# SSH_ORIGINAL_COMMAND. A key cid does not know gets sshd's refusal.
+SSHHOME="$WORK/ssh-home"; FAKEBIN="$WORK/fake-bin"
+mkdir -p "$SSHHOME/.ssh" "$FAKEBIN"
+ssh-keygen -q -t ed25519 -N '' -C reader -f "$SSHHOME/.ssh/id_ed25519"
+cat > "$FAKEBIN/ssh" <<FAKE
+#!/bin/sh
+shift   # the user@host part
+fp=\$(ssh-keygen -lf "$SSHHOME/.ssh/id_ed25519.pub" | cut -d' ' -f2)
+line=\$("$CID" ssh-keys "--fingerprint=\$fp")
+account=\$(printf '%s' "\$line" | sed -n 's/.*--account=\([^"]*\)".*/\1/p')
+[ -n "\$account" ] || { echo "cid@127.0.0.1: Permission denied (publickey)." >&2; exit 255; }
+SSH_ORIGINAL_COMMAND="\$*" exec "$CID" ssh-auth "--account=\$account"
+FAKE
+chmod +x "$FAKEBIN/ssh"
+# Only a key: no CID_SERVER, no CID_TOKEN, no stored login.
+by_key() { env -u CID_SERVER -u CID_TOKEN HOME="$SSHHOME" PATH="$FAKEBIN:$PATH" "$@"; }
+cd "$WORK"
+expect_code 5 "clone with a key the server does not know" by_key "$CID" clone "cid@127.0.0.1:$DS" by-stranger
+if [ -e by-stranger ]; then say "FAIL: a refused clone left its folder"; fails=$((fails+1)); else say "ok: a refused clone leaves no folder"; fi
+expect_ok   "register the key (the GitLab sync's job)" "$CID" admin add-key gitlab:9001 "Rina Reporter" "$(cat "$SSHHOME/.ssh/id_ed25519.pub")"
+expect_code 5 "clone before being given access"   by_key "$CID" clone "cid@127.0.0.1:$DS" by-stranger
+expect_ok   "Reporter access (the GitLab sync's job)" "$CID" admin grant "$DS" gitlab:9001 read
+expect_ok   "clone with only an SSH key"         by_key "$CID" clone "cid@127.0.0.1:$DS" by-key
+cd by-key
+echo "a reporter's edit" > reporter.txt
+expect_ok   "a Reporter commits locally"         by_key "$CID" add reporter.txt
+expect_ok   "and that is local"                  by_key "$CID" commit -m "reporter"
+expect_code 5 "a Reporter cannot push"           by_key "$CID" push
+
 # --- offline work, and the exit codes ------------------------------------------
 cd "$WORK/producer"
 OFF="offline $DS"
@@ -169,6 +208,26 @@ cd damaged
 expect_code 3 "checkout of a damaged file"       "$CID" checkout main
 if [ -e off.txt ]; then say "FAIL: a damaged file reached the folder"; fails=$((fails+1)); else say "ok: the damaged file stayed out"; fi
 unset XDG_CACHE_HOME
+
+# A damaged version file (the manifest the CLI downloads) or release
+# manifest is an integrity failure: exit 3, nothing half-written.
+s3put() {  # <key> <bytes>
+    curl -sf --aws-sigv4 'aws:amz:us-east-1:s3' --user "$CID_S3_ACCESS_KEY:$CID_S3_SECRET_KEY" \
+        -X PUT --data-binary "$2" "$CID_S3_ENDPOINT/cid/$1" >/dev/null \
+        || { say "FAIL: could not tamper with $1"; fails=$((fails+1)); }
+}
+api() { curl -sf -H "Authorization: Bearer $CID_TOKEN" "$CID_SERVER/v0/datasets/$DS/-/$1"; }
+V1=$(api releases | jq -r '.releases[] | select(.name == "v1.0.0") | .commit')
+STATE_URL=$(api "version/$V1" | jq -r '.url')
+STATE_KEY=${STATE_URL#*/cid/}; STATE_KEY=${STATE_KEY%%\?*}
+DSID=$(printf %s "$STATE_KEY" | cut -d/ -f2)
+cd "$WORK"
+expect_ok   "verify a release"                   "$CID" admin verify "$DS" v1.0.0
+s3put "$STATE_KEY" 'not the version file'
+expect_code 3 "clone a release whose version file is damaged" env XDG_CACHE_HOME="$WORK/cache-3" "$CID" clone "cid@127.0.0.1:$DS" damaged-manifest --release v1.0.0
+if [ -e damaged-manifest ]; then say "FAIL: a damaged clone left its folder"; fails=$((fails+1)); else say "ok: the damaged clone left nothing"; fi
+s3put "manifests/$DSID/$V1.manifest" 'not the manifest'
+expect_code 3 "verify a release whose manifest is damaged" "$CID" admin verify "$DS" v1.0.0
 
 # --- piped --version is one parseable line ----------------------------------
 lines=$("$CID" --version | wc -l)

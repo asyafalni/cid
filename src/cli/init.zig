@@ -53,7 +53,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
             .exists => return common.fail(ctx, .usage, "{s} already exists. Run 'cid clone {s}' to work with it.", .{ path, addr }),
             .refused => |r| return common.fail(ctx, .usage, "{s}. {s}", .{ r.what, r.next }),
         }
-    } else |_| {}
+    } else |err| if (err == error.AccessDenied) return common.denied(ctx, "cid init");
 
     workspace.init(ctx.arena, ctx.io, work_dir, addr, git) catch |err| switch (err) {
         error.BadAddress => return common.fail(ctx, .usage, "'{s}' is not a cid address (expected cid@host:org/path); {s}", .{ addr, usage_hint }),

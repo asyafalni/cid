@@ -58,6 +58,13 @@ pub fn openCacheDir(ctx: *const Context) !std.Io.Dir {
 /// 'ssh cid@host cid-auth <dataset> <level>', like git), or the
 /// CID_SERVER/CID_TOKEN environment override for CI and machines without
 /// SSH. The override wins when both are set.
+/// What a command says when it got no server: refused (exit 5), or none
+/// reachable or configured (exit 1).
+pub fn noRemote(ctx: *const Context, err: anyerror, comptime command: []const u8) ExitCode {
+    if (err == error.AccessDenied) return denied(ctx, command);
+    return fail(ctx, .usage, no_server_msg, .{});
+}
+
 pub const no_server_msg =
     "cannot reach a cid server: the SSH call failed and no override is set.\n" ++
     "Check that 'ssh <user@host from the address>' works, or export\n" ++
@@ -82,7 +89,7 @@ pub fn remoteFor(
         tok = stored.token;
     } else {
         const addr = address orelse return error.NoServer;
-        const grant = sshToken(ctx, addr, dataset_name, level) orelse return error.NoServer;
+        const grant = try sshToken(ctx, addr, dataset_name, level);
         server = grant.url;
         tok = grant.token;
     }
@@ -102,23 +109,28 @@ fn sshToken(
     address: []const u8,
     dataset_name: []const u8,
     level: remote_mod.TokenLevel,
-) ?Grant {
-    const colon = std.mem.indexOfScalar(u8, address, ':') orelse return null;
+) error{ NoServer, AccessDenied }!Grant {
+    const colon = std.mem.indexOfScalar(u8, address, ':') orelse return error.NoServer;
     const ssh_target = address[0..colon];
     const result = std.process.run(ctx.arena, ctx.io, .{
         .argv = &.{ "ssh", ssh_target, "cid-auth", dataset_name, @tagName(level) },
         .timeout = .{ .duration = .{ .clock = .awake, .raw = .{ .nanoseconds = 30 * std.time.ns_per_s } } },
         .stdout_limit = .limited(64 * 1024),
         .stderr_limit = .limited(64 * 1024),
-    }) catch return null;
+    }) catch return error.NoServer;
     if (result.term != .exited or result.term.exited != 0) {
         if (result.stderr.len > 0)
             std.log.warn("ssh said: {s}", .{std.mem.trim(u8, result.stderr, " \n")});
-        return null;
+        // The forced command exits 5 when it refuses this key the dataset
+        // or the level; sshd's own "Permission denied" is a key it does
+        // not know. Both are access, not a missing server.
+        if (result.term == .exited and result.term.exited == @intFromEnum(ExitCode.access)) return error.AccessDenied;
+        if (std.mem.indexOf(u8, result.stderr, "Permission denied") != null) return error.AccessDenied;
+        return error.NoServer;
     }
     const Parsed = struct { token: []const u8, url: []const u8, expires_in_secs: u64 = 0 };
     const parsed = std.json.parseFromSliceLeaky(Parsed, ctx.arena, result.stdout, .{ .ignore_unknown_fields = true }) catch
-        return null;
+        return error.NoServer;
     return .{ .token = parsed.token, .url = parsed.url };
 }
 

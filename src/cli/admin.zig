@@ -346,7 +346,8 @@ fn runVerify(
         };
         err_w.print("  - {s}\n", .{text}) catch {};
     }
-    err_w.writeAll("Investigate before anything else touches this dataset.\n") catch {};
+    err_w.print("Investigate before anything else touches this dataset: stop writes to it, restore storage or the\n" ++
+        "database from backup, then run 'cid admin verify {s} {s}' again.\n", .{ dataset_name, release_name }) catch {};
     err_w.flush() catch {};
     return .integrity;
 }

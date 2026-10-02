@@ -55,15 +55,15 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     if (cwd.access(ctx.io, dest, .{})) |_| {
         return common.fail(ctx, .usage, "'{s}' already exists here. Remove it, or run 'cid clone <address> <another-folder>'.", .{dest});
     } else |_| {}
+    // Access first: a refused clone leaves no folder behind.
+    const remote = common.remoteFor(ctx, name, .read, address) catch |err|
+        return common.noRemote(ctx, err, "cid clone");
+    const cache_dir = common.openCacheDir(ctx) catch
+        return common.fail(ctx, .network, "cannot open the cache folder (~/.cache/cid). Check HOME, then run 'cid clone' again.", .{});
     cwd.createDirPath(ctx.io, dest) catch
         return common.fail(ctx, .network, "cannot create '{s}'. Check permissions, then run 'cid clone' again.", .{dest});
     const dest_dir = cwd.openDir(ctx.io, dest, .{ .iterate = true }) catch
         return common.fail(ctx, .network, "cannot open '{s}'. Check permissions, then run 'cid clone' again.", .{dest});
-
-    const cache_dir = common.openCacheDir(ctx) catch
-        return common.fail(ctx, .network, "cannot open the cache folder (~/.cache/cid). Check HOME, then run 'cid clone' again.", .{});
-    const remote = common.remoteFor(ctx, name, .read, address) catch
-        return common.fail(ctx, .usage, common.no_server_msg, .{});
 
     const subset: workspace.Subset = .{ .split = splits.items, .class = classes.items };
     const outcome = sync.clone(ctx.arena, ctx.io, dest_dir, cache_dir, remote, address, release, format, subset) catch |err| {
