@@ -184,7 +184,7 @@ fn handleInner(
         eql(route.action, "check-hashes") or eql(route.action, "tag") or
         eql(route.action, "branch") or eql(route.action, "merge") or
         eql(route.action, "commit") or eql(route.action, "register-items") or
-        eql(route.action, "policy"))
+        eql(route.action, "policy") or (eql(method, "PUT") and eql(route.action, "card")))
         .write
     else
         .read;
@@ -254,6 +254,10 @@ fn handleInner(
         return policyCreate(arena, deps, scope, ds, body);
     if (eql(method, "GET") and eql(route.action, "policies"))
         return policies(arena, deps, scope, ds);
+    if (eql(method, "GET") and eql(route.action, "card"))
+        return cardGet(arena, deps, scope, ds);
+    if (eql(method, "PUT") and eql(route.action, "card"))
+        return cardPut(arena, deps, scope, caller, ds, body);
 
     return errorResponse(arena, .not_found, "no such route", "Update cid and try again.");
 }
@@ -1365,6 +1369,18 @@ fn createDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, auth_hea
     if (lookupDataset(arena, deps, scope, req.name) != null)
         return errorResponse(arena, .conflict, "the dataset already exists", "Run 'cid clone' to work with it.");
 
+    // Every dataset has a git repository cid writes (invariant 21): with the
+    // writer configured, find out now, not at the first release, whether
+    // it can. A server without one queues the writes for --resync instead.
+    if (deps.git) |git_config| {
+        const checked = offload(deps, git_writer.probe, .{ arena, deps.io, git_config, req.git_url }) catch return error.Storage;
+        switch (checked) {
+            .ok => {},
+            .unreachable_repo => |why| return errorResponse(arena, .unprocessable_entity, try std.fmt.allocPrint(arena, "the git repository {s} cannot be reached ({s})", .{ req.git_url, why }), "Check the URL (create the repository first if it does not exist), then run 'cid init' again."),
+            .not_writable => |why| return errorResponse(arena, .unprocessable_entity, try std.fmt.allocPrint(arena, "the cid server cannot push to {s} ({s})", .{ req.git_url, why }), "Give the cid server's key write access to that repository (a deploy key with write access), then run 'cid init' again."),
+        }
+    }
+
     const id = Uuid.now(deps.io).toString();
     _ = deps.db.exec(
         scope,
@@ -2318,6 +2334,42 @@ fn policyCreate(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datas
         .{ ds.id, req.version, body_json },
     ) catch return error.Db;
     return json(arena, .created, .{ .version = req.version });
+}
+
+/// The dataset card: the human-written fields (an object of text). Each
+/// release keeps a snapshot (`refs.card`), so editing never changes what
+/// an earlier release renders.
+fn cardGet(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) HandleError!Response {
+    const body = deps.db.rawOne([]const u8, scope, "SELECT body::text FROM dataset_cards WHERE dataset_id = $1::uuid", .{ds.id}) catch return error.Db;
+    return json(arena, .ok, .{ .card = if (body) |b| jsonValue(arena, b) else null });
+}
+
+const card_max_bytes = 64 * 1024;
+
+/// Owners only (invariant 17): the server token, or a signed-in person
+/// with the Maintainer role on the dataset's project.
+fn cardPut(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, body: []const u8) HandleError!Response {
+    if (caller.account) |account| {
+        const level = deps.db.rawOne([]const u8, scope, "SELECT level FROM access WHERE dataset_id = $1::uuid AND account_id = $2", .{ ds.id, account }) catch return error.Db;
+        if (level == null or !eql(level.?, "maintain"))
+            return errorResponse(arena, .forbidden, "only the dataset's owners (Maintainers of its project) edit its card", "Ask a Maintainer of the dataset's project.");
+    }
+    if (body.len > card_max_bytes)
+        return errorResponse(arena, .payload_too_large, "a card is at most 64 KB", "Shorten the card, then save it again.");
+    const Body = struct { card: std.json.Value };
+    const req = parseBody(Body, arena, body) orelse return error.BadRequest;
+    if (req.card != .object) return error.BadRequest;
+    var it = req.card.object.iterator();
+    while (it.next()) |e| {
+        if (e.key_ptr.len == 0 or e.key_ptr.len > 64 or e.value_ptr.* != .string)
+            return errorResponse(arena, .bad_request, "a card is fields of text: names up to 64 characters, text values", "Fix the card, then save it again.");
+    }
+    const text = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(req.card, .{})});
+    const actor = actorOf(arena, deps, caller) catch "server-token";
+    _ = deps.db.exec(scope, "INSERT INTO dataset_cards (dataset_id, body, updated_by) VALUES ($1::uuid, $2::jsonb, $3) " ++
+        "ON CONFLICT (dataset_id) DO UPDATE SET body = excluded.body, updated_by = excluded.updated_by, updated_at = now()", .{ ds.id, text, actor }) catch return error.Db;
+    noteActivity(arena, deps, scope, caller, ds, "card-edit", null, null);
+    return json(arena, .ok, .{ .card = req.card });
 }
 
 fn policies(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) HandleError!Response {

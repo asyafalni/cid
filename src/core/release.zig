@@ -118,8 +118,11 @@ pub fn create(
     s3.putFile(scope, work.io, key, path) catch return error.Storage;
     _ = db.exec(
         scope,
-        "INSERT INTO refs (dataset_id, name, kind, commit_id, manifest_path, manifest_sha256) " ++
-            "VALUES ($1::uuid, $2, 'release', $3::uuid, $4, decode($5, 'hex'))",
+        // The card as it is now, kept with the release: re-rendering this
+        // release later cannot pick up an edited card.
+        "INSERT INTO refs (dataset_id, name, kind, commit_id, manifest_path, manifest_sha256, card) " ++
+            "VALUES ($1::uuid, $2, 'release', $3::uuid, $4, decode($5, 'hex'), " ++
+            "(SELECT body FROM dataset_cards WHERE dataset_id = $1::uuid))",
         .{ dataset_id, name, commit_id, key, @as([]const u8, &written.sha256_hex.?) },
     ) catch return error.Db;
     return .{ .name = name, .commit_id = commit_id, .manifest_sha256 = written.sha256_hex.?, .items = written.items };

@@ -952,6 +952,75 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     const v2_at = std.mem.indexOf(u8, changelog, "v2.0.0").?;
     const v1_at = std.mem.indexOf(u8, changelog, "v1.0.0").?;
     try std.testing.expect(v2_at < v1_at);
+
+    const commitsOnMain = struct {
+        fn on(al: std.mem.Allocator, i: std.Io, url: []const u8) ![]const u8 {
+            return (try std.process.run(al, i, .{ .argv = &.{ "git", "-C", url, "rev-list", "--count", "main" } })).stdout;
+        }
+    }.on;
+    const rerender = "UPDATE git_writes SET status = 'pending' WHERE dataset_id = (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/gitw')";
+
+    // The card is edited after v2: rendering every release again (for
+    // real: each row back to pending) makes no new commit, because each
+    // release renders its own card snapshot.
+    const card_put = cid.api.handle(arena, &deps, &scope, "PUT", "/v0/datasets/test/datasets/gitw/-/card", "Bearer test-token", "{\"card\":{\"purpose\":\"exercise the git writer\",\"license\":\"CC0-1.0\"}}");
+    try std.testing.expectEqual(std.http.Status.ok, card_put.status);
+    _ = try db.exec(&fscope, rerender, .{});
+    const rerendered = try cid.gitrepo.writer.processDataset(arena, io, &standalone.db, &scope, deps.git.?, "test/datasets/gitw");
+    try std.testing.expectEqual(@as(u32, 2), rerendered.processed);
+    try std.testing.expectEqualStrings("2\n", try commitsOnMain(arena, io, bare_url));
+
+    // The next release carries the edited card.
+    const steps = struct {
+        fn release(al: std.mem.Allocator, i: std.Io, dir: std.Io.Dir, ws: *cid.client.workspace.Workspace, c: std.Io.Dir, r: *const cid.client.remote.Remote, file: []const u8, name: []const u8) !void {
+            try dir.writeFile(i, .{ .sub_path = file, .data = name });
+            _ = try cid.client.workspace.add(al, i, ws, c, &.{"."});
+            _ = try cid.client.workspace.commit(al, i, ws, name, "user:test");
+            _ = try cid.client.sync.push(al, i, ws, c, r);
+            _ = try r.tag(al, name);
+        }
+    }.release;
+    try steps(arena, io, producer.dir, &pws, cache.dir, &remote, "c.txt", "v3.0.0");
+    _ = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", clone_dir, "pull", "-q" } });
+    const readme3 = try check.readFileAlloc(io, "README.md", arena, .limited(64 * 1024));
+    try std.testing.expect(std.mem.indexOf(u8, readme3, "**Purpose:** exercise the git writer") != null);
+    try std.testing.expectEqualStrings("3\n", try commitsOnMain(arena, io, bare_url));
+
+    // A git outage: the repository is gone. The release still happens,
+    // intact; its git copy waits, and a resync fills the gap.
+    const away = try std.fmt.allocPrint(arena, "{s}/away.git", .{root_path});
+    try std.Io.Dir.rename(std.Io.Dir.cwd(), bare_url, std.Io.Dir.cwd(), away, io);
+    try steps(arena, io, producer.dir, &pws, cache.dir, &remote, "d.txt", "v4.0.0");
+    const v4_ref = try db.rawOne(i64, &fscope, "SELECT 1::bigint FROM refs r JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/gitw' AND r.name = 'v4.0.0'", .{});
+    try std.testing.expect(v4_ref != null);
+    const v4_git = (try db.rawOne([]const u8, &fscope, "SELECT status FROM git_writes w JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/gitw' AND w.release = 'v4.0.0'", .{})).?;
+    try std.testing.expectEqualStrings("failed", v4_git);
+    try std.Io.Dir.rename(std.Io.Dir.cwd(), away, std.Io.Dir.cwd(), bare_url, io);
+    const resynced = try cid.gitrepo.writer.processDataset(arena, io, &standalone.db, &scope, deps.git.?, "test/datasets/gitw");
+    try std.testing.expectEqual(@as(u32, 1), resynced.processed);
+    try std.testing.expectEqual(@as(u32, 0), resynced.failed);
+    try std.testing.expectEqualStrings("4\n", try commitsOnMain(arena, io, bare_url));
+    const tags4 = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", bare_url, "tag" } });
+    try std.testing.expectEqualStrings("v1.0.0\nv2.0.0\nv3.0.0\nv4.0.0\n", tags4.stdout);
+
+    // Restricted: the release's files hold counts and nothing more — no
+    // file names, no card, no release notes — in the repository itself.
+    _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = 'test/datasets/gitw'", .{});
+    defer _ = db.exec(&fscope, "UPDATE datasets SET restricted = false WHERE name = 'test/datasets/gitw'", .{}) catch {};
+    try steps(arena, io, producer.dir, &pws, cache.dir, &remote, "secret-name.txt", "v5.0.0");
+    const tree = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", bare_url, "ls-tree", "-r", "--name-only", "v5.0.0" } });
+    try std.testing.expect(std.mem.indexOf(u8, tree.stdout, "files.txt") == null);
+    const files_list = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", bare_url, "ls-tree", "-r", "--name-only", "v5.0.0" } });
+    var names = std.mem.splitScalar(u8, std.mem.trimEnd(u8, files_list.stdout, "\n"), '\n');
+    while (names.next()) |name| {
+        const shown = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", bare_url, "show", try std.fmt.allocPrint(arena, "v5.0.0:{s}", .{name}) } });
+        for ([_][]const u8{ "secret-name", "a.txt", "exercise the git writer", "first release content" }) |leak| {
+            if (std.mem.indexOf(u8, shown.stdout, leak) != null) {
+                std.debug.print("restricted release wrote '{s}' into {s}\n", .{ leak, name });
+                return error.RestrictedContentInGit;
+            }
+        }
+    }
 }
 
 test "access: key lookup, forced command, scoped tokens enforced by routes" {

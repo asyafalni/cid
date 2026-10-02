@@ -90,7 +90,8 @@ function seedDemo(dir: string) {
   run(`${cid} push`, dir);
   run(`${cid} tag v1.0.0`, dir);
   writeFileSync(join(dir, 'notes.txt'), 'a second version\n');
-  run(`${cid} commit -am "notes"`, dir);
+  run(`${cid} add notes.txt`, dir);
+  run(`${cid} commit -m "notes"`, dir);
   run(`${cid} push`, dir);
   run(`${cid} tag v1.1.0`, dir);
 }

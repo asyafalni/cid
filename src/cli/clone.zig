@@ -145,7 +145,8 @@ fn resolveGitUrl(ctx: *const common.Context, git_url: []const u8) ?[]const u8 {
     defer std.Io.Dir.cwd().deleteTree(ctx.io, tmp) catch {};
 
     const result = std.process.run(ctx.arena, ctx.io, .{
-        .argv = &.{ "git", "clone", "--depth", "1", "--quiet", git_url, tmp },
+        // cid writes only 'main', whatever the host's default branch is.
+        .argv = &.{ "git", "clone", "--depth", "1", "--quiet", "--branch", "main", git_url, tmp },
         .timeout = .{ .duration = .{ .clock = .awake, .raw = .{ .nanoseconds = 60 * std.time.ns_per_s } } },
         .stdout_limit = .limited(64 * 1024),
         .stderr_limit = .limited(64 * 1024),

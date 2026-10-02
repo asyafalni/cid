@@ -14,6 +14,12 @@ export CID_S3_ENDPOINT='http://127.0.0.1:8333'
 export CID_S3_ACCESS_KEY='cid-test-key' CID_S3_SECRET_KEY='cid-test-secret'
 export CID_TOKEN='usability-token' CID_SERVER="http://127.0.0.1:$PORT"
 export CID_AUTHOR='user:usability'
+# The server writes each release to the dataset's git repository: here a
+# local bare repository stands in for GitLab.
+export CID_GIT_WORKDIR="$WORK/git-work" CID_PUBLIC_URL="http://127.0.0.1:$PORT"
+REPO="$WORK/demo.git"
+git init -q --bare "$REPO"
+git init -q --bare "$WORK/readonly.git" && chmod -R a-w "$WORK/readonly.git"
 # A dataset of its own per run: the server keeps history forever, so a
 # fixed name would meet the previous run's pushes and refuse this one's.
 DS="usability/datasets/demo-$(date +%s)-$$"
@@ -61,7 +67,7 @@ expect_ok() {
 
 "$CID" admin serve --port "$PORT" >"$WORK/serve.log" 2>&1 &
 SERVE_PID=$!
-trap 'kill $SERVE_PID 2>/dev/null; rm -rf "$WORK"' EXIT
+trap 'kill $SERVE_PID 2>/dev/null; chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 sleep 1
 
 cd "$WORK" && mkdir producer && cd producer
@@ -75,7 +81,10 @@ expect_hint "init without --git"              "$CID" init cid@h:org/datasets/u
 expect_hint "init with a broken address"      "$CID" init not-an-address --git g@h:x.git
 
 # --- the happy everyday loop -------------------------------------------------
-expect_ok   "init"    "$CID" init "cid@127.0.0.1:$DS" --git g@h:u.git
+expect_hint "init with a git repository that does not exist" "$CID" init "cid@127.0.0.1:$DS" --git "$WORK/missing.git"
+expect_hint "init with a git repository cid cannot push to"  "$CID" init "cid@127.0.0.1:$DS" --git "$WORK/readonly.git"
+if [ -e .cid ]; then say "FAIL: a refused init left .cid/ behind"; fails=$((fails+1)); else say "ok: a refused init leaves nothing behind"; fi
+expect_ok   "init"    "$CID" init "cid@127.0.0.1:$DS" --git "$REPO"
 expect_hint "init twice"                      "$CID" init cid@h:a/b --git g@h:x.git
 expect_hint "add with nothing named"          "$CID" add
 expect_hint "add with an unmatched path"      "$CID" add nope.txt
@@ -103,6 +112,10 @@ expect_ok   "tag v1.1.0" "$CID" tag v1.1.0
 
 # --- reading elsewhere -------------------------------------------------------
 cd "$WORK"
+# The git URL works as an address: its .cid marker names the dataset.
+expect_ok   "clone by the git repository's URL" "$CID" clone "$REPO" via-git
+if [ "$(cat via-git/b.txt 2>/dev/null)" = "two" ]; then say "ok: the git-URL clone holds the release"
+else say "FAIL: the git-URL clone is missing b.txt"; fails=$((fails+1)); fi
 expect_ok   "clone (gets the newest release)" "$CID" clone "cid@127.0.0.1:$DS" reader
 expect_hint "clone onto an existing folder"   "$CID" clone "cid@127.0.0.1:$DS" reader
 expect_hint "clone a dataset that is not there" "$CID" clone "cid@127.0.0.1:usability/datasets/nope"

@@ -147,13 +147,31 @@ pub const Remote = struct {
     }
 
     pub fn createDataset(self: *const Remote, arena: std.mem.Allocator, git_url: []const u8) Error!void {
+        switch (try self.create(arena, git_url)) {
+            .created, .exists => {},
+            .refused => return error.ServerRefused,
+        }
+    }
+
+    /// The server's answer to creating this dataset: refused carries its
+    /// words (an unreachable or read-only git repository, say).
+    pub const Created = union(enum) { created, exists, refused: struct { what: []const u8, next: []const u8 } };
+
+    pub fn create(self: *const Remote, arena: std.mem.Allocator, git_url: []const u8) Error!Created {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{
             .name = self.name,
             .kind = "files",
             .git_url = git_url,
         }, .{})});
         const res = try self.send(arena, "POST", "/v0/datasets", body);
-        if (res.status != .created and res.status != .conflict) return error.ServerRefused;
+        if (res.status == .created) return .created;
+        if (res.status == .conflict) return .exists;
+        if (res.status == .unprocessable_entity) {
+            const Refusal = struct { @"error": []const u8, next: []const u8 = "" };
+            const r = parse(Refusal, arena, res.body) orelse return error.ServerRefused;
+            return .{ .refused = .{ .what = r.@"error", .next = r.next } };
+        }
+        return error.ServerRefused;
     }
 
     pub const Info = struct { name: []const u8, kind: []const u8, git_url: []const u8, default_format: []const u8 };
@@ -356,8 +374,8 @@ pub const Remote = struct {
         if (res.status == .unprocessable_entity) return error.NothingToTag;
         if (res.status == .not_found) return error.NoSuchDataset;
         if (res.status != .created) return error.ServerRefused;
-        const Created = struct { branch: []const u8, start: []const u8 };
-        const parsed = parse(Created, arena, res.body) orelse return error.ServerRefused;
+        const BranchCreated = struct { branch: []const u8, start: []const u8 };
+        const parsed = parse(BranchCreated, arena, res.body) orelse return error.ServerRefused;
         return parsed.start;
     }
 

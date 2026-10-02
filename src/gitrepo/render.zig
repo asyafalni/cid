@@ -39,6 +39,13 @@ pub const Input = struct {
     files: []const Item = &.{},
     /// Every release, newest first (this one included).
     releases: []const ReleaseInfo,
+    /// The card as it was when this release was made (`refs.card`, a JSON
+    /// object of text fields), never the live one: editing the card later
+    /// cannot change what this release renders.
+    card: ?[]const u8 = null,
+    /// A restricted dataset sends counts and nothing more (invariant 21):
+    /// no file or class names, no policy, no card, no release notes.
+    restricted: bool = false,
 };
 
 pub const Item = struct {
@@ -62,6 +69,7 @@ pub fn renderAll(arena: std.mem.Allocator, input: Input) ![]const File {
     try out.append(arena, .{ .path = "release.json", .contents = try releaseJson(arena, input) });
     try out.append(arena, .{ .path = "stats.yaml", .contents = try statsYaml(arena, input) });
     try out.append(arena, .{ .path = ".cid", .contents = try marker(arena, input) });
+    if (input.restricted) return out.items;
     if (input.items < files_txt_limit) {
         try out.append(arena, .{ .path = "files.txt", .contents = try filesTxt(arena, input) });
     }
@@ -86,7 +94,7 @@ fn classesYaml(arena: std.mem.Allocator, input: Input) ![]const u8 {
 
 fn readme(arena: std.mem.Allocator, input: Input) ![]const u8 {
     var size_buf: [32]u8 = undefined;
-    return std.fmt.allocPrint(arena,
+    const head = try std.fmt.allocPrint(arena,
         \\# {s}
         \\
         \\A dataset versioned with **cid · Controlled Iterative Datasets**. This
@@ -114,12 +122,52 @@ fn readme(arena: std.mem.Allocator, input: Input) ![]const u8 {
         input.dataset_name,
         input.release,
     });
+    if (input.restricted) return std.fmt.allocPrint(arena, "{s}\nThis dataset is restricted: this repository holds counts only.\n", .{head});
+    const card = input.card orelse return head;
+    return std.fmt.allocPrint(arena, "{s}{s}", .{ head, try cardSection(arena, card) });
+}
+
+/// The card's fields in a fixed order (the known ones first, then any
+/// others by name), text as written. A card that is not an object of
+/// text fields renders nothing rather than guessing.
+fn cardSection(arena: std.mem.Allocator, card_json: []const u8) ![]const u8 {
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, card_json, .{}) catch return "";
+    if (parsed != .object) return "";
+    const known = [_][2][]const u8{
+        .{ "purpose", "Purpose" },       .{ "collection", "How it was collected" },
+        .{ "license", "License" },       .{ "provenance", "Provenance" },
+        .{ "known_gaps", "Known gaps" },
+    };
+    var out: std.ArrayList(u8) = .empty;
+    for (known) |k| {
+        const v = parsed.object.get(k[0]) orelse continue;
+        if (v != .string or v.string.len == 0) continue;
+        try out.print(arena, "\n**{s}:** {s}\n", .{ k[1], v.string });
+    }
+    var others: std.ArrayList([]const u8) = .empty;
+    var it = parsed.object.iterator();
+    outer: while (it.next()) |e| {
+        for (known) |k| if (std.mem.eql(u8, k[0], e.key_ptr.*)) continue :outer;
+        if (e.value_ptr.* == .string and e.value_ptr.string.len > 0) try others.append(arena, e.key_ptr.*);
+    }
+    std.mem.sort([]const u8, others.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+    for (others.items) |key| try out.print(arena, "\n**{s}:** {s}\n", .{ key, parsed.object.get(key).?.string });
+    if (out.items.len == 0) return "";
+    return std.fmt.allocPrint(arena, "\n## About this dataset\n{s}", .{out.items});
 }
 
 fn changelog(arena: std.mem.Allocator, input: Input) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(arena, "# Changelog\n");
     for (input.releases) |r| {
+        if (input.restricted) {
+            try out.print(arena, "\n## {s} — {s}\n\n{d} items.\n", .{ r.name, &fmtDate(r.created_at_ms), r.items });
+            continue;
+        }
         try out.print(arena, "\n## {s} — {s}\n\n{s}\n\n{d} items.\n", .{
             r.name, &fmtDate(r.created_at_ms), r.message, r.items,
         });
@@ -160,10 +208,14 @@ fn statsYaml(arena: std.mem.Allocator, input: Input) ![]const u8 {
     if (input.classes.len > 0) {
         var ann_total: usize = 0;
         for (input.classes) |c| ann_total += c.count;
+        if (input.restricted) {
+            try out.print(arena, "annotations: {d}\n", .{ann_total});
+            return out.items;
+        }
         try out.print(arena, "annotations: {d}\nannotations_by_class:\n", .{ann_total});
         for (input.classes) |c| try out.print(arena, "  \"{s}\": {d}\n", .{ c.name, c.count });
     }
-    if (input.splits.len > 0) {
+    if (input.splits.len > 0 and !input.restricted) {
         try out.appendSlice(arena, "items_by_split:\n");
         for (input.splits) |sp| try out.print(arena, "  \"{s}\": {d}\n", .{ sp.name, sp.count });
     }
@@ -256,4 +308,49 @@ test "rendering is deterministic and complete" {
         }
     }
     try std.testing.expect(seen_marker);
+}
+
+test "a restricted release renders counts only; the card renders from its snapshot" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var input: Input = .{
+        .dataset_name = "org/datasets/faces",
+        .kind = "annotated",
+        .git_url = "git@example.invalid:org/datasets/faces.git",
+        .server_url = "https://cid.example",
+        .release = "v1",
+        .commit_id = "01a00000-0000-7000-8000-000000000001",
+        .manifest_sha256_hex = "ab" ** 32,
+        .created_at_ms = 1769904000000,
+        .items = 1,
+        .bytes = 10,
+        .classes = &.{.{ .name = "alice-smith", .count = 3 }},
+        .splits = &.{.{ .name = "secret-split", .count = 1 }},
+        .policy = .{ .version = "p1", .body_json = "{\"rule\":\"label alice-smith\"}" },
+        .files = &.{.{ .path = "people/alice-smith.jpg", .hash_hex = "cd" ** 32, .size = 10 }},
+        .releases = &.{.{ .name = "v1", .message = "added alice-smith", .created_at_ms = 1769904000000, .items = 1 }},
+        .card = "{\"purpose\":\"face matching for alice-smith\",\"license\":\"internal\"}",
+        .restricted = true,
+    };
+    for (try renderAll(arena, input)) |f| {
+        if (std.mem.indexOf(u8, f.contents, "alice-smith") != null or std.mem.indexOf(u8, f.contents, "secret-split") != null) {
+            std.debug.print("restricted content in {s}:\n{s}\n", .{ f.path, f.contents });
+            return error.RestrictedContentRendered;
+        }
+        try std.testing.expect(!std.mem.eql(u8, f.path, "files.txt"));
+        try std.testing.expect(!std.mem.eql(u8, f.path, "classes.yaml"));
+        try std.testing.expect(!std.mem.eql(u8, f.path, "policy.md"));
+    }
+
+    // Not restricted: the card's fields, known ones first, in words.
+    input.restricted = false;
+    input.card = "{\"zeta\":\"last\",\"license\":\"CC-BY-4.0\",\"purpose\":\"find people\",\"empty\":\"\",\"n\":3}";
+    const readme_text = (try renderAll(arena, input))[0].contents;
+    const purpose = std.mem.indexOf(u8, readme_text, "**Purpose:** find people").?;
+    const license = std.mem.indexOf(u8, readme_text, "**License:** CC-BY-4.0").?;
+    const zeta = std.mem.indexOf(u8, readme_text, "**zeta:** last").?;
+    try std.testing.expect(purpose < license and license < zeta);
+    try std.testing.expect(std.mem.indexOf(u8, readme_text, "empty") == null);
 }

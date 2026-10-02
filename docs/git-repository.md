@@ -48,6 +48,11 @@ counts (no class names that reveal identities, no file names, no samples).
 - **Deterministic.** The same release always renders the same files (sorted keys, fixed
   formats, the release's card snapshot, no "generated at" times except the release's
   own timestamp), so re-running produces no new git commit.
+- **Exact and in order.** Each commit's tree is exactly the release's rendered files
+  (a file an earlier release had and this one does not, like `files.txt` once a
+  dataset is restricted, is removed). Pending releases are written in release order,
+  and a release whose tag the repository already has is never rendered again, so a
+  resync can never put an older release's files on top of a newer one.
 - **Never blocks a release.** The release is created in cid first; the git write is
   queued (`git_writes`) and retried with backoff. The dashboard and `cid log` show
   "git: pending" until it lands; `cid admin git <dataset>` shows errors and `--resync`
@@ -87,7 +92,10 @@ CREATE TABLE git_writes (
   allowed to push to protected branches, so no paid seat or personal token is needed.
 - **Protection:** `main` is a protected branch with "Allowed to push and merge" set to
   the cid deploy key only; release tags are protected the same way. `cid init` checks
-  both and says exactly which setting to change if they are wrong.
+  that the cid server can reach the repository and push to it (it pushes, then
+  deletes, a throwaway `refs/cid/write-check`; branches and tags are untouched) and
+  refuses, with git's own reason, when it cannot. The protection settings themselves
+  are not checked yet.
 - **Optional GitLab Releases:** if the server is also given a token with the `api`
   scope, cid creates a GitLab Release for each tag, with the release notes and links
   to the dashboard. Without a token, cid skips this and everything else still works.
