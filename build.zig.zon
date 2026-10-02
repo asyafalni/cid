@@ -5,10 +5,8 @@
     .fingerprint = 0x4b30d9c479f4d7dc,
     .dependencies = .{
         .nilo = .{
-            // TEMP: fork pin carrying presignPut (nevindra/nilo PR #10);
-            // flips to upstream main the moment it merges.
-            .url = "git+https://github.com/asyafalni/nilo#21a9661ff449471b46cf000239bff0a9c8ad4c3a",
-            .hash = "nilo-0.6.0-5HEqwsUGegCWRVQL3p0x2jk6apdAhSTPxRqYauPCnKMg",
+            .url = "git+https://github.com/asyafalni/nilo#110cee1b797e2e87c391a3ec50009d6c4cf11563",
+            .hash = "nilo-0.6.0-5HEqwsP0gAA8isiTXsktcjrFPkk7uKlveM-kMbRg1Gfc",
         },
     },
     .paths = .{
