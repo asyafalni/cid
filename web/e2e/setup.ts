@@ -287,6 +287,20 @@ function seedTablesEdited(dir: string) {
   run(`${cid} tag v1.1.0`, folder);
 }
 
+// More items than one browse page holds (120), so paging is exercised.
+function seedMany(dir: string) {
+  const many = join(dir, 'many');
+  execSync(`mkdir -p ${many}/rows`);
+  for (let i = 1; i <= 130; i++) {
+    writeFileSync(join(many, 'rows', `${String(i).padStart(4, '0')}.txt`), `row ${i}\n`);
+  }
+  run(`${cid} init cid@127.0.0.1:e2e/datasets/many --git g@h:many.git`, many);
+  run(`${cid} add .`, many);
+  run(`${cid} commit -m "130 rows"`, many);
+  run(`${cid} push`, many);
+  run(`${cid} tag v1.0.0`, many);
+}
+
 // A restricted dataset: previews blurred until a logged reveal.
 function seedFaces(dir: string) {
   const faces = join(dir, 'faces');
@@ -340,6 +354,7 @@ export default function setup() {
     if (!already.includes('e2e/datasets/faces')) seedFaces(dir);
     if (!already.includes('e2e/datasets/masks')) seedMasks(dir);
     if (!already.includes('e2e/datasets/tables')) seedTables(dir);
+    if (!already.includes('e2e/datasets/many')) seedMany(dir);
     const tableReleases = run(
       `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/tables/-/releases -H "Authorization: Bearer ${token}"`,
     );

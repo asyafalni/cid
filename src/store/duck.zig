@@ -97,9 +97,49 @@ pub const Db = struct {
             std.log.warn("duckdb: {s}", .{if (why != null) std.mem.span(why) else "query failed"});
             return error.QueryFailed;
         }
-        if (c.duckdb_row_count(&result) == 0 or c.duckdb_column_count(&result) == 0) return null;
-        if (c.duckdb_value_is_null(&result, 0, 0)) return null;
-        const text = c.duckdb_value_varchar(&result, 0, 0) orelse return null;
+        return firstText(arena, &result);
+    }
+
+    /// A value bound to a prepared query's `$n`: text (or NULL) and
+    /// integers. Whatever a request carries reaches DuckDB this way, never
+    /// spliced into the SQL.
+    pub const Arg = union(enum) { text: ?[]const u8, int: i64 };
+
+    /// scalarText for a query with `$1…$n` bound to `args`, in order.
+    pub fn scalarTextArgs(self: *Db, arena: std.mem.Allocator, sql: []const u8, args: []const Arg) Error!?[]const u8 {
+        if (comptime !enabled) return error.Unavailable;
+        const sql_z = arena.dupeZ(u8, sql) catch return error.OutOfMemory;
+        var stmt: c.duckdb_prepared_statement = null;
+        defer c.duckdb_destroy_prepare(&stmt);
+        if (c.duckdb_prepare(self.conn, sql_z, &stmt) != c.DuckDBSuccess) {
+            const why = c.duckdb_prepare_error(stmt);
+            std.log.warn("duckdb: {s}", .{if (why != null) std.mem.span(why) else "prepare failed"});
+            return error.QueryFailed;
+        }
+        for (args, 1..) |arg, i| {
+            const bound = switch (arg) {
+                .text => |t| if (t) |v|
+                    c.duckdb_bind_varchar_length(stmt, i, v.ptr, v.len)
+                else
+                    c.duckdb_bind_null(stmt, i),
+                .int => |n| c.duckdb_bind_int64(stmt, i, n),
+            };
+            if (bound != c.DuckDBSuccess) return error.QueryFailed;
+        }
+        var result: c.duckdb_result = undefined;
+        defer c.duckdb_destroy_result(&result);
+        if (c.duckdb_execute_prepared(stmt, &result) != c.DuckDBSuccess) {
+            const why = c.duckdb_result_error(&result);
+            std.log.warn("duckdb: {s}", .{if (why != null) std.mem.span(why) else "query failed"});
+            return error.QueryFailed;
+        }
+        return firstText(arena, &result);
+    }
+
+    fn firstText(arena: std.mem.Allocator, result: *c.duckdb_result) Error!?[]const u8 {
+        if (c.duckdb_row_count(result) == 0 or c.duckdb_column_count(result) == 0) return null;
+        if (c.duckdb_value_is_null(result, 0, 0)) return null;
+        const text = c.duckdb_value_varchar(result, 0, 0) orelse return null;
         defer c.duckdb_free(text);
         return arena.dupe(u8, std.mem.span(text)) catch error.OutOfMemory;
     }
@@ -121,4 +161,7 @@ test "the CLI build answers Unavailable; the server build runs a query under its
     try std.testing.expectError(error.QueryFailed, db.scalarText(arena, "SET enable_external_access = true"));
     // And outside the allowed directory, nothing is readable.
     try std.testing.expectError(error.QueryFailed, db.scalarText(arena, "SELECT count(*) FROM read_csv('/etc/passwd')"));
+    // Bound values stay values: a quote is just a character.
+    const echoed = try db.scalarTextArgs(arena, "SELECT $1::VARCHAR || '/' || ($2 + 1)::VARCHAR || '/' || coalesce($3::VARCHAR, 'null')", &.{ .{ .text = "it's'; DROP" }, .{ .int = 41 }, .{ .text = null } });
+    try std.testing.expectEqualStrings("it's'; DROP/42/null", echoed.?);
 }

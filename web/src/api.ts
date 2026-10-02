@@ -128,6 +128,51 @@ export function getState(
   return request(`/v0/datasets/${name}/-/state/${commit}`);
 }
 
+/** An item as browse answers it: the state item and its annotations at
+ * that version. */
+export type BrowseItem = StateItem & { annotations: StateAnnotation[] };
+
+export type BrowseFacet = { value: string; count: number };
+
+export type BrowsePage = {
+  engine: 'duckdb' | 'state';
+  total: number;
+  matched: number;
+  items: BrowseItem[];
+  /** The cursor for the next page; null on the last. */
+  next: string | null;
+  open: BrowseItem | null;
+  facets: { split: BrowseFacet[]; class: BrowseFacet[]; type: BrowseFacet[] };
+  /** Annotations per class across the whole version. */
+  classes: BrowseFacet[];
+};
+
+export type BrowseQuery = {
+  q?: string;
+  split?: string;
+  cls?: string;
+  type?: string;
+  after?: string;
+  item?: string;
+  limit?: number;
+};
+
+/** One page of a version, filtered on the server (docs/dashboard.md,
+ * Browse API). An empty split or class is a value ("none"), so only an
+ * absent filter is left out of the URL. */
+export function getBrowse(name: string, commit: string, query: BrowseQuery): Promise<BrowsePage> {
+  const params = new URLSearchParams({ commit });
+  if (query.q) params.set('q', query.q);
+  if (query.split !== undefined) params.set('split', query.split);
+  if (query.cls !== undefined) params.set('class', query.cls);
+  if (query.type !== undefined) params.set('type', query.type);
+  if (query.after !== undefined) params.set('after', query.after);
+  if (query.item !== undefined) params.set('item', query.item);
+  if (query.limit !== undefined) params.set('limit', String(query.limit));
+  // The server decodes %XX only: spaces must not travel as '+'.
+  return request(`/v0/datasets/${name}/-/browse?${params.toString().replace(/\+/g, '%20')}`);
+}
+
 export function getThumbs(
   name: string,
   hashes: string[],

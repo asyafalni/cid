@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import {
+  ApiError,
+  getBrowse,
   getDownloads,
   getHistory,
-  getState,
   getThumbs,
   reveal,
   type Revealed,
@@ -16,15 +17,11 @@ import { AnnotationOverlay } from '../overlays';
 import { classColor } from '../shapes';
 import { timeline } from '../history';
 import { TableView } from '../TableView';
-import {
-  anyFilter,
-  applyFilters,
-  classesByItem,
-  extOf,
-  facet,
-  type FilterPatch,
-  type Filters,
-} from '../browseFilter';
+import { anyFilter, extOf, type FilterPatch, type Filters } from '../browseFilter';
+
+// A page of the gallery or table: what the server answers per request,
+// and what one scroll to the bottom asks for next.
+const pageSize = 120;
 
 // Browse: never "viewer not available". Every item renders — as its
 // thumbnail when the worker has built one, as a type tile when not —
@@ -83,44 +80,62 @@ export function BrowseTab({
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const [opacity, setOpacity] = useState(0.9);
 
-  const state = useQuery({
-    queryKey: ['state', name, commit],
-    queryFn: () => getState(name, commit!),
+  // The version a page at a time, filtered on the server (DuckDB over the
+  // version's Parquet index in the server build): the page never holds
+  // more than what was scrolled to, whatever the dataset's size. Each
+  // page brings its own thumbnails; a page whose thumbnails cannot be had
+  // still shows every item, as type tiles.
+  const query = { q: filters.q, split: filters.split, cls: filters.cls, type: filters.type };
+  const pages = useInfiniteQuery({
+    queryKey: ['browse', name, commit, query],
+    queryFn: async ({ pageParam }) => {
+      const page = await getBrowse(name, commit!, { ...query, after: pageParam, limit: pageSize });
+      return { ...page, thumbs: await thumbsFor(name, page.items) };
+    },
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.next ?? undefined,
     enabled: commit !== null,
   });
-  const imageHashes =
-    state.data?.items
-      .filter((i) => looksVisual(i.path))
-      .map((i) => i.hash)
-      .slice(0, 500) ?? [];
-  const thumbs = useQuery({
-    queryKey: ['thumbs', name, commit, imageHashes.length],
-    queryFn: () => getThumbs(name, imageHashes),
-    enabled: imageHashes.length > 0,
+  const loaded = pages.data?.pages.flatMap((p) => p.items) ?? [];
+  const openLoaded = loaded.find((i) => i.path === openItem);
+  // A shared link can open an item no loaded page holds yet.
+  const openFetched = useQuery({
+    queryKey: ['browse-open', name, commit, openItem],
+    queryFn: async () => {
+      const page = await getBrowse(name, commit!, { item: openItem, limit: 1 });
+      return page.open ? { item: page.open, thumbs: await thumbsFor(name, [page.open]) } : null;
+    },
+    enabled: commit !== null && openItem !== undefined && openLoaded === undefined && pages.isSuccess,
   });
 
   if (commit === null) return <p className="quiet">Nothing to browse until the first push.</p>;
-  if (state.isPending) return <p className="quiet">Reading the manifest…</p>;
-  if (state.isError) {
+  if (pages.isPending) return <p className="quiet">Reading the manifest…</p>;
+  if (pages.isError) {
+    const indexing = pages.error instanceof ApiError && pages.error.status === 503;
     return (
       <div className="panel notice" role="alert">
-        <p>Could not read this version. Run the link again, or pick another release.</p>
+        <p>
+          {indexing
+            ? 'The server is indexing another version. Reload in a moment.'
+            : 'Could not read this version. Run the link again, or pick another release.'}
+        </p>
       </div>
     );
   }
 
-  const all = state.data.items;
-  const annotations = state.data.annotations ?? [];
-  const itemClasses = classesByItem(annotations);
-  const items = applyFilters(all, filters, itemClasses);
-  const splitFacet = facet(all, filters, itemClasses, 'split');
-  const classFacet = facet(all, filters, itemClasses, 'cls');
-  const typeFacet = facet(all, filters, itemClasses, 'type');
+  const first = pages.data.pages[0];
+  const total = first.total;
+  const matched = first.matched;
+  const items = loaded;
+  const splitFacet = first.facets.split;
+  const classFacet = first.facets.class;
+  const typeFacet = first.facets.type;
   const filtered = anyFilter(filters);
-  const thumbByHash = new Map((thumbs.data?.thumbs ?? []).map((t) => [t.hash, t.url]));
-  const annsByItem = groupAnnotations(annotations);
-  const classes = classCounts(annotations);
-  const open = all.find((i) => i.path === openItem);
+  const thumbByHash = new Map(
+    [...pages.data.pages.flatMap((p) => p.thumbs), ...(openFetched.data?.thumbs ?? [])].map((t) => [t.hash, t.url]),
+  );
+  const classes = first.classes.map((c) => ({ name: c.value, count: c.count }));
+  const open = openLoaded ?? openFetched.data?.item;
 
   return (
     <div className="browse">
@@ -143,12 +158,12 @@ export function BrowseTab({
         )}
         <p className="quiet data" aria-live="polite">
           {filtered
-            ? `${items.length.toLocaleString()} of ${all.length.toLocaleString()} items`
-            : `${all.length.toLocaleString()} items`}
+            ? `${matched.toLocaleString()} of ${total.toLocaleString()} items`
+            : `${total.toLocaleString()} items`}
         </p>
       </div>
 
-      {all.length > 0 && (
+      {total > 0 && (
         <div className="filter-bar" role="search">
           <input
             type="search"
@@ -232,12 +247,12 @@ export function BrowseTab({
         </div>
       )}
 
-      {all.length === 0 ? (
+      {total === 0 ? (
         <div className="empty blueprint">
           <h2>This version is empty</h2>
           <p>Every item was deleted by this point in history.</p>
         </div>
-      ) : items.length === 0 ? (
+      ) : matched === 0 ? (
         <div className="empty blueprint">
           <h2>No item matches these filters</h2>
           <p>
@@ -249,7 +264,7 @@ export function BrowseTab({
             >
               Clear filters
             </button>{' '}
-            to see all {all.length.toLocaleString()} items at this version.
+            to see all {total.toLocaleString()} items at this version.
           </p>
         </div>
       ) : mode === 'gallery' ? (
@@ -275,7 +290,7 @@ export function BrowseTab({
                         <AnnotationOverlay
                           width={item.width}
                           height={item.height}
-                          annotations={annsByItem.get(item.item_id) ?? []}
+                          annotations={item.annotations}
                           hidden={hidden}
                           opacity={opacity}
                         />
@@ -321,13 +336,22 @@ export function BrowseTab({
         </table>
       )}
 
+      {pages.hasNextPage && (
+        <MoreItems
+          shown={items.length}
+          matched={matched}
+          loading={pages.isFetchingNextPage}
+          onMore={() => void pages.fetchNextPage()}
+        />
+      )}
+
       {open && (
         <ItemDrawer
           name={name}
           item={open}
           annotated={overview.kind === 'annotated'}
           restricted={overview.restricted}
-          annotations={open.item_id ? (annsByItem.get(open.item_id) ?? []) : []}
+          annotations={open.annotations}
           thumb={thumbByHash.get(open.hash)}
           hidden={hidden}
           opacity={opacity}
@@ -559,25 +583,48 @@ function HashChip({ hash }: { hash: string }) {
   );
 }
 
-function groupAnnotations(annotations: StateAnnotation[]): Map<string, StateAnnotation[]> {
-  const map = new Map<string, StateAnnotation[]>();
-  for (const a of annotations) {
-    const list = map.get(a.item_id);
-    if (list) list.push(a);
-    else map.set(a.item_id, [a]);
+/** Thumbnails for a page's visual items. Previews are optional: when they
+ * cannot be had, the items show as type tiles, never as an error. */
+async function thumbsFor(name: string, items: StateItem[]): Promise<{ hash: string; url: string }[]> {
+  const hashes = items.filter((i) => looksVisual(i.path)).map((i) => i.hash);
+  if (hashes.length === 0) return [];
+  try {
+    return (await getThumbs(name, hashes)).thumbs;
+  } catch {
+    return [];
   }
-  return map;
 }
 
-function classCounts(annotations: StateAnnotation[]): { name: string; count: number }[] {
-  const counts = new Map<string, number>();
-  for (const a of annotations) {
-    const cls = a.class ?? '';
-    counts.set(cls, (counts.get(cls) ?? 0) + 1);
-  }
-  return [...counts.entries()]
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+// The next page: fetched as the button scrolls into view, and a plain
+// button for keyboards and anyone who would rather click.
+function MoreItems({
+  shown,
+  matched,
+  loading,
+  onMore,
+}: {
+  shown: number;
+  matched: number;
+  loading: boolean;
+  onMore: () => void;
+}) {
+  const ref = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || loading || typeof IntersectionObserver === 'undefined') return;
+    const watch = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) onMore();
+    });
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [loading, onMore]);
+  return (
+    <button ref={ref} className="filter-clear more-items" disabled={loading} onClick={onMore}>
+      {loading
+        ? 'Loading more…'
+        : `Show more (${shown.toLocaleString()} of ${matched.toLocaleString()} shown)`}
+    </button>
+  );
 }
 
 function isTable(path: string): boolean {

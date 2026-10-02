@@ -301,9 +301,16 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   plain build is the CLI download and never fetches it; there every DuckDB call
   answers `error.Unavailable` and the feature says, in words, that it needs the
   server build. Table statistics (preview worker) are the first user.
-- **The dashboard** is served by the cid server. Its browse API queries release
-  manifests with DuckDB (filters, facets, cursors) and returns presigned preview URLs;
-  it never scans raw files on page load.
+- **The dashboard** is served by the cid server. Its browse API (`src/server/browse/`)
+  answers a page of a version at a time: items with their annotations, counts, facets
+  counted against the other filters, and a cursor. In the server build each version
+  has a Parquet browse index queried by DuckDB (0.2–0.5 s per page at 1M items, one
+  thread, measured on a synthetic index; filters and facets read only the light
+  columns, the page's rows alone carry hashes and annotations); a release's index is built at tag time and kept in storage,
+  other commits' indexes are built from state-at-commit on first view into a bounded
+  local cache. An index holds only what the commit seals; media metadata (image
+  dimensions) is joined per page. The CLI build answers the same contract from state
+  rows in memory. It never scans raw files on page load.
 - **The preview worker** (`cid admin previews`) builds thumbnails, waveforms, video
   posters, PDF page images and table statistics, by calling `ffmpeg` (and `vips`
   where present) as external programs. **ffmpeg never scales with users**: the
@@ -394,7 +401,7 @@ If a change would weaken any of these, stop and ask.
 <bucket>/
   items/sha256/<aa>/<bb>/<hex>                any file, stored once
   previews/<aa>/<hex>/…                       thumbnails, waveforms, blurred renditions
-  manifests/<dataset_id>/<commit_id>.parquet  one per release
+  manifests/<dataset_id>/<commit_id>.parquet  one per release: its browse index
   exports/<dataset_id>/<release>/<format>/…   annotated datasets, rebuildable
 ```
 

@@ -2,10 +2,11 @@
 //! release can be rebuilt exactly (invariants 5 and 6). Used by the
 //! server's tag route and by `cid admin verify`.
 //!
-//! v0 stores the manifest as the canonical text stream itself
-//! (manifests/<dataset_id>/<commit_id>.manifest). Parquet via DuckDB is a
-//! storage upgrade for the browse API later; the hash is defined over the
-//! canonical stream either way, so the upgrade cannot break releases.
+//! The manifest is stored as the canonical text stream itself
+//! (manifests/<dataset_id>/<commit_id>.manifest), which is what the hash
+//! covers. The release's Parquet browse index sits beside it (.parquet,
+//! written by the server build's tag route): derived, rebuildable, never
+//! hashed, so it cannot break a release.
 
 const std = @import("std");
 const dbx = @import("../store/db.zig");

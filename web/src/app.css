@@ -1316,3 +1316,8 @@
 .table-pending {
   font-size: 0.85rem;
 }
+
+.more-items {
+  display: block;
+  margin: var(--space-3) auto;
+}

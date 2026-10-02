@@ -285,9 +285,16 @@ accent colours.
   series colour, legend for 2+ series).
 - **Design:** tokens and rules from section 3, kept in `web/src/theme/`. The annotation
   platform can adopt the same tokens so both feel like one product. WCAG 2.2 AA.
-- **Browse API** (in `cid serve`): queries the release manifest with DuckDB (filters,
-  sort, facets/histograms, pagination by cursor), returns thumbnails as presigned URLs.
-  Commits and branches not yet released are browsed from TimescaleDB state-at-commit.
+- **Browse API** (in `cid serve`, `GET …/-/browse?commit=…`): one page of a version —
+  items with their annotations, total and matched counts, the split/class/type facets
+  (each counted against the other filters), the class counts, a cursor, and the open
+  item. The server build answers from the version's Parquet browse index with DuckDB:
+  built at tag time for a release and kept in storage beside its manifest, built from
+  TimescaleDB state-at-commit on first view for any other commit, cached on the
+  server's disk by commit id (commits are sealed, so an index never goes stale). Media
+  metadata is joined per page, because the worker fills it in after ingest. The CLI
+  build answers the same contract from state rows. Thumbnails come per page, as
+  presigned URLs; the gallery loads the next page as the end scrolls into view.
 - **Preview worker** (`cid admin previews`): builds thumbnails (WebP), audio waveform
   peaks, video poster frames and short previews, PDF page thumbnails, and per-file
   table statistics, when items are pushed or registered. It calls **ffmpeg** and

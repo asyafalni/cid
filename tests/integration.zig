@@ -1430,6 +1430,81 @@ test "annotated: the platform writes revisions, the server commits, state compos
     } else return error.NoCreateInHistory;
     try std.testing.expectEqual(@as(i64, 10), original.geometry.?.object.get("x").?.integer);
     try std.testing.expectEqualStrings(c1, original.commit.?);
+
+    // Browse: each version as it was, a page at a time, the same contract
+    // in both builds (DuckDB over a Parquet index; state rows without).
+    var browse_tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer browse_tmp.cleanup();
+    deps.browse_dir = try browse_tmp.dir.realPathFileAlloc(io, ".", arena);
+    deps.browse_cache_max = 1;
+    const Browsed = struct {
+        engine: []const u8,
+        total: u64,
+        matched: u64,
+        items: []const struct { path: []const u8, split: ?[]const u8, annotations: []const struct { class: ?[]const u8, geometry: ?std.json.Value } },
+        next: ?[]const u8,
+        open: ?struct { path: []const u8 } = null,
+        facets: struct { class: []const struct { value: []const u8, count: u64 } },
+        classes: []const struct { value: []const u8, count: u64 },
+    };
+    const browseAt = struct {
+        fn get(al: std.mem.Allocator, d: *cid.api.Deps, sc: anytype, commit: []const u8, query: []const u8) !Browsed {
+            const target = try std.fmt.allocPrint(al, "/v0/datasets/test/datasets/ann/-/browse?commit={s}{s}", .{ commit, query });
+            const res = cid.api.handle(al, d, sc, "GET", target, "Bearer test-token", "");
+            if (res.status != .ok) {
+                std.debug.print("browse answered {d}: {s}\n", .{ @intFromEnum(res.status), res.body });
+                return error.BrowseRefused;
+            }
+            return std.json.parseFromSliceLeaky(Browsed, al, res.body, .{ .ignore_unknown_fields = true });
+        }
+    }.get;
+    const b1 = try browseAt(arena, &deps, &scope, c1, "");
+    try std.testing.expectEqualStrings(if (cid.duck.enabled) "duckdb" else "state", b1.engine);
+    try std.testing.expectEqual(@as(u64, 2), b1.total);
+    try std.testing.expectEqualStrings("frames/0001.jpg", b1.items[0].path);
+    try std.testing.expectEqual(@as(usize, 2), b1.items[0].annotations.len);
+    try std.testing.expectEqual(@as(usize, 2), b1.facets.class.len);
+    try std.testing.expectEqualStrings("person", b1.classes[0].value);
+    const vehicles = try browseAt(arena, &deps, &scope, c1, "&class=vehicle&item=frames%2F0002.jpg");
+    try std.testing.expectEqual(@as(u64, 1), vehicles.matched);
+    try std.testing.expectEqualStrings("frames/0002.jpg", vehicles.open.?.path);
+    // The second version: one box, moved; the vehicle is gone.
+    const b2 = try browseAt(arena, &deps, &scope, c2, "&q=FRAMES%2F0001");
+    try std.testing.expectEqual(@as(u64, 1), b2.matched);
+    try std.testing.expectEqual(@as(usize, 1), b2.items[0].annotations.len);
+    try std.testing.expectEqual(@as(i64, 11), b2.items[0].annotations[0].geometry.?.object.get("x").?.integer);
+    const val = try browseAt(arena, &deps, &scope, c2, "&split=val&limit=1");
+    try std.testing.expectEqual(@as(u64, 1), val.matched);
+    try std.testing.expectEqualStrings("val", val.items[0].split.?);
+    try std.testing.expect(val.next == null);
+    const paged = try browseAt(arena, &deps, &scope, c2, "&limit=1");
+    try std.testing.expectEqualStrings("frames/0001.jpg", paged.next.?);
+    const page2 = try browseAt(arena, &deps, &scope, c2, "&limit=1&after=frames%2F0001.jpg");
+    try std.testing.expectEqualStrings("frames/0002.jpg", page2.items[0].path);
+    // Another dataset's version, or none at all, is not browsable here.
+    const stranger = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/ann/-/browse?commit=01890000-0000-7000-8000-000000000000", "Bearer test-token", "");
+    try std.testing.expectEqual(std.http.Status.not_found, stranger.status);
+
+    if (comptime cid.duck.enabled) {
+        // The cache kept one index (the limit), the most recent.
+        var kept: usize = 0;
+        var it = browse_tmp.dir.iterate();
+        while (try it.next(io)) |entry| if (std.mem.endsWith(u8, entry.name, ".parquet")) {
+            kept += 1;
+        };
+        try std.testing.expectEqual(@as(usize, 1), kept);
+        // A release's index is built at tag time and kept in storage, so a
+        // server with an empty cache fetches it rather than rebuilding.
+        const tagged = try remote.tag(arena, "v-browse");
+        const key = try std.fmt.allocPrint(arena, "manifests/{s}/{s}.parquet", .{ ds_id, tagged.commit });
+        try std.testing.expect((try s3c.headObject(&scope, key)) != null);
+        var empty_cache = std.testing.tmpDir(.{});
+        defer empty_cache.cleanup();
+        deps.browse_dir = try empty_cache.dir.realPathFileAlloc(io, ".", arena);
+        const fetched = try browseAt(arena, &deps, &scope, tagged.commit, "");
+        try std.testing.expectEqual(@as(u64, 2), fetched.total);
+        try s3c.deleteObject(&scope, key);
+    }
 }
 
 test "annotated releases: v2 manifest with JCS rows, verify catches smuggled boxes" {
@@ -1964,6 +2039,12 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
     _ = try cid.client.workspace.commit(arena, io, &pws, "a png, pushed blind", "user:test");
     _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    // Released before the worker has looked at it: whatever a release
+    // indexes then, the dimensions sniffed later must still show.
+    var browse_tmp = std.testing.tmpDir(.{});
+    defer browse_tmp.cleanup();
+    deps.browse_dir = try browse_tmp.dir.realPathFileAlloc(io, ".", arena);
+    const released = try remote.tag(arena, "v1.0.0");
 
     // Before the worker: an honest octet-stream.
     {
@@ -1991,6 +2072,15 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     }
     const thumb = try s3c.getObjectAlloc(&scope, try cid.preview.thumbKey(arena, &hh));
     try std.testing.expect(thumb.len > 100);
+    {
+        const target = try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/sniff/-/browse?commit={s}&item=cli.png", .{released.commit});
+        const res = cid.api.handle(arena, &deps, &scope, "GET", target, "Bearer test-token", "");
+        try std.testing.expectEqual(std.http.Status.ok, res.status);
+        const Dims = struct { width: ?u32, height: ?u32 };
+        const page = try std.json.parseFromSliceLeaky(struct { items: []const Dims, open: ?Dims }, arena, res.body, .{ .ignore_unknown_fields = true });
+        try std.testing.expectEqual(@as(?u32, 96), page.items[0].width);
+        try std.testing.expectEqual(@as(?u32, 64), page.open.?.height);
+    }
 
     // The home listing: the card's counts come from the head commit's
     // stats, computed once and cached on the commit, and its mosaic is

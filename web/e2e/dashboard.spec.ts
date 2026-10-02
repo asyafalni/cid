@@ -417,6 +417,24 @@ test('compare shows a modified table by its rows: counts, then the rows themselv
   await expect(change.locator('table', { hasText: 'Added' })).toContainText('Fajar');
 });
 
+test('browse pages through a version: one page, then more on scroll, and links past the first page', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/many?view=browse&mode=table');
+  await expect(page.getByText('130 items')).toBeVisible();
+  const rows = page.locator('.browse-table tbody tr');
+  await expect(rows).toHaveCount(120);
+  const more = page.getByRole('button', { name: /Show more \(120 of 130 shown\)/ });
+  await more.scrollIntoViewIfNeeded();
+  await expect(rows).toHaveCount(130);
+  await expect(page.getByRole('button', { name: /Show more/ })).toHaveCount(0);
+  // Filters run on the server and page the same way.
+  await page.goto('/d/e2e/datasets/many?view=browse&mode=table&q=012');
+  await expect(page.getByText('11 of 130 items')).toBeVisible();
+  // A shared link opens an item no loaded page holds.
+  await page.goto('/d/e2e/datasets/many?view=browse&item=rows/0130.txt');
+  await expect(page.getByRole('complementary', { name: 'rows/0130.txt' })).toBeVisible();
+});
+
 test('accessibility: no serious or critical axe findings', async ({ page }) => {
   await signIn(page);
   for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0']) {

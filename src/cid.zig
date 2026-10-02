@@ -27,6 +27,7 @@ pub const table_stats = @import("tabular/stats.zig");
 pub const rowdiff = @import("tabular/rowdiff.zig");
 pub const api = @import("server/api.zig");
 pub const serve = @import("server/serve.zig");
+pub const browse = @import("server/browse/browse.zig");
 pub const signin = @import("server/signin.zig");
 pub const migrate = @import("core/migrate.zig");
 pub const release = @import("core/release.zig");
@@ -83,6 +84,7 @@ test {
     _ = rowdiff;
     _ = api;
     _ = serve;
+    _ = browse;
     _ = signin;
     _ = migrate;
     _ = release;
