@@ -66,6 +66,10 @@ expect_ok() {
     say "ok: $desc"
 }
 
+if curl -sf "$CID_SERVER/v0/ping" >/dev/null 2>&1; then
+    say "usability: something already answers on port $PORT (a server left from an earlier run?). Stop it, then run this again."
+    exit 1
+fi
 "$CID" admin serve --port "$PORT" >"$WORK/serve.log" 2>&1 &
 SERVE_PID=$!
 # Wait for the server to be gone on exit, so a run right after this one
@@ -178,6 +182,14 @@ expect_ok   "register the key (the GitLab sync's job)" "$CID" admin add-key gitl
 expect_code 5 "clone before being given access"   by_key "$CID" clone "cid@127.0.0.1:$DS" by-stranger
 expect_ok   "Reporter access (the GitLab sync's job)" "$CID" admin grant "$DS" gitlab:9001 read
 expect_ok   "clone with only an SSH key"         by_key "$CID" clone "cid@127.0.0.1:$DS" by-key
+# The forced command is all a key gets: no shell, no other command.
+for cmd in "" "bash" "cat /etc/passwd" "cid-auth $DS admin"; do
+    out=$(env PATH="$FAKEBIN:$PATH" HOME="$SSHHOME" ssh cid@127.0.0.1 $cmd 2>&1); code=$?
+    case "$code:$out" in
+        5:*"only answers: cid-auth"*) say "ok: ssh '$cmd' is refused" ;;
+        *) say "FAIL: ssh '$cmd' was not refused (exit $code): $out"; fails=$((fails+1)) ;;
+    esac
+done
 cd by-key
 echo "a reporter's edit" > reporter.txt
 expect_ok   "a Reporter commits locally"         by_key "$CID" add reporter.txt

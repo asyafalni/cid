@@ -11,6 +11,9 @@ pub const ExitCode = root.ExitCode;
 
 pub const Context = struct {
     arena: std.mem.Allocator,
+    /// For memory reused and freed while a command streams (a line
+    /// buffer, per-file scratch): never the arena, which cannot free.
+    gpa: std.mem.Allocator,
     io: std.Io,
     out: *std.Io.Writer,
     env: *const std.process.Environ.Map,
@@ -96,7 +99,7 @@ pub fn remoteFor(
     const transport = try ctx.arena.create(remote_mod.HttpTransport);
     transport.* = remote_mod.HttpTransport.init(ctx.arena, ctx.io, server, tok);
     const r = try ctx.arena.create(remote_mod.Remote);
-    r.* = .{ .t = transport.transport(), .name = dataset_name };
+    r.* = .{ .t = transport.transport(), .name = dataset_name, .gpa = ctx.gpa };
     return r;
 }
 

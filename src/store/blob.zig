@@ -40,11 +40,14 @@ pub const Client = struct {
     store: s3.Store,
     items: Items,
     multipart_threshold: u64,
+    /// Holds a file below the multipart threshold while it goes up.
+    gpa: std.mem.Allocator,
 
     /// Out-pointer init, because `items` keeps a pointer to `store`:
     /// a Client that moved after `open` would dangle.
     pub fn open(self: *Client, gpa: std.mem.Allocator, config: Config) !void {
         self.multipart_threshold = config.multipart_threshold;
+        self.gpa = gpa;
         self.store = try s3.open(gpa, .{
             .endpoint = config.endpoint,
             .region = config.region,
@@ -107,8 +110,8 @@ pub const Client = struct {
                 .content_type = "application/octet-stream",
             });
         }
-        const bytes = std.heap.page_allocator.alloc(u8, @intCast(size)) catch return error.FileUnreadable;
-        defer std.heap.page_allocator.free(bytes);
+        const bytes = self.gpa.alloc(u8, @intCast(size)) catch return error.FileUnreadable;
+        defer self.gpa.free(bytes);
         fr.interface.readSliceAll(bytes) catch return error.FileUnreadable;
         return self.items.put(scope, key, .{ .bytes = bytes, .content_type = "application/octet-stream" });
     }

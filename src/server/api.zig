@@ -75,7 +75,7 @@ pub const Deps = struct {
     browse_building_commit: std.atomic.Value(u64) = .init(0),
     /// For memory that outlives no single step but must not grow with a
     /// dataset: each batch of a streamed index build.
-    gpa: std.mem.Allocator = std.heap.page_allocator,
+    gpa: std.mem.Allocator,
     /// Set by `cid admin serve`: DuckDB work goes to nilo's thread pool
     /// (nilo ADR 013) so the fiber's thread keeps serving meanwhile. Tests
     /// and admin commands, which have no engine, run it in place.
@@ -890,6 +890,7 @@ fn browseIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
 
     // One pass over history (core/version.zig), then DuckDB's conversion.
     const lines = try openLines(deps, index.files);
+    defer deps.gpa.destroy(lines);
     _ = versions.pass(deps.gpa, deps.db, scope, ds.id, commit, .{ .items = lines.items(), .annotations = lines.anns() }) catch |err| {
         lines.discard(deps, index.files);
         return switch (err) {

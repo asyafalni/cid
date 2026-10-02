@@ -181,7 +181,7 @@ pub fn build(
                 if (nameless) |path| return .{ .failed = .{ .path = try gpa.dupe(u8, path), .why = "a box has no class" } };
                 const names = tx.raw([]const u8, scope, "SELECT class FROM (SELECT DISTINCT class FROM x_anns WHERE kind = 'box') d ORDER BY class COLLATE \"C\"", .{}) catch return error.Db;
                 renderer = .{ .yolo = .{ .classes = try dupeAll(arena, names) } };
-                renderer.yolo.begin(bundle) catch return error.WriteFailed;
+                renderer.yolo.begin(bundle, arena) catch return error.WriteFailed;
             }
 
             _ = tx.exec(scope, "DECLARE x_ac NO SCROLL CURSOR FOR SELECT path, annotation_id::text AS id, kind, class, " ++

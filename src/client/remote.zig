@@ -133,6 +133,9 @@ pub const Remote = struct {
     t: Transport,
     /// Dataset path, e.g. "org/datasets/calls".
     name: []const u8,
+    /// Line buffers and per-file scratch while a version streams in:
+    /// reused and freed as it goes, so not an arena.
+    gpa: std.mem.Allocator,
 
     fn target(self: *const Remote, arena: std.mem.Allocator, comptime action_fmt: []const u8, args: anytype) ![]u8 {
         return std.fmt.allocPrint(arena, "/v0/datasets/{s}/-/" ++ action_fmt, .{self.name} ++ args);
@@ -309,7 +312,7 @@ pub const Remote = struct {
     /// SHA-256 checked over every byte (invariant 14).
     pub fn versionOf(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8, subset: Subset) Error!Version {
         const where = try self.whereIs(arena, commit_id, "state", subset);
-        var reading: StateReading = .{ .arena = arena };
+        var reading: StateReading = .{ .arena = arena, .gpa = self.gpa };
         self.t.getUrl(where.url, .{ .ctx = &reading, .read = StateReading.read }) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             error.BadState => error.Corrupt,
@@ -332,7 +335,7 @@ pub const Remote = struct {
     /// what was written as void.
     pub fn exportTo(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8, format: []const u8, subset: Subset, sink: FileSink) Error!void {
         const where = try self.whereIs(arena, commit_id, format, subset);
-        var reading: BundleReading = .{ .sink = sink, .scratch = .init(std.heap.page_allocator) };
+        var reading: BundleReading = .{ .sink = sink, .scratch = .init(self.gpa) };
         defer reading.scratch.deinit();
         self.t.getUrl(where.url, .{ .ctx = &reading, .read = BundleReading.read }) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
@@ -466,7 +469,7 @@ pub const Remote = struct {
         if (res.status != .ok) return error.ServerRefused;
         const Where = struct { url: []const u8, sha256: []const u8, summary: DiffSummary };
         const where = parse(Where, arena, res.body) orelse return error.ServerRefused;
-        var reading: DiffReading = .{ .visitor = visitor, .scratch = .init(std.heap.page_allocator) };
+        var reading: DiffReading = .{ .visitor = visitor, .scratch = .init(self.gpa) };
         defer reading.scratch.deinit();
         self.t.getUrl(where.url, .{ .ctx = &reading, .read = DiffReading.read }) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
@@ -519,12 +522,12 @@ pub const Remote = struct {
 /// Reads a gzip stream of JSON lines as it arrives: every compressed byte
 /// hashed, the first line checked against `header`, each further line
 /// handed to `line` (valid only for that call). Answers the SHA-256.
-fn readGzLines(body: *std.Io.Reader, header: []const u8, ctx: anytype, comptime line: fn (@TypeOf(ctx), []const u8) anyerror!void) anyerror![64]u8 {
+fn readGzLines(gpa: std.mem.Allocator, body: *std.Io.Reader, header: []const u8, ctx: anytype, comptime line: fn (@TypeOf(ctx), []const u8) anyerror!void) anyerror![64]u8 {
     var hash_buf: [64 * 1024]u8 = undefined;
     var hashed = body.hashed(std.crypto.hash.sha2.Sha256.init(.{}), &hash_buf);
     var window: [std.compress.flate.max_window_len]u8 = undefined;
     var gz: std.compress.flate.Decompress = .init(&hashed.reader, .gzip, &window);
-    var text: std.Io.Writer.Allocating = .init(std.heap.page_allocator);
+    var text: std.Io.Writer.Allocating = .init(gpa);
     defer text.deinit();
     var first = true;
     while (true) {
@@ -552,12 +555,13 @@ fn readGzLines(body: *std.Io.Reader, header: []const u8, ctx: anytype, comptime 
 /// annotations.
 const StateReading = struct {
     arena: std.mem.Allocator,
+    gpa: std.mem.Allocator,
     items: std.ArrayList(Remote.StateItem) = .empty,
     sha256_hex: [64]u8 = @splat('0'),
 
     fn read(ctx: *anyopaque, body: *std.Io.Reader) anyerror!void {
         const self: *StateReading = @ptrCast(@alignCast(ctx));
-        self.sha256_hex = try readGzLines(body, "{\"cid\":\"state\",\"v\":1,", self, line);
+        self.sha256_hex = try readGzLines(self.gpa, body, "{\"cid\":\"state\",\"v\":1,", self, line);
     }
 
     fn line(self: *StateReading, text: []const u8) anyerror!void {
@@ -575,7 +579,7 @@ const BundleReading = struct {
 
     fn read(ctx: *anyopaque, body: *std.Io.Reader) anyerror!void {
         const self: *BundleReading = @ptrCast(@alignCast(ctx));
-        self.sha256_hex = try readGzLines(body, "{\"cid\":\"bundle\",\"v\":1,", self, line);
+        self.sha256_hex = try readGzLines(self.scratch.child_allocator, body, "{\"cid\":\"bundle\",\"v\":1,", self, line);
     }
 
     fn line(self: *BundleReading, text: []const u8) anyerror!void {
@@ -595,7 +599,7 @@ const DiffReading = struct {
 
     fn read(ctx: *anyopaque, body: *std.Io.Reader) anyerror!void {
         const self: *DiffReading = @ptrCast(@alignCast(ctx));
-        self.sha256_hex = try readGzLines(body, "{\"cid\":\"diff\",\"v\":1,", self, line);
+        self.sha256_hex = try readGzLines(self.scratch.child_allocator, body, "{\"cid\":\"diff\",\"v\":1,", self, line);
     }
 
     fn line(self: *DiffReading, text: []const u8) anyerror!void {

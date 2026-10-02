@@ -76,7 +76,7 @@ pub fn compute(
     }, .{})}) catch error.OutOfMemory;
 }
 
-test "rows added and removed, duplicates counted, edits as a pair, across formats" {
+test "rows added and removed, duplicates counted, edits as a pair: CSV, Parquet and JSONL" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -126,6 +126,35 @@ test "rows added and removed, duplicates counted, edits as a pair, across format
         try std.testing.expectEqual(@as(u64, 3), d.added); // Citra (edited), Fajar ×2
         try std.testing.expectEqual(@as(u64, 2), d.removed); // Budi, Citra (old)
     }
+
+    // JSONL, the same story: one object a row.
+    const row = struct {
+        fn line(id: u32, name: []const u8, city: []const u8, score: []const u8) [128]u8 {
+            var buf: [128]u8 = @splat(' ');
+            _ = std.fmt.bufPrint(&buf, "{{\"id\":{d},\"name\":\"{s}\",\"city\":\"{s}\",\"score\":{s}}}", .{ id, name, city, score }) catch unreachable;
+            return buf;
+        }
+    }.line;
+    var a_lines: std.ArrayList(u8) = .empty;
+    var b_lines: std.ArrayList(u8) = .empty;
+    for ([_]struct { u32, []const u8, []const u8, []const u8 }{
+        .{ 1, "Ana Wijaya", "Bandung", "91.5" }, .{ 2, "Budi", "Jakarta", "72" },
+        .{ 3, "Citra", "Bandung", "78" },        .{ 4, "Dewi", "Surabaya", "88.25" },
+        .{ 5, "Eko", "Jakarta", "64" },
+    }) |r| try a_lines.print(arena, "{s}\n", .{std.mem.trimEnd(u8, &row(r[0], r[1], r[2], r[3]), " ")});
+    for ([_]struct { u32, []const u8, []const u8, []const u8 }{
+        .{ 1, "Ana Wijaya", "Bandung", "91.5" }, .{ 3, "Citra", "Bandung", "79" },
+        .{ 4, "Dewi", "Surabaya", "88.25" },     .{ 5, "Eko", "Jakarta", "64" },
+        .{ 6, "Fajar", "Medan", "70" },          .{ 6, "Fajar", "Medan", "70" },
+    }) |r| try b_lines.print(arena, "{s}\n", .{std.mem.trimEnd(u8, &row(r[0], r[1], r[2], r[3]), " ")});
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.jsonl", .data = a_lines.items });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.jsonl", .data = b_lines.items });
+    const jd = try std.json.parseFromSliceLeaky(Diff, arena, try compute(arena, &db, try path(arena, dir, "a.jsonl"), .jsonl, try path(arena, dir, "b.jsonl"), .jsonl), .{ .ignore_unknown_fields = true });
+    try std.testing.expect(!jd.columns_changed);
+    try std.testing.expectEqual(@as(u64, 5), jd.rows_a);
+    try std.testing.expectEqual(@as(u64, 6), jd.rows_b);
+    try std.testing.expectEqual(@as(u64, 3), jd.added);
+    try std.testing.expectEqual(@as(u64, 2), jd.removed);
 
     // A column added: rows are not compared, the column change is the answer.
     try tmp.dir.writeFile(io, .{ .sub_path = "c.csv", .data = "id,name,city,score,team\n1,Ana Wijaya,Bandung,91.5,red\n" });

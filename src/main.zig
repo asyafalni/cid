@@ -16,11 +16,12 @@ pub fn main(init: std.process.Init) u8 {
     const io = init.io;
     const args = init.minimal.args.toSlice(arena) catch
         return fail(io, .usage, "could not read arguments", "cid help");
-    return run(arena, io, init.environ_map, args[1..]);
+    return run(arena, init.gpa, io, init.environ_map, args[1..]);
 }
 
 fn run(
     arena: std.mem.Allocator,
+    gpa: std.mem.Allocator,
     io: std.Io,
     env: *const std.process.Environ.Map,
     args: []const [:0]const u8,
@@ -30,7 +31,7 @@ fn run(
     const out = &stdout_writer.interface;
     const is_tty = std.Io.File.stdout().isTty(io) catch false;
 
-    const ctx: cid.common.Context = .{ .arena = arena, .io = io, .out = out, .env = env };
+    const ctx: cid.common.Context = .{ .arena = arena, .gpa = gpa, .io = io, .out = out, .env = env };
     const code: cid.ExitCode = switch (cid.command.parse(args)) {
         .help => blk: {
             cid.help.print(out) catch break :blk .network;

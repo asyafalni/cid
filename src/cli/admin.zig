@@ -222,7 +222,7 @@ fn runServe(
         }
     }
 
-    var deps: api.Deps = .{ .db = &db, .s3 = &s3_client, .io = io, .token = token, .token_secret = token_secret };
+    var deps: api.Deps = .{ .db = &db, .s3 = &s3_client, .io = io, .gpa = std.heap.smp_allocator, .token = token, .token_secret = token_secret };
     if (env.get("CID_BROWSE_DIR")) |dir| deps.browse_dir = dir;
     if (env.get("CID_WORK_DIR")) |dir| deps.work_dir = dir;
     if (env.get("CID_GIT_WORKDIR")) |git_workdir| {

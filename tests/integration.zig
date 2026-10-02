@@ -169,7 +169,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     const name = "test/datasets/api";
 
     // Leftovers from earlier runs go through the maintenance escape.
@@ -324,7 +324,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
 
     // The version as the CLI reads it: a file in storage, hash-checked.
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = name };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = name, .gpa = std.testing.allocator };
     const items2 = try remote.state(arena, &id2);
     try std.testing.expectEqual(@as(usize, 1), items2.len);
     try std.testing.expectEqualStrings("b.txt", items2[0].path);
@@ -472,9 +472,9 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/sync" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/sync", .gpa = std.testing.allocator };
 
     // Earlier runs may have uploaded this test's contents; purge them so
     // upload counts are exact.
@@ -678,9 +678,9 @@ test "clone round trip: clone, checkout and pull give exactly the release's file
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/fixtures" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/fixtures", .gpa = std.testing.allocator };
 
     // Every fixture, in folders: image, audio, PDF, text, CSV, Parquet,
     // JSONL and a binary no sniffer knows.
@@ -764,9 +764,9 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/rel" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/rel", .gpa = std.testing.allocator };
 
     // Clean slate.
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
@@ -884,11 +884,12 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
         .db = &standalone.db,
         .s3 = &s3c,
         .io = io,
+        .gpa = std.testing.allocator,
         .token = "test-token",
         .git = .{ .workdir = work_root, .server_url = "https://cid.example" },
     };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/gitw" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/gitw", .gpa = std.testing.allocator };
 
     // Clean slate, then a dataset whose git_url is the bare repo.
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
@@ -1047,7 +1048,7 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "", .token_secret = secret };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "", .token_secret = secret };
     const ndb = &standalone.db;
 
     // Clean slate: account, key, dataset, access.
@@ -1264,9 +1265,9 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/br" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/br", .gpa = std.testing.allocator };
 
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
@@ -1424,9 +1425,9 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/purge" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/purge", .gpa = std.testing.allocator };
 
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
@@ -1507,9 +1508,9 @@ test "annotated: the platform writes revisions, the server commits, state compos
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/ann" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/ann", .gpa = std.testing.allocator };
 
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "annotation_revisions", "dataset_items" }) |table| {
@@ -1919,9 +1920,9 @@ test "cutoff lock: revision writers racing commits never land under a sealed cut
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/race" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/race", .gpa = std.testing.allocator };
 
     const created = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/race\",\"kind\":\"annotated\",\"git_url\":\"g@h:race.git\"}");
     try std.testing.expectEqual(std.http.Status.created, created.status);
@@ -1990,9 +1991,9 @@ test "item identity: re-encoding keeps annotations; identical files at two paths
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/ident" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/ident", .gpa = std.testing.allocator };
 
     const created = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/ident\",\"kind\":\"annotated\",\"git_url\":\"g@h:ident.git\"}");
     try std.testing.expectEqual(std.http.Status.created, created.status);
@@ -2118,9 +2119,9 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/annrel" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/annrel", .gpa = std.testing.allocator };
 
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "annotation_revisions", "dataset_items" }) |table| {
@@ -2220,9 +2221,9 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/fmt" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/fmt", .gpa = std.testing.allocator };
 
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "annotation_revisions", "dataset_items" }) |table| {
@@ -2403,11 +2404,12 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
         .db = &standalone.db,
         .s3 = &s3c,
         .io = io,
+        .gpa = std.testing.allocator,
         .token = "test-token",
         .git = .{ .workdir = work_root, .server_url = "https://cid.example" },
     };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/anngit" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/anngit", .gpa = std.testing.allocator };
 
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "annotation_revisions", "dataset_items", "policy_versions" }) |table| {
@@ -2523,9 +2525,9 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/fmt" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/fmt", .gpa = std.testing.allocator };
     const fmt_id = (try db.rawOne([]const u8, &scope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/fmt'", .{})).?;
     try s3c.putObject(&scope, try cid.api.stagedKey(arena, fmt_id, &png_hash), png);
     try s3c.putObject(&scope, try cid.api.stagedKey(arena, fmt_id, &text_hash), text);
@@ -2610,13 +2612,13 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var producer = std.testing.tmpDir(.{ .iterate = true });
     defer producer.cleanup();
     var cache = std.testing.tmpDir(.{});
     defer cache.cleanup();
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/sniff" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/sniff", .gpa = std.testing.allocator };
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
         _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/sniff')", .{});
@@ -2815,11 +2817,11 @@ test "table statistics: CSV, Parquet and JSONL, withheld when restricted" {
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var cache = std.testing.tmpDir(.{});
     defer cache.cleanup();
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/tables" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/tables", .gpa = std.testing.allocator };
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
         _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/tables')", .{});
@@ -2900,11 +2902,11 @@ test "row diffs: rows added and removed between versions, cached, withheld when 
     defer scope.deinit();
     var scratch = std.testing.tmpDir(.{});
     defer scratch.cleanup();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token", .work_dir = try scratch.dir.realPathFileAlloc(io, ".", arena) };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token", .work_dir = try scratch.dir.realPathFileAlloc(io, ".", arena) };
     var cache = std.testing.tmpDir(.{});
     defer cache.cleanup();
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/rowdiff" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/rowdiff", .gpa = std.testing.allocator };
 
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
@@ -3027,11 +3029,11 @@ test "media: audio gets its waveform, text reads as text, restricted text withhe
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var cache = std.testing.tmpDir(.{});
     defer cache.cleanup();
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/media" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/media", .gpa = std.testing.allocator };
 
     // The fixtures, pushed the CLI way (the server records octet-stream),
     // plus a binary file and a long text that the drawer shows the start of.
@@ -3134,9 +3136,9 @@ test "state at commit: random changes on main and a branch match an in-memory mo
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/model" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/model", .gpa = std.testing.allocator };
     try remote.createDataset(arena, "g@h:model.git");
     const ds_id = (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/model'", .{})).?;
 
@@ -3250,9 +3252,9 @@ test "resume: a push killed halfway finishes on the next run, no file uploaded t
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/resume" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/resume", .gpa = std.testing.allocator };
 
     // Three new files (fresh bytes each run: nothing in storage yet), in
     // two local commits.
@@ -3335,9 +3337,9 @@ test "gc: never deletes what a release or branch head holds; collected bytes can
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
-    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/gc" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/gc", .gpa = std.testing.allocator };
 
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "refs", "commits", "item_revisions", "dataset_items" }) |table| {

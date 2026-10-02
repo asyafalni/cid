@@ -22,10 +22,9 @@ pub const Writer = struct {
     /// Every box class in the export, sorted: a label's class index.
     classes: []const []const u8,
 
-    pub fn begin(self: Writer, out: bundle.Bundle) !void {
+    pub fn begin(self: Writer, out: bundle.Bundle, arena: std.mem.Allocator) !void {
         var text: std.ArrayList(u8) = .empty;
-        defer text.deinit(std.heap.page_allocator);
-        for (self.classes) |name| try text.print(std.heap.page_allocator, "{s}\n", .{name});
+        for (self.classes) |name| try text.print(arena, "{s}\n", .{name});
         try out.put("classes.txt", text.items);
     }
 
@@ -104,7 +103,7 @@ test "normalized boxes, sorted classes, the yaml, named failures" {
     const out: bundle.Bundle = .{ .w = &buf.writer };
     const writer: Writer = .{ .classes = &.{ "person", "vehicle" } };
 
-    try writer.begin(out);
+    try writer.begin(out, arena);
     const a: bundle.Item = .{ .path = "img/a.jpg", .hash = "ab" ** 32, .size = 1, .split = "train", .item_id = "i1", .width = 640, .height = 480 };
     try std.testing.expect((try writer.writeItem(out, arena, a, &.{
         .{ .id = "1", .kind = "box", .class = "vehicle", .geometry = "{\"x\": 32, \"y\": 48, \"w\": 64, \"h\": 96}", .attrs = null },
