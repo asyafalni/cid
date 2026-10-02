@@ -132,7 +132,11 @@ $$;
 CREATE TABLE item_revisions (
   rev_id      uuid        NOT NULL DEFAULT cid_rev(),  -- UUIDv7, database clock
   ts          timestamptz NOT NULL DEFAULT clock_timestamp(), -- when it landed
-  dataset_id  uuid        NOT NULL REFERENCES datasets(dataset_id),
+  -- No foreign key, on purpose: checking one costs a quarter of a bulk
+  -- import (2M revisions: 57 s with, 43 s without). A row naming a dataset
+  -- that does not exist is inert: commits, states and reads all start from
+  -- the datasets table, so nothing ever reaches it.
+  dataset_id  uuid        NOT NULL,
   branch      text        NOT NULL DEFAULT 'main',
   path        text        NOT NULL,
   op          text        NOT NULL CHECK (op IN ('add','update','delete')),
@@ -149,7 +153,7 @@ CREATE INDEX item_revisions_lookup
 CREATE TABLE annotation_revisions (
   rev_id         uuid        NOT NULL DEFAULT cid_rev(),
   ts             timestamptz NOT NULL DEFAULT clock_timestamp(),
-  dataset_id     uuid        NOT NULL REFERENCES datasets(dataset_id),
+  dataset_id     uuid        NOT NULL,                -- no foreign key: see item_revisions
   branch         text        NOT NULL DEFAULT 'main',
   annotation_id  uuid        NOT NULL,
   item_id        uuid        NOT NULL,             -- identity, not bytes

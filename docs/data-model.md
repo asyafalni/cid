@@ -110,9 +110,9 @@ file (a specific face image, say) exists in a restricted dataset.
 ```sql
 -- which item sits at which path, in which split, over time
 CREATE TABLE item_revisions (
-  rev_id      uuid        NOT NULL,       -- UUIDv7
-  ts          timestamptz NOT NULL,       -- the UUIDv7 time
-  dataset_id  uuid        NOT NULL REFERENCES datasets(dataset_id),
+  rev_id      uuid        NOT NULL DEFAULT cid_rev(),          -- UUIDv7, database clock
+  ts          timestamptz NOT NULL DEFAULT clock_timestamp(), -- when it landed
+  dataset_id  uuid        NOT NULL,            -- no foreign key: a quarter of a bulk import; an unknown id is inert
   branch      text        NOT NULL DEFAULT 'main',
   path        text        NOT NULL,
   op          text        NOT NULL CHECK (op IN ('add','update','delete')),
@@ -124,9 +124,9 @@ CREATE TABLE item_revisions (
 
 -- structured annotations, annotated datasets only; attached to item identity
 CREATE TABLE annotation_revisions (
-  rev_id         uuid        NOT NULL,
-  ts             timestamptz NOT NULL,
-  dataset_id     uuid        NOT NULL REFERENCES datasets(dataset_id),
+  rev_id         uuid        NOT NULL DEFAULT cid_rev(),
+  ts             timestamptz NOT NULL DEFAULT clock_timestamp(),
+  dataset_id     uuid        NOT NULL,
   branch         text        NOT NULL DEFAULT 'main',
   annotation_id  uuid        NOT NULL,
   item_id        uuid        NOT NULL,    -- survives re-encoding of the item
@@ -233,10 +233,29 @@ the platform needs them before it writes). Time-ordered ids keep the
 over it, about 8× slower per batch at 10M rows (measured: 7.7 s against 0.95 s for
 30,000 annotations).
 
-**Retry-safe batches.** A platform batch is one transaction. It inserts its key into
-`revision_batches (dataset_id, batch_key)` in the same transaction as its rows. A retry
-of a batch whose first attempt did commit (the acknowledgement lost) fails on the key
-and writes nothing twice; a resumed import reads the table to see which keys are done.
+**Retry-safe batches.** A platform batch is one transaction, and its rows go in with
+its key in **one statement**, so a batch is written whole or not at all, and a
+batch already written writes nothing:
+
+```sql
+BEGIN;
+SELECT pg_advisory_xact_lock_shared(hashtextextended($dataset || '/main', 0));
+SET LOCAL ROLE cid_writer;
+WITH fresh AS (
+  INSERT INTO revision_batches (dataset_id, batch_key) VALUES ($dataset, $key)
+  ON CONFLICT DO NOTHING RETURNING 1
+), items AS (
+  INSERT INTO item_revisions (dataset_id, branch, path, op, item_id, item_hash, split, author)
+  SELECT … WHERE EXISTS (SELECT 1 FROM fresh)
+)
+INSERT INTO annotation_revisions (…) SELECT … WHERE EXISTS (SELECT 1 FROM fresh);
+COMMIT;
+```
+
+An import that stops (a crash, a lost connection, an acknowledgement that never
+arrived) is resumed by sending every batch again: the ones already in write nothing.
+Several writers may run at once, each on its own connection: the write lock is shared
+between writers, and only a commit waits for them.
 
 **State at a commit** = for each path (and each annotation), the latest change up to
 the commit's cutoff, deletes dropped:
