@@ -113,6 +113,12 @@ $$;
 CREATE FUNCTION cid_rev() RETURNS uuid LANGUAGE sql VOLATILE PARALLEL SAFE AS $$
   SELECT cid_rev_at(floor(extract(epoch FROM clock_timestamp()) * 1000000)::bigint)
 $$;
+-- The moment inside an id (its first 48 bits, Unix milliseconds): every
+-- revision above an id was written at or after it, so a search for them
+-- can start there instead of at the beginning of history.
+CREATE FUNCTION cid_rev_time(rev uuid) RETURNS timestamptz LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+  SELECT to_timestamp(('x' || substr(replace(rev::text, '-', ''), 1, 12))::bit(48)::bigint / 1000.0)
+$$;
 -- A fresh id strictly above `floor`: the server's own writes, which come in
 -- sequence and must order after the branch's cutoff even within one
 -- microsecond (the random tail is stepped instead).
