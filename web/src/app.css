@@ -1208,3 +1208,26 @@
   margin-left: var(--space-2);
   font-size: 0.8rem;
 }
+
+/* Restricted: the reveal says what it does before it does it. */
+.reveal {
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  border-color: var(--warn);
+  font-size: 0.9rem;
+}
+
+.reveal p {
+  margin: 0 0 var(--space-3);
+}
+
+.reveal-note {
+  font-size: 0.85rem;
+}
+
+.activity-table caption {
+  caption-side: bottom;
+  text-align: left;
+  padding-top: var(--space-2);
+  font-size: 0.8rem;
+}

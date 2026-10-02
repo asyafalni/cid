@@ -180,6 +180,26 @@ function seedBoxesMoved() {
   api('POST', `/v0/datasets/${name}/-/tag`, { name: 'v1.1.0' });
 }
 
+// A restricted dataset: previews blurred until a logged reveal.
+function seedFaces(dir: string) {
+  const faces = join(dir, 'faces');
+  execSync(`mkdir -p ${faces}`);
+  run(
+    `ffmpeg -nostdin -loglevel error -f lavfi -i testsrc2=size=240x180:rate=1 -frames:v 1 -y ${faces}/person-01.png`,
+  );
+  run(`${cid} init cid@127.0.0.1:e2e/datasets/faces --git g@h:faces.git`, faces);
+  run(`${cid} add .`, faces);
+  run(`${cid} commit -m "one face"`, faces);
+  run(`${cid} push`, faces);
+  run(`${cid} tag v1.0.0`, faces);
+  psql(`
+    UPDATE datasets SET restricted = true WHERE name = 'e2e/datasets/faces';
+    INSERT INTO access (dataset_id, account_id, level, source)
+      SELECT dataset_id, 'gitlab:4242', 'read', 'dashboard' FROM datasets WHERE name = 'e2e/datasets/faces'
+      ON CONFLICT (dataset_id, account_id) DO NOTHING;
+  `);
+}
+
 export default function setup() {
   // A serve must be up for the CLI and the API; playwright's webServer
   // starts its own before tests but after globalSetup, so run one briefly.
@@ -210,7 +230,13 @@ export default function setup() {
         SELECT dataset_id, 'gitlab:5151', 'maintain', 'dashboard' FROM datasets WHERE name = 'e2e/datasets/boxes'
         ON CONFLICT (dataset_id, account_id) DO NOTHING;
     `);
-    run(`${cid} admin previews`); // sniff + thumbs for every new png
+    if (!already.includes('e2e/datasets/faces')) seedFaces(dir);
+    // Sniff, thumbnail and blur every new png. One pass takes a batch, and
+    // a migration can requeue many, so drain the queue.
+    for (let i = 0; i < 40; i++) {
+      const out = run(`${cid} admin previews`);
+      if (/^Previews: 0 built/.test(out)) break;
+    }
   } finally {
     serve.kill();
   }

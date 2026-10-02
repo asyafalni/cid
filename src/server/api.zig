@@ -139,6 +139,10 @@ fn handleInner(
     const ds = lookupDataset(arena, deps, scope, route.name) orelse
         return errorResponse(arena, .not_found, "no such dataset", "Run 'cid init' to create it, or check the address.");
 
+    if (eql(method, "POST") and eql(route.action, "reveal"))
+        return reveal(arena, deps, scope, caller, ds, body);
+    if (eql(method, "GET") and eql(route.action, "activity"))
+        return activity(arena, deps, scope, caller, ds);
     if (eql(route.action, "star") and (eql(method, "PUT") or eql(method, "DELETE")))
         return star(arena, deps, scope, caller, ds, eql(method, "PUT"));
     if (eql(method, "GET") and eql(route.action, "info"))
@@ -156,7 +160,7 @@ fn handleInner(
     if (eql(method, "GET") and std.mem.startsWith(u8, route.action, "state/"))
         return state(arena, deps, scope, ds, route.action["state/".len..]);
     if (eql(method, "POST") and eql(route.action, "downloads"))
-        return downloads(arena, deps, scope, ds, body);
+        return downloads(arena, deps, scope, caller, ds, body);
     if (eql(method, "POST") and eql(route.action, "thumbs"))
         return thumbs(arena, deps, scope, ds, body);
     if (eql(method, "POST") and eql(route.action, "tag"))
@@ -260,18 +264,21 @@ const Dataset = struct {
     id: []const u8, // uuid text
     name: []const u8,
     kind: []const u8, // 'files' | 'annotated'
+    /// Previews blurred until a logged reveal; every clear URL logged.
+    restricted: bool = false,
 };
 
 const DatasetRow = struct {
     pub const nilo_table = .projection;
     dataset_id: []const u8,
     kind: []const u8,
+    restricted: bool,
 };
 
 fn lookupDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, name: []const u8) ?Dataset {
     _ = arena;
-    const row = (deps.db.rawOne(DatasetRow, scope, "SELECT dataset_id::text AS dataset_id, kind FROM datasets WHERE name = $1", .{name}) catch return null) orelse return null;
-    return .{ .id = row.dataset_id, .name = name, .kind = row.kind };
+    const row = (deps.db.rawOne(DatasetRow, scope, "SELECT dataset_id::text AS dataset_id, kind, restricted FROM datasets WHERE name = $1", .{name}) catch return null) orelse return null;
+    return .{ .id = row.dataset_id, .name = name, .kind = row.kind, .restricted = row.restricted };
 }
 
 fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: ?[]const u8) HandleError!Response {
@@ -331,14 +338,15 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
         else
             .{};
         // Only previews that already exist are handed out (the structural
-        // ffmpeg guarantee), and a restricted dataset shows none until the
-        // blurred rendition exists (invariant 20): its card gets type tiles.
+        // ffmpeg guarantee); a restricted dataset's card shows the blurred
+        // renditions, and none where a blur does not exist yet — never a
+        // clear thumbnail (invariant 20).
         var mosaic: std.ArrayList(Thumb) = .empty;
-        if (!row.restricted) {
+        {
             for (st.visual) |hash| {
-                const done = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM previews WHERE item_hash = decode($1, 'hex') AND status = 'done'", .{hash}) catch return error.Db;
+                const done = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM previews WHERE item_hash = decode($1, 'hex') AND status = 'done' AND (blurred OR NOT $2)", .{ hash, row.restricted }) catch return error.Db;
                 if (done == null) continue;
-                const key = preview_worker.thumbKey(arena, hash) catch return error.OutOfMemory;
+                const key = (if (row.restricted) preview_worker.blurKey(arena, hash) else preview_worker.thumbKey(arena, hash)) catch return error.OutOfMemory;
                 const url = deps.s3.presignGet(scope, key, presign_secs) catch return error.Storage;
                 try mosaic.append(arena, .{ .hash = hash, .url = url });
             }
@@ -360,6 +368,77 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
         };
     }
     return json(arena, .ok, .{ .datasets = list });
+}
+
+const RevealBody = struct { hash: []const u8 };
+
+/// The one way to a clear preview of a restricted item (invariant 20):
+/// the reveal is written to the activity log first, then the clear
+/// thumbnail and a download link are handed back. The item must belong to
+/// this dataset — reading one dataset never reveals another's bytes
+/// (invariant 12). An open dataset answers with the same shape, unlogged.
+fn reveal(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, body: []const u8) HandleError!Response {
+    const req = parseBody(RevealBody, arena, body) orelse return error.BadRequest;
+    if (!validHashHex(req.hash)) return error.BadRequest;
+    const here = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM item_revisions WHERE dataset_id = $1::uuid AND item_hash = decode($2, 'hex') LIMIT 1", .{ ds.id, req.hash }) catch return error.Db;
+    if (here == null) return errorResponse(arena, .not_found, "no such item in this dataset", "Pick the item from this dataset's Browse view, then reveal it again.");
+
+    if (ds.restricted) try logActivity(arena, deps, scope, ds, try actorOf(arena, deps, caller), "reveal", req.hash, null);
+
+    const built = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM previews WHERE item_hash = decode($1, 'hex') AND status = 'done'", .{req.hash}) catch return error.Db;
+    const thumb: ?[]const u8 = if (built != null)
+        deps.s3.presignGet(scope, preview_worker.thumbKey(arena, req.hash) catch return error.OutOfMemory, presign_secs) catch return error.Storage
+    else
+        null;
+    const download = deps.s3.presignGet(scope, itemKey(arena, req.hash) catch return error.OutOfMemory, presign_secs) catch return error.Storage;
+    return json(arena, .ok, .{ .hash = req.hash, .thumb = thumb, .download = download, .logged = ds.restricted });
+}
+
+/// The dataset's activity log (docs/dashboard.md §4.7). It names who
+/// revealed what, so it is the owners' to read: Maintainers, and the
+/// server token, which administers everything.
+fn activity(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset) HandleError!Response {
+    if (!(try isOwner(deps, scope, caller, ds)))
+        return errorResponse(arena, .forbidden, "the activity log is for the dataset's owners", "Ask an owner (a Maintainer of the dataset's GitLab project) if you need to see it.");
+    const Event = struct {
+        pub const nilo_table = .projection;
+        at: []const u8,
+        account_id: []const u8,
+        display_name: ?[]const u8,
+        action: []const u8,
+        ref: ?[]const u8,
+        detail: ?[]const u8,
+    };
+    const events = deps.db.raw(Event, scope, "SELECT to_char(e.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS at, e.account_id, " ++
+        "a.display_name, e.action, e.ref, e.detail::text AS detail " ++
+        "FROM activity_events e LEFT JOIN accounts a ON a.account_id = e.account_id " ++
+        "WHERE e.dataset_id = $1::uuid ORDER BY e.ts DESC LIMIT 200", .{ds.id}) catch return error.Db;
+    return json(arena, .ok, .{ .events = events });
+}
+
+fn isOwner(deps: *Deps, scope: anytype, caller: Caller, ds: Dataset) HandleError!bool {
+    if (tokenOk(deps.token, caller.header)) return true;
+    const account = caller.account orelse return false;
+    const level = deps.db.rawOne([]const u8, scope, "SELECT level FROM access WHERE dataset_id = $1::uuid AND account_id = $2", .{ ds.id, account }) catch return error.Db;
+    return if (level) |l| eql(l, "maintain") else false;
+}
+
+/// Who did it, for the record: a dashboard session's account, an
+/// SSH-issued token's account, or the server token, which is nobody's.
+fn actorOf(arena: std.mem.Allocator, deps: *Deps, caller: Caller) HandleError![]const u8 {
+    if (caller.account) |account| return account;
+    if (deps.token_secret) |secret| if (caller.header) |h| if (std.mem.startsWith(u8, h, "Bearer ")) {
+        const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(deps.io, .real).toSeconds()));
+        if (token_mod.verify(arena, secret, h["Bearer ".len..], now)) |claims| return claims.account else |_| {}
+    };
+    return "server-token";
+}
+
+/// An audit record, written before the thing it records happens: if it
+/// cannot be written, the clear URL is not handed out either.
+fn logActivity(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, actor: []const u8, action: []const u8, ref: ?[]const u8, detail: anytype) HandleError!void {
+    const detail_text: ?[]const u8 = if (@TypeOf(detail) == @TypeOf(null)) null else try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(detail, .{})});
+    _ = deps.db.exec(scope, "INSERT INTO activity_events (ts, dataset_id, account_id, action, ref, detail) VALUES (now(), $1::uuid, $2, $3, $4, $5::jsonb)", .{ ds.id, actor, action, ref, detail_text }) catch return error.Db;
 }
 
 /// A star is one person's bookmark — their preference, not the dataset's
@@ -619,6 +698,7 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) 
     return json(arena, .ok, .{
         .name = ds.name,
         .kind = ds.kind,
+        .restricted = ds.restricted,
         .git_url = info.git_url,
         .default_format = info.default_format,
         .commits = tape,
@@ -920,26 +1000,31 @@ fn releases(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) 
 /// a hash with no finished preview is simply absent from the answer and
 /// the page shows a placeholder (the structural ffmpeg guarantee).
 fn thumbs(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
-    _ = ds;
     const req = parseBody(HashesBody, arena, body) orelse return error.BadRequest;
     if (req.hashes.len > 1000) return error.BadRequest;
     const Thumb = struct { hash: []const u8, url: []const u8 };
     var list: std.ArrayList(Thumb) = .empty;
     for (req.hashes) |hash| {
         if (!validHashHex(hash)) return error.BadRequest;
-        const done = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM previews WHERE item_hash = decode($1, 'hex') AND status = 'done'", .{hash}) catch return error.Db;
+        // A restricted dataset is answered with the blurred rendition and
+        // nothing else (invariant 20): a missing blur is an absent preview,
+        // never the clear one in its place. The clear one is /reveal's.
+        const done = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM previews WHERE item_hash = decode($1, 'hex') AND status = 'done' AND (blurred OR NOT $2)", .{ hash, ds.restricted }) catch return error.Db;
         if (done == null) continue;
-        const key = preview_worker.thumbKey(arena, hash) catch return error.OutOfMemory;
+        const key = (if (ds.restricted) preview_worker.blurKey(arena, hash) else preview_worker.thumbKey(arena, hash)) catch return error.OutOfMemory;
         const url = deps.s3.presignGet(scope, key, presign_secs) catch return error.Storage;
         try list.append(arena, .{ .hash = hash, .url = url });
     }
     return json(arena, .ok, .{ .thumbs = list.items });
 }
 
-fn downloads(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
-    _ = ds;
+fn downloads(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(HashesBody, arena, body) orelse return error.BadRequest;
     if (req.hashes.len > 1000) return error.BadRequest;
+    // Clear bytes of a restricted dataset are content too: every batch
+    // handed out — a CLI clone, a reveal's download — is on the record
+    // before the URLs exist (invariant 20).
+    if (ds.restricted) try logActivity(arena, deps, scope, ds, try actorOf(arena, deps, caller), "download", null, .{ .items = req.hashes.len });
     const Download = struct { hash: []const u8, url: []const u8 };
     const list = try arena.alloc(Download, req.hashes.len);
     for (req.hashes, 0..) |hash, i| {

@@ -4,6 +4,8 @@ import {
   getDownloads,
   getState,
   getThumbs,
+  reveal,
+  type Revealed,
   type Overview,
   type StateAnnotation,
   type StateItem,
@@ -133,6 +135,9 @@ export function BrowseTab({
             </button>
           ))}
         </div>
+        {overview.restricted && (
+          <p className="chip restricted-badge">restricted · blurred until revealed</p>
+        )}
         <p className="quiet data" aria-live="polite">
           {filtered
             ? `${items.length.toLocaleString()} of ${all.length.toLocaleString()} items`
@@ -318,6 +323,7 @@ export function BrowseTab({
           name={name}
           item={open}
           annotated={overview.kind === 'annotated'}
+          restricted={overview.restricted}
           annotations={open.item_id ? (annsByItem.get(open.item_id) ?? []) : []}
           thumb={thumbByHash.get(open.hash)}
           hidden={hidden}
@@ -333,6 +339,7 @@ function ItemDrawer({
   name,
   item,
   annotated,
+  restricted,
   annotations,
   thumb,
   hidden,
@@ -342,17 +349,25 @@ function ItemDrawer({
   name: string;
   item: StateItem;
   annotated: boolean;
+  restricted: boolean;
   annotations: StateAnnotation[];
   thumb: string | undefined;
   hidden: ReadonlySet<string>;
   opacity: number;
   onClose: () => void;
 }) {
+  // A restricted item's bytes are never fetched just because its drawer
+  // opened: that would log a download nobody chose. They come with a
+  // reveal, which is logged and says so first (invariant 20).
   const download = useQuery({
     queryKey: ['download', name, item.hash],
     queryFn: () => getDownloads(name, [item.hash]),
+    enabled: !restricted,
   });
-  const url = download.data?.downloads[0]?.url;
+  const [revealed, setRevealed] = useState<Revealed | null>(null);
+  const [revealing, setRevealing] = useState(false);
+  const url = restricted ? revealed?.download : download.data?.downloads[0]?.url;
+  const shownThumb = revealed?.thumb ?? thumb;
 
   return (
     <aside className="drawer panel" aria-label={item.path}>
@@ -362,13 +377,13 @@ function ItemDrawer({
           ✕
         </button>
       </div>
-      {thumb ? (
+      {shownThumb ? (
         item.item_id && item.width && item.height ? (
           <span
             className="drawer-media overlay-fit"
             style={{ aspectRatio: `${item.width} / ${item.height}` }}
           >
-            <img src={thumb} alt={item.path} />
+            <img src={shownThumb} alt={item.path} />
             <AnnotationOverlay
               width={item.width}
               height={item.height}
@@ -378,7 +393,7 @@ function ItemDrawer({
             />
           </span>
         ) : (
-          <img className="drawer-media" src={thumb} alt={item.path} />
+          <img className="drawer-media" src={shownThumb} alt={item.path} />
         )
       ) : (
         <div className="drawer-media drawer-media--none blueprint">
@@ -426,6 +441,27 @@ function ItemDrawer({
           )}
         </section>
       )}
+      {restricted && !revealed && (
+        <div className="reveal panel">
+          <p>
+            Restricted: shown blurred. Revealing shows the clear image and the file, and{' '}
+            <strong>is logged</strong> with your name for the dataset's owners.
+          </p>
+          <button
+            className="action"
+            disabled={revealing}
+            onClick={() => {
+              setRevealing(true);
+              void reveal(name, item.hash)
+                .then(setRevealed)
+                .finally(() => setRevealing(false));
+            }}
+          >
+            {revealing ? 'Revealing…' : 'Reveal this item'}
+          </button>
+        </div>
+      )}
+      {restricted && revealed && <p className="quiet reveal-note">Revealed; this was logged.</p>}
       {url && (
         <a className="action drawer-download" href={url} download>
           Download the file

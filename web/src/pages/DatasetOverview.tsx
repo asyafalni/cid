@@ -8,6 +8,7 @@ import { OverviewTab } from './OverviewTab';
 import { BrowseTab } from './BrowseTab';
 import { ReleasesTab } from './ReleasesTab';
 import { FilesTab } from './FilesTab';
+import { ActivityTab } from './ActivityTab';
 import { noteVisit } from '../recent';
 
 // The dataset page: sky-band header, the release tape, then the tabs.
@@ -16,7 +17,7 @@ import { noteVisit } from '../recent';
 export function DatasetOverview() {
   const { _splat: name = '' } = useParams({ strict: false });
   const search = useSearch({ strict: false }) as {
-    view?: 'overview' | 'browse' | 'releases' | 'files';
+    view?: 'overview' | 'browse' | 'releases' | 'files' | 'activity';
     release?: string;
     item?: string;
     a?: string;
@@ -123,6 +124,15 @@ export function DatasetOverview() {
         >
           Files
         </Link>
+        <Link
+          to="/d/$"
+          params={{ _splat: name }}
+          search={{ view: 'activity', release: search.release }}
+          className={view === 'activity' ? 'tab on' : 'tab'}
+          aria-current={view === 'activity' ? 'page' : undefined}
+        >
+          Activity
+        </Link>
       </nav>
 
       {view === 'overview' ? (
@@ -145,6 +155,8 @@ export function DatasetOverview() {
           b={search.b}
           onPick={(patch) => setSearch(patch)}
         />
+      ) : view === 'activity' ? (
+        <ActivityTab name={name} />
       ) : (
         <FilesTab
           name={name}

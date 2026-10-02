@@ -1985,6 +1985,45 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     const second = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets", "Bearer test-token", "");
     const relisted = try std.json.parseFromSliceLeaky(Listing, arena, second.body, .{ .ignore_unknown_fields = true });
     for (relisted.datasets) |d| {
-        if (std.mem.eql(u8, d.name, "test/datasets/sniff")) try std.testing.expectEqual(@as(usize, 0), d.mosaic.len);
+        if (!std.mem.eql(u8, d.name, "test/datasets/sniff")) continue;
+        // The worker built a blur beside the thumbnail; the card shows it.
+        try std.testing.expectEqual(@as(usize, 1), d.mosaic.len);
+        try std.testing.expect(std.mem.indexOf(u8, d.mosaic[0].url, "blur.webp") != null);
+        try std.testing.expect(std.mem.indexOf(u8, d.mosaic[0].url, "thumb.webp") == null);
     }
+
+    // Browse's thumbs answer with the blur and nothing else.
+    const thumbs_body = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\"]}}", .{&hh});
+    const blurred = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/sniff/-/thumbs", "Bearer test-token", thumbs_body);
+    try std.testing.expect(std.mem.indexOf(u8, blurred.body, "blur.webp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, blurred.body, "thumb.webp") == null);
+    // The blur is a real, different image.
+    const blur_bytes = try s3c.getObjectAlloc(&scope, try cid.preview.blurKey(arena, &hh));
+    try std.testing.expect(!std.mem.eql(u8, blur_bytes, thumb));
+
+    // A reveal is logged first, then hands back the clear thumbnail.
+    const before = (try db.rawOne(i64, &fscope, "SELECT count(*) FROM activity_events e JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/sniff' AND e.action = 'reveal'", .{})).?;
+    const reveal_body = try std.fmt.allocPrint(arena, "{{\"hash\":\"{s}\"}}", .{&hh});
+    const revealed = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/sniff/-/reveal", "Bearer test-token", reveal_body);
+    try std.testing.expectEqual(std.http.Status.ok, revealed.status);
+    try std.testing.expect(std.mem.indexOf(u8, revealed.body, "thumb.webp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, revealed.body, "\"logged\":true") != null);
+    const after = (try db.rawOne(i64, &fscope, "SELECT count(*) FROM activity_events e JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/sniff' AND e.action = 'reveal'", .{})).?;
+    try std.testing.expectEqual(before + 1, after);
+
+    // A hash from elsewhere is not revealed through this dataset.
+    const stranger = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/sniff/-/reveal", "Bearer test-token", "{\"hash\":\"" ++ ("ab" ** 32) ++ "\"}");
+    try std.testing.expectEqual(std.http.Status.not_found, stranger.status);
+
+    // Raw downloads are logged too: no clear URL leaves unrecorded.
+    const dl = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/sniff/-/downloads", "Bearer test-token", thumbs_body);
+    try std.testing.expectEqual(std.http.Status.ok, dl.status);
+    const dl_logged = (try db.rawOne(i64, &fscope, "SELECT count(*) FROM activity_events e JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/sniff' AND e.action = 'download'", .{})).?;
+    try std.testing.expect(dl_logged >= 1);
+
+    // The log is the owners': the server token reads it, a reader does not.
+    const log = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/sniff/-/activity", "Bearer test-token", "");
+    try std.testing.expectEqual(std.http.Status.ok, log.status);
+    try std.testing.expect(std.mem.indexOf(u8, log.body, "\"action\":\"reveal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, log.body, "server-token") != null);
 }

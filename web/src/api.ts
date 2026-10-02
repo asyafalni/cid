@@ -82,6 +82,7 @@ export type TapeCommit = {
 export type Overview = {
   name: string;
   kind: 'files' | 'annotated';
+  restricted: boolean;
   git_url: string;
   default_format: string;
   commits: TapeCommit[]; // newest first
@@ -132,6 +133,26 @@ export function getThumbs(
   hashes: string[],
 ): Promise<{ thumbs: { hash: string; url: string }[] }> {
   return post(`/v0/datasets/${name}/-/thumbs`, { hashes });
+}
+
+export type Revealed = { hash: string; thumb: string | null; download: string; logged: boolean };
+
+/** The one way to a clear restricted preview: logged on the server first. */
+export function reveal(name: string, hash: string): Promise<Revealed> {
+  return post(`/v0/datasets/${name}/-/reveal`, { hash });
+}
+
+export type ActivityEvent = {
+  at: string;
+  account_id: string;
+  display_name: string | null;
+  action: string;
+  ref: string | null;
+  detail: string | null;
+};
+
+export function getActivity(name: string): Promise<{ events: ActivityEvent[] }> {
+  return request(`/v0/datasets/${name}/-/activity`);
 }
 
 export function getDownloads(

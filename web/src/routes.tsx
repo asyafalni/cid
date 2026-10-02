@@ -57,7 +57,7 @@ const datasetRoute = createRoute({
   validateSearch: (
     search: Record<string, unknown>,
   ): {
-    view?: 'overview' | 'browse' | 'releases' | 'files';
+    view?: 'overview' | 'browse' | 'releases' | 'files' | 'activity';
     release?: string;
     item?: string;
     a?: string;
@@ -76,7 +76,9 @@ const datasetRoute = createRoute({
           ? 'releases'
           : search.view === 'files'
             ? 'files'
-            : undefined,
+            : search.view === 'activity'
+              ? 'activity'
+              : undefined,
     release: typeof search.release === 'string' ? search.release : undefined,
     item: typeof search.item === 'string' ? search.item : undefined,
     a: typeof search.a === 'string' ? search.a : undefined,

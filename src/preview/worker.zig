@@ -37,6 +37,12 @@ pub fn thumbKey(arena: std.mem.Allocator, hash_hex: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "previews/{s}/{s}/thumb.webp", .{ hash_hex[0..2], hash_hex });
 }
 
+/// The blurred rendition beside it: the only preview of a restricted item
+/// the server presigns before a logged reveal (invariant 20).
+pub fn blurKey(arena: std.mem.Allocator, hash_hex: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "previews/{s}/{s}/blur.webp", .{ hash_hex[0..2], hash_hex });
+}
+
 /// One pass over the queue. Serial on purpose: the default concurrency
 /// is one ffmpeg in flight; raise it by running more passes in more
 /// processes, never by letting traffic fan out.
@@ -141,6 +147,9 @@ fn buildOne(
         return .{ .failed = "out of memory" };
     const out_path = std.fmt.allocPrint(arena, "{s}/{s}.webp", .{ config.tmpdir, hash }) catch
         return .{ .failed = "out of memory" };
+    const blur_path = std.fmt.allocPrint(arena, "{s}/{s}.blur.webp", .{ config.tmpdir, hash }) catch
+        return .{ .failed = "out of memory" };
+    defer std.Io.Dir.cwd().deleteFile(io, blur_path) catch {};
     defer std.Io.Dir.cwd().deleteFile(io, in_path) catch {};
     defer std.Io.Dir.cwd().deleteFile(io, out_path) catch {};
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = in_path, .data = bytes }) catch
@@ -152,11 +161,17 @@ fn buildOne(
     argv.appendSlice(arena, &.{ "nice", "-n", "19", "ffmpeg", "-nostdin", "-threads", "1", "-y", "-loglevel", "error" }) catch
         return .{ .failed = "out of memory" };
     if (is_video) argv.appendSlice(arena, &.{ "-ss", "1" }) catch return .{ .failed = "out of memory" };
+    // One decode, two renditions: the thumbnail, and a blurred copy for
+    // restricted datasets (invariant 20), split after scaling so the blur
+    // works on 320 pixels, not the original.
     argv.appendSlice(arena, &.{
-        "-i",        in_path,
-        "-vf",       "scale='min(320,iw)':-2",
-        "-frames:v", "1",
-        out_path,
+        "-i",              in_path,
+        "-filter_complex", "[0:v]scale='min(320,iw)':-2,split=2[thumb][src];[src]boxblur=12:4[blur]",
+        "-map",            "[thumb]",
+        "-frames:v",       "1",
+        out_path,          "-map",
+        "[blur]",          "-frames:v",
+        "1",               blur_path,
     }) catch return .{ .failed = "out of memory" };
 
     const run = std.process.run(arena, io, .{
@@ -180,6 +195,14 @@ fn buildOne(
     const key = thumbKey(arena, hash) catch return .{ .failed = "out of memory" };
     s3.putObject(scope, key, thumb) catch
         return .{ .failed = "could not store the thumbnail" };
+
+    const blur = std.Io.Dir.cwd().readFileAlloc(io, blur_path, arena, .limited(8 * 1024 * 1024)) catch
+        return .{ .failed = "ffmpeg wrote no blurred rendition" };
+    const bkey = blurKey(arena, hash) catch return .{ .failed = "out of memory" };
+    s3.putObject(scope, bkey, blur) catch
+        return .{ .failed = "could not store the blurred rendition" };
+    _ = db.exec(scope, "UPDATE previews SET blurred = true WHERE item_hash = decode($1, 'hex')", .{hash}) catch
+        return .{ .failed = "could not record the blurred rendition" };
     return .built;
 }
 

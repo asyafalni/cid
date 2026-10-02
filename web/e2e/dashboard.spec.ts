@@ -308,6 +308,41 @@ test('the server token cannot star: a star belongs to a person', async ({ page }
   await expect(page.locator('.star')).toHaveCount(0);
 });
 
+test('restricted: blurred until a logged reveal, and the log is for owners', async ({ page }) => {
+  await signIn(page); // the server token: an owner of everything
+  // The home's card shows the blur, never the clear thumbnail.
+  const card = page.locator('.manifest-row', { has: page.getByRole('link', { name: 'e2e/datasets/faces', exact: true }) });
+  await expect(card.locator('.mosaic img')).toHaveAttribute('src', /blur\.webp/);
+
+  await page.goto('/d/e2e/datasets/faces?view=browse');
+  await expect(page.getByText('restricted · blurred until revealed')).toBeVisible();
+  await expect(page.locator('.tile img')).toHaveAttribute('src', /blur\.webp/);
+  await page.getByRole('button', { name: /person-01\.png/ }).click();
+  const drawer = page.getByRole('complementary', { name: 'person-01.png' });
+  await expect(drawer.locator('img')).toHaveAttribute('src', /blur\.webp/);
+  // No clear bytes until the reveal: not even a download link.
+  await expect(drawer.getByRole('link', { name: 'Download the file' })).toHaveCount(0);
+  await expect(drawer.getByText('is logged')).toBeVisible();
+
+  await drawer.getByRole('button', { name: 'Reveal this item' }).click();
+  await expect(drawer.locator('img')).toHaveAttribute('src', /thumb\.webp/);
+  await expect(drawer.getByRole('link', { name: 'Download the file' })).toBeVisible();
+  await expect(drawer.getByText('Revealed; this was logged.')).toBeVisible();
+
+  // The owner's log shows it.
+  await page.goto('/d/e2e/datasets/faces?view=activity');
+  await expect(page.locator('.activity-table')).toContainText('reveal');
+  await expect(page.locator('.activity-table')).toContainText('server-token');
+});
+
+test('a reader of a restricted dataset cannot read its activity log', async ({ page }) => {
+  await page.goto('/signin');
+  await page.getByRole('link', { name: 'Sign in with GitLab' }).click();
+  await expect(page.getByRole('heading', { name: 'Datasets' })).toBeVisible();
+  await page.goto('/d/e2e/datasets/faces?view=activity');
+  await expect(page.getByRole('alert')).toContainText("for the dataset's owners");
+});
+
 test('a GitLab callback with a forged state is refused, in words', async ({ page }) => {
   await page.goto('/auth/gitlab/callback?code=anything&state=forged-state-value-x');
   await expect(page).toHaveURL(/\/signin\?error=/);
@@ -316,7 +351,7 @@ test('a GitLab callback with a forged state is refused, in words', async ({ page
 
 test('accessibility: no serious or critical axe findings', async ({ page }) => {
   await signIn(page);
-  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt']) {
+  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png']) {
     await page.goto(path);
     await page.waitForLoadState('networkidle');
     const results = await new AxeBuilder({ page }).analyze();
