@@ -21,6 +21,7 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
         error.StagedChanges => return common.fail(ctx, .conflict, "you have staged changes. Commit them ('cid commit -m \"...\"') or unstage ('cid restore --staged'), then run 'cid pull' again.", .{}),
         error.LocalChangesInTheWay => return common.fail(ctx, .conflict, "local edits would be overwritten. Commit them ('cid commit -a -m \"...\"') or move them aside, then run 'cid pull' again.", .{}),
         error.EmptyDataset => return common.fail(ctx, .usage, "the server has nothing for this dataset yet. Run 'cid push' first.", .{}),
+        error.AccessDenied => return common.denied(ctx, "cid pull"),
         error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server. Check CID_SERVER, then run 'cid pull' again.", .{}),
         error.ExportFailed => return common.fail(ctx, .integrity, "the export sidecars could not be rebuilt (see the warning above). Fix the data in the platform, then run the command again.", .{}),
         error.Collected => return common.fail(ctx, .integrity, "this version needs files cleanup removed from the server: it is in no release and no branch head; the folder was not changed. Run 'cid log' and check out a release or a branch instead.", .{}),

@@ -416,6 +416,9 @@ const DirectTransport = struct {
     deps: *cid.api.Deps,
     scope: *cid.db.Run,
     auth: []const u8,
+    /// The connection drops as the push is being recorded: a push killed
+    /// after its uploads, before the server took its commits.
+    cut_push: bool = false,
 
     fn transport(self: *DirectTransport) cid.client.remote.Transport {
         return .{ .ctx = self, .call_fn = call, .get_url_fn = getUrl };
@@ -436,6 +439,7 @@ const DirectTransport = struct {
         body: []const u8,
     ) anyerror!cid.client.remote.Response {
         const self: *DirectTransport = @ptrCast(@alignCast(ctx));
+        if (self.cut_push and std.mem.endsWith(u8, target, "/-/push")) return error.ConnectionResetByPeer;
         const r = cid.api.handle(arena, self.deps, self.scope, method, target, self.auth, body);
         return .{ .status = r.status, .body = r.body };
     }
@@ -1672,6 +1676,134 @@ test "annotated: the platform writes revisions, the server commits, state compos
     }
 }
 
+test "item identity: re-encoding keeps annotations; identical files at two paths share none" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/ident" };
+
+    const created = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/ident\",\"kind\":\"annotated\",\"git_url\":\"g@h:ident.git\"}");
+    try std.testing.expectEqual(std.http.Status.created, created.status);
+    const ds_id = (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/ident'", .{})).?;
+
+    // Three contents: a clip, the same clip re-encoded, and a photo.
+    const bytes = [_][]const u8{ "ident: clip, original encoding", "ident: clip, re-encoded smaller", "ident: a photo" };
+    var hashes: [bytes.len][64]u8 = undefined;
+    for (bytes, &hashes) |b, *h| {
+        var dg: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(b, &dg, .{});
+        h.* = std.fmt.bytesToHex(dg, .lower);
+        try s3c.putObject(&scope, try cid.api.stagedKey(arena, ds_id, h), b);
+    }
+    try remote.registerItems(arena, &.{
+        .{ .hash = &hashes[0], .size = bytes[0].len },
+        .{ .hash = &hashes[1], .size = bytes[1].len },
+        .{ .hash = &hashes[2], .size = bytes[2].len },
+    });
+
+    // Platform-style writes, under the shared write lock as cid_writer.
+    var last = cid.uuid7.Uuid.now(io);
+    const Writer = struct {
+        db: *cid.db.sql.Db,
+        scope: *cid.db.Run,
+        arena: std.mem.Allocator,
+        io: std.Io,
+        ds: []const u8,
+        last: *cid.uuid7.Uuid,
+
+        fn begin(w: @This()) !void {
+            _ = try w.db.exec(w.scope, "BEGIN", .{});
+            const lock = try std.fmt.allocPrintSentinel(w.arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{w.ds}, 0);
+            _ = try w.db.exec(w.scope, lock, .{});
+            _ = try w.db.exec(w.scope, "SET LOCAL ROLE cid_writer", .{});
+        }
+        fn item(w: @This(), path: []const u8, op: []const u8, item_id: []const u8, hash: []const u8) !void {
+            w.last.* = cid.uuid7.Uuid.nextAfter(w.io, w.last.*);
+            const sql = try std.fmt.allocPrintSentinel(w.arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, author) " ++
+                "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', '{s}', decode('{s}', 'hex'), 'agent:t')", .{ &w.last.toString(), w.last.unixMs() / 1000, w.ds, path, op, item_id, hash }, 0);
+            _ = try w.db.exec(w.scope, sql, .{});
+        }
+        fn box(w: @This(), item_id: []const u8, class: []const u8) !void {
+            w.last.* = cid.uuid7.Uuid.nextAfter(w.io, w.last.*);
+            const ann = cid.uuid7.Uuid.nextAfter(w.io, w.last.*);
+            const sql = try std.fmt.allocPrintSentinel(w.arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+                "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'create', 'box', '{s}', '{{\"x\":1,\"y\":2,\"w\":3,\"h\":4}}'::jsonb, 'agent:t', 'p1')", .{ &w.last.toString(), w.last.unixMs() / 1000, w.ds, &ann.toString(), item_id, class }, 0);
+            _ = try w.db.exec(w.scope, sql, .{});
+        }
+        fn commit(w: @This()) !void {
+            _ = try w.db.exec(w.scope, "COMMIT", .{});
+        }
+    };
+    const w: Writer = .{ .db = db, .scope = &fscope, .arena = arena, .io = io, .ds = ds_id, .last = &last };
+    const clip_id = cid.uuid7.Uuid.now(io).toString();
+    const photo_id = cid.uuid7.Uuid.nextAfter(io, cid.uuid7.Uuid.now(io)).toString();
+    const copy_id = cid.uuid7.Uuid.nextAfter(io, cid.uuid7.Uuid.parse(&photo_id) catch unreachable).toString();
+
+    // The clip and the photo, each annotated; the same photo bytes again
+    // at a second path — a separate item, with no annotation of its own.
+    try w.begin();
+    try w.item("clips/a.mp4", "add", &clip_id, &hashes[0]);
+    try w.item("photos/p.jpg", "add", &photo_id, &hashes[2]);
+    try w.item("photos/copy-of-p.jpg", "add", &copy_id, &hashes[2]);
+    try w.box(&clip_id, "person");
+    try w.box(&photo_id, "car");
+    try w.commit();
+    const c1 = try remote.commitServer(arena, "main", "first batch", "agent:t");
+
+    // Re-encoding: new bytes at the same path, the same item_id.
+    try w.begin();
+    try w.item("clips/a.mp4", "update", &clip_id, &hashes[1]);
+    try w.commit();
+    const c2 = try remote.commitServer(arena, "main", "re-encode", "agent:t");
+
+    const Page = struct { items: []const struct { path: []const u8, hash: []const u8, annotations: []const struct { class: ?[]const u8 } } };
+    const classesAt = struct {
+        fn get(al: std.mem.Allocator, d: *cid.api.Deps, sc: anytype, commit: []const u8) !Page {
+            const res = cid.api.handle(al, d, sc, "GET", try std.fmt.allocPrint(al, "/v0/datasets/test/datasets/ident/-/browse?commit={s}&limit=200", .{commit}), "Bearer test-token", "");
+            if (res.status != .ok) return error.BrowseRefused;
+            return std.json.parseFromSliceLeaky(Page, al, res.body, .{ .ignore_unknown_fields = true });
+        }
+    }.get;
+    for ([_][]const u8{ c1, c2 }, 0..) |commit, n| {
+        const page = try classesAt(arena, &deps, &scope, commit);
+        try std.testing.expectEqual(@as(usize, 3), page.items.len);
+        for (page.items) |it| {
+            if (std.mem.eql(u8, it.path, "clips/a.mp4")) {
+                // Its box survives the new bytes.
+                try std.testing.expectEqualStrings(&hashes[if (n == 0) 0 else 1], it.hash);
+                try std.testing.expectEqual(@as(usize, 1), it.annotations.len);
+                try std.testing.expectEqualStrings("person", it.annotations[0].class.?);
+            } else if (std.mem.eql(u8, it.path, "photos/p.jpg")) {
+                try std.testing.expectEqual(@as(usize, 1), it.annotations.len);
+            } else {
+                // Same bytes as the photo; none of its annotations.
+                try std.testing.expectEqualStrings(&hashes[2], it.hash);
+                try std.testing.expectEqual(@as(usize, 0), it.annotations.len);
+            }
+        }
+    }
+}
+
 test "annotated releases: v2 manifest with JCS rows, verify catches smuggled boxes" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -2686,6 +2818,206 @@ test "media: audio gets its waveform, text reads as text, restricted text withhe
     const revealed = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/media/-/reveal", "Bearer test-token", body);
     try std.testing.expect(std.mem.indexOf(u8, revealed.body, "UTF-8 is fine") != null);
     try std.testing.expect(std.mem.indexOf(u8, revealed.body, "\"logged\":true") != null);
+}
+
+test "state at commit: random changes on main and a branch match an in-memory model at every commit" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/model" };
+    try remote.createDataset(arena, "g@h:model.git");
+    const ds_id = (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/model'", .{})).?;
+
+    // A pool of contents (staged once; afterwards this dataset holds them)
+    // and of paths, some nested, some sharing prefixes.
+    const contents = [_][]const u8{ "m0", "m1 one", "m2 two two", "m3 three!", "m4 ...." };
+    var hashes: [contents.len][64]u8 = undefined;
+    for (contents, &hashes) |c, *h| {
+        var dg: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(c, &dg, .{});
+        h.* = std.fmt.bytesToHex(dg, .lower);
+        try s3c.putObject(&scope, try cid.api.stagedKey(arena, ds_id, h), c);
+    }
+    const paths = [_][]const u8{ "a.txt", "a/b.txt", "a/b/c.txt", "a.b/x", "z", "dir/one", "dir/two", "dir/sub/three" };
+
+    const State = [paths.len]?u8; // content index per path
+    const Line = enum { main, branch };
+    const Snapshot = struct { commit: []const u8, state: State };
+    var snapshots: std.ArrayList(Snapshot) = .empty;
+    var states: [2]State = .{ @splat(null), @splat(null) };
+    var heads: [2]?cid.uuid7.Uuid = .{ null, null };
+    var branched = false;
+    var prng: std.Random.DefaultPrng = .init(0x5eed_c1d);
+    const rand = prng.random();
+
+    const commitOn = struct {
+        fn run(al: std.mem.Allocator, r: *const cid.client.remote.Remote, i: std.Io, line: Line, head: *?cid.uuid7.Uuid, st: *State, h: *const [contents.len][64]u8, rnd: std.Random, first: bool) ![]const u8 {
+            var changes: std.ArrayList(cid.client.local.Change) = .empty;
+            var touched: [paths.len]bool = @splat(false);
+            const n = if (first) contents.len else 1 + rnd.uintLessThan(usize, 4);
+            for (0..n) |k| {
+                const p = if (first) k else rnd.uintLessThan(usize, paths.len);
+                if (touched[p]) continue;
+                touched[p] = true;
+                if (st[p] != null and rnd.uintLessThan(u8, 10) < 3) {
+                    st[p] = null;
+                    try changes.append(al, .{ .op = .delete, .path = paths[p], .hash_hex = undefined, .size = 0 });
+                } else {
+                    const c: u8 = if (first) @intCast(k) else rnd.uintLessThan(u8, contents.len);
+                    st[p] = c;
+                    try changes.append(al, .{ .op = .add, .path = paths[p], .hash_hex = h[c], .size = contents[c].len });
+                }
+            }
+            const id = cid.uuid7.Uuid.now(i);
+            const branch = if (line == .main) "main" else "exp";
+            try r.push(al, branch, &.{.{ .id = id, .parent = head.*, .branch = branch, .author = "user:model", .authored_at_ms = 1760000000000, .message = "random", .changes = changes.items }});
+            head.* = id;
+            return al.dupe(u8, &id.toString());
+        }
+    }.run;
+
+    for (0..55) |step| {
+        if (step == 30) {
+            // Cut the branch from main's head: it starts as main's state.
+            _ = try remote.branchCreate(arena, "exp");
+            heads[1] = try cid.uuid7.Uuid.parse((try remote.head(arena, "exp")).?);
+            states[1] = states[0];
+            branched = true;
+        }
+        const line: Line = if (branched and rand.boolean()) .branch else .main;
+        const l = @intFromEnum(line);
+        const commit = try commitOn(arena, &remote, io, line, &heads[l], &states[l], &hashes, rand, step == 0);
+        try snapshots.append(arena, .{ .commit = commit, .state = states[l] });
+    }
+
+    // Every commit's state, as the server composes it, is the model's.
+    for (snapshots.items, 0..) |snap, n| {
+        const got = try remote.state(arena, snap.commit);
+        var expected: usize = 0;
+        for (snap.state, 0..) |c, p| {
+            const content = c orelse continue;
+            expected += 1;
+            const item = for (got) |it| {
+                if (std.mem.eql(u8, it.path, paths[p])) break it;
+            } else {
+                std.debug.print("commit #{d}: {s} missing\n", .{ n, paths[p] });
+                return error.StateDiffers;
+            };
+            try std.testing.expectEqualStrings(&hashes[content], item.hash);
+            try std.testing.expectEqual(@as(u64, contents[content].len), item.size);
+        }
+        if (got.len != expected) {
+            std.debug.print("commit #{d}: {d} items, the model has {d}\n", .{ n, got.len, expected });
+            return error.StateDiffers;
+        }
+        // In path order, bytewise (what clone and diff rely on).
+        for (got[1..], got[0 .. got.len - 1]) |b, a| try std.testing.expect(std.mem.order(u8, a.path, b.path) == .lt);
+    }
+}
+
+test "resume: a push killed halfway finishes on the next run, no file uploaded twice, nothing half-recorded" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/resume" };
+
+    // Three new files (fresh bytes each run: nothing in storage yet), in
+    // two local commits.
+    var nonce: [8]u8 = undefined;
+    io.random(&nonce);
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    try cid.client.workspace.init(arena, io, producer.dir, "cid@test:test/datasets/resume", "git@example.invalid:resume.git");
+    var ws = try cid.client.workspace.open(arena, io, producer.dir);
+    for ([_][]const u8{ "one.txt", "two.bin" }) |name| {
+        try producer.dir.writeFile(io, .{ .sub_path = name, .data = try std.fmt.allocPrint(arena, "{s} {x}", .{ name, &nonce }) });
+    }
+    _ = try cid.client.workspace.add(arena, io, &ws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &ws, "first", "user:test");
+    try producer.dir.writeFile(io, .{ .sub_path = "three.csv", .data = try std.fmt.allocPrint(arena, "a,b\n{x},1\n", .{&nonce}) });
+    _ = try cid.client.workspace.add(arena, io, &ws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &ws, "second", "user:test");
+
+    // Killed after one upload: the dataset exists, one file is up.
+    _ = remote.head(arena, "main") catch try remote.createDataset(arena, "git@example.invalid:resume.git");
+    const ds_id = (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/resume'", .{})).?;
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
+    inline for (.{ "refs", "commits", "item_revisions", "dataset_items" }) |table| {
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id = $1::uuid", .{ds_id});
+    }
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
+    var hashes: [3][]const u8 = undefined;
+    var sizes: [3]u64 = undefined;
+    for ([_][]const u8{ "one.txt", "two.bin", "three.csv" }, 0..) |name, i| {
+        const stored = try cid.client.cache.hashFile(io, producer.dir, name);
+        hashes[i] = try arena.dupe(u8, &stored.hash_hex);
+        sizes[i] = stored.size;
+    }
+    const first = try remote.checkHashes(arena, &hashes);
+    try std.testing.expectEqual(@as(usize, 3), first.len);
+    try cid.client.remote.uploadFromCache(arena, io, cache.dir, first[0].hash, sizes[0], first[0].url);
+
+    // Run again, and the connection drops while recording: the other two
+    // go up, nothing is recorded.
+    direct.cut_push = true;
+    try std.testing.expectError(error.ServerUnreachable, cid.client.sync.push(arena, io, &ws, cache.dir, &remote));
+    const recorded = try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM commits WHERE dataset_id = $1::uuid", .{ds_id});
+    try std.testing.expectEqual(@as(?i64, 0), recorded);
+
+    // And again: everything is up already, so nothing is uploaded twice;
+    // both commits land together.
+    direct.cut_push = false;
+    const done = try cid.client.sync.push(arena, io, &ws, cache.dir, &remote);
+    try std.testing.expectEqual(@as(u32, 0), done.uploaded_files);
+    try std.testing.expectEqual(@as(u32, 2), done.pushed_commits);
+    for (hashes) |h| try std.testing.expect((try s3c.headObject(&scope, try cid.api.itemKey(arena, h))) != null);
+    const recorded_now = try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM commits WHERE dataset_id = $1::uuid", .{ds_id});
+    try std.testing.expectEqual(@as(?i64, 2), recorded_now);
+    const again = try cid.client.sync.push(arena, io, &ws, cache.dir, &remote);
+    try std.testing.expectEqual(@as(u32, 0), again.pushed_commits);
 }
 
 test "gc: never deletes what a release or branch head holds; collected bytes can come back" {

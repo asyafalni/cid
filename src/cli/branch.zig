@@ -28,6 +28,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         error.BranchExists => return common.fail(ctx, .conflict, "'{s}' already exists. Run 'cid checkout {s}' to work on it.", .{ name, name }),
         error.BadReleaseName => return common.fail(ctx, .usage, "'{s}' is not a branch name (letters, digits, dot, dash, underscore). Run 'cid branch cleanup'.", .{name}),
         error.NothingToTag => return common.fail(ctx, .usage, "main has no commits yet. Run 'cid push' first.", .{}),
+        error.AccessDenied => return common.denied(ctx, "cid branch"),
         error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server. Check the connection, then run 'cid branch' again.", .{}),
         else => return common.fail(ctx, .network, "the server refused. Check the server logs, then run 'cid branch' again.", .{}),
     };

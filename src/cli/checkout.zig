@@ -58,6 +58,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         error.UnpushedCommits => return common.fail(ctx, .conflict, "you have local commits not pushed; switching would hide them. Run 'cid push' first.", .{}),
         error.LocalChangesInTheWay => return common.fail(ctx, .conflict, "local edits would be overwritten. Commit them ('cid commit -a -m \"...\"') or move them aside, then run 'cid checkout' again.", .{}),
         error.NoSuchDataset => return common.fail(ctx, .usage, "no such commit here. Run 'cid log' to list commits.", .{}),
+        error.AccessDenied => return common.denied(ctx, "cid checkout"),
         error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server. Check CID_SERVER, then run 'cid checkout' again.", .{}),
         error.ExportFailed => return common.fail(ctx, .integrity, "the export sidecars could not be rebuilt (see the warning above). Fix the data in the platform, then run the command again.", .{}),
         error.Collected => return common.fail(ctx, .integrity, "this version needs files cleanup removed from the server: it is in no release and no branch head; the folder was not changed. Run 'cid log' and check out a release or a branch instead.", .{}),

@@ -31,6 +31,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         error.BadReleaseName => return common.fail(ctx, .usage, "'{s}' is not a release name (letters, digits, dot, dash, underscore). Try something like v1.0.0.", .{name}),
         error.NothingToTag => return common.fail(ctx, .usage, "nothing to tag yet. Run 'cid push' first, then 'cid tag {s}' again.", .{name}),
         error.NoSuchDataset => return common.fail(ctx, .usage, "the dataset is not on the server yet. Run 'cid push' first.", .{}),
+        error.AccessDenied => return common.denied(ctx, "cid tag"),
         error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server. Check CID_SERVER, then run 'cid tag' again.", .{}),
         else => return common.fail(ctx, .network, "the server refused the tag. Check the server logs, then run 'cid tag' again.", .{}),
     };

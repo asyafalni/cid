@@ -35,6 +35,21 @@ expect_hint() {
     say "ok (hinted): $desc"
 }
 
+# A failing command must exit with the documented code, and still say
+# what to run next.
+expect_code() {
+    want="$1"; desc="$2"; shift 2
+    out="$("$@" 2>&1)"; code=$?
+    if [ "$code" -ne "$want" ]; then
+        say "FAIL (exit $code, want $want): $desc"; say "     got: $out"; fails=$((fails+1)); return
+    fi
+    case "$out" in
+        *"Run '"*|*"run '"*|*"Run the command again"*) ;;
+        *) say "FAIL (no next-command hint): $desc"; say "     got: $out"; fails=$((fails+1)); return ;;
+    esac
+    say "ok (exit $want, hinted): $desc"
+}
+
 expect_ok() {
     desc="$1"; shift
     out="$("$@" 2>&1)"; code=$?
@@ -112,6 +127,31 @@ if [ "$(sha256sum < "$c" | cut -d' ' -f1)" = "$h" ]; then say "ok: in-place edit
 else say "FAIL: in-place edit changed the cached copy"; fails=$((fails+1)); fi
 expect_ok   "stage the edit" "$CID" add a.txt
 expect_hint "pull over staged changes"        "$CID" pull
+
+# --- offline work, and the exit codes ------------------------------------------
+cd "$WORK/producer"
+OFF="offline $DS"
+printf '%s\n' "$OFF" > off.txt
+DOWN='http://127.0.0.1:9'
+expect_ok   "add with the server unreachable"    env CID_SERVER="$DOWN" "$CID" add off.txt
+expect_ok   "commit with the server unreachable" env CID_SERVER="$DOWN" "$CID" commit -m "offline"
+expect_code 4 "push with the server unreachable" env CID_SERVER="$DOWN" "$CID" push
+expect_ok   "push once the server is back"       "$CID" push
+expect_code 5 "a token the server refuses"       env CID_TOKEN=wrong "$CID" pull
+# Bytes damaged in storage never reach a folder: a fresh cache downloads,
+# the hash check fails, exit 3.
+h=$(printf '%s\n' "$OFF" | sha256sum | cut -d' ' -f1)
+a=$(printf %.2s "$h"); b=$(printf %s "$h" | cut -c3-4)
+curl -sf --aws-sigv4 'aws:amz:us-east-1:s3' --user "$CID_S3_ACCESS_KEY:$CID_S3_SECRET_KEY" \
+    -X PUT --data-binary 'tampered' "$CID_S3_ENDPOINT/cid/items/sha256/$a/$b/$h" >/dev/null \
+    || { say "FAIL: could not tamper with storage for the integrity check"; fails=$((fails+1)); }
+cd "$WORK"
+export XDG_CACHE_HOME="$WORK/fresh-cache"
+expect_ok   "clone with an empty cache"          "$CID" clone "cid@127.0.0.1:$DS" damaged
+cd damaged
+expect_code 3 "checkout of a damaged file"       "$CID" checkout main
+if [ -e off.txt ]; then say "FAIL: a damaged file reached the folder"; fails=$((fails+1)); else say "ok: the damaged file stayed out"; fi
+unset XDG_CACHE_HOME
 
 # --- piped --version is one parseable line ----------------------------------
 lines=$("$CID" --version | wc -l)

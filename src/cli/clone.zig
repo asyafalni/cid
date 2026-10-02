@@ -112,6 +112,7 @@ fn cloneFailed(
         error.ExportFailed => return common.fail(ctx, .integrity, "the {s} export could not be built (see the warning above for the file). Fix it in the platform, or clone with --format files.", .{format orelse "requested"}),
         error.NoSuchDataset => return common.fail(ctx, .usage, "no dataset '{s}' on the server. Check the address, or run 'cid init' in the producing folder to create it.", .{name}),
         error.EmptyDataset => return common.fail(ctx, .usage, "'{s}' has nothing pushed yet. Push from the producing folder first.", .{name}),
+        error.AccessDenied => return common.denied(ctx, "cid clone"),
         error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server. Check CID_SERVER, then run 'cid clone' again.", .{}),
         error.TransferFailed => return common.fail(ctx, .integrity, "a download failed its hash check or the connection broke. Run 'cid clone' again.", .{}),
         error.Collected => return common.fail(ctx, .integrity, "this version needs files cleanup removed from the server: it is in no release and no branch head. Run 'cid log' and clone a release or a branch instead (--release).", .{}),

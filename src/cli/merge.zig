@@ -20,6 +20,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     const author = common.author(ctx) catch return .network;
     const result = remote.merge(ctx.arena, name, author) catch |err| switch (err) {
         error.NoSuchBranch => return common.fail(ctx, .usage, "no branch named '{s}'. Run 'cid branch {s}' to create it.", .{ name, name }),
+        error.AccessDenied => return common.denied(ctx, "cid merge"),
         error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server. Check the connection, then run 'cid merge' again.", .{}),
         else => return common.fail(ctx, .network, "the server refused. Check the server logs, then run 'cid merge' again.", .{}),
     };

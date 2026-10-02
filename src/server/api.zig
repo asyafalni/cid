@@ -2457,7 +2457,11 @@ fn admit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, has
     defer deps.s3.deleteObject(scope, staged) catch {};
     if (!eql(&got[1], hash) or (size != null and size.? != got[0])) return .mismatch;
     const key = itemKey(arena, hash) catch return error.OutOfMemory;
-    if ((deps.s3.headObject(scope, key) catch return error.Storage) == null)
+    // Stored only if absent, never overwritten (invariant 2), except bytes
+    // that cannot be these: a stored object of another size is damage, and
+    // the verified upload repairs it.
+    const stored = deps.s3.headObject(scope, key) catch return error.Storage;
+    if (stored == null or stored.? != got[0])
         deps.s3.putFile(scope, deps.io, key, path) catch return error.Storage;
     // Verified bytes are back in storage: whatever cleanup took returns.
     _ = deps.db.exec(scope, "DELETE FROM collected_items WHERE item_hash = decode($1, 'hex')", .{hash}) catch return error.Db;

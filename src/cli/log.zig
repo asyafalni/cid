@@ -29,8 +29,11 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
                 printRemote(ctx.out, e) catch return .network;
                 printed += 1;
             }
-        } else |_| {
-            ctx.out.writeAll("(server unreachable: showing local commits only)\n") catch return .network;
+        } else |err| {
+            ctx.out.writeAll(if (err == error.AccessDenied)
+                "(access denied by the server: showing local commits only)\n"
+            else
+                "(server unreachable: showing local commits only)\n") catch return .network;
         }
     } else |_| {
         ctx.out.writeAll("(no server configured: showing local commits only)\n") catch return .network;

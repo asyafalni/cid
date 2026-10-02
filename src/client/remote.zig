@@ -114,6 +114,7 @@ pub const HttpTransport = struct {
 pub const Error = error{
     ServerUnreachable,
     ServerRefused, // unexpected status; message in logs
+    AccessDenied, // 401/403: this key or token may not do this here
     NoSuchDataset,
     Stale, // someone pushed since you pulled
     MissingContent, // a file was not in storage; re-run push
@@ -137,29 +138,35 @@ pub const Remote = struct {
         return std.fmt.allocPrint(arena, "/v0/datasets/{s}/-/" ++ action_fmt, .{self.name} ++ args);
     }
 
+    /// Every API call: a transport failure is the server unreachable, and a
+    /// refused identity (401) or permission (403) is access denied (exit 5).
+    fn send(self: *const Remote, arena: std.mem.Allocator, method: []const u8, path: []const u8, body: []const u8) Error!Response {
+        const res = self.t.call(arena, method, path, body) catch return error.ServerUnreachable;
+        if (res.status == .unauthorized or res.status == .forbidden) return error.AccessDenied;
+        return res;
+    }
+
     pub fn createDataset(self: *const Remote, arena: std.mem.Allocator, git_url: []const u8) Error!void {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{
             .name = self.name,
             .kind = "files",
             .git_url = git_url,
         }, .{})});
-        const res = self.t.call(arena, "POST", "/v0/datasets", body) catch return error.ServerUnreachable;
+        const res = try self.send(arena, "POST", "/v0/datasets", body);
         if (res.status != .created and res.status != .conflict) return error.ServerRefused;
     }
 
     pub const Info = struct { name: []const u8, kind: []const u8, git_url: []const u8, default_format: []const u8 };
 
     pub fn info(self: *const Remote, arena: std.mem.Allocator) Error!Info {
-        const res = self.t.call(arena, "GET", try self.target(arena, "info", .{}), "") catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "GET", try self.target(arena, "info", .{}), "");
         if (res.status == .not_found) return error.NoSuchDataset;
         if (res.status != .ok) return error.ServerRefused;
         return parse(Info, arena, res.body) orelse error.ServerRefused;
     }
 
     pub fn head(self: *const Remote, arena: std.mem.Allocator, branch: []const u8) Error!?[]const u8 {
-        const res = self.t.call(arena, "GET", try self.target(arena, "head?branch={s}", .{branch}), "") catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "GET", try self.target(arena, "head?branch={s}", .{branch}), "");
         if (res.status == .not_found) return error.NoSuchDataset;
         if (res.status != .ok) return error.ServerRefused;
         const Head = struct { commit: ?[]const u8 };
@@ -176,8 +183,7 @@ pub const Remote = struct {
     };
 
     pub fn log(self: *const Remote, arena: std.mem.Allocator, branch: []const u8) Error![]const LogEntry {
-        const res = self.t.call(arena, "GET", try self.target(arena, "log?branch={s}", .{branch}), "") catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "GET", try self.target(arena, "log?branch={s}", .{branch}), "");
         if (res.status == .not_found) return error.NoSuchDataset;
         if (res.status != .ok) return error.ServerRefused;
         const Log = struct { commits: []const LogEntry };
@@ -189,8 +195,7 @@ pub const Remote = struct {
 
     pub fn checkHashes(self: *const Remote, arena: std.mem.Allocator, hashes: []const []const u8) Error![]const Missing {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .hashes = hashes }, .{})});
-        const res = self.t.call(arena, "POST", try self.target(arena, "check-hashes", .{}), body) catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "POST", try self.target(arena, "check-hashes", .{}), body);
         if (res.status != .ok) return error.ServerRefused;
         const Check = struct { missing: []const Missing };
         const parsed = parse(Check, arena, res.body) orelse return error.ServerRefused;
@@ -227,8 +232,7 @@ pub const Remote = struct {
             };
         }
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .branch = branch, .commits = wire }, .{})});
-        const res = self.t.call(arena, "POST", try self.target(arena, "push", .{}), body) catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "POST", try self.target(arena, "push", .{}), body);
         if (res.status == .conflict) return error.Stale;
         if (res.status == .unprocessable_entity) return error.MissingContent;
         if (res.status != .ok) return error.ServerRefused;
@@ -262,8 +266,7 @@ pub const Remote = struct {
 
     /// Asks for a version file (items, or an export) and where to get it.
     fn whereIs(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8, kind: []const u8, subset: Subset) Error!struct { url: []const u8, sha256: []const u8, total: u64 } {
-        const res = self.t.call(arena, "GET", try self.fileTarget(arena, commit_id, kind, subset), "") catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "GET", try self.fileTarget(arena, commit_id, kind, subset), "");
         if (res.status == .not_found) return error.NoSuchDataset;
         if (res.status == .unprocessable_entity) {
             const Why = struct { @"error": []const u8 = "the export is impossible" };
@@ -325,8 +328,7 @@ pub const Remote = struct {
 
     pub fn tag(self: *const Remote, arena: std.mem.Allocator, name: []const u8) Error!TagResult {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .name = name }, .{})});
-        const res = self.t.call(arena, "POST", try self.target(arena, "tag", .{}), body) catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "POST", try self.target(arena, "tag", .{}), body);
         if (res.status == .conflict) return error.ReleaseExists;
         if (res.status == .bad_request) return error.BadReleaseName;
         if (res.status == .unprocessable_entity) return error.NothingToTag;
@@ -338,8 +340,7 @@ pub const Remote = struct {
     pub const Release = struct { name: []const u8, commit: []const u8, manifest_sha256: []const u8 };
 
     pub fn releases(self: *const Remote, arena: std.mem.Allocator) Error![]const Release {
-        const res = self.t.call(arena, "GET", try self.target(arena, "releases", .{}), "") catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "GET", try self.target(arena, "releases", .{}), "");
         if (res.status == .not_found) return error.NoSuchDataset;
         if (res.status != .ok) return error.ServerRefused;
         const List = struct { releases: []const Release };
@@ -349,8 +350,7 @@ pub const Remote = struct {
 
     pub fn branchCreate(self: *const Remote, arena: std.mem.Allocator, name: []const u8) Error![]const u8 {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .name = name }, .{})});
-        const res = self.t.call(arena, "POST", try self.target(arena, "branch", .{}), body) catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "POST", try self.target(arena, "branch", .{}), body);
         if (res.status == .conflict) return error.BranchExists;
         if (res.status == .bad_request) return error.BadReleaseName;
         if (res.status == .unprocessable_entity) return error.NothingToTag;
@@ -364,8 +364,7 @@ pub const Remote = struct {
     pub const Branch = struct { name: []const u8, commit: []const u8 };
 
     pub fn branches(self: *const Remote, arena: std.mem.Allocator) Error![]const Branch {
-        const res = self.t.call(arena, "GET", try self.target(arena, "branches", .{}), "") catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "GET", try self.target(arena, "branches", .{}), "");
         if (res.status == .not_found) return error.NoSuchDataset;
         if (res.status != .ok) return error.ServerRefused;
         const List = struct { branches: []const Branch };
@@ -381,8 +380,7 @@ pub const Remote = struct {
 
     pub fn merge(self: *const Remote, arena: std.mem.Allocator, name: []const u8, author: []const u8) Error!MergeResult {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .name = name, .author = author }, .{})});
-        const res = self.t.call(arena, "POST", try self.target(arena, "merge", .{}), body) catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "POST", try self.target(arena, "merge", .{}), body);
         if (res.status == .conflict) {
             const C = struct { conflicts: []const []const u8 };
             const parsed = parse(C, arena, res.body) orelse return error.ServerRefused;
@@ -399,8 +397,7 @@ pub const Remote = struct {
     /// The platform-style server commit over directly written revisions.
     pub fn commitServer(self: *const Remote, arena: std.mem.Allocator, branch: []const u8, message: []const u8, author: []const u8) Error![]const u8 {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .branch = branch, .message = message, .author = author }, .{})});
-        const res = self.t.call(arena, "POST", try self.target(arena, "commit", .{}), body) catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "POST", try self.target(arena, "commit", .{}), body);
         if (res.status == .unprocessable_entity) return error.NothingToTag;
         if (res.status == .not_found) return error.NoSuchDataset;
         if (res.status != .created) return error.ServerRefused;
@@ -413,8 +410,7 @@ pub const Remote = struct {
 
     pub fn registerItems(self: *const Remote, arena: std.mem.Allocator, items: []const RegisterItem) Error!void {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .items = items }, .{})});
-        const res = self.t.call(arena, "POST", try self.target(arena, "register-items", .{}), body) catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "POST", try self.target(arena, "register-items", .{}), body);
         if (res.status == .unprocessable_entity) return error.MissingContent;
         if (res.status != .ok) return error.ServerRefused;
     }
@@ -447,8 +443,7 @@ pub const Remote = struct {
     /// checked over every byte; on a mismatch the error comes after the
     /// visits, so a caller that printed them must say the output is void.
     pub fn compare(self: *const Remote, arena: std.mem.Allocator, a: []const u8, b: []const u8, visitor: DiffVisitor) Error!DiffSummary {
-        const res = self.t.call(arena, "GET", try self.target(arena, "compare/{s}/{s}", .{ a, b }), "") catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "GET", try self.target(arena, "compare/{s}/{s}", .{ a, b }), "");
         if (res.status == .not_found) return error.NoSuchDataset;
         if (res.status != .ok) return error.ServerRefused;
         const Where = struct { url: []const u8, sha256: []const u8, summary: DiffSummary };
@@ -468,8 +463,7 @@ pub const Remote = struct {
 
     pub fn downloads(self: *const Remote, arena: std.mem.Allocator, hashes: []const []const u8) Error![]const Download {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .hashes = hashes }, .{})});
-        const res = self.t.call(arena, "POST", try self.target(arena, "downloads", .{}), body) catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "POST", try self.target(arena, "downloads", .{}), body);
         if (res.status == .gone) return error.Collected;
         if (res.status != .ok) return error.ServerRefused;
         const Dl = struct { downloads: []const Download };
@@ -496,8 +490,7 @@ pub const Remote = struct {
     /// Row-level diff of two contents of a table file, by the server.
     pub fn rowDiff(self: *const Remote, arena: std.mem.Allocator, a: []const u8, path_a: []const u8, b: []const u8, path_b: []const u8) Error!RowDiff {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .a = a, .b = b, .path_a = path_a, .path_b = path_b }, .{})});
-        const res = self.t.call(arena, "POST", try self.target(arena, "rowdiff", .{}), body) catch
-            return error.ServerUnreachable;
+        const res = try self.send(arena, "POST", try self.target(arena, "rowdiff", .{}), body);
         if (res.status == .service_unavailable) return .{ .status = "busy" };
         if (res.status == .not_found) return error.NoSuchDataset;
         if (res.status != .ok) return error.ServerRefused;

@@ -17,6 +17,13 @@ pub const Context = struct {
 };
 
 /// Every error ends with the command to run next.
+/// The server refused this identity or this action (exit 5). Roles come
+/// from the dataset's GitLab project: Reporter reads, Developer pushes,
+/// Maintainer tags, branches and merges.
+pub fn denied(ctx: *const Context, comptime command: []const u8) ExitCode {
+    return fail(ctx, .access, "access denied: the server refused this for your key or token. Ask a Maintainer of the dataset's project for the role you need (Reporter to read, Developer to push, Maintainer to tag, branch or merge), then run '" ++ command ++ "' again.", .{});
+}
+
 pub fn fail(ctx: *const Context, code: ExitCode, comptime fmt: []const u8, args: anytype) ExitCode {
     var buf: [2048]u8 = undefined;
     var stderr_writer = std.Io.File.stderr().writer(ctx.io, &buf);
