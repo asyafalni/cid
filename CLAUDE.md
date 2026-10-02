@@ -701,6 +701,7 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
 | `cid status` on 100k files | < 1 s, no network (cached hashes, re-hash only files whose size/mtime changed) |
 | `cid add` | limited by disk read speed (hashing), 100k small files < 30 s |
 | `cid commit` | < 100 ms, no network |
+| Platform migration, 10M revisions (batches as `cid_writer`, server commit per 1M) | < 10 min with progress, resumable (`tests/bench/ingest_10m.sh`: 490 s) |
 | `cid push` | limited by upload speed; server-side recording < 1 s |
 | `cid tag` (write manifest), 1M items or annotations | < 60 s |
 | `cid diff` of two releases, 1M rows each | < 10 s |

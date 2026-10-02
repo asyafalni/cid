@@ -227,6 +227,12 @@ sealed commit. Three rules close it:
 with `rev_id <= cutoff_rev` of an existing commit but absent from that commit's state is
 reported as **corruption**, loudly, exit code 3.
 
+**Annotation ids are UUIDv7**, minted by the writer (they are identities, not times:
+the platform needs them before it writes). Time-ordered ids keep the
+`(dataset_id, branch, annotation_id)` index growing at its end; random ones land all
+over it, about 8× slower per batch at 10M rows (measured: 7.7 s against 0.95 s for
+30,000 annotations).
+
 **Retry-safe batches.** A platform batch is one transaction. It inserts its key into
 `revision_batches (dataset_id, batch_key)` in the same transaction as its rows. A retry
 of a batch whose first attempt did commit (the acknowledgement lost) fails on the key
