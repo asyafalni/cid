@@ -37,15 +37,18 @@ pub fn storeFile(
 
     {
         defer tmp_file.close(io);
+        // The reader's own buffer is never the destination too: reading a
+        // file larger than one buffer into it would copy it over itself.
         var rbuf: [64 * 1024]u8 = undefined;
+        var chunk: [64 * 1024]u8 = undefined;
         var wbuf: [64 * 1024]u8 = undefined;
         var fr = file.reader(io, &rbuf);
         var fw = tmp_file.writer(io, &wbuf);
         while (true) {
-            const n = fr.interface.readSliceShort(&rbuf) catch return error.CacheWriteFailed;
+            const n = fr.interface.readSliceShort(&chunk) catch return error.CacheWriteFailed;
             if (n == 0) break;
-            hasher.update(rbuf[0..n]);
-            fw.interface.writeAll(rbuf[0..n]) catch return error.CacheWriteFailed;
+            hasher.update(chunk[0..n]);
+            fw.interface.writeAll(chunk[0..n]) catch return error.CacheWriteFailed;
             size += n;
         }
         fw.interface.flush() catch return error.CacheWriteFailed;
@@ -79,11 +82,12 @@ pub fn hashFile(io: std.Io, work_dir: std.Io.Dir, rel_path: []const u8) Error!St
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     var size: u64 = 0;
     var rbuf: [64 * 1024]u8 = undefined;
+    var chunk: [64 * 1024]u8 = undefined;
     var fr = file.reader(io, &rbuf);
     while (true) {
-        const n = fr.interface.readSliceShort(&rbuf) catch return error.CacheWriteFailed;
+        const n = fr.interface.readSliceShort(&chunk) catch return error.CacheWriteFailed;
         if (n == 0) break;
-        hasher.update(rbuf[0..n]);
+        hasher.update(chunk[0..n]);
         size += n;
     }
     var digest: [32]u8 = undefined;
