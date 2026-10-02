@@ -27,6 +27,9 @@ const max_body = 64 * 1024 * 1024;
 pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
     var app = nilo.App.init(gpa);
     defer app.deinit();
+    // Versions are prepared ahead of their first visitor, in the background.
+    try app.spawn(prepareVersions, .{deps});
+
     // Served by nilo now: long DuckDB calls go to its blocking pool.
     deps.offload = true;
     deps.gpa = gpa;
@@ -158,4 +161,21 @@ fn dispatch(deps: *api.Deps, s: signin.Session, c: *nilo.Ctx) !void {
         null;
     const response = api.handleAs(arena, deps, c, @tagName(c.method), target, .{ .header = auth, .account = account }, body);
     try c.send(@intFromEnum(response.status), "application/json", response.body);
+}
+
+/// The background worker: every couple of seconds, prepares whatever
+/// versions are queued (api.prepareNext), one at a time.
+fn prepareVersions(deps: *api.Deps) void {
+    while (true) {
+        nilo.sleep(2_000) catch return; // the server is going
+        while (true) {
+            var run = nilo.Run.initIo(deps.gpa, deps.io);
+            defer run.deinit();
+            const more = api.prepareNext(run.arena(), deps, &run) catch |err| {
+                std.log.warn("preparing a version: {t}", .{err});
+                break;
+            };
+            if (!more) break;
+        }
+    }
 }

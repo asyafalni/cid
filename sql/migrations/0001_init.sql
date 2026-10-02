@@ -322,6 +322,20 @@ CREATE TABLE version_files (
   PRIMARY KEY (commit_id, kind, subset)
 );
 
+-- Versions to prepare ahead of their first visitor: a new head's
+-- statistics, browse index, items file and default export, built by the
+-- server's background worker right after the commit (api.prepareNext).
+CREATE TABLE version_jobs (
+  commit_id  uuid PRIMARY KEY REFERENCES commits(commit_id),
+  dataset_id uuid NOT NULL REFERENCES datasets(dataset_id),
+  status     text NOT NULL DEFAULT 'pending'
+             CHECK (status IN ('pending','building','done','skipped','failed')),
+  reason     text,
+  queued_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX version_jobs_pending ON version_jobs (queued_at) WHERE status IN ('pending', 'building');
+
 -- What changed between two versions, as the CLI reads it: a gzip file of
 -- JSON lines in storage, written once by the server (both versions are
 -- sealed, so a diff never changes).

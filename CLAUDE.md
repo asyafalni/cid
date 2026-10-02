@@ -312,7 +312,10 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   cursor), a subset's size, a folder's listing, or the compare of two versions.
   Filters and facets read only the light columns; only the page's rows fetch hashes
   and annotations. A release's index is written in the same pass as its manifest and
-  kept in storage; other commits' are built on first view into a bounded local cache.
+  kept in storage; other commits' are built into a bounded local cache. A new branch
+  head or release is prepared ahead of its first visitor by the server's background
+  worker (`version_jobs`, `api.prepareNext`): its statistics, browse index, items file
+  and default export, through the same code a request takes.
   An index holds only what the commit seals; media metadata (image dimensions) is
   joined per page. Measured at 1M items with `tests/bench/browse_1m.sh` (ReleaseFast):
   release 35 s and 247 MB peak, pages 0.13–0.46 s, filter change to 60 thumbnails in

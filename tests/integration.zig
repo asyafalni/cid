@@ -263,6 +263,29 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     const head_parsed = try std.json.parseFromSliceLeaky(Head, arena, head_res.body, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqualStrings(&id2, head_parsed.commit.?);
 
+    // Both pushes queued their head for the background worker. By its turn
+    // the first is no longer a head: skipped. The second is prepared — its
+    // statistics, browse index and items file, before anyone asks.
+    {
+        var prep_tmp = std.testing.tmpDir(.{});
+        defer prep_tmp.cleanup();
+        deps.browse_dir = try prep_tmp.dir.realPathFileAlloc(io, ".", arena);
+        while (try cid.api.prepareNext(arena, &deps, &scope)) {}
+        const Job = struct {
+            pub const nilo_table = .projection;
+            status: []const u8,
+        };
+        const first_job = (try db.rawOne(Job, &fscope, "SELECT status FROM version_jobs WHERE commit_id = $1::uuid", .{@as([]const u8, &id1)})).?;
+        try std.testing.expectEqualStrings("skipped", first_job.status);
+        const head_job = (try db.rawOne(Job, &fscope, "SELECT status FROM version_jobs WHERE commit_id = $1::uuid", .{@as([]const u8, &id2)})).?;
+        try std.testing.expectEqualStrings("done", head_job.status);
+        try std.testing.expect((try db.rawOne([]const u8, &fscope, "SELECT stats::text FROM commits WHERE commit_id = $1::uuid AND stats IS NOT NULL", .{@as([]const u8, &id2)})) != null);
+        try std.testing.expect((try db.rawOne(i64, &fscope, "SELECT 1::bigint FROM version_files WHERE commit_id = $1::uuid AND kind = 'state'", .{@as([]const u8, &id2)})) != null);
+        const index = try std.fmt.allocPrint(arena, "{s}.items.parquet", .{&id2});
+        _ = try prep_tmp.dir.statFile(io, index, .{});
+        deps.browse_dir = "/tmp/cid-browse";
+    }
+
     // The version as the CLI reads it: a file in storage, hash-checked.
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = name };

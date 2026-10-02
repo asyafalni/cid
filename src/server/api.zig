@@ -340,6 +340,76 @@ const DatasetRow = struct {
     restricted: bool,
 };
 
+// ---------------------------------------------------------------------------
+// Preparing versions ahead of their first visitor
+// ---------------------------------------------------------------------------
+
+/// Queues a new branch head or release for the background worker. Best
+/// effort: a version nobody prepared is prepared by its first visit.
+fn queueVersion(deps: *Deps, scope: anytype, ds: Dataset, commit_id: []const u8) void {
+    _ = deps.db.exec(scope, "INSERT INTO version_jobs (commit_id, dataset_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING", .{ commit_id, ds.id }) catch {};
+}
+
+/// Prepares the next queued version: its statistics, its browse index,
+/// its items file and, for an annotated dataset, its default export —
+/// the work its first visit would otherwise wait for (8–30 s at 1M
+/// items). The same code paths a request takes, so a version is never
+/// prepared two ways. A commit that is no longer a branch head or a
+/// release by its turn is skipped. Answers whether there was a job.
+pub fn prepareNext(arena: std.mem.Allocator, deps: *Deps, scope: anytype) HandleError!bool {
+    const Job = struct {
+        pub const nilo_table = .projection;
+        commit_id: []const u8,
+        dataset_id: []const u8,
+    };
+    const job = (deps.db.rawOne(Job, scope, "UPDATE version_jobs SET status = 'building', updated_at = now() WHERE commit_id = (" ++
+        "  SELECT commit_id FROM version_jobs WHERE status = 'pending' OR (status = 'building' AND updated_at < now() - interval '10 minutes') " ++
+        "  ORDER BY queued_at LIMIT 1 FOR UPDATE SKIP LOCKED) " ++
+        "RETURNING commit_id::text AS commit_id, dataset_id::text AS dataset_id", .{}) catch return error.Db) orelse return false;
+    const Row = struct {
+        pub const nilo_table = .projection;
+        name: []const u8,
+        kind: []const u8,
+        restricted: bool,
+        default_format: []const u8,
+    };
+    const row = (deps.db.rawOne(Row, scope, "SELECT name, kind, restricted, default_format FROM datasets WHERE dataset_id = $1::uuid", .{job.dataset_id}) catch return error.Db) orelse return error.Db;
+    const ds: Dataset = .{ .id = job.dataset_id, .name = row.name, .kind = row.kind, .restricted = row.restricted };
+
+    const live = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM refs WHERE dataset_id = $1::uuid AND commit_id = $2::uuid LIMIT 1", .{ ds.id, job.commit_id }) catch return error.Db;
+    if (live == null) {
+        finishJob(deps, scope, job.commit_id, "skipped", "no longer a branch head or a release");
+        return true;
+    }
+    prepare(arena, deps, scope, ds, job.commit_id, row.default_format) catch |err| {
+        finishJob(deps, scope, job.commit_id, "failed", @errorName(err));
+        return true;
+    };
+    finishJob(deps, scope, job.commit_id, "done", null);
+    return true;
+}
+
+fn prepare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit_id: []const u8, default_format: []const u8) HandleError!void {
+    _ = versions.stats(arena, deps.db, scope, ds.id, commit_id) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.Db,
+    };
+    // The browse index; another build holding the slot means it is busy
+    // with some version's index, and this one is built by its first view.
+    _ = try browseIndex(arena, deps, scope, ds, commit_id);
+    _ = try ensureVersionFile(arena, deps, scope, ds, commit_id, .state, .{});
+    if (eql(ds.kind, "annotated")) {
+        if (std.meta.stringToEnum(bundle_mod.Kind, default_format)) |kind| if (kind != .state) {
+            // An impossible export is an answer too; the clone says why.
+            _ = try ensureVersionFile(arena, deps, scope, ds, commit_id, kind, .{});
+        };
+    }
+}
+
+fn finishJob(deps: *Deps, scope: anytype, commit_id: []const u8, status: []const u8, reason: ?[]const u8) void {
+    _ = deps.db.exec(scope, "UPDATE version_jobs SET status = $2, reason = $3, updated_at = now() WHERE commit_id = $1::uuid", .{ commit_id, status, reason }) catch {};
+}
+
 fn lookupDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, name: []const u8) ?Dataset {
     _ = arena;
     const row = (deps.db.rawOne(DatasetRow, scope, "SELECT dataset_id::text AS dataset_id, kind, restricted FROM datasets WHERE name = $1", .{name}) catch return null) orelse return null;
@@ -1385,6 +1455,7 @@ fn push(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, d
     ) catch return error.Db;
     tx.commit() catch return error.Db;
 
+    queueVersion(deps, scope, ds, last_commit_id);
     noteActivity(arena, deps, scope, caller, ds, "push", last_commit_id, .{ .branch = req.branch, .commits = req.commits.len });
     return json(arena, .ok, .{ .head = last_commit_id, .commits_recorded = req.commits.len });
 }
@@ -1410,10 +1481,37 @@ fn versionFile(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
     // The subset, canonical: sorted lists, so the same subset is one file.
     const splits = try sortedCopy(arena, try paramAll(arena, route, "split"));
     const classes = try sortedCopy(arena, try paramAll(arena, route, "class"));
-    const subset_key = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .splits = splits, .classes = classes }, .{})});
     const mine = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM commits WHERE commit_id = $1::uuid AND dataset_id = $2::uuid", .{ commit_id, ds.id }) catch return error.Db;
     if (mine == null) return errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits.");
 
+    // How many items the version holds before any subset (clone says "N of M").
+    const total = (versions.stats(arena, deps.db, scope, ds.id, commit_id) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.Db,
+    }).items;
+    const file = switch (try ensureVersionFile(arena, deps, scope, ds, commit_id, kind, .{ .splits = splits, .classes = classes })) {
+        .ready => |f| f,
+        .failed => |f| return json(arena, .unprocessable_entity, .{
+            .@"error" = try std.fmt.allocPrint(arena, "the {t} export is impossible: {s}: {s}", .{ kind, f.path, f.why }),
+            .next = "Fix that item in the annotation platform, commit, then run the command again; or clone with --format jsonl.",
+            .path = f.path,
+        }),
+    };
+    const url = deps.s3.presignGet(scope, file.key, presign_secs) catch return error.Storage;
+    return json(arena, .ok, .{ .commit = commit_id, .url = url, .sha256 = file.sha, .final = file.final, .total = total });
+}
+
+const VersionFile = union(enum) {
+    ready: struct { key: []const u8, sha: []const u8, final: bool },
+    failed: bundle_mod.Failure,
+};
+
+/// A version file in storage, kept or written now: one streamed pass →
+/// gzip → hashed → a file in the work folder → storage, named by its own
+/// SHA-256 (the same content is the same object). What a request asks
+/// for, and what the background worker prepares before anyone asks.
+fn ensureVersionFile(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit_id: []const u8, kind: bundle_mod.Kind, subset: bundle_mod.Subset) HandleError!VersionFile {
+    const subset_key = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .splits = subset.splits, .classes = subset.classes }, .{})});
     const Kept = struct {
         pub const nilo_table = .projection;
         sha: []const u8,
@@ -1423,21 +1521,13 @@ fn versionFile(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
     const kept = deps.db.rawOne(Kept, scope, "SELECT sha256 AS sha, final, " ++
         "built_at > now() - interval '" ++ std.fmt.comptimePrint("{d}", .{state_provisional_secs}) ++ " seconds' AS fresh " ++
         "FROM version_files WHERE commit_id = $1::uuid AND kind = $2 AND subset = $3", .{ commit_id, @tagName(kind), subset_key }) catch return error.Db;
-    // How many items the version holds before any subset (clone says "N of M").
-    const total = (versions.stats(arena, deps.db, scope, ds.id, commit_id) catch |err| return switch (err) {
-        error.OutOfMemory => error.OutOfMemory,
-        else => error.Db,
-    }).items;
-    if (kept) |k| if (k.final or k.fresh) {
-        const url = deps.s3.presignGet(scope, try fileKey(arena, ds.id, commit_id, kind, subset_key, k.sha), presign_secs) catch return error.Storage;
-        return json(arena, .ok, .{ .commit = commit_id, .url = url, .sha256 = k.sha, .final = k.final, .total = total });
-    };
+    if (kept) |k| if (k.final or k.fresh)
+        return .{ .ready = .{ .key = try fileKey(arena, ds.id, commit_id, kind, subset_key, k.sha), .sha = k.sha, .final = k.final } };
 
-    // Write it: one streamed pass → gzip → hashed → a file in the work folder.
     const path = try std.fmt.allocPrint(arena, "{s}/{s}-{t}-{s}.gz", .{ deps.work_dir, commit_id, kind, (try subsetHash(arena, subset_key))[0..16] });
     const gz = try GzFile.open(deps, path);
     defer gz.close(deps);
-    const outcome = bundle_mod.build(deps.gpa, deps.db, scope, ds.id, commit_id, kind, .{ .splits = splits, .classes = classes }, gz.writer()) catch |err| return switch (err) {
+    const outcome = bundle_mod.build(deps.gpa, deps.db, scope, ds.id, commit_id, kind, subset, gz.writer()) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.WriteFailed => error.Storage,
         else => error.Db,
@@ -1446,22 +1536,17 @@ fn versionFile(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
         .written => |w| w,
         .failed => |f| {
             defer deps.gpa.free(f.path);
-            return json(arena, .unprocessable_entity, .{
-                .@"error" = try std.fmt.allocPrint(arena, "the {t} export is impossible: {s}: {s}", .{ kind, f.path, f.why }),
-                .next = "Fix that item in the annotation platform, commit, then run the command again; or clone with --format jsonl.",
-                .path = try arena.dupe(u8, f.path),
-            });
+            return .{ .failed = .{ .path = try arena.dupe(u8, f.path), .why = f.why } };
         },
     };
-    const sha = try gz.finish();
+    const sha = try arena.dupe(u8, &(try gz.finish()));
     const final = !written.media_pending;
-    // Named by its own hash: the same content is the same object.
-    if (!(kept != null and eql(kept.?.sha, &sha)))
-        deps.s3.putFile(scope, deps.io, try fileKey(arena, ds.id, commit_id, kind, subset_key, &sha), path) catch return error.Storage;
+    const key = try fileKey(arena, ds.id, commit_id, kind, subset_key, sha);
+    if (!(kept != null and eql(kept.?.sha, sha)))
+        deps.s3.putFile(scope, deps.io, key, path) catch return error.Storage;
     _ = deps.db.exec(scope, "INSERT INTO version_files (commit_id, kind, subset, sha256, final) VALUES ($1::uuid, $2, $3, $4, $5) " ++
-        "ON CONFLICT (commit_id, kind, subset) DO UPDATE SET sha256 = excluded.sha256, final = excluded.final, built_at = now()", .{ commit_id, @tagName(kind), subset_key, @as([]const u8, &sha), final }) catch return error.Db;
-    const url = deps.s3.presignGet(scope, try fileKey(arena, ds.id, commit_id, kind, subset_key, &sha), presign_secs) catch return error.Storage;
-    return json(arena, .ok, .{ .commit = commit_id, .url = url, .sha256 = @as([]const u8, &sha), .final = final, .total = total });
+        "ON CONFLICT (commit_id, kind, subset) DO UPDATE SET sha256 = excluded.sha256, final = excluded.final, built_at = now()", .{ commit_id, @tagName(kind), subset_key, sha, final }) catch return error.Db;
+    return .{ .ready = .{ .key = key, .sha = sha, .final = final } };
 }
 
 fn sortedCopy(arena: std.mem.Allocator, list: []const []const u8) HandleError![]const []const u8 {
@@ -1698,6 +1783,7 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
         } else |_| std.log.warn("browse: the new release's index was not built; browsing will build it", .{});
     }
     if (cached) |files| storeBrowseIndex(arena, deps, scope, ds, created.commit_id, files);
+    queueVersion(deps, scope, ds, created.commit_id);
     noteActivity(arena, deps, scope, caller, ds, "tag", created.name, .{ .items = created.items });
     return json(arena, .created, .{
         .release = created.name,
@@ -1977,6 +2063,7 @@ fn merge(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, 
     ) catch return error.Db;
     tx.commit() catch return error.Db;
 
+    queueVersion(deps, scope, ds, &merge_id.toString());
     noteActivity(arena, deps, scope, caller, ds, "merge", req.name, .{ .changes = branch_changes.count() });
     return json(arena, .ok, .{ .merge_commit = &merge_id.toString(), .changes = branch_changes.count() });
 }
@@ -2118,6 +2205,7 @@ fn serverCommit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: C
     ) catch return error.Db;
     tx.commit() catch return error.Db;
 
+    queueVersion(deps, scope, ds, &commit_id.toString());
     noteActivity(arena, deps, scope, caller, ds, "commit", req.message, null);
     return json(arena, .created, .{ .commit = &commit_id.toString() });
 }
