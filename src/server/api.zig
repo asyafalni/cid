@@ -1485,11 +1485,14 @@ fn log(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, branc
         message: []const u8,
         author: []const u8,
         authored_at_ms: i64,
+        /// The releases made at this commit, comma-separated (most have none).
+        releases: ?[]const u8,
     };
-    const list = deps.db.raw(Entry, scope, "SELECT commit_id::text AS id, parent_id::text AS parent, message, author, " ++
-        "(extract(epoch from authored_at) * 1000)::bigint AS authored_at_ms " ++
-        "FROM commits WHERE dataset_id = $1::uuid AND branch = $2 " ++
-        "ORDER BY commit_id DESC LIMIT 200", .{ ds.id, branch }) catch return error.Db;
+    const list = deps.db.raw(Entry, scope, "SELECT c.commit_id::text AS id, c.parent_id::text AS parent, c.message, c.author, " ++
+        "(extract(epoch from c.authored_at) * 1000)::bigint AS authored_at_ms, " ++
+        "(SELECT string_agg(r.name, ', ' ORDER BY r.name) FROM refs r WHERE r.dataset_id = c.dataset_id AND r.commit_id = c.commit_id AND r.kind = 'release') AS releases " ++
+        "FROM commits c WHERE c.dataset_id = $1::uuid AND c.branch = $2 " ++
+        "ORDER BY c.commit_id DESC LIMIT 200", .{ ds.id, branch }) catch return error.Db;
     return json(arena, .ok, .{ .commits = list });
 }
 
@@ -1497,9 +1500,10 @@ fn log(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, branc
 /// is asked for in pieces.
 const HashesBody = struct { hashes: []const []const u8, sizes: []const u64 = &.{} };
 
-/// Which of these hashes must be uploaded, with presigned PUT URLs for them.
-/// v0 answers for everything the single token can see; the per-dataset
-/// dedup-privacy rule (invariant 12) binds when real auth lands.
+/// Which of these hashes must be uploaded, with presigned PUT URLs for them
+/// (into this dataset's staging area). Only bytes this dataset already
+/// holds count as present (invariant 12: a hash learned elsewhere opens
+/// nothing).
 fn checkHashes(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(HashesBody, arena, body) orelse return error.BadRequest;
     if (req.hashes.len > 1000) return error.BadRequest;

@@ -68,6 +68,15 @@ pub const HttpTransport = struct {
     http: std.http.Client,
     base_url: []const u8, // no trailing '/'
     token: []const u8,
+    /// Asks for a fresh token (the SSH front door again) when the server
+    /// says the current one is no good: tokens live 15 minutes, a large
+    /// push longer. Null for a fixed token (CID_TOKEN, `cid login`).
+    renew: ?Renew = null,
+
+    pub const Renew = struct {
+        ctx: *anyopaque,
+        token: *const fn (ctx: *anyopaque) ?[]const u8,
+    };
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, base_url: []const u8, token: []const u8) HttpTransport {
         var base = base_url;
@@ -96,6 +105,15 @@ pub const HttpTransport = struct {
         body: []const u8,
     ) anyerror!Response {
         const self: *HttpTransport = @ptrCast(@alignCast(ctx));
+        const first = try self.send(arena, method, target, body);
+        if (first.status != .unauthorized) return first;
+        const renew = self.renew orelse return first;
+        // Expired (or otherwise refused): one fresh token, one more try.
+        self.token = renew.token(renew.ctx) orelse return first;
+        return self.send(arena, method, target, body);
+    }
+
+    fn send(self: *HttpTransport, arena: std.mem.Allocator, method: []const u8, target: []const u8, body: []const u8) !Response {
         const url = try std.fmt.allocPrint(arena, "{s}{s}", .{ self.base_url, target });
         const auth = try std.fmt.allocPrint(arena, "Bearer {s}", .{self.token});
         var aw: std.Io.Writer.Allocating = .init(arena);
@@ -204,6 +222,8 @@ pub const Remote = struct {
         message: []const u8,
         author: []const u8,
         authored_at_ms: u64,
+        /// Release names made at this commit, comma-separated.
+        releases: ?[]const u8 = null,
     };
 
     pub fn log(self: *const Remote, arena: std.mem.Allocator, branch: []const u8) Error![]const LogEntry {

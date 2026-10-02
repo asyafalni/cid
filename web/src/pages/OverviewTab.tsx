@@ -40,8 +40,8 @@ export function OverviewTab({ overview: o, pinned }: { overview: Overview; pinne
           </table>
         )}
         <p className="quiet">
-          Purpose, collection method and known gaps are written by the owners; card editing
-          arrives with the access slice.
+          Purpose, collection method and known gaps are written by the owners in the dataset's
+          card; each release keeps a copy, shown in its git repository's README.
         </p>
       </section>
 

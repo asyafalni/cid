@@ -1535,12 +1535,22 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
         break :blk try arena.dupeZ(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/purge'", .{})).?);
     };
 
-    // Purge by path; the bytes vanish, the tombstone and audit land.
+    // Its previews exist (as the worker would have made them).
+    const thumb = try cid.preview.thumbKey(arena, &sensitive_hash);
+    const blur = try cid.preview.blurKey(arena, &sensitive_hash);
+    try s3c.putObject(&scope, thumb, "a thumbnail of the face");
+    try s3c.putObject(&scope, blur, "a blurred face");
+
+    // Purge by path; the bytes and their previews vanish, the tombstone
+    // and audit land (invariant 19).
     const purged = try cid.purge.purge(arena, &standalone.db, &scope, &s3c, "test/datasets/purge", "face.jpg", "erasure request #42", "user:admin");
     try std.testing.expectEqualStrings(&sensitive_hash, purged.hash_hex);
     try std.testing.expectEqual(@as(usize, 1), purged.releases_affected);
     const key = try cid.api.itemKey(arena, &sensitive_hash);
     try std.testing.expectEqual(@as(?u64, null), try s3c.headObject(&scope, key));
+    try std.testing.expectEqual(@as(?u64, null), try s3c.headObject(&scope, thumb));
+    try std.testing.expectEqual(@as(?u64, null), try s3c.headObject(&scope, blur));
+    try std.testing.expectEqual(@as(?i64, null), try db.rawOne(i64, &fscope, "SELECT 1::bigint FROM previews WHERE item_hash = decode($1, 'hex')", .{&sensitive_hash}));
     try std.testing.expectError(error.AlreadyPurged, cid.purge.purge(arena, &standalone.db, &scope, &s3c, "test/datasets/purge", "face.jpg", "again", "user:admin"));
 
     const audit = try db.rawExactlyOne(i64, &fscope, "SELECT count(*) FROM activity_events WHERE dataset_id = $1::uuid AND action = 'purge'", .{ds_id});

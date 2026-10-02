@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 // The e2e suite runs against the real binary with the dashboard embedded
-// (docs/dashboard.md: budgets and acceptance tests are measured in CI).
+// (docs/dashboard.md, budgets and acceptance tests: which are measured here).
 // It needs docker-compose.test.yml up and `zig build` done; global setup
 // seeds a small dataset through the actual CLI.
 const port = 7177;

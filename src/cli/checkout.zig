@@ -1,6 +1,6 @@
-//! `cid checkout <commit>`: switch the folder to another commit; only
-//! changed files transfer. Releases and branches join when `cid tag` and
-//! `cid branch` land.
+//! `cid checkout <release|branch|commit>`: switch the folder; only changed
+//! files transfer. `cid checkout --mine|--theirs <path>` decides a listed
+//! conflict of the pull or merge in progress.
 
 const std = @import("std");
 const common = @import("common.zig");

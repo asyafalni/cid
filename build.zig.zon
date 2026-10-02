@@ -11,7 +11,7 @@
         .duckdb = .{
             .url = "https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-linux-amd64.zip",
             .hash = "N-V-__8AACFXKwnX1RoveZhztd4utbUmLx0lfZgDmWQjZaED",
-            // Server builds only (-Dduckdb); a CLI build never fetches it.
+            // Linked into every build, shipped beside the binary.
             .lazy = true,
         },
     },

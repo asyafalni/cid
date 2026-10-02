@@ -95,17 +95,31 @@ pub fn push(
     }
     if (remote.progress) |p| p.begin("Uploading", missing.items.len, upload_bytes);
     defer if (remote.progress) |p| p.end();
-    for (missing.items) |m| {
-        const size = sized.get(m.hash) orelse return error.CorruptLocalState;
-        remote_mod.uploadFromCache(arena, io, cache_dir, size, m, remote.progress) catch |err| switch (err) {
-            // The cached copy changed after `cid add`: cache the file
-            // again from the folder, if it still holds those bytes.
-            error.CacheDamaged => {
-                try recache(io, ws, cache_dir, unpushed, m.hash);
-                try remote_mod.uploadFromCache(arena, io, cache_dir, size, m, remote.progress);
-            },
-            else => return err,
-        };
+    for (missing.items) |first| {
+        const size = sized.get(first.hash) orelse return error.CorruptLocalState;
+        // Presigned URLs live 15 minutes, and a long push outlives the
+        // later ones: when an upload fails, the server is asked again for
+        // what it still lacks of this file (fresh URLs, only the missing
+        // pieces), a few times before giving up.
+        var m = first;
+        var attempt: u32 = 0;
+        while (true) : (attempt += 1) {
+            if (remote_mod.uploadFromCache(arena, io, cache_dir, size, m, remote.progress)) |_| {
+                break;
+            } else |err| switch (err) {
+                // The cached copy changed after `cid add`: cache the file
+                // again from the folder, if it still holds those bytes.
+                error.CacheDamaged => {
+                    if (attempt > 0) return err;
+                    try recache(io, ws, cache_dir, unpushed, m.hash);
+                },
+                error.TransferFailed => if (attempt >= upload_attempts) return err,
+                else => return err,
+            }
+            const again = try remote.checkHashes(arena, &.{m.hash}, &.{size});
+            if (again.len == 0) break; // everything arrived after all
+            m = again[0];
+        }
         outcome.uploaded_files += 1;
     }
 
@@ -736,6 +750,9 @@ fn recache(io: std.Io, ws: *workspace.Workspace, cache_dir: std.Io.Dir, commits:
 
 /// The server's limit on hashes per check-hashes or downloads request.
 const check_chunk = 1000;
+
+/// Uploads of one file tried before a push gives up (each with fresh URLs).
+const upload_attempts = 3;
 
 fn findFile(files: []const scan.FileInfo, path: []const u8) ?scan.FileInfo {
     return scan.findByPath(scan.FileInfo, files, path);

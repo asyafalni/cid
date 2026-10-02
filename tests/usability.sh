@@ -88,7 +88,7 @@ echo "hello" > a.txt
 # --- errors before a dataset exists -----------------------------------------
 expect_hint "status outside a dataset"        "$CID" status
 expect_hint "typo command"                    "$CID" comit
-expect_hint "not-built command says so"       "$CID" branch x
+expect_hint "branch outside a dataset"         "$CID" branch x
 expect_hint "init without --git"              "$CID" init cid@h:org/datasets/u
 expect_hint "init with a broken address"      "$CID" init not-an-address --git g@h:x.git
 
@@ -112,6 +112,8 @@ expect_ok   "diff shows the edit"             "$CID" diff
 expect_ok   "restore the edit"                "$CID" restore a.txt
 expect_ok   "status clean"                    "$CID" status
 expect_ok   "log"     "$CID" log
+if "$CID" log | grep -q "(release: v1.0.0)"; then say "ok: log names the release at its commit"
+else say "FAIL: log does not name release v1.0.0"; fails=$((fails+1)); fi
 
 echo "two" > b.txt
 expect_hint "commit -a leaves new files alone, like git" "$CID" commit -am "second"

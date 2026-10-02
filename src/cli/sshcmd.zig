@@ -57,7 +57,7 @@ pub fn runAuth(
     }
     const acct = account orelse return quietFail(io, "ssh-auth needs --account=");
     const original = env.get("SSH_ORIGINAL_COMMAND") orelse
-        return quietFail(io, "no command. This endpoint only answers: cid-auth <dataset> <read|write>");
+        return quietFail(io, "no command. This endpoint only answers: cid-auth <dataset> <read|write|maintain>");
     const secret = env.get("CID_TOKEN_SECRET") orelse
         return quietFail(io, "server misconfigured (CID_TOKEN_SECRET unset); tell the administrator");
     const server_url = env.get("CID_PUBLIC_URL") orelse
@@ -70,7 +70,7 @@ pub fn runAuth(
     defer scope.deinit();
 
     const req = auth.parseOriginalCommand(original, acct) catch
-        return quietFail(io, "refused. This endpoint only answers: cid-auth <dataset> <read|write>");
+        return quietFail(io, "refused. This endpoint only answers: cid-auth <dataset> <read|write|maintain>");
     const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
     const grant = auth.authorize(arena, &standalone.db, &scope, secret, server_url, now, req) catch |err| switch (err) {
         error.AccessDenied => return quietFail(io, "access denied. Ask for access to the dataset's project, then try again."),

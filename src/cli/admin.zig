@@ -32,8 +32,10 @@ const admin_help =
     \\  gc [--days <n>] [--apply]    show unreferenced files (untouched for n days,
     \\             default 30); --apply deletes them
     \\  purge <dataset> <path|hash> --reason "why"   audited erasure of one item
-    \\  previews   run the preview worker
+    \\  previews   one pass of the preview worker (serve also runs it)
     \\  sync-gitlab  sync members and SSH keys now
+    \\  add-key <account> <name> <public-key>   register an SSH key by hand
+    \\  grant <dataset> <account> <read|write|maintain>   give access by hand
     \\
     \\All of them read configuration from the environment:
     \\  CID_DB     the TimescaleDB connection (setup, migrate, serve)
@@ -45,6 +47,14 @@ const admin_help =
     \\             Parquet file per version (default /tmp/cid-browse) (serve)
     \\  CID_WORK_DIR  files in flight: manifests going up, tables a row
     \\             diff compares (default /tmp/cid-work) (serve)
+    \\  CID_TOKEN_SECRET  signs the tokens the SSH front door hands out
+    \\             (serve, ssh-auth)
+    \\  CID_GIT_WORKDIR  turns the git writer on: clones of dataset
+    \\             repositories live here (serve)
+    \\  CID_GITLAB_TOKEN, CID_GITLAB_URL  member and key sync (serve,
+    \\             sync-gitlab)
+    \\  CID_SYNC_INTERVAL_SECS  the background loop's period: previews,
+    \\             GitLab sync, git retries (default 600) (serve)
     \\  The bucket is always named 'cid'; create it on the store first
     \\  (docker-compose.test.yml shows how).
     \\

@@ -1,6 +1,6 @@
-// The dashboard talks only to the cid server (docs/dashboard.md): same
-// JSON as `cid --json`. Dev sign-in is a pasted token; the GitLab OAuth
-// slice replaces this screen, not this client.
+// The dashboard talks only to the cid server (docs/dashboard.md lists the
+// routes it calls). People sign in with GitLab; the server token can be
+// pasted too (development, the e2e suite).
 
 export type DatasetSummary = {
   name: string;

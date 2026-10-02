@@ -10,6 +10,9 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
     const ws = common.openWorkspace(ctx) catch
         return common.fail(ctx, .usage, common.not_a_dataset_msg, .{});
 
+    // The folder's branch: its history, not always main's.
+    const branch = if (local.loadHead(ctx.arena, ctx.io, ws.cid_dir)) |h| h.branch else |_| "main";
+
     // Local, always available: the unpushed commits, marked.
     const last_pushed = local.readLastPushed(ctx.arena, ctx.io, ws.cid_dir);
     const locals = local.listUnpushed(ctx.arena, ctx.io, ws.cid_dir, last_pushed) catch
@@ -19,7 +22,7 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
         // Local commits, then the server's (null when it cannot be reached).
         const name_j = workspace.datasetPathOf(ws.config.address) orelse "";
         const server: ?[]const remote_mod.Remote.LogEntry = if (common.remoteFor(ctx, name_j, .read, ws.config.address)) |remote|
-            remote.log(ctx.arena, "main") catch null
+            remote.log(ctx.arena, branch) catch null
         else |_|
             null;
         const Local = struct { id: []const u8, message: []const u8, author: []const u8, authored_at_ms: u64 };
@@ -37,7 +40,7 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
     // The server's view, when reachable.
     const name = workspace.datasetPathOf(ws.config.address) orelse "";
     if (common.remoteFor(ctx, name, .read, ws.config.address)) |remote| {
-        if (remote.log(ctx.arena, "main")) |entries| {
+        if (remote.log(ctx.arena, branch)) |entries| {
             for (entries) |e| {
                 printRemote(ctx.out, e) catch return .network;
                 printed += 1;
@@ -66,8 +69,11 @@ fn printLocal(out: *std.Io.Writer, commit: local.Commit, mark: []const u8) !void
 const remote_mod = @import("../client/remote.zig");
 
 fn printRemote(out: *std.Io.Writer, e: remote_mod.Remote.LogEntry) !void {
-    try out.print("commit {s}\nAuthor: {s}\nDate:   {s}\n\n    {s}\n\n", .{
-        e.id, e.author, &fmtDate(e.authored_at_ms), firstLine(e.message),
+    // A commit that is a release says so, as `git log --decorate` does.
+    try out.print("commit {s}", .{e.id});
+    if (e.releases) |names| try out.print(" (release: {s})", .{names});
+    try out.print("\nAuthor: {s}\nDate:   {s}\n\n    {s}\n\n", .{
+        e.author, &fmtDate(e.authored_at_ms), firstLine(e.message),
     });
 }
 

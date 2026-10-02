@@ -95,6 +95,9 @@ pub fn openCacheDir(ctx: *const Context) !std.Io.Dir {
 /// reachable or configured (exit 1).
 pub fn noRemote(ctx: *const Context, err: anyerror, comptime command: []const u8) ExitCode {
     if (err == error.AccessDenied) return denied(ctx, command);
+    // The SSH call ran and failed: the server or the network (exit 4);
+    // otherwise nothing says where the server is (exit 1).
+    if (err == error.ServerUnreachable) return fail(ctx, .network, no_server_msg, .{});
     return fail(ctx, .usage, no_server_msg, .{});
 }
 
@@ -111,6 +114,7 @@ pub fn remoteFor(
 ) !*const remote_mod.Remote {
     var server: []const u8 = undefined;
     var tok: []const u8 = undefined;
+    var renew: ?*SshRenew = null;
     const login = @import("login.zig");
     if (ctx.env.get("CID_SERVER")) |s| {
         server = s;
@@ -125,15 +129,32 @@ pub fn remoteFor(
         const grant = try sshToken(ctx, addr, dataset_name, level);
         server = grant.url;
         tok = grant.token;
+        renew = try ctx.arena.create(SshRenew);
+        renew.?.* = .{ .ctx = ctx, .address = addr, .dataset = dataset_name, .level = level };
     }
     const transport = try ctx.arena.create(remote_mod.HttpTransport);
     transport.* = remote_mod.HttpTransport.init(ctx.arena, ctx.io, server, tok);
+    if (renew) |r| transport.renew = .{ .ctx = r, .token = SshRenew.token };
     const r = try ctx.arena.create(remote_mod.Remote);
     r.* = .{ .t = transport.transport(), .name = dataset_name, .gpa = ctx.gpa, .progress = stderrProgress(ctx) };
     return r;
 }
 
 const Grant = struct { token: []const u8, url: []const u8 };
+
+/// A token from the SSH front door, asked for again when it expires.
+const SshRenew = struct {
+    ctx: *const Context,
+    address: []const u8,
+    dataset: []const u8,
+    level: remote_mod.TokenLevel,
+
+    fn token(raw: *anyopaque) ?[]const u8 {
+        const self: *SshRenew = @ptrCast(@alignCast(raw));
+        const grant = sshToken(self.ctx, self.address, self.dataset, self.level) catch return null;
+        return grant.token;
+    }
+};
 
 /// `ssh cid@host cid-auth <dataset> <read|write>` — the system ssh, exactly
 /// as git uses it, so ~/.ssh/config, agents and hardware keys all work.
@@ -142,7 +163,7 @@ fn sshToken(
     address: []const u8,
     dataset_name: []const u8,
     level: remote_mod.TokenLevel,
-) error{ NoServer, AccessDenied }!Grant {
+) error{ NoServer, ServerUnreachable, AccessDenied }!Grant {
     const colon = std.mem.indexOfScalar(u8, address, ':') orelse return error.NoServer;
     const ssh_target = address[0..colon];
     const result = std.process.run(ctx.arena, ctx.io, .{
@@ -150,7 +171,7 @@ fn sshToken(
         .timeout = .{ .duration = .{ .clock = .awake, .raw = .{ .nanoseconds = 30 * std.time.ns_per_s } } },
         .stdout_limit = .limited(64 * 1024),
         .stderr_limit = .limited(64 * 1024),
-    }) catch return error.NoServer;
+    }) catch return error.ServerUnreachable;
     if (result.term != .exited or result.term.exited != 0) {
         if (result.stderr.len > 0)
             std.log.warn("ssh said: {s}", .{std.mem.trim(u8, result.stderr, " \n")});
@@ -159,11 +180,11 @@ fn sshToken(
         // not know. Both are access, not a missing server.
         if (result.term == .exited and result.term.exited == @intFromEnum(ExitCode.access)) return error.AccessDenied;
         if (std.mem.indexOf(u8, result.stderr, "Permission denied") != null) return error.AccessDenied;
-        return error.NoServer;
+        return error.ServerUnreachable;
     }
     const Parsed = struct { token: []const u8, url: []const u8, expires_in_secs: u64 = 0 };
     const parsed = std.json.parseFromSliceLeaky(Parsed, ctx.arena, result.stdout, .{ .ignore_unknown_fields = true }) catch
-        return error.NoServer;
+        return error.ServerUnreachable;
     return .{ .token = parsed.token, .url = parsed.url };
 }
 

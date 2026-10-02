@@ -6,6 +6,7 @@
 const std = @import("std");
 const dbx = @import("../store/db.zig");
 const blob = @import("../store/blob.zig");
+const worker = @import("../preview/worker.zig");
 
 pub const Error = error{
     NoSuchDataset,
@@ -75,6 +76,16 @@ pub fn purge(
         hash_hex[0..2], hash_hex[2..4], hash_hex,
     }) catch return error.OutOfMemory;
     s3.deleteObject(scope, key) catch return error.Storage;
+    // Its previews are its content too (invariant 19): the thumbnail, the
+    // blurred rendition, and the queue row (which also holds a table's
+    // first rows).
+    inline for (.{ worker.thumbKey, worker.blurKey }) |keyOf| {
+        s3.deleteObject(scope, keyOf(arena, hash_hex) catch return error.OutOfMemory) catch |err| switch (err) {
+            error.NotFound => {},
+            else => return error.Storage,
+        };
+    }
+    _ = db.exec(scope, "DELETE FROM previews WHERE item_hash = decode($1, 'hex')", .{hash_hex}) catch return error.Db;
 
     const affected = db.rawExactlyOne(i64, scope, "SELECT count(DISTINCT r.name) FROM refs r JOIN commits c ON c.commit_id = r.commit_id " ++
         "JOIN item_revisions ir ON ir.dataset_id = r.dataset_id AND ir.rev_id <= c.cutoff_rev " ++

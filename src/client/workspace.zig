@@ -111,8 +111,9 @@ pub fn open(arena: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) OpenError!Wor
 
 pub const InitError = error{ AlreadyADataset, BadAddress, InitFailed } || std.mem.Allocator.Error;
 
-/// Creates `.cid/` in `dir`. Server registration and the git-repository
-/// checks happen when the server face lands; the local state is final.
+/// Creates `.cid/` in `dir`: the local half of `cid init` (the command
+/// registers the dataset on the server first, which checks its git
+/// repository, when a server is reachable).
 pub fn init(
     arena: std.mem.Allocator,
     io: std.Io,
