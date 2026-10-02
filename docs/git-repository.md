@@ -4,66 +4,83 @@ Read with `CLAUDE.md`. This is how "git lives inside cid" works in practice: eve
 dataset is paired with a git repository that cid writes and people only read.
 
 The pairing is set when the dataset is created (`cid init <address> --git <url>`, or
-the platform's create-dataset API). cid checks at that moment that the repository
-exists, is empty or cid-owned, and that the server's git credential can push to it;
-if not, the dataset is not created and the error says how to fix it.
+the platform's create-dataset API). When the server has a git writer configured
+(`CID_GIT_WORKDIR`), it checks at that moment that it can reach the repository and
+push to it: it pushes a throwaway ref, `refs/cid/write-check`, then deletes it;
+branches and tags are untouched. If either step fails, the dataset is not created and
+the error gives git's own reason and what to fix. Nothing else is checked: not
+whether the repository is empty, and not its branch protection. A server without a
+git writer creates the dataset without the check.
 
 ---
 
 ## What cid writes, on every release
 
-One git commit, one git tag with the release name:
+One git commit (message `release: <name>`, author `cid`) and one git tag with the
+release name. Each commit's tree is exactly that release's files:
 
 ```
-README.md          dataset card: summary, counts, classes, splits, known gaps, quality,
-                   and links: browse, compare with the previous release, health, clone
-CHANGELOG.md       release notes, newest first: the last 50 releases in full, then one
-                   line per older release linking to the dashboard (bounded growth)
-release.json       dataset, release, commit id, manifest sha256, created at, clone
-                   command, dashboard URL
-stats.yaml         counts per class, split and media type (one value per line, so git
-                   diffs between releases read clearly)
-classes.yaml       class map (index → name), annotated datasets
-policy.md          the policy version used, annotated datasets
-files.txt          file datasets under 10,000 files and 1 MB rendered: sorted list of
-                   path + size + short hash; otherwise omitted, README links to the
-                   dashboard
+README.md          dataset name; latest release, item count, total size and date;
+                   `cid clone <git-url>`; one link to browse this release in the
+                   dashboard; then the release's card fields (see below)
+CHANGELOG.md       every release in full, newest first: name, date, message, item count
+release.json       dataset, release, commit (cid commit id), manifest_sha256,
+                   created_at (date), items, clone (the git URL), dashboard (server URL)
+stats.yaml         release, items, bytes, files_by_extension; for annotated datasets
+                   also annotations, annotations_by_class and items_by_split (one
+                   value per line, so git diffs between releases read clearly)
+classes.yaml       class map (index → name, the yolo export's order), annotated datasets
+policy.md          the labelling policy version used, annotated datasets that have one
+files.txt          releases under 10,000 items: one line per item, sorted by path,
+                   path<TAB>size<TAB>first 12 hex characters of its hash
 .cid               marker file: server URL and dataset name, so `cid clone <git-url>` works
 ```
 
 The card fields in `README.md` render from the **release's card snapshot**
-(`refs.card`, see `docs/data-model.md`), never from the live card — so editing the
-card between releases cannot change what an old release renders.
+(`refs.card`, see `docs/data-model.md`), never from the live card, so editing the card
+between releases cannot change what an old release renders. Known fields come first,
+in this order: purpose, collection, license, provenance, known gaps; any other text
+fields follow, by name. Empty fields are left out.
 
-**What cid never writes to git:** data files, previews, the Parquet manifest, anything
-over 1 MB per file or 5 MB per release, and any content of a restricted dataset beyond
-counts (no class names that reveal identities, no file names, no samples).
+**Restricted datasets** get counts only: `README.md` without the card, `CHANGELOG.md`
+without release messages, `stats.yaml` without class or split names (the annotation
+total only), `release.json` and `.cid`. No `files.txt`, `classes.yaml` or `policy.md`.
+
+**What cid never writes to git:** data files, previews, the Parquet manifest, and any
+content of a restricted dataset beyond counts (no class names, no file names, no
+samples, no card, no release messages).
+
+Not built yet: size limits on rendered files (1 MB per file, 5 MB per release).
+`files.txt` is bounded by its item count only.
 
 ## Rules
 
 - **One-way.** cid writes; cid never reads data back from git. Humans get read access
-  only; the repository's default branch is protected so only the cid bot can push.
-  (The single exception to "never reads": `cid clone <git-url>` reads the tiny `.cid`
-  marker to find the cid server — see `CLAUDE.md`, CLI rules.)
+  only. (The single exception to "never reads": `cid clone <git-url>` reads the tiny
+  `.cid` marker to find the cid server; see below.)
 - **Deterministic.** The same release always renders the same files (sorted keys, fixed
-  formats, the release's card snapshot, no "generated at" times except the release's
-  own timestamp), so re-running produces no new git commit.
+  formats, the release's card snapshot, no times except the release's own date), so
+  re-running produces no new git commit.
 - **Exact and in order.** Each commit's tree is exactly the release's rendered files
   (a file an earlier release had and this one does not, like `files.txt` once a
-  dataset is restricted, is removed). Pending releases are written in release order,
-  and a release whose tag the repository already has is never rendered again, so a
-  resync can never put an older release's files on top of a newer one.
+  dataset is restricted or reaches 10,000 items, is removed). Pending releases are
+  written in release order, and a release whose tag the repository already has is
+  never rendered again, so a resync can never put an older release's files on top of
+  a newer one.
 - **Never blocks a release.** The release is created in cid first; the git write is
-  queued (`git_writes`) and retried with backoff. The dashboard and `cid log` show
-  "git: pending" until it lands; `cid admin git <dataset>` shows errors and `--resync`
-  repairs gaps.
+  queued (`git_writes`). With `CID_GIT_WORKDIR` set, it is attempted right away at tag
+  time and, if it fails, retried on every background tick (`CID_SYNC_INTERVAL_SECS`,
+  default 600 seconds). Without it, writes wait in the queue for
+  `cid admin git <dataset> --resync`. `cid admin git <dataset>` shows each release's
+  status, attempts and last error; `--resync` writes whatever is pending or failed.
+  Not built yet: a "git: pending" note in the dashboard or `cid log`.
 - **History matches.** Git tags equal cid release names; git commit order equals
-  release order. If someone force-pushes or deletes a tag, cid reports it and
-  `--resync` restores it; cid never rewrites its own earlier commits.
-- **Links, not copies.** Anything heavy (browsing items, visual diffs, health) is a
-  link into the cid dashboard, pinned to that release.
+  release order. cid never rewrites its own earlier commits.
+  Not built yet: noticing a force-push or a deleted tag and restoring it.
+- **Links, not copies.** Anything heavy (browsing items, comparing releases) is a link
+  into the cid dashboard, pinned to that release.
 - **Renames:** renaming a dataset does not move its git repository; cid keeps pushing
-  to the configured `git_url` until a Maintainer changes it.
+  to the configured `git_url`. Not built yet: changing a dataset's `git_url`.
 
 The write queue:
 
@@ -81,24 +98,37 @@ CREATE TABLE git_writes (
 );
 ```
 
+## Server settings
+
+- `CID_GIT_WORKDIR`: where the server keeps one clone per dataset repository. Without
+  it there is no git writer: no check at creation, and releases queue their git copy.
+- `CID_PUBLIC_URL`: the server address written into the README's browse link,
+  `release.json` and the `.cid` marker.
+- Credentials: the writer runs the `git` program as the server's own user, so it uses
+  that user's SSH setup (`~/.ssh/config`, keys). cid holds no git credential of its own.
+- cid always writes the branch `main`.
+
+## `cid clone <git-url>`
+
+An address ending in `.git` is taken as a dataset repository. The CLI runs
+`git clone --depth 1 --branch main` of it into a temporary folder, reads the `.cid`
+marker (server and dataset), deletes the folder, and continues over SSH and HTTPS as
+for any cid address. This is the only time the CLI runs git.
+
 ---
 
 ## On GitLab.com (the default host)
 
+This section is advice for administrators; cid does not configure GitLab.
+
 - **One GitLab group** holds all dataset projects, e.g. `your-org/datasets/<dataset>`.
   Projects are **private**; people get Reporter (read) access through the group.
-- **Credential: one SSH deploy key** owned by the cid server, enabled with **write
+- **Credential: one SSH deploy key** for the cid server's user, enabled with **write
   access** on each dataset project. Deploy keys work on every GitLab tier and can be
   allowed to push to protected branches, so no paid seat or personal token is needed.
-- **Protection:** `main` is a protected branch with "Allowed to push and merge" set to
-  the cid deploy key only; release tags are protected the same way. `cid init` checks
-  that the cid server can reach the repository and push to it (it pushes, then
-  deletes, a throwaway `refs/cid/write-check`; branches and tags are untouched) and
-  refuses, with git's own reason, when it cannot. The protection settings themselves
-  are not checked yet.
-- **Optional GitLab Releases:** if the server is also given a token with the `api`
-  scope, cid creates a GitLab Release for each tag, with the release notes and links
-  to the dashboard. Without a token, cid skips this and everything else still works.
+- **Protection:** make `main` a protected branch with "Allowed to push and merge" set
+  to the cid deploy key only, and protect release tags the same way. cid does not
+  check these settings.
 - **What leaves your network:** only the small files above. Keep dataset names, cards
   and release notes free of customer names or anything contractually confidential, and
   restricted datasets never send more than counts.
@@ -108,6 +138,8 @@ CREATE TABLE git_writes (
 - Everything here is GitLab-specific configuration only; the git writer itself speaks
   plain git and works with any host (self-hosted GitLab, Gitea, GitHub).
 
-Server config holds one git credential (on GitLab.com: that SSH deploy key) and one
-GitLab token with `read_api` scope, used only to read project membership and users'
-public SSH keys. Users never handle either.
+Not built yet: GitLab Releases (a GitLab Release per tag, with the release notes).
+
+The GitLab token with `read_api` scope (`CID_GITLAB_TOKEN`) is separate from the git
+writer: it is used only to read project membership and users' public SSH keys
+(`docs/access.md`). Users never handle either.

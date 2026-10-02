@@ -1,32 +1,43 @@
-# React + TypeScript + Vite
+# cid dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The web dashboard for browsing, comparing and downloading datasets: React,
+TypeScript and Vite. Read [`docs/dashboard.md`](../docs/dashboard.md) before
+changing anything here: its phases, principles, design language and budgets
+apply to every page.
 
-Currently, two official plugins are available:
+## Scripts
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Install once with `pnpm --dir web install`, then run each from the repository
+root with `pnpm --dir web <script>`:
 
-## React Compiler
+| Script | Does |
+|---|---|
+| `dev` | Vite dev server; proxies `/v0` to a `cid admin serve` on `127.0.0.1:7070` |
+| `build` | Type-check, then build into `web/dist` |
+| `preview` | Serve the built `web/dist` locally |
+| `lint` | oxlint (`.oxlintrc.json`) |
+| `typecheck` | `tsc -b` |
+| `test:e2e` | Playwright (`web/e2e/`): UX budgets, accessibility (axe), keyboard |
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Dashboard changes must pass `lint`, `typecheck` and `test:e2e`.
 
-## Expanding the Oxlint configuration
+## Dev server
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+`pnpm --dir web dev` proxies only `/v0` (the API) to `127.0.0.1:7070`, so
+start `cid admin serve` there first. `/auth` is not proxied, so "Sign in with
+GitLab" does not work through the dev server; use the server's own port for
+sign-in.
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
+## Build
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+`pnpm --dir web build` writes `web/dist`. `zig build` embeds every file under
+`web/dist` into the `cid` binary, so the dashboard ships inside the server;
+without a build, the server has no dashboard to show. Build the web first,
+then `zig build`.
+
+## End-to-end tests
+
+`pnpm --dir web test:e2e` runs against `../zig-out/bin/cid` (so `zig build`
+first) with the services from `docker-compose.test.yml` up. It starts the
+server on port 7177 and a fake GitLab on 7190, and seeds a small dataset
+through the real CLI.

@@ -79,10 +79,11 @@ and everything heavy link to the cid dashboard. Full spec: `docs/git-repository.
   decision first): a hosted "cidhub" cloud and anything multi-tenant; billing;
   email one-time-link sign-in; complex dashboard administration. When a design choice
   appears that only matters for the hosted cloud, choose the simple internal answer.
-- **First milestone ("cid exists"):** the file-dataset round trip against a real
-  server — `init → add → commit → push`, then `clone / pull / checkout / status / log`
-  elsewhere — using `cid login` token auth. The SSH front door, git writer, previews
-  and dashboard come after, in that order of need; none of them changes the data model.
+- **First milestone ("cid exists") is reached:** the file-dataset round trip against a
+  real server, the SSH front door, the git writer, previews and the dashboard all run.
+  Still open, each needing a decision first: creating a dataset with only an SSH key
+  (today it needs the server token or `cid login`), and Postgres row-level security for
+  restricted datasets (invariant 11).
 - **AI stays out of cid.** cid never calls an LLM or judgment API (TypeSafe/Jev
   included) in the CLI or server. The one permitted future exception is advisory-only
   dashboard scoring, Phase 3 at the earliest, decided then (`docs/dashboard.md`). The
@@ -128,8 +129,8 @@ When a design choice trades simplicity for power, choose simplicity and ask firs
 | What it holds | Any files, in folders, exactly as you put them | Items (images, clips, audio…) plus structured annotations |
 | Who changes it | People and scripts, from a folder: `cid add`, `cid commit`, `cid push` | The annotation platform (agents + reviewers), through the server |
 | Typical use | Text corpora, audio sets, tables, documents, model inputs, anything | Vision datasets built in the annotation platform |
-| Clone gives you | The same folder tree | A ready-to-train export (`yolo`, `coco`, `voc`, `jsonl`, …) |
-| Diff shows | Files added/removed/changed; **row-level** for CSV, Parquet, JSONL | Items and annotations added/removed/changed |
+| Clone gives you | The same folder tree | A ready-to-train export (`yolo`, `jsonl`; `coco` and `voc` planned) |
+| Diff shows | Files added/removed/changed; rows added/removed for CSV, Parquet, JSONL | Items and annotations added/removed/changed |
 
 Both kinds share the same history model, releases, storage and commands. Annotations in
 a file dataset are just files (e.g. `labels.jsonl`); structured annotations exist only in
@@ -146,11 +147,11 @@ cid clone cid@cidhub.com:your-org/datasets/speech-id    # no login: your SSH key
 # the git URL copied from GitLab works too:
 # cid clone git@gitlab.com:your-org/datasets/speech-id.git
 cd speech-id
-cid log                               # releases and commits, newest first
+cid log                               # commits newest first, releases named
 cid checkout v1.3.0                   # switch release; only changed files download
 cid pull                              # get the newest
 cid diff v1.2.0 v1.3.0                # what changed
-cid status                            # which version you have, anything edited
+cid status                            # your branch, anything edited or unpushed
 ```
 
 ### Someone producing a file dataset
@@ -186,7 +187,7 @@ then `cid pull --continue`; `cid merge` conflicts resolve the same way, then
 
 Engineers use the reading commands above.
 `cid clone cid@cidhub.com:your-org/datasets/person-vehicle` gives a ready-to-train
-folder in the dataset's default format; `--format coco` for another, and
+folder in the dataset's default format; `--format jsonl` (or `yolo`) for another, and
 `--split train --class person` for just part of it. In such a clone,
 `cid add` refuses with: `This is an export of an annotated dataset. Annotations change
 in the annotation platform; run 'cid pull' to update.` The platform does commits and
@@ -196,23 +197,27 @@ creation, exactly like `cid init --git`.
 ### Admins
 
 ```bash
-cid admin setup        # create database schema and storage layout
+cid admin setup        # create the database schema (the bucket is the deployment's job)
 cid admin migrate      # apply new SQL migrations
 cid admin verify <dataset> <release>   # rebuild a release and check its hash
-cid admin gc           # show unreferenced files; --apply to delete
-cid admin purge <dataset> <item>       # audited erasure (the one exception; see docs/data-model.md)
-cid admin serve        # run the cid server
-cid admin previews     # run the preview worker
+cid admin gc [--days n] [--apply]      # show unreferenced files and abandoned uploads; --apply deletes
+cid admin purge <dataset> <path|hash> --reason "why"   # audited erasure (docs/data-model.md)
+cid admin serve        # run the cid server (its background loop also drains previews,
+                       # syncs GitLab and retries git writes)
+cid admin previews     # one pass of the preview worker
 cid admin sync-gitlab  # sync members and SSH keys now
 cid admin git <dataset>            # git repository status: last release written, errors
-cid admin git <dataset> --resync   # rewrite any missing releases into the repository
+cid admin git <dataset> --resync   # write any pending releases into the repository
+cid admin add-key <account> <name> <public-key>   # register a key by hand
+cid admin grant <dataset> <account> <read|write|maintain>
 ```
 
 ### CI and scripts
 
-CI jobs use SSH like git does: a deploy key registered for the dataset (read-only or
-read-write) in the dashboard. `cid login <server>` with a token remains available only
-for machines that cannot use SSH at all (token in `~/.config/cid/credentials`, 0600).
+CI jobs today use `CID_SERVER` + `CID_TOKEN` (the server's static token, full access;
+it wins over SSH and over a stored login) or `cid login <server>` (token in
+`~/.config/cid/credentials`, 0600; used for every dataset once stored). Per-dataset
+deploy keys are planned, not built.
 
 ---
 
@@ -251,13 +256,13 @@ makes every change between versions visible).
 | **push** | Uploading local commits and their new files; accepted only on top of the server's latest commit |
 | **branch** | A draft line of work. Always starts from `main` |
 | **release** | A tag on a commit, e.g. `v4.2.0`. Never moves. Has a manifest |
-| **manifest** | The file listing every item (path, hash, split) and annotation in a release, with its content hash |
+| **manifest** | The canonical listing of every item (path, hash, size, split) and annotation in a release, hashed (`manifest_sha256`) and stored as `manifests/<dataset_id>/<commit_id>.manifest` |
 | **dataset path** | The dataset's full name, like a GitLab project path: `your-org/datasets/person-vehicle` |
 | **address** | Where to reach a dataset, git-style: `cid@cidhub.com:your-org/datasets/person-vehicle` (a trailing `.cid` is accepted and ignored) |
 | **dataset repository** | The git repository paired with a dataset. cid writes one git commit and tag per release; people only read it |
 | **owner** | Anyone with the Maintainer role on the dataset (tag, branch, merge, edit the card) |
 | **version** | A release or commit, as shown in a version picker |
-| **purge** | The audited, logged erasure of one item's content — the single exception to append-only |
+| **purge** | The audited, logged erasure of one content's bytes and previews — the single exception to "items are immutable"; history rows stay |
 | **Validator** | The annotation platform's quality-audit service; cid only stores and shows its reports |
 
 In user-facing text say "release", not "tag", except in the `cid tag` command itself.
@@ -287,16 +292,19 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
 
 - **TimescaleDB** holds all history; both revision tables are compressed hypertables.
   Schema and integrity rules: `docs/data-model.md`.
-- **SeaweedFS** holds items, manifests and exports. Clients reach it only through
-  short-lived presigned URLs handed out by the server, never with their own credentials.
+- **SeaweedFS** holds items and everything derived from them (see Storage layout).
+  Clients reach it only through short-lived presigned URLs handed out by the server,
+  never with their own credentials.
 - **The cid server** is the only thing users talk to: SSH to prove who they are, then
   HTTPS with a short-lived token for everything else (`docs/access.md`). HTTP serving,
   Postgres and S3 all go through **Nilo** (see Zig conventions); TLS terminates at a
-  reverse proxy (`deploy/`).
+  reverse proxy you bring (`deploy/` holds only the sshd setup). The dashboard also
+  signs people in with GitLab (OAuth: `CID_GITLAB_OAUTH_ID`, `CID_GITLAB_OAUTH_SECRET`,
+  `CID_PUBLIC_URL`, `CID_SESSION_SECRET`).
 - **DuckDB** (C API, in-process on the server) answers every question asked of a
   version: browse pages, subset sizes, folder listings, comparing two versions, table
   statistics and row-level diffs. It is **always linked** (`src/store/duck.zig`):
-  libduckdb is a lazy dependency, linked dynamically and installed beside the binary.
+  libduckdb is a pinned dependency, linked dynamically and installed beside the binary.
   `cid admin serve` opens **one** database for browse queries, confined to its browse
   folder (`CID_BROWSE_DIR`) with a locked configuration, two threads and one memory
   ceiling; every query takes a connection to it, so their memory is bounded however
@@ -311,8 +319,8 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   (items with annotations, counts, facets counted against the other filters, a
   cursor), a subset's size, a folder's listing, or the compare of two versions.
   Filters and facets read only the light columns; only the page's rows fetch hashes
-  and annotations. A release's index is written in the same pass as its manifest and
-  kept in storage; other commits' are built into a bounded local cache. A new branch
+  and annotations. A release's index is written in the same pass as its manifest;
+  every built index is kept in storage and in a bounded local cache. A new branch
   head or release is prepared ahead of its first visitor by the server's background
   worker (`version_jobs`, `api.prepareNext`): its statistics, browse index, items file
   and default export, through the same code a request takes.
@@ -328,25 +336,29 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   26–120 ms; compare 1.9 s the first time a pair is compared and 51 ms after (the
   pair's diff is kept beside the indexes, and a release's diff with the release before
   it is prepared in the background); `cid diff` 0.4 s, with a 19 MB client.
-- **The preview worker** (`cid admin previews`) builds thumbnails, waveforms, video
-  posters, PDF page images and table statistics, by calling `ffmpeg` (and `vips`
-  where present) as external programs. **ffmpeg never scales with users**: the
-  `previews` queue holds one row per content hash, filled at ingest (push,
-  register-items) and drained only by the worker — bounded concurrency
-  (CID_PREVIEW_JOBS, default 1), nice -19, -threads 1, hard timeouts, size
-  guards, bounded attempts then a recorded skip. Request paths only hand out
-  presigned URLs to previews that already exist; a missing preview renders as
-  a placeholder, never a generation. Previews are stored in SeaweedFS by item
-  hash; restricted items also get a blurred rendition (see `docs/dashboard.md`).
+- **The preview worker** builds thumbnails, audio waveforms, video posters and table
+  statistics, sniffing each file's real type and image dimensions as it goes, by
+  calling `ffmpeg` as an external program (PDF page images, which need `vips`, are not
+  built yet). **ffmpeg never scales with users**: the `previews` queue holds one row
+  per content hash, filled at ingest (push, register-items) and drained only by the
+  worker — `cid admin serve`'s background loop, or one pass of `cid admin previews` —
+  one file at a time, nice -19, -threads 1, hard timeouts, size guards, bounded
+  attempts then a recorded skip. Request paths only hand out presigned URLs to previews
+  that already exist; a missing preview renders as a placeholder, never a generation.
+  Previews are stored in SeaweedFS by item hash; restricted items also get a blurred
+  rendition (see `docs/dashboard.md`).
 - **The git writer** (`src/gitrepo/`) renders each release's small files and pushes a
-  commit and tag to the dataset repository, using the `git` program on the server.
+  commit and tag to the dataset repository, using the `git` program on the server. It
+  runs when `CID_GIT_WORKDIR` is set (otherwise releases queue for
+  `cid admin git --resync`); creating a dataset then first proves it can push
+  (a throwaway `refs/cid/write-check`). Restricted datasets render counts only.
 - **SSH front door:** OpenSSH `sshd` on the cid host accepts only the user `cid`, looks
   up keys through cid, and runs cid's restricted command. SSH only authenticates and
   hands out short-lived HTTPS credentials; data moves over HTTPS in parallel.
 - **The annotation platform** uploads item bytes through the server API (hash-verified),
   inserts revision rows directly with the INSERT-only role `cid_writer` (under the
-  per-branch write lock), and uses the server API for commit, release, branch, merge,
-  diff and export.
+  per-branch write lock; the database mints `rev_id` and `ts`), and uses the server API
+  for commit, release, branch, merge, diff and export.
 
 Deep dives: `docs/data-model.md` · `docs/access.md` · `docs/git-repository.md` ·
 `docs/dashboard.md`.
@@ -357,19 +369,21 @@ Deep dives: `docs/data-model.md` · `docs/access.md` · `docs/git-repository.md`
 
 1. **Changes are append-only.** No `UPDATE`/`DELETE` on `item_revisions` or
    `annotation_revisions`; writers have INSERT only, and a trigger rejects UPDATE/DELETE
-   for every role except the migration owner. The single sanctioned exception is
-   `cid admin purge` (invariant 19).
+   for everyone unless the maintenance setting `cid.maintenance` is on (migrations
+   only). Purge never touches these rows (invariant 19).
 2. **Items are immutable and stored by hash.** Write only if absent; all bytes enter
    through the server, which verifies the hash of every upload before recording it.
-3. **Commits are sealed.** Revision writes and commit recording serialize on the
-   per-(dataset, branch) advisory lock, so no revision can land under an existing
-   cutoff; `cid admin verify` treats such a row as corruption (exit 3).
+3. **Commits are sealed.** The database mints every revision's `rev_id` and `ts`
+   (`cid_rev()`; writers cannot set them), and revision writes and commit recording
+   serialize on the per-(dataset, branch) advisory lock, so no revision can land under
+   an existing cutoff. Each commit first checks none did (the backstop refuses to record
+   past one), and `cid admin verify` treats such a row as corruption (exit 3).
 4. **Annotations attach to item identity** (`item_id`), never to bytes; re-encoding an
    item must never orphan its annotations.
 5. **Releases never move.** Tagging an existing name is an error.
 6. **Manifests are repeatable.** `manifest_sha256` hashes the canonical row stream
-   (sorted, fixed encoding, RFC 8785 for JSON fields — `docs/data-model.md`), not the
-   Parquet bytes. Rebuilding a release reproduces the same hash.
+   (sorted, fixed encoding, RFC 8785 for JSON fields — `docs/data-model.md`).
+   Rebuilding a release from history reproduces the same hash.
 7. **Pushes only move forward.** The server accepts a push only if its first commit's
    parent is the server's latest commit on that branch; otherwise it refuses (pull
    first). A push is all-or-nothing: files uploaded first, then commits recorded in
@@ -382,9 +396,13 @@ Deep dives: `docs/data-model.md` · `docs/access.md` · `docs/git-repository.md`
     `--apply`. Only releases and branch heads are guaranteed rebuildable forever.
 11. **Restricted datasets** (e.g. `face-id`) use Postgres row-level security and their
     own role. cid never logs their contents or annotations, at any log level, and
-    never sends their items to any external service by default.
-12. **Hash existence is never an oracle.** The push dedup check confirms a hash only
-    for datasets the caller can read; otherwise the upload is requested and discarded.
+    never sends their items to any external service by default. **Not met yet:** there
+    is no RLS or separate role; restriction is a flag enforced by the server (blurred
+    previews until a logged reveal, withheld rows and text, counts-only git, owner-only
+    activity). Closing this needs a decision.
+12. **Hash existence is never an oracle.** The push dedup check confirms a hash only if
+    this dataset already holds those bytes (`dataset_hashes`); anything else must be
+    uploaded and verified again, so a hash learned elsewhere opens nothing.
 13. **Stream, never load.** Whole-dataset work streams with bounded memory. On the
     server that means `src/core/version.zig`: a version is read through cursors,
     5,000 rows a batch, each batch freed before the next; manifests are hashed as
@@ -396,17 +414,21 @@ Deep dives: `docs/data-model.md` · `docs/access.md` · `docs/git-repository.md`
     `tests/bench/browse_1m.sh` measures all of it at 1M items.
 14. **Downloads verify everything.** Every file is hash-checked before it appears in
     the folder; a mismatch fails the command.
-15. **cid never interprets file contents except** to read media metadata on upload and
-    to diff tabular files. Unknown file types are always accepted and stored as-is.
+15. **cid never interprets file contents except** to read media metadata (the preview
+    worker, after upload) and to diff and summarise tabular files. Unknown file types
+    are always accepted and stored as-is.
 16. **Local state is recoverable.** An interrupted `push`, `pull` or `checkout` leaves
     `.cid/` consistent; running the same command again finishes the job.
-17. **The dashboard never changes data** other than dataset cards and new releases
-    (owners only). Annotations are edited only in the annotation platform.
+17. **The dashboard changes no data** (a person's stars aside). Card editing and making
+    releases there are parked decisions; annotations are edited only in the annotation
+    platform.
 18. **One bad file never breaks a view.** If an item can't be previewed or parsed, only
     that item shows an error, in plain words; the rest of the dataset stays browsable.
 19. **Purge is loud, logged and minimal.** `cid admin purge` removes bytes and previews
-    only; history keeps its rows and hashes, every affected release reports "intact
-    except N purged items", and the purge itself is an audited activity event.
+    only, for every dataset holding that content; history keeps its rows and hashes,
+    `cid admin verify` reports each affected release "intact except N purged items",
+    the hash can never be uploaded again, and the purge itself is an audited activity
+    event.
 20. **Restricted previews are blurred on the server until revealed**, and every reveal
     is logged. A presigned URL to clear restricted content exists only after the
     logged reveal.
@@ -425,31 +447,39 @@ If a change would weaken any of these, stop and ask.
 ```
 <bucket>/
   items/sha256/<aa>/<bb>/<hex>                any file, stored once
-  uploads/<dataset_id>/<hex>                  staged uploads, verified then moved
-  previews/<aa>/<hex>/…                       thumbnails, waveforms, blurred renditions
+  uploads/<dataset_id>/<hex>[.part-NNNNNN]    staged uploads (pieces over 64 MB),
+                                              verified then stored, or cleaned by gc
+  previews/<aa>/<hex>/thumb.webp, blur.webp   thumbnails/waveforms, blurred renditions
+  manifests/<dataset_id>/<commit_id>.manifest the release's hashed canonical manifest
   manifests/<dataset_id>/<commit_id>.items.parquet, .anns.parquet
-                                              one pair per release: its browse index
+                                              a version's browse index (any version built)
   states/<dataset_id>/<commit>-<subset>-<sha>.jsonl.gz        a version's items, as the CLI downloads them
   exports/<dataset_id>/<commit>/<format>-<subset>-<sha>.jsonl.gz  an export, as a bundle of files
   diffs/<dataset_id>/<a>-<b>-<sha>.jsonl.gz        what changed between two versions
+  diffs/<dataset_id>/<a>-<b>.items.parquet, .anns.parquet     the pair's compare, kept
 ```
 
 S3 client rules for SeaweedFS: path-style addressing, SigV4, real payload hash,
 multipart for files over 64 MB (all via nilo_s3), the bucket always named `cid` and
 created by the deployment, SeaweedFS version pinned in the test compose file.
 
-Local cache on user machines: `~/.cache/cid/items/<aa>/<hex>`, shared by every clone and
-release. Working folders get copies (copy-on-write clones where the filesystem has
+Local cache on user machines: `~/.cache/cid/items/<aa>/<hex>` (or under
+`$XDG_CACHE_HOME`), shared by every clone and release. Working folders get copies (copy-on-write clones where the filesystem has
 them), never hard links: editing a file in place must never change the cached bytes.
 
 Local repository state in each folder's `.cid/`:
 
 ```
 .cid/
-  config.zon        dataset, server URL, git URL (written by clone/init only)
-  HEAD              current branch, commit or release (like git's HEAD)
+  config.zon        address, git URL, dataset kind, clone format and subset
+                    (written by clone/init only)
+  HEAD              current branch and commit
   index             staged changes: path, hash, size, mtime (like git's index)
+  tracked           the tree as of the last commit: path, hash, size, mtime
   commits/          local commits not yet pushed, one small file each
+  last-pushed       the server commit the local commits sit on
+  pull-state        a pull stopped on conflicts: each path and its decision
+  merge-state       a merge stopped on conflicts: the branch, each path and decision
 ```
 
 Files added with `cid add` are hashed and copied into the local cache at `add` time, so
@@ -465,8 +495,9 @@ asks the server what it still lacks, whole files and pieces alike, and sends onl
 ## Formats
 
 - **`files`** (default for file datasets): the folder tree exactly as committed.
-- **Annotated datasets:** `yolo`, `coco`, `voc` (images), `jsonl` (universal: one line per
-  item with its annotations; works for audio, text and anything else), more as needed.
+- **Annotated datasets:** `yolo` (images) and `jsonl` (universal: one line per item with
+  its annotations; works for audio, text and anything else). `coco` and `voc` are
+  planned, not built; `cid clone` refuses other names.
 - Each format is one file in `src/export/`, a streaming writer fed an item at a time
   (with its annotations) by `src/export/bundle.zig`, which reads the version once on
   the server, narrowed in SQL to any `--split`/`--class` subset. An export reaches the
@@ -474,9 +505,9 @@ asks the server what it still lacks, whole files and pieces alike, and sends onl
   into the folder as it streams, SHA-256 checked; the CLI never holds a version's
   annotations. Adding a format never touches `core/`.
 
-**Row-level diff** (`cid diff`) for `.csv`, `.parquet` and `.jsonl`: rows added, removed
-and changed, using a key column when the dataset declares one, otherwise whole-row
-comparison. Row-level diffs are computed **on the server** (where DuckDB lives); the
+**Row-level diff** (`cid diff`) for `.csv`, `.parquet` and `.jsonl`: rows added and
+removed, by whole-row comparison (declaring a key column, to see rows changed, is not
+built). Row-level diffs are computed **on the server** (where DuckDB lives); the
 CLI itself never reads a table. Comparing two versions is the server's job too: DuckDB
 joins their browse indexes (annotations compared as stored jsonb text, so formatting
 never counts) and the changes are written once to storage as gzip JSON lines, which
@@ -498,10 +529,10 @@ Everyday (shown by `cid help`):
 | Command | Does |
 |---|---|
 | `cid clone <address\|git-url> [--release v] [--format f] [--split s] [--class c]` | Download into a new folder. No login: your SSH key is your identity. `--split`/`--class` (repeatable) keep only matching items — and, for classes, only those classes' annotations; the folder remembers the subset, `pull` keeps it, and it is read-only |
-| `cid pull` | Get new commits and releases; replays unpushed commits on top, or lists conflicts |
-| `cid checkout <release\|branch>` | Switch the folder to another release or branch; `--mine`/`--theirs <path>` resolves a listed conflict |
-| `cid status` | Current version, staged and unstaged changes, unpushed commits, newer versions |
-| `cid log` | Releases and commits, newest first; unpushed commits marked |
+| `cid pull [--continue]` | Get new commits; replays unpushed commits on top, or lists conflicts (`--continue` once decided) |
+| `cid checkout <release\|branch\|commit>` | Switch the folder; `--mine`/`--theirs <path>` decides a listed conflict of the pull or merge in progress |
+| `cid status` | Branch, staged and unstaged changes, unpushed commits, subset, pending conflicts (offline) |
+| `cid log` | The folder's branch, newest first: unpushed commits marked, then the server's, releases named |
 | `cid diff [<a>] [<b>]` | What changed; no arguments = unstaged edits, `--staged` = staged |
 | `cid add <path>...` | Stage added, changed and deleted files (`cid add .` for everything) |
 | `cid restore [--staged] <path>` | Unstage (`--staged`) or throw away local edits |
@@ -509,35 +540,41 @@ Everyday (shown by `cid help`):
 | `cid push` | Upload local commits and their new files; resumes if interrupted |
 
 For dataset owners (`cid help --all`): `init <address> --git <url>` (both required),
-`tag`, `branch`, `merge`. Rarely needed: `cid login <server>` for machines that cannot
-use SSH.
+`tag`, `branch`, `merge [--continue]`. Rarely needed: `cid login <server>` /
+`cid logout` for machines that cannot use SSH.
 `tag`, `branch` and `merge` act on the server and need everything pushed first; they
 say so and suggest `cid push` when there are local commits.
-Admins: `cid admin setup|migrate|verify|gc|purge|serve|previews|sync-gitlab|git`.
+Admins: `cid admin setup|migrate|verify|gc|purge|serve|previews|sync-gitlab|git|add-key|grant`.
 
 Rules for every command:
 - Inside a cloned folder the dataset is implied; outside, it is the first argument.
-- `.cidignore` (same syntax as `.gitignore`) excludes files from `cid add`.
-- `--json` for machine output, same shape as the server API.
-- Exit codes: 0 ok, 1 wrong usage, 2 conflict, 3 integrity failure, 4 server or
-  network, 5 access denied.
+- `.cidignore` excludes files from `cid add`: a small subset of `.gitignore` (exact
+  paths, `dir/`, `*.ext`, `#` comments).
+- `--json` anywhere on the line: the result as one JSON document on stdout (`diff`:
+  one line per change, then a summary); errors as `{"error", "exit"}` on stderr.
+- Exit codes: 0 ok, 1 wrong usage (or no server configured), 2 conflict, 3 integrity
+  failure, 4 server or network, 5 access denied.
+- The author of a commit is `CID_AUTHOR`, else `user:$USER`.
 - Progress bars for anything over a second; quiet when not attached to a terminal.
 - Errors end with the command to run next. Never print tokens or keys.
 - `cid --version` prints the version, plus a small original ASCII airship when attached
   to a terminal (plain version only when piped, so scripts can parse it).
 - Permissions come from the GitLab role on the dataset's project (`docs/access.md`):
-  Reporter = read, Developer = push, Maintainer (= owner) = tag, branch, merge. Anyone
-  can `add` and `commit` locally; the server checks permission at `push`.
+  Reporter = read, Developer = push, Maintainer (= owner) = tag, branch, merge (token
+  levels read, write, maintain). Anyone can `add` and `commit` locally; the server
+  checks permission at `push`.
 
 There is no user config to write. SSH settings come from the user's normal
 `~/.ssh/config`; a folder's `.cid/config.zon` (written by `clone`/`init`) holds its
 address and git URL. `cid login` (rare) stores its token in
-`~/.config/cid/credentials` (0600).
+`~/.config/cid/credentials` (0600). `CID_SERVER` + `CID_TOKEN` in the environment
+override both (scripts, CI). A token from the SSH front door lives 15 minutes; a longer
+command asks for a fresh one and retries.
 
-`cid clone <git-url>` works by reading the `.cid` marker file from the dataset
-repository: the CLI runs the system `git` program for exactly this one step (a shallow
-fetch of that one file to a temp dir), then proceeds over SSH + HTTPS as usual. This
-is the only git invocation the CLI ever makes.
+`cid clone <git-url>` (a URL ending in `.git`) works by reading the `.cid` marker file
+from the dataset repository: the CLI runs the system `git` program for exactly this one
+step (a depth-1 clone of `main` into a temporary folder), then proceeds over SSH +
+HTTPS as usual. This is the only git invocation the CLI ever makes.
 
 ---
 
@@ -548,30 +585,36 @@ build.zig, build.zig.zon     pinned Zig version (minimum_zig_version)
 LICENSE                      GPL-2.0-only, exactly like git
 src/main.zig                 entry point, argument parsing, exit codes
 src/cli/                     one file per command, thin
-src/core/                    commit, refs, state-at-commit, diff, merge, release, gc, purge
+src/core/                    version.zig (state at a commit, one streamed pass), release
+                             (manifest, verify), gc, purge, migrate; commit, branch and
+                             merge recording live in src/server/api.zig
 src/client/                  server calls, local cache, folder scan, ignore rules
-src/client/index.zig         staging area (.cid/index)
-src/client/local.zig         local commits, HEAD, resumable push state
-src/client/sync.zig          push, pull, replaying unpushed commits, conflict listing
-src/server/                  HTTP API (Nilo), tokens and permissions, presigned URLs, uploads
+src/client/index.zig         staging area (.cid/index) and the tracked tree
+src/client/local.zig         local commits, HEAD, last-pushed
+src/client/sync.zig          push, pull, replaying unpushed commits, conflicts, merge state
+src/server/                  api.zig (every route, tokens and permissions, presigned URLs,
+                             uploads), serve.zig (Nilo app), signin.zig (GitLab OAuth)
 src/store/db.zig             TimescaleDB via nilo_sql (pg.zig native driver, pooled)
 src/store/blob.zig           S3 via nilo_s3: one Bucket ('cid'), the storage rules
-src/manifest/                canonical rows, RFC 8785 JSON, hashing, Parquet via DuckDB C API
-src/media/                   media type detection and metadata (image size, audio length…)
-src/tabular/                 row-level diff for CSV, Parquet, JSONL via DuckDB (server)
-src/export/                  files.zig, yolo.zig, coco.zig, voc.zig, jsonl.zig
+src/manifest/                canonical manifest rows, RFC 8785 JSON (jcs.zig)
+src/media/                   media type sniffing and image dimensions
+src/tabular/                 row diffs and table statistics for CSV, Parquet, JSONL (DuckDB)
+src/export/                  bundle.zig (the streamed version), jsonl.zig, yolo.zig
 src/server/browse/           dashboard API: manifest queries, facets, cursors, compare
-src/preview/                 preview worker: calls ffmpeg / vips, stores by item hash
+src/preview/                 preview worker: calls ffmpeg, stores by item hash
 src/gitrepo/                 dataset repository: render release files, queue, push, resync
-src/access/                  SSH key lookup for sshd, forced command (cid-auth), tokens,
-                             GitLab member and key sync, permission checks
-deploy/                      reverse proxy (TLS) config; deploy/sshd/ hardened sshd_config
+src/access/                  key lookup and forced-command checks (auth.zig), tokens,
+                             GitLab member and key sync; their CLI entry points are
+                             src/cli/sshcmd.zig (cid ssh-keys, cid ssh-auth)
+deploy/sshd/                 hardened sshd_config and setup (reverse proxy: bring your own)
 web/                         dashboard: React + Vite + TypeScript (see docs/dashboard.md)
 web/e2e/                     Playwright tests: UX budgets, accessibility (axe), keyboard
 docs/                        data-model.md, access.md, git-repository.md, dashboard.md
-src/util/                    uuid7, hex, config (ZON), redaction, progress
+src/util/                    uuid7, progress
 sql/migrations/
-tests/                       integration tests against real TimescaleDB + SeaweedFS
+tests/                       integration tests against real TimescaleDB + SeaweedFS;
+                             usability.sh (the scripted CLI session); bench/ (1M browse,
+                             10M ingest)
 tests/fixtures/              small image, audio, text, CSV, Parquet, JSONL, PDF, binary
 docker-compose.test.yml      timescaledb + seaweedfs, pinned versions
 ```
@@ -587,11 +630,19 @@ zig build test                     # unit tests, no services
 docker compose -f docker-compose.test.yml up -d
 zig build integration              # needs the services
 
+sh tests/usability.sh              # the scripted CLI session (services + `zig build`)
+
 pnpm --dir web install
-pnpm --dir web dev                 # dashboard dev server, proxies the API to cid serve
+pnpm --dir web dev                 # dashboard dev server, proxies /v0 to cid serve
 pnpm --dir web build               # builds web/dist, embedded by `zig build`
 pnpm --dir web test:e2e            # Playwright, against zig-out/bin/cid
+
+tests/bench/browse_1m.sh           # 1M items: release, browse, compare (ReleaseFast)
+tests/bench/ingest_10m.sh          # 10M revisions through the platform's path
 ```
+
+Integration tests, the usability script and the benchmarks share the test database:
+run them one at a time (the integration suite resets the schema).
 
 Dashboard changes must pass `pnpm --dir web lint`, `pnpm --dir web typecheck` and the
 e2e suite, and meet the budgets and acceptance tests in `docs/dashboard.md`.
@@ -654,8 +705,12 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
 - **Explicit allocators** everywhere; an arena per command or request. No globals.
 - **Errors:** explicit error sets at module boundaries, `errdefer` for cleanup, never
   `catch unreachable` on I/O, parsing, network or database results. Map errors to exit
-  codes and friendly messages only in `main.zig`.
-- **No global state:** pass a `Context` (allocator, config, logger, db/s3 or client).
+  codes and friendly messages only at the top: `main.zig` and the command files in
+  `src/cli/`.
+- **No global state:** the CLI passes `common.Context` (arena, gpa, io, out, env,
+  json), the server `api.Deps` (db, s3, io, gpa, folders, …). Each takes the allocator
+  it is given (tests pass `std.testing.allocator`, which catches leaks). One sanctioned
+  exception: the last database problem message, kept for `cid admin` errors.
 - **Streaming I/O** with bounded buffers; hash files while uploading; batch DB work
   (about 5,000 rows).
 - **C libraries allowed:** DuckDB only. SHA-256, HMAC, JSON, UUIDv7 and media
@@ -666,8 +721,10 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
   Guardrails: depend on a **pinned commit** (it is pre-1.0 and breaks; the hash in
   build.zig.zon is the lock, and upstream now hash-pins its own `zio`);
   `.sql = true` brings nilo_sql — the native pooled Postgres driver all of
-  cid queries through (src/store/db.zig; libpq is gone) — and nothing
-  client-side imports a nilo module; TLS stays at the reverse proxy.
+  cid queries through (src/store/db.zig; libpq is gone) — and nilo_fetch
+  carries the server's outbound calls (GitLab). Client code imports no nilo
+  module (main.zig takes only nilo's `std_options`); TLS stays at the
+  reverse proxy.
   serve.zig keeps `api.handle` as the one dispatcher behind two catch-all
   routes, so the API stays HTTP-free and directly testable; handlers take
   the request's Ctx as the query Scope, admin commands and tests a Run.
@@ -680,15 +737,16 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
   job), CID_S3_BUCKET does not exist, and CID_S3_REGION is optional
   (default us-east-1). `cid admin serve` refuses to start without the
   bucket, naming the fix.
-- **External programs allowed:** on the server, `ffmpeg` and `vips` (preview worker),
+- **External programs allowed:** on the server, `ffmpeg` (preview worker; `vips` when
+  PDF page images arrive),
   `git` (dataset repository writer) and OpenSSH `sshd` (front door, runs as its own
   service). In the CLI, the system `ssh` client, exactly as git uses it, plus the
   system `git` for the one `.cid`-marker fetch in `cid clone <git-url>`.
   Call them with explicit arguments, never through a shell, with timeouts and memory
   limits; treat their output as untrusted.
 - **One binary, DuckDB beside it**: client and server are one `cid`, always linked
-  against libduckdb (shipped next to it), for the platforms DuckDB publishes
-  libraries for (Linux x86-64 and arm64, macOS, Windows). No build conditions: a
+  against libduckdb (shipped next to it). Only the Linux x86-64 library is pinned
+  today; other platforms need theirs pinned in `build.zig.zon`. No build conditions: a
   feature never asks whether DuckDB is there. Client code never imports DuckDB, so a
   client-only target could be added later without one. No keychain libraries.
 - `zig fmt`; `snake_case` functions and variables, `PascalCase` types.
@@ -704,7 +762,7 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
 | `cid add` | limited by disk read speed (hashing), 100k small files < 30 s |
 | `cid commit` | < 100 ms, no network |
 | Platform migration, 10M revisions (4 writers, batches as `cid_writer`, server commit per 1M) | < 10 min with progress, resumable (`tests/bench/ingest_10m.sh`: 257 s) |
-| `cid push` | limited by upload speed; server-side recording < 1 s |
+| `cid push` | limited by upload speed; server-side recording < 1 s (today it grows with the bytes uploaded, which the server hashes as it records; a server-side copy is planned) |
 | `cid tag` (write manifest), 1M items or annotations | < 60 s |
 | `cid diff` of two releases, 1M rows each | < 10 s |
 | `cid checkout` between releases | only changed files transferred |
@@ -725,7 +783,7 @@ Full dashboard budgets are in `docs/dashboard.md`.
   for each transaction and inserting a `revision_batches` key with each batch so a
   retry never writes twice (`docs/data-model.md`).
 - For commit, release, branch, merge, diff and export it calls the cid server API
-  (same JSON as `--json`).
+  (`src/server/api.zig` lists every route).
 - It commits when a batch finishes a pipeline stage and tags when someone publishes a
   release in the web app.
 - Restricted datasets use their own database role and row-level security on both sides.

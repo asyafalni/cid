@@ -27,6 +27,10 @@ cid push
 cid tag v1.0.0
 ```
 
+For now, creating a dataset needs the server token (`CID_SERVER` and `CID_TOKEN`) or
+`cid login`; creating one over SSH alone is refused until who may create datasets is
+decided (see [`docs/access.md`](docs/access.md)).
+
 If you know git, you already know cid: `add`, `commit`, `push`, `pull`, `checkout`,
 `status`, `log`, `diff` — same verbs, same meaning.
 
@@ -40,6 +44,19 @@ the first usable release. Design docs: [`CLAUDE.md`](CLAUDE.md) (rules and invar
 
 Stack: CLI and server in Zig; history in TimescaleDB; files in SeaweedFS (S3 API);
 dashboard in React + TypeScript, embedded in the server binary.
+
+## Build
+
+```bash
+pnpm --dir web install
+pnpm --dir web build                          # the dashboard, embedded by zig build
+zig build                                     # the cid binary, libduckdb beside it
+zig build test                                # unit tests, no services
+docker compose -f docker-compose.test.yml up -d
+zig build integration                         # against TimescaleDB + SeaweedFS
+```
+
+More in [`CLAUDE.md`](CLAUDE.md), "Build and test", and [`web/README.md`](web/README.md).
 
 ## Name
 
