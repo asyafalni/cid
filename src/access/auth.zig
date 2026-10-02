@@ -49,7 +49,7 @@ pub const AuthError = error{
     OutOfMemory,
 };
 
-/// Parses SSH_ORIGINAL_COMMAND. Only `cid-auth <dataset> <read|write>`
+/// Parses SSH_ORIGINAL_COMMAND. Only `cid-auth <dataset> <read|write|maintain>`
 /// is accepted; anything else is refused and logged (invariant 22).
 pub fn parseOriginalCommand(original: []const u8, account: []const u8) AuthError!AuthRequest {
     var it = std.mem.tokenizeScalar(u8, original, ' ');
@@ -87,8 +87,8 @@ pub fn authorize(
 
     const granted = blk: {
         const text = have_text orelse break :blk false;
-        // access levels: read < write < maintain; maintain covers write.
-        const have: token_mod.Level = if (std.mem.eql(u8, text, "read")) .read else .write;
+        // The access table's levels are the token levels, one for one.
+        const have = std.meta.stringToEnum(token_mod.Level, text) orelse break :blk false;
         break :blk have.covers(req.level);
     };
     logAuthEvent(db, scope, req, granted);
@@ -112,6 +112,8 @@ fn logAuthEvent(db: *dbx.sql.Db, scope: anytype, req: AuthRequest, granted: bool
 }
 
 test "original command parsing accepts exactly one shape" {
+    const owner = try parseOriginalCommand("cid-auth org/datasets/x maintain", "gitlab:1");
+    try std.testing.expectEqual(token_mod.Level.maintain, owner.level);
     const ok = try parseOriginalCommand("cid-auth org/datasets/x write", "gitlab:1");
     try std.testing.expectEqualStrings("org/datasets/x", ok.dataset);
     try std.testing.expectEqual(token_mod.Level.write, ok.level);

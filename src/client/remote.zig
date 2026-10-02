@@ -9,7 +9,7 @@ const cache_mod = @import("cache.zig");
 const local = @import("local.zig");
 const index_mod = @import("index.zig");
 
-pub const TokenLevel = enum { read, write };
+pub const TokenLevel = enum { read, write, maintain };
 
 pub const Response = struct {
     status: std.http.Status,

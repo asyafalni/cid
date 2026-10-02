@@ -12,9 +12,12 @@
 
 const std = @import("std");
 
+/// Reporter reads, Developer writes (push), Maintainer maintains: tags,
+/// branches, merges and the card. Each covers the ones below it.
 pub const Level = enum {
     read,
     write,
+    maintain,
 
     pub fn covers(self: Level, needed: Level) bool {
         return @intFromEnum(self) >= @intFromEnum(needed);
@@ -132,11 +135,14 @@ test "mint and verify round trip, scoped and expiring" {
     try std.testing.expectError(error.Malformed, verify(arena, secret, "cid1.!!!.x", 999));
 }
 
-test "levels: write covers read, read does not cover write" {
+test "levels: each covers the ones below it, never above" {
     try std.testing.expect(Level.write.covers(.read));
     try std.testing.expect(Level.write.covers(.write));
     try std.testing.expect(Level.read.covers(.read));
     try std.testing.expect(!Level.read.covers(.write));
+    try std.testing.expect(Level.maintain.covers(.write));
+    try std.testing.expect(!Level.write.covers(.maintain));
+    try std.testing.expect(!Level.read.covers(.maintain));
 }
 
 test "datasets with colons are refused at mint time" {

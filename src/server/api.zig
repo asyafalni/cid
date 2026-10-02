@@ -179,17 +179,23 @@ fn handleInner(
     const route = parseDatasetRoute(target) orelse
         return errorResponse(arena, .not_found, "no such route", "Update cid and try again.");
 
-    // Writes need a write-scoped token for this dataset; reads a read one.
-    const needed: token_mod.Level = if (eql(route.action, "push") or
-        eql(route.action, "check-hashes") or eql(route.action, "tag") or
+    // Owners' actions need a maintain-scoped token (Maintainer), writes a
+    // write one (Developer), reads a read one (Reporter).
+    const needed: token_mod.Level = if (eql(route.action, "tag") or
         eql(route.action, "branch") or eql(route.action, "merge") or
+        (eql(method, "PUT") and eql(route.action, "card")))
+        .maintain
+    else if (eql(route.action, "push") or eql(route.action, "check-hashes") or
         eql(route.action, "commit") or eql(route.action, "register-items") or
-        eql(route.action, "policy") or (eql(method, "PUT") and eql(route.action, "card")))
+        eql(route.action, "policy"))
         .write
     else
         .read;
-    if (!authorized(arena, deps, scope, caller, route.name, needed))
+    if (!authorized(arena, deps, scope, caller, route.name, needed)) {
+        if (needed == .maintain and authorized(arena, deps, scope, caller, route.name, .write))
+            return errorResponse(arena, .forbidden, "only the dataset's owners (Maintainers of its project) tag, branch, merge and edit the card", "Ask a Maintainer of the dataset's project to do it, or for the Maintainer role.");
         return errorResponse(arena, .unauthorized, "missing, wrong or expired token for this dataset", "Run the command again; cid fetches a fresh token over SSH. CI: check CID_TOKEN.");
+    }
 
     const ds = lookupDataset(arena, deps, scope, route.name) orelse
         return errorResponse(arena, .not_found, "no such dataset", "Run 'cid init' to create it, or check the address.");
@@ -321,8 +327,7 @@ fn authorized(
     if (caller.account) |account| {
         const level = deps.db.rawOne([]const u8, scope, "SELECT a.level FROM access a JOIN datasets d USING (dataset_id) WHERE d.name = $1 AND a.account_id = $2", .{ dataset, account }) catch return false;
         const have = level orelse return false;
-        // read < write < maintain; maintain covers write.
-        const as: token_mod.Level = if (eql(have, "read")) .read else .write;
+        const as = std.meta.stringToEnum(token_mod.Level, have) orelse return false;
         return as.covers(needed);
     }
     const secret = deps.token_secret orelse return false;
@@ -2347,14 +2352,8 @@ fn cardGet(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) H
 
 const card_max_bytes = 64 * 1024;
 
-/// Owners only (invariant 17): the server token, or a signed-in person
-/// with the Maintainer role on the dataset's project.
+/// Owners only (invariant 17): the route needs the maintain level.
 fn cardPut(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, body: []const u8) HandleError!Response {
-    if (caller.account) |account| {
-        const level = deps.db.rawOne([]const u8, scope, "SELECT level FROM access WHERE dataset_id = $1::uuid AND account_id = $2", .{ ds.id, account }) catch return error.Db;
-        if (level == null or !eql(level.?, "maintain"))
-            return errorResponse(arena, .forbidden, "only the dataset's owners (Maintainers of its project) edit its card", "Ask a Maintainer of the dataset's project.");
-    }
     if (body.len > card_max_bytes)
         return errorResponse(arena, .payload_too_large, "a card is at most 64 KB", "Shorten the card, then save it again.");
     const Body = struct { card: std.json.Value };

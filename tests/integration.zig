@@ -1108,6 +1108,20 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
     const check_ok = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/access/-/check-hashes", write_auth, "{\"hashes\":[]}");
     try std.testing.expectEqual(std.http.Status.ok, check_ok.status);
 
+    // Owners' actions need the maintain level: a Developer's token is
+    // told who can (403), and the forced command will not mint maintain
+    // for a Developer.
+    for ([_][]const u8{ "tag", "branch", "merge" }) |action| {
+        const res = cid.api.handle(arena, &deps, &scope, "POST", try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/access/-/{s}", .{action}), write_auth, "{}");
+        try std.testing.expectEqual(std.http.Status.forbidden, res.status);
+        try std.testing.expect(std.mem.indexOf(u8, res.body, "Maintainer") != null);
+    }
+    const wade_maintain = try cid.access.auth.parseOriginalCommand("cid-auth test/datasets/access maintain", "gitlab:7002");
+    try std.testing.expectError(error.AccessDenied, cid.access.auth.authorize(arena, ndb, &scope, secret, "x", now, wade_maintain));
+    const owner_token = try cid.access.token.mint(arena, secret, .{ .expiry_unix = now + 60, .level = .maintain, .account = "gitlab:7002", .dataset = "test/datasets/access" });
+    const owner_tag = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/access/-/tag", try std.fmt.allocPrint(arena, "Bearer {s}", .{owner_token}), "{}");
+    try std.testing.expect(owner_tag.status != .forbidden and owner_tag.status != .unauthorized);
+
     const other_ds = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/sync/-/head", read_auth, "");
     try std.testing.expectEqual(std.http.Status.unauthorized, other_ds.status);
     const garbage = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/access/-/head", "Bearer cid1.not.real", "");

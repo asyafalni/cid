@@ -14,7 +14,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         return common.fail(ctx, .usage, common.not_a_dataset_msg, .{});
     const dataset = workspace.datasetPathOf(ws.config.address) orelse
         return common.fail(ctx, .integrity, ".cid/config.zon holds a broken address. Clone again, or fix it to cid@host:org/path.", .{});
-    const remote = common.remoteFor(ctx, dataset, .write, ws.config.address) catch |err|
+    const remote = common.remoteFor(ctx, dataset, .maintain, ws.config.address) catch |err|
         return common.noRemote(ctx, err, "cid merge");
 
     const author = common.author(ctx) catch return .network;

@@ -21,7 +21,8 @@ redirects old paths (see `dataset_names`) and the CLI prints the new address onc
 The same pattern Git LFS uses over SSH:
 
 1. The CLI runs the system `ssh` program (so `~/.ssh/config`, agents and hardware keys
-   all work): `ssh cid@cidhub.com cid-auth <dataset-path> <read|write>`.
+   all work): `ssh cid@cidhub.com cid-auth <dataset-path> <read|write|maintain>`: `read` for
+   clone, pull and checkout, `write` for push, `maintain` for tag, branch and merge.
 2. On the server, OpenSSH asks cid which account owns that key
    (`AuthorizedKeysCommand`), and runs only cid's restricted command (forced command:
    no shell, no port forwarding, no terminal).
@@ -66,8 +67,11 @@ deletes it.
 
 - SSH is used only to authenticate and hand out tokens; data never flows over the SSH
   connection.
-- The forced command accepts only `cid-auth` with a dataset path and `read` or
-  `write`; anything else is refused and logged.
+- The forced command accepts only `cid-auth` with a dataset path and `read`, `write`
+  or `maintain`; anything else is refused and logged. Each level is granted only to
+  the matching GitLab role or above (Reporter, Developer, Maintainer), and each covers
+  the ones below it. A Developer asking to tag is refused at the front door, and a
+  write token sent to an owner's route gets a 403 that says only Maintainers can.
 - Tokens are scoped to one dataset and one access level, expire in 15 minutes, and
   are never written to disk by the CLI (the `cid login` credentials file is the one
   exception, for SSH-less machines).

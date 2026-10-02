@@ -195,6 +195,13 @@ echo "a reporter's edit" > reporter.txt
 expect_ok   "a Reporter commits locally"         by_key "$CID" add reporter.txt
 expect_ok   "and that is local"                  by_key "$CID" commit -m "reporter"
 expect_code 5 "a Reporter cannot push"           by_key "$CID" push
+expect_ok   "Developer access"                   "$CID" admin grant "$DS" gitlab:9001 write
+expect_ok   "catch up with main (replays the commit)" by_key "$CID" pull
+expect_ok   "a Developer pushes"                 by_key "$CID" push
+expect_code 5 "a Developer cannot make a release" by_key "$CID" tag v9.0.0
+expect_code 5 "a Developer cannot branch"        by_key "$CID" branch dev-branch
+expect_ok   "Maintainer access"                  "$CID" admin grant "$DS" gitlab:9001 maintain
+expect_ok   "a Maintainer makes a release"       by_key "$CID" tag v9.0.0
 
 # --- offline work, and the exit codes ------------------------------------------
 cd "$WORK/producer"
@@ -204,6 +211,7 @@ DOWN='http://127.0.0.1:9'
 expect_ok   "add with the server unreachable"    env CID_SERVER="$DOWN" "$CID" add off.txt
 expect_ok   "commit with the server unreachable" env CID_SERVER="$DOWN" "$CID" commit -m "offline"
 expect_code 4 "push with the server unreachable" env CID_SERVER="$DOWN" "$CID" push
+expect_ok   "pull what others pushed meanwhile"  "$CID" pull
 expect_ok   "push once the server is back"       "$CID" push
 expect_code 5 "a token the server refuses"       env CID_TOKEN=wrong "$CID" pull
 # Bytes damaged in storage never reach a folder: a fresh cache downloads,
