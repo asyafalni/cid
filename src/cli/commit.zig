@@ -32,6 +32,8 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
 
     var ws = common.openWorkspace(ctx) catch
         return common.fail(ctx, .usage, common.not_a_dataset_msg, .{});
+    if (workspace.readOnlyReason(ctx.arena, ws.config)) |why|
+        return common.fail(ctx, .usage, "{s}", .{why});
 
     if (stage_all) {
         const cache_dir = common.openCacheDir(ctx) catch

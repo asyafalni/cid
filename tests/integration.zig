@@ -451,7 +451,7 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     defer reader_dir.cleanup();
     var reader_cache = std.testing.tmpDir(.{});
     defer reader_cache.cleanup();
-    const cloned = try cid.client.sync.clone(arena, io, reader_dir.dir, reader_cache.dir, &remote, "cid@test:test/datasets/sync", null, null);
+    const cloned = try cid.client.sync.clone(arena, io, reader_dir.dir, reader_cache.dir, &remote, "cid@test:test/datasets/sync", null, null, .{});
     try std.testing.expectEqual(@as(u32, 2), cloned.files);
     try std.testing.expectEqual(@as(u32, 2), cloned.downloaded);
     try std.testing.expectEqualSlices(u8, "version one of a\n", try readWholeFile(io, reader_dir.dir, "a.txt", arena));
@@ -1012,7 +1012,7 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
     defer worker.cleanup();
     var wcache = std.testing.tmpDir(.{});
     defer wcache.cleanup();
-    _ = try cid.client.sync.clone(arena, io, worker.dir, wcache.dir, &remote, "cid@test:test/datasets/br", null, null);
+    _ = try cid.client.sync.clone(arena, io, worker.dir, wcache.dir, &remote, "cid@test:test/datasets/br", null, null, .{});
     var wws = try cid.client.workspace.open(arena, io, worker.dir);
 
     // Switch to the branch: the base files are all there (composed state).
@@ -1546,7 +1546,7 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     defer jl_dir.cleanup();
     var cache = std.testing.tmpDir(.{});
     defer cache.cleanup();
-    const jl = try cid.client.sync.clone(arena, io, jl_dir.dir, cache.dir, &remote, "cid@test:test/datasets/fmt", null, "jsonl");
+    const jl = try cid.client.sync.clone(arena, io, jl_dir.dir, cache.dir, &remote, "cid@test:test/datasets/fmt", null, "jsonl", .{});
     try std.testing.expectEqual(@as(u32, 1), jl.files);
     try std.testing.expectEqualSlices(u8, pix, try readWholeFile(io, jl_dir.dir, "img/a.jpg", arena));
     const jl_text = try readWholeFile(io, jl_dir.dir, "annotations.jsonl", arena);
@@ -1561,7 +1561,7 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     // Clone as yolo: labels, classes, split list, dataset.yaml.
     var yo_dir = std.testing.tmpDir(.{ .iterate = true });
     defer yo_dir.cleanup();
-    _ = try cid.client.sync.clone(arena, io, yo_dir.dir, cache.dir, &remote, "cid@test:test/datasets/fmt", null, "yolo");
+    _ = try cid.client.sync.clone(arena, io, yo_dir.dir, cache.dir, &remote, "cid@test:test/datasets/fmt", null, "yolo", .{});
     try std.testing.expectEqualStrings("person\n", try readWholeFile(io, yo_dir.dir, "classes.txt", arena));
     try std.testing.expectEqualStrings(
         "0 0.100000 0.200000 0.100000 0.200000\n",
@@ -1593,6 +1593,37 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     try std.testing.expectEqualStrings("person\nvehicle\n", try readWholeFile(io, yo_dir.dir, "classes.txt", arena));
     const label2 = try readWholeFile(io, yo_dir.dir, "labels/img/a.txt", arena);
     try std.testing.expect(std.mem.indexOf(u8, label2, "1 0.250000 0.250000 0.500000 0.500000") != null);
+
+    // A subset clone: --class vehicle keeps the frame (it carries one) and
+    // narrows its labels to vehicle, which becomes class 0 of its own map.
+    var sub_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer sub_dir.cleanup();
+    const sub = try cid.client.sync.clone(arena, io, sub_dir.dir, cache.dir, &remote, "cid@test:test/datasets/fmt", null, "yolo", .{
+        .split = &.{"train"},
+        .class = &.{"vehicle"},
+    });
+    try std.testing.expectEqual(@as(u32, 1), sub.files);
+    try std.testing.expectEqual(@as(u32, 1), sub.total);
+    try std.testing.expectEqualStrings("vehicle\n", try readWholeFile(io, sub_dir.dir, "classes.txt", arena));
+    const sub_label = try readWholeFile(io, sub_dir.dir, "labels/img/a.txt", arena);
+    try std.testing.expectEqualStrings("0 0.250000 0.250000 0.500000 0.500000\n", sub_label);
+
+    // The folder remembers the subset, refuses to record changes, and a
+    // pull keeps the same shape.
+    var sub_ws = try cid.client.workspace.open(arena, io, sub_dir.dir);
+    try std.testing.expectEqualStrings("vehicle", sub_ws.config.class[0]);
+    try std.testing.expect(cid.client.workspace.readOnlyReason(arena, sub_ws.config) != null);
+    const sub_pulled = try cid.client.sync.pull(arena, io, &sub_ws, cache.dir, &remote);
+    try std.testing.expect(sub_pulled == .already_up_to_date);
+    try std.testing.expectEqualStrings("vehicle\n", try readWholeFile(io, sub_dir.dir, "classes.txt", arena));
+
+    // A subset nothing matches is refused before a folder is written.
+    var none_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer none_dir.cleanup();
+    try std.testing.expectError(error.EmptySubset, cid.client.sync.clone(arena, io, none_dir.dir, cache.dir, &remote, "cid@test:test/datasets/fmt", null, "yolo", .{
+        .split = &.{"val"},
+    }));
+    try std.testing.expectError(error.NotADataset, cid.client.workspace.open(arena, io, none_dir.dir));
 }
 
 test "annotated git writer: classes.yaml, policy.md and per-class stats land" {

@@ -16,7 +16,71 @@ pub const Config = struct {
     kind: []const u8 = "files",
     /// The export format this folder was cloned with ('files' = plain tree).
     format: []const u8 = "files",
+    /// A subset clone keeps only items in these splits (empty: all).
+    split: []const []const u8 = &.{},
+    /// …and, in annotated datasets, only items carrying one of these
+    /// classes, with annotations narrowed to them (empty: all).
+    class: []const []const u8 = &.{},
 };
+
+/// What `cid clone --split/--class` asked for. Recorded in config.zon so
+/// `pull` and `checkout` keep the folder the same shape.
+pub const Subset = struct {
+    split: []const []const u8 = &.{},
+    class: []const []const u8 = &.{},
+
+    pub fn active(self: Subset) bool {
+        return self.split.len > 0 or self.class.len > 0;
+    }
+
+    pub fn of(config: Config) Subset {
+        return .{ .split = config.split, .class = config.class };
+    }
+
+    /// "split train · class person, vehicle", for status and clone.
+    pub fn describe(self: Subset, arena: std.mem.Allocator) ![]const u8 {
+        var out: std.ArrayList(u8) = .empty;
+        if (self.split.len > 0) {
+            try out.appendSlice(arena, "split ");
+            try joinInto(arena, &out, self.split);
+        }
+        if (self.class.len > 0) {
+            if (out.items.len > 0) try out.appendSlice(arena, " \xc2\xb7 ");
+            try out.appendSlice(arena, "class ");
+            try joinInto(arena, &out, self.class);
+        }
+        return out.items;
+    }
+
+    fn joinInto(arena: std.mem.Allocator, out: *std.ArrayList(u8), values: []const []const u8) !void {
+        for (values, 0..) |v, i| {
+            if (i > 0) try out.appendSlice(arena, ", ");
+            try out.appendSlice(arena, v);
+        }
+    }
+};
+
+/// Why this folder cannot record changes, or null when it can. An
+/// annotated export is generated from the platform's annotations, and a
+/// subset holds only part of the tree, so a commit from it would read the
+/// files it left out as deleted. Both stay current through 'cid pull'.
+pub fn readOnlyReason(arena: std.mem.Allocator, config: Config) ?[]const u8 {
+    const subset = Subset.of(config);
+    if (subset.active()) {
+        const what = subset.describe(arena) catch "a subset";
+        return std.fmt.allocPrint(
+            arena,
+            "This folder is a subset ({s}), so it cannot record changes: the files it left out would look deleted. Run 'cid pull' to update it, or clone without --split/--class to change the dataset.",
+            .{what},
+        ) catch "This folder is a subset, so it cannot record changes. Run 'cid pull' to update it.";
+    }
+    // Annotated datasets change only in the platform (CLAUDE.md, two
+    // kinds of dataset), whatever format the folder was cloned in.
+    if (std.mem.eql(u8, config.kind, "annotated")) {
+        return "This is an export of an annotated dataset. Annotations change in the annotation platform; run 'cid pull' to update.";
+    }
+    return null;
+}
 
 pub const Workspace = struct {
     work_dir: std.Io.Dir,
@@ -53,7 +117,7 @@ pub fn init(
     address: []const u8,
     git_url: []const u8,
 ) InitError!void {
-    return initFull(arena, io, dir, address, git_url, "files", "files");
+    return initFull(arena, io, dir, address, git_url, "files", "files", .{});
 }
 
 pub fn initFull(
@@ -64,6 +128,7 @@ pub fn initFull(
     git_url: []const u8,
     kind: []const u8,
     format: []const u8,
+    subset: Subset,
 ) InitError!void {
     if (datasetPathOf(address) == null) return error.BadAddress;
     if (dir.access(io, ".cid", .{})) |_| return error.AlreadyADataset else |_| {}
@@ -74,7 +139,14 @@ pub fn initFull(
 
     var config_buf: std.ArrayList(u8) = .empty;
     var aw: std.Io.Writer.Allocating = .init(arena);
-    std.zon.stringify.serialize(Config{ .address = address, .git_url = git_url, .kind = kind, .format = format }, .{}, &aw.writer) catch
+    std.zon.stringify.serialize(Config{
+        .address = address,
+        .git_url = git_url,
+        .kind = kind,
+        .format = format,
+        .split = subset.split,
+        .class = subset.class,
+    }, .{}, &aw.writer) catch
         return error.InitFailed;
     config_buf.appendSlice(arena, aw.writer.buffered()) catch return error.InitFailed;
     config_buf.append(arena, '\n') catch return error.InitFailed;
@@ -615,4 +687,22 @@ test "init, add, commit, status: the offline loop" {
     try std.testing.expectEqual(@as(usize, 0), st.unstaged_modified.len);
     try std.testing.expectEqual(@as(usize, 0), st.unstaged_deleted.len);
     try std.testing.expectEqual(@as(u32, 2), st.local_commits);
+}
+
+test "a subset describes itself, and makes its folder read-only" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const both: Subset = .{ .split = &.{"train"}, .class = &.{ "person", "vehicle" } };
+    try std.testing.expectEqualStrings("split train \xc2\xb7 class person, vehicle", try both.describe(arena));
+    try std.testing.expect(!(Subset{}).active());
+
+    const full: Config = .{ .address = "cid@h:o/d", .git_url = "g" };
+    try std.testing.expect(readOnlyReason(arena, full) == null);
+    const sub: Config = .{ .address = "cid@h:o/d", .git_url = "g", .split = &.{"val"} };
+    try std.testing.expect(std.mem.indexOf(u8, readOnlyReason(arena, sub).?, "split val") != null);
+    try std.testing.expect(std.mem.indexOf(u8, readOnlyReason(arena, sub).?, "Run 'cid pull'") != null);
+    const ann: Config = .{ .address = "cid@h:o/d", .git_url = "g", .kind = "annotated", .format = "files" };
+    try std.testing.expect(std.mem.startsWith(u8, readOnlyReason(arena, ann).?, "This is an export of an annotated dataset."));
 }

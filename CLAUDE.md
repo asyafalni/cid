@@ -186,7 +186,8 @@ then `cid pull --continue`; `cid merge` conflicts resolve the same way, then
 
 Engineers use the reading commands above.
 `cid clone cid@cidhub.com:your-org/datasets/person-vehicle` gives a ready-to-train
-folder in the dataset's default format; `--format coco` for another. In such a clone,
+folder in the dataset's default format; `--format coco` for another, and
+`--split train --class person` for just part of it. In such a clone,
 `cid add` refuses with: `This is an export of an annotated dataset. Annotations change
 in the annotation platform; run 'cid pull' to update.` The platform does commits and
 releases through the server API, and must give the dataset's git repository URL at
@@ -438,7 +439,7 @@ Everyday (shown by `cid help`):
 
 | Command | Does |
 |---|---|
-| `cid clone <address\|git-url> [--release v] [--format f]` | Download into a new folder. No login: your SSH key is your identity |
+| `cid clone <address\|git-url> [--release v] [--format f] [--split s] [--class c]` | Download into a new folder. No login: your SSH key is your identity. `--split`/`--class` (repeatable) keep only matching items — and, for classes, only those classes' annotations; the folder remembers the subset, `pull` keeps it, and it is read-only |
 | `cid pull` | Get new commits and releases; replays unpushed commits on top, or lists conflicts |
 | `cid checkout <release\|branch>` | Switch the folder to another release or branch; `--mine`/`--theirs <path>` resolves a listed conflict |
 | `cid status` | Current version, staged and unstaged changes, unpushed commits, newer versions |

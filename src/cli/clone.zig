@@ -9,6 +9,8 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     var positional: std.ArrayList([]const u8) = .empty;
     var release: ?[]const u8 = null;
     var format: ?[]const u8 = null;
+    var splits: std.ArrayList([]const u8) = .empty;
+    var classes: std.ArrayList([]const u8) = .empty;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--release")) {
@@ -21,6 +23,15 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
             if (!std.mem.eql(u8, f, "files") and !std.mem.eql(u8, f, "jsonl") and !std.mem.eql(u8, f, "yolo"))
                 return common.fail(ctx, .usage, "this build knows the formats files, jsonl and yolo. Run 'cid clone <address> --format jsonl'.", .{});
             format = f;
+        } else if (std.mem.eql(u8, args[i], "--split") or std.mem.eql(u8, args[i], "--class")) {
+            const flag = args[i];
+            i += 1;
+            if (i >= args.len or args[i].len == 0)
+                return common.fail(ctx, .usage, "{s} needs a name. Run 'cid clone <address> {s} {s}'.", .{
+                    flag, flag, if (std.mem.eql(u8, flag, "--split")) "train" else "person",
+                });
+            const list = if (std.mem.eql(u8, flag, "--split")) &splits else &classes;
+            list.append(ctx.arena, args[i]) catch return .network;
         } else {
             positional.append(ctx.arena, args[i]) catch return .network;
         }
@@ -54,7 +65,49 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     const remote = common.remoteFor(ctx, name, .read, address) catch
         return common.fail(ctx, .usage, common.no_server_msg, .{});
 
-    const outcome = sync.clone(ctx.arena, ctx.io, dest_dir, cache_dir, remote, address, release, format) catch |err| switch (err) {
+    const subset: workspace.Subset = .{ .split = splits.items, .class = classes.items };
+    const outcome = sync.clone(ctx.arena, ctx.io, dest_dir, cache_dir, remote, address, release, format, subset) catch |err| {
+        // The folder was made by this command and holds nothing worth
+        // keeping; leaving it would make the retry say it already exists.
+        cwd.deleteTree(ctx.io, dest) catch {};
+        return cloneFailed(ctx, err, name, release, format, subset);
+    };
+
+    if (subset.active()) {
+        const what = subset.describe(ctx.arena) catch return .network;
+        ctx.out.print("Cloned {s}{s}{s} into {s}/: {d} of {d} item{s} ({s}), {d} downloaded, the rest from the local cache.\n", .{
+            name,
+            if (outcome.release != null) " at release " else "",
+            outcome.release orelse "",
+            dest,
+            outcome.files,
+            outcome.total,
+            plural(outcome.total),
+            what,
+            outcome.downloaded,
+        }) catch return .network;
+        return .ok;
+    }
+    return reportClone(ctx, name, dest, outcome);
+}
+
+fn cloneFailed(
+    ctx: *const common.Context,
+    err: sync.Error,
+    name: []const u8,
+    release: ?[]const u8,
+    format: ?[]const u8,
+    subset: workspace.Subset,
+) common.ExitCode {
+    switch (err) {
+        error.ClassOnFileDataset => return common.fail(ctx, .usage, "'{s}' is a file dataset: it has no classes to choose. Run 'cid clone' with --split instead, or without --class.", .{name}),
+        error.EmptySubset => {
+            const what = subset.describe(ctx.arena) catch "that subset";
+            return common.fail(ctx, .usage, "no item matches {s} at this version. Check the names in the dashboard's Browse filters, or run 'cid clone' without --split/--class.", .{what});
+        },
+        else => {},
+    }
+    switch (err) {
         error.NoSuchRelease => return common.fail(ctx, .usage, "no release named '{s}'. Leave --release off for the newest, or ask the owner which releases exist.", .{release.?}),
         error.ExportFailed => return common.fail(ctx, .integrity, "the {s} export could not be built (see the warning above for the file). Fix it in the platform, or clone with --format files.", .{format orelse "requested"}),
         error.NoSuchDataset => return common.fail(ctx, .usage, "no dataset '{s}' on the server. Check the address, or run 'cid init' in the producing folder to create it.", .{name}),
@@ -62,8 +115,10 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server. Check CID_SERVER, then run 'cid clone' again.", .{}),
         error.TransferFailed => return common.fail(ctx, .integrity, "a download failed its hash check or the connection broke. Run 'cid clone' again.", .{}),
         else => return common.fail(ctx, .network, "clone failed. Fix the cause above, then run 'cid clone' again.", .{}),
-    };
+    }
+}
 
+fn reportClone(ctx: *const common.Context, name: []const u8, dest: []const u8, outcome: sync.CloneOutcome) common.ExitCode {
     if (outcome.release) |rel| {
         ctx.out.print("Cloned {s} at release {s} into {s}/: {d} file{s} ({d} downloaded, the rest from the local cache).\n", .{
             name, rel, dest, outcome.files, plural(outcome.files), outcome.downloaded,

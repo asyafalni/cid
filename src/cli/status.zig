@@ -14,6 +14,11 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
 
     const out = ctx.out;
     print(out, st) catch return .network;
+    const subset = workspace.Subset.of(ws.config);
+    if (subset.active()) {
+        const what = subset.describe(ctx.arena) catch return .network;
+        out.print("Subset: {s} (read-only; 'cid pull' keeps it current)\n", .{what}) catch return .network;
+    }
 
     if (sync.pendingConflicts(ctx.arena, ctx.io, &ws)) |conflicts| {
         var undecided: usize = 0;

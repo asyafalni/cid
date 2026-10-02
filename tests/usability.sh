@@ -14,6 +14,9 @@ export CID_S3_ENDPOINT='http://127.0.0.1:8333'
 export CID_S3_ACCESS_KEY='cid-test-key' CID_S3_SECRET_KEY='cid-test-secret'
 export CID_TOKEN='usability-token' CID_SERVER="http://127.0.0.1:$PORT"
 export CID_AUTHOR='user:usability'
+# A dataset of its own per run: the server keeps history forever, so a
+# fixed name would meet the previous run's pushes and refuse this one's.
+DS="usability/datasets/demo-$(date +%s)-$$"
 
 fails=0
 say() { printf '%s\n' "$*"; }
@@ -57,7 +60,7 @@ expect_hint "init without --git"              "$CID" init cid@h:org/datasets/u
 expect_hint "init with a broken address"      "$CID" init not-an-address --git g@h:x.git
 
 # --- the happy everyday loop -------------------------------------------------
-expect_ok   "init"    "$CID" init "cid@127.0.0.1:usability/datasets/demo" --git g@h:u.git
+expect_ok   "init"    "$CID" init "cid@127.0.0.1:$DS" --git g@h:u.git
 expect_hint "init twice"                      "$CID" init cid@h:a/b --git g@h:x.git
 expect_hint "add with nothing named"          "$CID" add
 expect_hint "add with an unmatched path"      "$CID" add nope.txt
@@ -82,9 +85,13 @@ expect_ok   "tag v1.1.0" "$CID" tag v1.1.0
 
 # --- reading elsewhere -------------------------------------------------------
 cd "$WORK"
-expect_ok   "clone (gets the newest release)" "$CID" clone "cid@127.0.0.1:usability/datasets/demo" reader
-expect_hint "clone onto an existing folder"   "$CID" clone "cid@127.0.0.1:usability/datasets/demo" reader
+expect_ok   "clone (gets the newest release)" "$CID" clone "cid@127.0.0.1:$DS" reader
+expect_hint "clone onto an existing folder"   "$CID" clone "cid@127.0.0.1:$DS" reader
 expect_hint "clone a dataset that is not there" "$CID" clone "cid@127.0.0.1:usability/datasets/nope"
+expect_hint "--class on a file dataset"       "$CID" clone "cid@127.0.0.1:$DS" sub1 --class person
+expect_hint "a subset that matches nothing"   "$CID" clone "cid@127.0.0.1:$DS" sub2 --split train
+if [ -e sub2 ]; then say "FAIL: a refused clone left its folder behind"; fails=$((fails+1)); else say "ok: a refused clone leaves no folder"; fi
+expect_hint "--split with no name"            "$CID" clone "cid@127.0.0.1:$DS" sub3 --split
 cd reader
 expect_ok   "checkout an older release"       "$CID" checkout v1.0.0
 expect_hint "checkout something unknown"      "$CID" checkout v9.9.9

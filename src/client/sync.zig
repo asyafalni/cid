@@ -22,6 +22,10 @@ pub const Error = error{
     EmptyDataset,
     NoSuchRelease,
     ExportFailed,
+    /// `--class` on a file dataset, which has no structured annotations.
+    ClassOnFileDataset,
+    /// A subset that matches no item at the chosen position.
+    EmptySubset,
     UnpushedCommits,
     StagedChanges,
     LocalChangesInTheWay,
@@ -99,6 +103,9 @@ pub const CloneOutcome = struct {
     head_commit: []const u8,
     /// The release the folder sits at, when one was used.
     release: ?[]const u8,
+    /// Items at that position before a subset was taken; equals `files`
+    /// for a full clone.
+    total: u32,
 };
 
 /// Fills an empty folder and writes `.cid/`. The default is the newest
@@ -113,8 +120,10 @@ pub fn clone(
     address: []const u8,
     want_release: ?[]const u8,
     want_format: ?[]const u8,
+    subset: workspace.Subset,
 ) Error!CloneOutcome {
     const info = try remote.info(arena);
+    if (subset.class.len > 0 and !std.mem.eql(u8, info.kind, "annotated")) return error.ClassOnFileDataset;
     const format: []const u8 = want_format orelse
         (if (std.mem.eql(u8, info.kind, "annotated")) info.default_format else "files");
     const head_commit = (try remote.head(arena, "main")) orelse return error.EmptyDataset;
@@ -136,9 +145,11 @@ pub fn clone(
         at_release = releases[0].name;
     }
 
-    const items = try remote.state(arena, at_commit);
+    const position = try subsetItems(arena, remote, subset, at_commit);
+    const items = position.items;
+    if (items.len == 0 and subset.active()) return error.EmptySubset;
 
-    workspace.initFull(arena, io, dest_dir, address, info.git_url, info.kind, format) catch
+    workspace.initFull(arena, io, dest_dir, address, info.git_url, info.kind, format, subset) catch
         return error.CorruptLocalState;
     var ws = workspace.open(arena, io, dest_dir) catch return error.CorruptLocalState;
 
@@ -149,7 +160,13 @@ pub fn clone(
     // Server history reaches the branch head even when the folder sits at
     // an older release; 'cid pull' moves up to it.
     local.writeLastPushed(io, ws.cid_dir, head_commit) catch return error.CorruptLocalState;
-    return .{ .files = @intCast(items.len), .downloaded = downloaded, .head_commit = at_commit, .release = at_release };
+    return .{
+        .files = @intCast(items.len),
+        .total = @intCast(position.total),
+        .downloaded = downloaded,
+        .head_commit = at_commit,
+        .release = at_release,
+    };
 }
 
 pub const PullOutcome = union(enum) {
@@ -188,7 +205,7 @@ pub fn pull(
         return error.CorruptLocalState;
 
     if (unpushed_newest_first.len == 0) {
-        const items = try remote.state(arena, server_head);
+        const items = (try subsetItems(arena, remote, workspace.Subset.of(ws.config), server_head)).items;
         const changed = try materialize(arena, io, ws, cache_dir, remote, items);
         try generateExport(arena, io, ws, remote, server_head);
         try setPosition(io, ws, head.branch, server_head);
@@ -413,13 +430,83 @@ pub fn checkout(
         return error.CorruptLocalState;
     if (unpushed.len > 0) return error.UnpushedCommits;
 
-    const items = try remote.state(arena, commit_id);
+    const items = (try subsetItems(arena, remote, workspace.Subset.of(ws.config), commit_id)).items;
     const changed = try materialize(arena, io, ws, cache_dir, remote, items);
     try generateExport(arena, io, ws, remote, commit_id);
     try setPosition(io, ws, branch, commit_id);
     if (move_root)
         local.writeLastPushed(io, ws.cid_dir, commit_id) catch return error.CorruptLocalState;
     return changed;
+}
+
+const Position = struct {
+    items: []const remote_mod.Remote.StateItem,
+    /// Items at the position before the subset was taken.
+    total: usize,
+};
+
+/// The items a folder holds at `commit_id`: all of them, or the subset
+/// its config names. Filtering happens here, before any download, so a
+/// subset clone fetches only what it keeps.
+fn subsetItems(
+    arena: std.mem.Allocator,
+    remote: *const Remote,
+    subset: workspace.Subset,
+    commit_id: []const u8,
+) Error!Position {
+    if (subset.class.len == 0) {
+        const all = try remote.state(arena, commit_id);
+        if (subset.split.len == 0) return .{ .items = all, .total = all.len };
+        var kept: std.ArrayList(remote_mod.Remote.StateItem) = .empty;
+        for (all) |item| if (inSplit(subset, item)) try kept.append(arena, item);
+        return .{ .items = kept.items, .total = all.len };
+    }
+    const state = try remote.stateAnnotated(arena, commit_id);
+    const narrowed = narrow(arena, subset, state) catch return error.OutOfMemory;
+    return .{ .items = narrowed.items, .total = state.items.len };
+}
+
+/// A subset applied to an annotated state: items in the split that carry
+/// at least one of the classes, and only those classes' annotations.
+fn narrow(
+    arena: std.mem.Allocator,
+    subset: workspace.Subset,
+    state: remote_mod.Remote.AnnotatedState,
+) !remote_mod.Remote.AnnotatedState {
+    if (!subset.active()) return state;
+
+    var anns: std.ArrayList(remote_mod.Remote.Annotation) = .empty;
+    var carrying: std.StringHashMapUnmanaged(void) = .empty;
+    for (state.annotations) |ann| {
+        if (subset.class.len > 0 and !inList(subset.class, ann.class orelse "")) continue;
+        try anns.append(arena, ann);
+        try carrying.put(arena, ann.item_id, {});
+    }
+    var items: std.ArrayList(remote_mod.Remote.StateItem) = .empty;
+    for (state.items) |item| {
+        if (!inSplit(subset, item)) continue;
+        if (subset.class.len > 0) {
+            const id = item.item_id orelse continue;
+            if (!carrying.contains(id)) continue;
+        }
+        try items.append(arena, item);
+    }
+    // Annotations of items the split removed go too.
+    var kept_ids: std.StringHashMapUnmanaged(void) = .empty;
+    for (items.items) |item| if (item.item_id) |id| try kept_ids.put(arena, id, {});
+    var final: std.ArrayList(remote_mod.Remote.Annotation) = .empty;
+    for (anns.items) |ann| if (kept_ids.contains(ann.item_id)) try final.append(arena, ann);
+    return .{ .items = items.items, .annotations = final.items };
+}
+
+fn inSplit(subset: workspace.Subset, item: remote_mod.Remote.StateItem) bool {
+    if (subset.split.len == 0) return true;
+    return inList(subset.split, item.split orelse return false);
+}
+
+fn inList(list: []const []const u8, value: []const u8) bool {
+    for (list) |v| if (std.mem.eql(u8, v, value)) return true;
+    return false;
 }
 
 /// Brings the working folder and tracked tree to exactly `items`:
@@ -519,7 +606,8 @@ fn generateExport(
     if (!std.mem.eql(u8, ws.config.kind, "annotated")) return;
     if (std.mem.eql(u8, ws.config.format, "files")) return;
 
-    const state = try remote.stateAnnotated(arena, commit_id);
+    const state = narrow(arena, workspace.Subset.of(ws.config), try remote.stateAnnotated(arena, commit_id)) catch
+        return error.OutOfMemory;
 
     // Link annotations to their items by item_id.
     var by_item: std.StringArrayHashMapUnmanaged(std.ArrayList(remote_mod.Remote.Annotation)) = .empty;
@@ -622,4 +710,48 @@ fn saveTracked(arena: std.mem.Allocator, io: std.Io, ws: *workspace.Workspace, t
     var aw: std.Io.Writer.Allocating = .init(arena);
     try tracked.serialize(&aw.writer);
     try local.writeFileAtomic(io, ws.cid_dir, "tracked", aw.writer.buffered());
+}
+
+test "a subset keeps items in its split carrying its classes, and only those annotations" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const Item = remote_mod.Remote.StateItem;
+    const Ann = remote_mod.Remote.Annotation;
+
+    const items = [_]Item{
+        .{ .path = "a.png", .hash = "h1", .size = 1, .split = "train", .item_id = "i1" },
+        .{ .path = "b.png", .hash = "h2", .size = 1, .split = "val", .item_id = "i2" },
+        .{ .path = "c.png", .hash = "h3", .size = 1, .split = "train", .item_id = "i3" },
+        .{ .path = "d.png", .hash = "h4", .size = 1, .split = null, .item_id = "i4" },
+    };
+    const anns = [_]Ann{
+        .{ .id = "a1", .item_id = "i1", .class = "person", .author = "x", .policy_ver = "p" },
+        .{ .id = "a2", .item_id = "i1", .class = "vehicle", .author = "x", .policy_ver = "p" },
+        .{ .id = "a3", .item_id = "i2", .class = "person", .author = "x", .policy_ver = "p" },
+        .{ .id = "a4", .item_id = "i3", .class = "vehicle", .author = "x", .policy_ver = "p" },
+    };
+    const state: remote_mod.Remote.AnnotatedState = .{ .items = &items, .annotations = &anns };
+
+    // split train + class person: only a.png, with only its person box.
+    const both = try narrow(arena, .{ .split = &.{"train"}, .class = &.{"person"} }, state);
+    try std.testing.expectEqual(@as(usize, 1), both.items.len);
+    try std.testing.expectEqualStrings("a.png", both.items[0].path);
+    try std.testing.expectEqual(@as(usize, 1), both.annotations.len);
+    try std.testing.expectEqualStrings("a1", both.annotations[0].id);
+
+    // split only: train items, all their annotations; an item with no
+    // split is outside every named split.
+    const split = try narrow(arena, .{ .split = &.{"train"} }, state);
+    try std.testing.expectEqual(@as(usize, 2), split.items.len);
+    try std.testing.expectEqual(@as(usize, 3), split.annotations.len);
+
+    // class only: items carrying it, in any split; unlabelled d.png gone.
+    const cls = try narrow(arena, .{ .class = &.{"vehicle"} }, state);
+    try std.testing.expectEqual(@as(usize, 2), cls.items.len);
+    try std.testing.expectEqual(@as(usize, 2), cls.annotations.len);
+
+    // No subset: the state, untouched.
+    const none = try narrow(arena, .{}, state);
+    try std.testing.expectEqual(@as(usize, 4), none.items.len);
 }
