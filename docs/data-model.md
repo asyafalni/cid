@@ -196,20 +196,41 @@ CREATE TABLE refs (
 );
 ```
 
-**The cutoff race, and the lock that closes it.** A commit is "every revision with
-`rev_id <= cutoff_rev`". Revision ids are client-generated UUIDv7, so a slow writer
-transaction (or a skewed clock) could land a row *under* an already-recorded cutoff —
-silently changing a sealed commit. The rule:
+**The cutoff race, and what closes it.** A commit is "every revision with
+`rev_id <= cutoff_rev`". If a writer could choose its own ids, a slow transaction or a
+skewed clock could land a row *under* an already-recorded cutoff, silently changing a
+sealed commit. Three rules close it:
 
-- Every transaction that INSERTs revisions first takes
-  `pg_advisory_xact_lock_shared(h)` where `h = hash(dataset_id, branch)`.
-- Recording a commit takes the same lock **exclusively**, computes `cutoff_rev` as the
-  maximum existing `rev_id`, and inserts the commit, all in that one transaction.
+- **The database mints every id.** `rev_id` defaults to `cid_rev()`, a UUIDv7 from
+  the database clock whose 12 bits after the version hold the fraction of the
+  millisecond, so ids order to the microsecond; `ts` defaults to the same clock
+  (`clock_timestamp()`). The `cid_writer` role may insert every column **except**
+  these two (column-level grants), so no writer can choose an id, whatever its own
+  clock says. The server's own writes use `cid_rev_after(floor)`, strictly above the
+  previous id and the branch's cutoff. Cost: about 4 µs per row (measured: 200k rows
+  in 2.4 s against 1.5 s with ids supplied); no trigger runs per row.
+- **The lock.** Every transaction that INSERTs revisions first takes
+  `pg_advisory_xact_lock_shared(h)` where `h = hash(dataset_id, branch)`. Recording a
+  commit takes the same lock **exclusively**, computes `cutoff_rev` as the maximum
+  existing `rev_id`, and inserts the commit, all in that one transaction. Writers
+  never block each other (shared), and a commit waits for in-flight writes to land
+  before sealing, so a row minted before a commit is in it, and one minted after is
+  above its cutoff.
+- **The backstop.** Each commit records when it was sealed (`recorded_at`, the clock,
+  not the transaction start). Before the next commit on that branch is recorded,
+  under the exclusive lock, the server checks that no revision with `ts` after that
+  moment sits at or under the sealed cutoff; if one does (only the owner role can
+  still set ids), nothing more is recorded on the branch and the error names it. The
+  check reads only rows written since the last commit, through the `ts` index.
 
-Writers never block each other (shared), and a commit waits for in-flight writes to
-land before sealing. `cid admin verify` enforces the invariant from the other side:
-any revision found with `rev_id <= cutoff_rev` of an existing commit but absent from
-that commit's state is reported as **corruption**, loudly, exit code 3.
+`cid admin verify` still enforces the invariant from the other side: any revision found
+with `rev_id <= cutoff_rev` of an existing commit but absent from that commit's state is
+reported as **corruption**, loudly, exit code 3.
+
+**Retry-safe batches.** A platform batch is one transaction. It inserts its key into
+`revision_batches (dataset_id, batch_key)` in the same transaction as its rows. A retry
+of a batch whose first attempt did commit (the acknowledgement lost) fails on the key
+and writes nothing twice; a resumed import reads the table to see which keys are done.
 
 **State at a commit** = for each path (and each annotation), the latest change up to
 the commit's cutoff, deletes dropped:

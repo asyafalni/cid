@@ -97,9 +97,35 @@ CREATE UNLOGGED TABLE gc_candidates (
 -- Revisions: append-only history (hypertables)
 ---------------------------------------------------------------------------
 
+-- Revision ids come from the database clock, never a writer's (invariant
+-- 3): a writer cannot mint an id under a sealed cutoff, whatever its own
+-- clock says, because it cannot mint one at all (the column grants below).
+-- A UUIDv7 whose 12 bits after the version hold the fraction of the
+-- millisecond (RFC 9562 §6.2, method 3), so ids order to the microsecond.
+CREATE FUNCTION cid_rev_at(us bigint) RETURNS uuid LANGUAGE sql VOLATILE PARALLEL SAFE AS $$
+  SELECT encode(
+    set_byte(set_byte(
+      overlay(uuid_send(gen_random_uuid()) PLACING substring(int8send(us / 1000) FROM 3 FOR 6) FROM 1 FOR 6),
+      6, (112 | (((us % 1000) * 4096 / 1000) >> 8))::int),
+      7, (((us % 1000) * 4096 / 1000) & 255)::int),
+    'hex')::uuid
+$$;
+CREATE FUNCTION cid_rev() RETURNS uuid LANGUAGE sql VOLATILE PARALLEL SAFE AS $$
+  SELECT cid_rev_at(floor(extract(epoch FROM clock_timestamp()) * 1000000)::bigint)
+$$;
+-- A fresh id strictly above `floor`: the server's own writes, which come in
+-- sequence and must order after the branch's cutoff even within one
+-- microsecond (the random tail is stepped instead).
+CREATE FUNCTION cid_rev_after(floor uuid) RETURNS uuid LANGUAGE sql VOLATILE PARALLEL SAFE AS $$
+  SELECT CASE WHEN floor IS NULL OR fresh > floor THEN fresh
+    ELSE encode(overlay(uuid_send(floor) PLACING
+      int8send(('x' || encode(substring(uuid_send(floor) FROM 9 FOR 8), 'hex'))::bit(64)::bigint + 1) FROM 9 FOR 8), 'hex')::uuid
+  END FROM (SELECT cid_rev() AS fresh) f
+$$;
+
 CREATE TABLE item_revisions (
-  rev_id      uuid        NOT NULL,                -- UUIDv7
-  ts          timestamptz NOT NULL,                -- the UUIDv7 time
+  rev_id      uuid        NOT NULL DEFAULT cid_rev(),  -- UUIDv7, database clock
+  ts          timestamptz NOT NULL DEFAULT clock_timestamp(), -- when it landed
   dataset_id  uuid        NOT NULL REFERENCES datasets(dataset_id),
   branch      text        NOT NULL DEFAULT 'main',
   path        text        NOT NULL,
@@ -115,8 +141,8 @@ CREATE INDEX item_revisions_lookup
   ON item_revisions (dataset_id, branch, path, rev_id DESC);
 
 CREATE TABLE annotation_revisions (
-  rev_id         uuid        NOT NULL,
-  ts             timestamptz NOT NULL,
+  rev_id         uuid        NOT NULL DEFAULT cid_rev(),
+  ts             timestamptz NOT NULL DEFAULT clock_timestamp(),
   dataset_id     uuid        NOT NULL REFERENCES datasets(dataset_id),
   branch         text        NOT NULL DEFAULT 'main',
   annotation_id  uuid        NOT NULL,
@@ -185,7 +211,10 @@ CREATE TABLE commits (
   message          text NOT NULL,
   author           text NOT NULL,
   authored_at      timestamptz NOT NULL,           -- when `cid commit` ran
-  recorded_at      timestamptz NOT NULL DEFAULT now(),
+  -- the moment it was sealed (the clock, not the transaction's start):
+  -- a revision landing later at or under cutoff_rev is refused at the
+  -- next commit (api.sealedIntact)
+  recorded_at      timestamptz NOT NULL DEFAULT clock_timestamp(),
   -- the version's statistics, one aggregate, computed once (core/version.zig)
   stats            jsonb
 );
@@ -389,5 +418,20 @@ DO $$ BEGIN
   END IF;
 END $$;
 GRANT USAGE ON SCHEMA public TO cid_writer;
-GRANT INSERT ON item_revisions, annotation_revisions TO cid_writer;
+-- Every column but rev_id and ts: those the database sets, so a writer's
+-- clock never decides where a revision falls against a sealed cutoff.
+GRANT INSERT (dataset_id, branch, path, op, item_id, item_hash, split, author) ON item_revisions TO cid_writer;
+GRANT INSERT (dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, attrs, author, policy_ver, parent_rev)
+  ON annotation_revisions TO cid_writer;
+-- Retry-safe batches: a writer inserts its batch's key in the same
+-- transaction as the batch. A retry of a batch that did commit (its
+-- acknowledgement lost) fails on the key and writes nothing twice; a
+-- resumed import reads which keys are done.
+CREATE TABLE revision_batches (
+  dataset_id  uuid NOT NULL REFERENCES datasets(dataset_id) ON DELETE CASCADE,
+  batch_key   text NOT NULL CHECK (length(batch_key) BETWEEN 1 AND 200),
+  written_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (dataset_id, batch_key)
+);
+GRANT INSERT, SELECT ON revision_batches TO cid_writer;
 GRANT SELECT ON datasets, dataset_items, items, policy_versions TO cid_writer;

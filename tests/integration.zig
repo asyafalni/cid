@@ -64,7 +64,7 @@ fn openBlobs(client: *cid.blob.Client, io: std.Io) !void {
     try client.start(io);
 }
 
-fn expectRefused(db: *cid.db.sql.Db, scope: anytype, sql: []const u8, needle: []const u8) !void {
+fn expectRefused(db: anytype, scope: anytype, sql: []const u8, needle: []const u8) !void {
     problem_len = 0;
     if (db.exec(scope, sql, .{})) |_| {
         std.debug.print("expected '{s}' to be refused\n", .{sql});
@@ -397,13 +397,48 @@ test "append-only history and immovable releases, enforced by the database" {
         "' AND name = 'main'", .{});
 
     // The platform's role can INSERT revisions and nothing else.
-    _ = try db.exec(&fscope, "SET ROLE cid_writer", .{});
-    _ = try db.exec(&fscope, "INSERT INTO item_revisions (rev_id, ts, dataset_id, path, op, item_id, item_hash, author) " ++
-        "VALUES ('018e0000-0000-7000-8000-00000000a002', now(), '" ++ ds ++ "', 'b.txt', 'add', " ++
-        "'018e0000-0000-7000-8000-00000000b002', decode(repeat('cd', 32), 'hex'), 'agent:annotator')", .{});
-    try expectRefused(db, &fscope, "UPDATE item_revisions SET author = 'evil' WHERE dataset_id = '" ++ ds ++ "'", "permission denied");
-    try expectRefused(db, &fscope, "INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES (gen_random_uuid(), 'x/y', 'files', 'g')", "permission denied");
-    _ = try db.exec(&fscope, "RESET ROLE", .{});
+    {
+        var ptx = try db.begin(&fscope, .{});
+        defer ptx.deinit();
+        try platformWrite(&ptx, &fscope, ds);
+        _ = try ptx.exec(&fscope, "INSERT INTO item_revisions (dataset_id, path, op, item_id, item_hash, author) " ++
+            "VALUES ('" ++ ds ++ "', 'b.txt', 'add', '018e0000-0000-7000-8000-00000000b002', decode(repeat('cd', 32), 'hex'), 'agent:annotator')", .{});
+        try ptx.commit();
+    }
+    // A batch carries its key: retrying one that already committed (its
+    // acknowledgement lost) fails on the key, and nothing lands twice.
+    inline for (0..2) |attempt| {
+        var ptx = try db.begin(&fscope, .{});
+        defer ptx.deinit();
+        try platformWrite(&ptx, &fscope, ds);
+        if (attempt == 0) {
+            _ = try ptx.exec(&fscope, "INSERT INTO revision_batches (dataset_id, batch_key) VALUES ('" ++ ds ++ "', 'import-0001')", .{});
+            _ = try ptx.exec(&fscope, "INSERT INTO item_revisions (dataset_id, path, op, item_id, item_hash, author) " ++
+                "VALUES ('" ++ ds ++ "', 'batch.txt', 'add', gen_random_uuid(), decode(repeat('cd', 32), 'hex'), 'agent:import')", .{});
+            try ptx.commit();
+        } else {
+            try expectRefused(&ptx, &fscope, "INSERT INTO revision_batches (dataset_id, batch_key) VALUES ('" ++ ds ++ "', 'import-0001')", "duplicate key");
+        }
+    }
+    const batch_rows = try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM item_revisions WHERE dataset_id = '" ++ ds ++ "' AND path = 'batch.txt'", .{});
+    try std.testing.expectEqual(@as(?i64, 1), batch_rows);
+
+    // …and nothing else: not its own revision id (the database's clock
+    // decides, invariant 3), not history, not datasets. Each refusal in a
+    // transaction of its own, as the role.
+    inline for (.{
+        "INSERT INTO item_revisions (rev_id, dataset_id, path, op, item_id, item_hash, author) VALUES " ++
+            "('018e0000-0000-7000-8000-00000000a003', '" ++ ds ++ "', 'c.txt', 'add', '018e0000-0000-7000-8000-00000000b003', decode(repeat('cd', 32), 'hex'), 'agent:annotator')",
+        "INSERT INTO item_revisions (ts, dataset_id, path, op, item_id, item_hash, author) VALUES " ++
+            "(now() - interval '1 day', '" ++ ds ++ "', 'c.txt', 'add', '018e0000-0000-7000-8000-00000000b003', decode(repeat('cd', 32), 'hex'), 'agent:annotator')",
+        "UPDATE item_revisions SET author = 'evil' WHERE dataset_id = '" ++ ds ++ "'",
+        "INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES (gen_random_uuid(), 'x/y', 'files', 'g')",
+    }) |sql| {
+        var ptx = try db.begin(&fscope, .{});
+        defer ptx.deinit();
+        try platformWrite(&ptx, &fscope, ds);
+        try expectRefused(&ptx, &fscope, sql, "permission denied");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -411,6 +446,14 @@ test "append-only history and immovable releases, enforced by the database" {
 // with the server's handlers plugged in as the transport (no sockets;
 // content still rides real presigned URLs against live SeaweedFS).
 // ---------------------------------------------------------------------------
+
+/// A platform-style write, exactly the documented contract: one
+/// transaction, the branch's shared write lock, the cid_writer role (which
+/// cannot set rev_id or ts: the database mints them).
+fn platformWrite(tx: anytype, scope: anytype, dataset_id: []const u8) !void {
+    _ = try tx.exec(scope, "SELECT pg_advisory_xact_lock_shared(hashtextextended($1 || '/main', 0))", .{dataset_id});
+    _ = try tx.exec(scope, "SET LOCAL ROLE cid_writer", .{});
+}
 
 const DirectTransport = struct {
     deps: *cid.api.Deps,
@@ -1580,32 +1623,31 @@ test "annotated: the platform writes revisions, the server commits, state compos
     const ann1 = ann1_id.toString();
     const ann2 = cid.uuid7.Uuid.nextAfter(io, ann1_id).toString();
 
-    _ = try db.exec(&fscope, "BEGIN", .{});
     {
-        const lock = try std.fmt.allocPrintSentinel(arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{ds_id}, 0);
-        _ = try db.exec(&fscope, lock, .{});
+        var ptx = try db.begin(&fscope, .{});
+        defer ptx.deinit();
+        try platformWrite(&ptx, &fscope, ds_id);
+        inline for (.{
+            .{ "frames/0001.jpg", &h1, "train" },
+            .{ "frames/0002.jpg", &h2, "val" },
+        }, 0..) |row, idx| {
+            last = cid.uuid7.Uuid.nextAfter(io, last);
+            const item_id = if (idx == 0) &aitem1 else &aitem2;
+            const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
+                "VALUES ('{s}', 'main', '{s}', 'add', '{s}', decode('{s}', 'hex'), '{s}', 'agent:annotator')", .{ ds_id, row[0], item_id, row[1], row[2] }, 0);
+            _ = try ptx.exec(&fscope, sql, .{});
+        }
+        inline for (.{
+            .{ &ann1, &aitem1, "{\"x\":10,\"y\":20,\"w\":30,\"h\":40}", "person" },
+            .{ &ann2, &aitem1, "{\"x\":50,\"y\":60,\"w\":70,\"h\":80}", "vehicle" },
+        }) |row| {
+            last = cid.uuid7.Uuid.nextAfter(io, last);
+            const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+                "VALUES ('{s}', 'main', '{s}', '{s}', 'create', 'box', '{s}', '{s}'::jsonb, 'agent:annotator', 'policy-v1')", .{ ds_id, row[0], row[1], row[3], row[2] }, 0);
+            _ = try ptx.exec(&fscope, sql, .{});
+        }
+        try ptx.commit();
     }
-    _ = try db.exec(&fscope, "SET LOCAL ROLE cid_writer", .{});
-    inline for (.{
-        .{ "frames/0001.jpg", &h1, "train" },
-        .{ "frames/0002.jpg", &h2, "val" },
-    }, 0..) |row, idx| {
-        last = cid.uuid7.Uuid.nextAfter(io, last);
-        const item_id = if (idx == 0) &aitem1 else &aitem2;
-        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
-            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', 'add', '{s}', decode('{s}', 'hex'), '{s}', 'agent:annotator')", .{ &last.toString(), last.unixMs() / 1000, ds_id, row[0], item_id, row[1], row[2] }, 0);
-        _ = try db.exec(&fscope, sql, .{});
-    }
-    inline for (.{
-        .{ &ann1, &aitem1, "{\"x\":10,\"y\":20,\"w\":30,\"h\":40}", "person" },
-        .{ &ann2, &aitem1, "{\"x\":50,\"y\":60,\"w\":70,\"h\":80}", "vehicle" },
-    }) |row| {
-        last = cid.uuid7.Uuid.nextAfter(io, last);
-        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
-            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'create', 'box', '{s}', '{s}'::jsonb, 'agent:annotator', 'policy-v1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, row[0], row[1], row[3], row[2] }, 0);
-        _ = try db.exec(&fscope, sql, .{});
-    }
-    _ = try db.exec(&fscope, "COMMIT", .{});
 
     // The server seals the batch.
     const c1 = try remote.commitServer(arena, "main", "batch one annotated", "agent:annotator");
@@ -1640,25 +1682,24 @@ test "annotated: the platform writes revisions, the server commits, state compos
     try std.testing.expectError(error.NothingToTag, remote.commitServer(arena, "main", "empty", "agent:annotator"));
 
     // Batch two: move box one, delete box two.
-    _ = try db.exec(&fscope, "BEGIN", .{});
     {
-        const lock = try std.fmt.allocPrintSentinel(arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{ds_id}, 0);
-        _ = try db.exec(&fscope, lock, .{});
+        var ptx = try db.begin(&fscope, .{});
+        defer ptx.deinit();
+        try platformWrite(&ptx, &fscope, ds_id);
+        last = cid.uuid7.Uuid.nextAfter(io, last);
+        {
+            const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+                "VALUES ('{s}', 'main', '{s}', '{s}', 'update', 'box', 'person', '{{\"x\":11,\"y\":21,\"w\":30,\"h\":40}}'::jsonb, 'user:reviewer', 'policy-v1')", .{ ds_id, &ann1, &aitem1 }, 0);
+            _ = try ptx.exec(&fscope, sql, .{});
+        }
+        last = cid.uuid7.Uuid.nextAfter(io, last);
+        {
+            const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (dataset_id, branch, annotation_id, item_id, op, author, policy_ver) " ++
+                "VALUES ('{s}', 'main', '{s}', '{s}', 'delete', 'user:reviewer', 'policy-v1')", .{ ds_id, &ann2, &aitem1 }, 0);
+            _ = try ptx.exec(&fscope, sql, .{});
+        }
+        try ptx.commit();
     }
-    _ = try db.exec(&fscope, "SET LOCAL ROLE cid_writer", .{});
-    last = cid.uuid7.Uuid.nextAfter(io, last);
-    {
-        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
-            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'update', 'box', 'person', '{{\"x\":11,\"y\":21,\"w\":30,\"h\":40}}'::jsonb, 'user:reviewer', 'policy-v1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &ann1, &aitem1 }, 0);
-        _ = try db.exec(&fscope, sql, .{});
-    }
-    last = cid.uuid7.Uuid.nextAfter(io, last);
-    {
-        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, author, policy_ver) " ++
-            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'delete', 'user:reviewer', 'policy-v1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &ann2, &aitem1 }, 0);
-        _ = try db.exec(&fscope, sql, .{});
-    }
-    _ = try db.exec(&fscope, "COMMIT", .{});
 
     const c2 = try remote.commitServer(arena, "main", "review pass", "user:reviewer");
     const s2 = try stateAt(arena, &deps, &scope, c2);
@@ -1865,9 +1906,9 @@ test "annotated: the platform writes revisions, the server commits, state compos
 }
 
 /// One platform-style revision writer for the cutoff race: each
-/// transaction takes the shared write lock, mints its revision id, waits a
-/// little (a slow writer), inserts as cid_writer, and — still holding the
-/// lock — checks no sealed commit already covers the row it just wrote.
+/// transaction takes the shared write lock, inserts as cid_writer (the
+/// database mints the id), waits a little with the row in (a slow writer),
+/// and — still holding the lock — checks no sealed commit covers it.
 const RaceWriter = struct {
     ds_id: []const u8,
     rounds: u32,
@@ -1895,16 +1936,17 @@ const RaceWriter = struct {
             var tx = try conn.db.begin(&scope, .{});
             defer tx.deinit();
             _ = try tx.exec(&scope, "SELECT pg_advisory_xact_lock_shared(hashtextextended($1 || '/main', 0))", .{self.ds_id});
-            const rev = cid.uuid7.Uuid.now(io);
-            try std.Io.sleep(io, .fromMilliseconds(2 + prng.random().uintLessThan(u32, 9)), .awake);
             _ = try tx.exec(&scope, "SET LOCAL ROLE cid_writer", .{});
             const path = try std.fmt.allocPrint(a, "w{d}/{d}", .{ self.seed, n });
-            _ = try tx.exec(&scope, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, author) " ++
-                "VALUES ($1::uuid, to_timestamp($2::bigint / 1000.0), $3::uuid, 'main', $4, 'add', $5::uuid, decode(repeat('ab', 32), 'hex'), 'agent:race')", .{
-                @as([]const u8, &rev.toString()), @as(i64, @intCast(rev.unixMs())), self.ds_id, path, @as([]const u8, &cid.uuid7.Uuid.now(io).toString()),
+            _ = try tx.exec(&scope, "INSERT INTO item_revisions (dataset_id, branch, path, op, item_id, item_hash, author) " ++
+                "VALUES ($1::uuid, 'main', $2, 'add', $3::uuid, decode(repeat('ab', 32), 'hex'), 'agent:race')", .{
+                self.ds_id, path, @as([]const u8, &cid.uuid7.Uuid.now(io).toString()),
             });
+            // A slow writer: the row is in, the transaction still open.
+            try std.Io.sleep(io, .fromMilliseconds(2 + prng.random().uintLessThan(u32, 9)), .awake);
             _ = try tx.exec(&scope, "RESET ROLE", .{});
-            const covered = try tx.rawOne(i64, &scope, "SELECT count(*)::bigint FROM commits WHERE dataset_id = $1::uuid AND branch = 'main' AND cutoff_rev >= $2::uuid", .{ self.ds_id, @as([]const u8, &rev.toString()) });
+            const rev = (try tx.rawOne([]const u8, &scope, "SELECT rev_id::text FROM item_revisions WHERE dataset_id = $1::uuid AND path = $2", .{ self.ds_id, path })).?;
+            const covered = try tx.rawOne(i64, &scope, "SELECT count(*)::bigint FROM commits WHERE dataset_id = $1::uuid AND branch = 'main' AND cutoff_rev >= $2::uuid", .{ self.ds_id, rev });
             if (covered.? > 0) self.violations += 1;
             try tx.commit();
             self.written += 1;
@@ -1981,6 +2023,29 @@ test "cutoff lock: revision writers racing commits never land under a sealed cut
     const outside = try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM item_revisions r WHERE r.dataset_id = $1::uuid " ++
         "AND r.rev_id > (SELECT cutoff_rev FROM commits WHERE dataset_id = $1::uuid ORDER BY cutoff_rev DESC LIMIT 1)", .{ds_id});
     try std.testing.expectEqual(@as(?i64, 0), outside);
+
+    // The backstop: a row that does land under a sealed cutoff (only the
+    // owner role can still set its own id) stops the next commit, loudly,
+    // until it is dealt with.
+    const sealed_cutoff = (try db.rawOne([]const u8, &fscope, "SELECT cutoff_rev::text FROM commits WHERE dataset_id = $1::uuid ORDER BY cutoff_rev DESC LIMIT 1", .{ds_id})).?;
+    _ = try db.exec(&fscope, "INSERT INTO item_revisions (rev_id, dataset_id, branch, path, op, item_id, item_hash, author) " ++
+        "VALUES ($1::uuid, $2::uuid, 'main', 'late.txt', 'add', gen_random_uuid(), decode(repeat('ab', 32), 'hex'), 'user:late')", .{ sealed_cutoff, ds_id });
+    {
+        var wscope = cid.db.Run.init(std.testing.allocator);
+        defer wscope.deinit();
+        var ptx = try db.begin(&wscope, .{});
+        defer ptx.deinit();
+        try platformWrite(&ptx, &wscope, ds_id);
+        _ = try ptx.exec(&wscope, "INSERT INTO item_revisions (dataset_id, branch, path, op, item_id, item_hash, author) VALUES ($1::uuid, 'main', 'next.txt', 'add', gen_random_uuid(), decode(repeat('ab', 32), 'hex'), 'agent:race')", .{ds_id});
+        try ptx.commit();
+    }
+    const refused = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/race/-/commit", "Bearer test-token", "{\"branch\":\"main\",\"message\":\"after\",\"author\":\"agent:race\"}");
+    try std.testing.expectEqual(std.http.Status.internal_server_error, refused.status);
+    try std.testing.expect(std.mem.indexOf(u8, refused.body, "after it was sealed") != null);
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM item_revisions WHERE author = 'user:late'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
+    _ = try remote.commitServer(arena, "main", "after", "agent:race");
 }
 
 test "item identity: re-encoding keeps annotations; identical files at two paths share none" {
@@ -2029,58 +2094,47 @@ test "item identity: re-encoding keeps annotations; identical files at two paths
     });
 
     // Platform-style writes, under the shared write lock as cid_writer.
-    var last = cid.uuid7.Uuid.now(io);
-    const Writer = struct {
-        db: *cid.db.sql.Db,
-        scope: *cid.db.Run,
-        arena: std.mem.Allocator,
-        io: std.Io,
-        ds: []const u8,
-        last: *cid.uuid7.Uuid,
-
-        fn begin(w: @This()) !void {
-            _ = try w.db.exec(w.scope, "BEGIN", .{});
-            const lock = try std.fmt.allocPrintSentinel(w.arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{w.ds}, 0);
-            _ = try w.db.exec(w.scope, lock, .{});
-            _ = try w.db.exec(w.scope, "SET LOCAL ROLE cid_writer", .{});
+    // Platform-style batches: each its own transaction (platformWrite).
+    const W = struct {
+        fn item(tx: anytype, sc: anytype, al: std.mem.Allocator, dsid: []const u8, path: []const u8, op: []const u8, item_id: []const u8, hash: []const u8) !void {
+            const sql = try std.fmt.allocPrintSentinel(al, "INSERT INTO item_revisions (dataset_id, branch, path, op, item_id, item_hash, author) " ++
+                "VALUES ('{s}', 'main', '{s}', '{s}', '{s}', decode('{s}', 'hex'), 'agent:t')", .{ dsid, path, op, item_id, hash }, 0);
+            _ = try tx.exec(sc, sql, .{});
         }
-        fn item(w: @This(), path: []const u8, op: []const u8, item_id: []const u8, hash: []const u8) !void {
-            w.last.* = cid.uuid7.Uuid.nextAfter(w.io, w.last.*);
-            const sql = try std.fmt.allocPrintSentinel(w.arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, author) " ++
-                "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', '{s}', decode('{s}', 'hex'), 'agent:t')", .{ &w.last.toString(), w.last.unixMs() / 1000, w.ds, path, op, item_id, hash }, 0);
-            _ = try w.db.exec(w.scope, sql, .{});
-        }
-        fn box(w: @This(), item_id: []const u8, class: []const u8) !void {
-            w.last.* = cid.uuid7.Uuid.nextAfter(w.io, w.last.*);
-            const ann = cid.uuid7.Uuid.nextAfter(w.io, w.last.*);
-            const sql = try std.fmt.allocPrintSentinel(w.arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
-                "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'create', 'box', '{s}', '{{\"x\":1,\"y\":2,\"w\":3,\"h\":4}}'::jsonb, 'agent:t', 'p1')", .{ &w.last.toString(), w.last.unixMs() / 1000, w.ds, &ann.toString(), item_id, class }, 0);
-            _ = try w.db.exec(w.scope, sql, .{});
-        }
-        fn commit(w: @This()) !void {
-            _ = try w.db.exec(w.scope, "COMMIT", .{});
+        fn box(tx: anytype, sc: anytype, al: std.mem.Allocator, i: std.Io, dsid: []const u8, item_id: []const u8, class: []const u8) !void {
+            const ann = cid.uuid7.Uuid.now(i);
+            const sql = try std.fmt.allocPrintSentinel(al, "INSERT INTO annotation_revisions (dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+                "VALUES ('{s}', 'main', '{s}', '{s}', 'create', 'box', '{s}', '{{\"x\":1,\"y\":2,\"w\":3,\"h\":4}}'::jsonb, 'agent:t', 'p1')", .{ dsid, &ann.toString(), item_id, class }, 0);
+            _ = try tx.exec(sc, sql, .{});
         }
     };
-    const w: Writer = .{ .db = db, .scope = &fscope, .arena = arena, .io = io, .ds = ds_id, .last = &last };
     const clip_id = cid.uuid7.Uuid.now(io).toString();
     const photo_id = cid.uuid7.Uuid.nextAfter(io, cid.uuid7.Uuid.now(io)).toString();
     const copy_id = cid.uuid7.Uuid.nextAfter(io, cid.uuid7.Uuid.parse(&photo_id) catch unreachable).toString();
 
     // The clip and the photo, each annotated; the same photo bytes again
     // at a second path — a separate item, with no annotation of its own.
-    try w.begin();
-    try w.item("clips/a.mp4", "add", &clip_id, &hashes[0]);
-    try w.item("photos/p.jpg", "add", &photo_id, &hashes[2]);
-    try w.item("photos/copy-of-p.jpg", "add", &copy_id, &hashes[2]);
-    try w.box(&clip_id, "person");
-    try w.box(&photo_id, "car");
-    try w.commit();
+    {
+        var ptx = try db.begin(&fscope, .{});
+        defer ptx.deinit();
+        try platformWrite(&ptx, &fscope, ds_id);
+        try W.item(&ptx, &fscope, arena, ds_id, "clips/a.mp4", "add", &clip_id, &hashes[0]);
+        try W.item(&ptx, &fscope, arena, ds_id, "photos/p.jpg", "add", &photo_id, &hashes[2]);
+        try W.item(&ptx, &fscope, arena, ds_id, "photos/copy-of-p.jpg", "add", &copy_id, &hashes[2]);
+        try W.box(&ptx, &fscope, arena, io, ds_id, &clip_id, "person");
+        try W.box(&ptx, &fscope, arena, io, ds_id, &photo_id, "car");
+        try ptx.commit();
+    }
     const c1 = try remote.commitServer(arena, "main", "first batch", "agent:t");
 
     // Re-encoding: new bytes at the same path, the same item_id.
-    try w.begin();
-    try w.item("clips/a.mp4", "update", &clip_id, &hashes[1]);
-    try w.commit();
+    {
+        var ptx = try db.begin(&fscope, .{});
+        defer ptx.deinit();
+        try platformWrite(&ptx, &fscope, ds_id);
+        try W.item(&ptx, &fscope, arena, ds_id, "clips/a.mp4", "update", &clip_id, &hashes[1]);
+        try ptx.commit();
+    }
     const c2 = try remote.commitServer(arena, "main", "re-encode", "agent:t");
 
     const Page = struct { items: []const struct { path: []const u8, hash: []const u8, annotations: []const struct { class: ?[]const u8 } } };
@@ -2160,26 +2214,25 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     var last = cid.uuid7.Uuid.now(io);
     const item_id = cid.uuid7.Uuid.now(io).toString();
     const box_id = cid.uuid7.Uuid.now(io).toString();
-    _ = try db.exec(&fscope, "BEGIN", .{});
     {
-        const lock = try std.fmt.allocPrintSentinel(arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{ds_id}, 0);
-        _ = try db.exec(&fscope, lock, .{});
+        var ptx = try db.begin(&fscope, .{});
+        defer ptx.deinit();
+        try platformWrite(&ptx, &fscope, ds_id);
+        {
+            const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
+                "VALUES ('{s}', 'main', 'img/a.jpg', 'add', '{s}', decode('{s}', 'hex'), 'train', 'agent:annotator')", .{ ds_id, &item_id, &hh }, 0);
+            _ = try ptx.exec(&fscope, sql, .{});
+        }
+        last = cid.uuid7.Uuid.nextAfter(io, last);
+        {
+            // Written messy on purpose: unsorted keys, 10.0 instead of 10.
+            const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+                "VALUES ('{s}', 'main', '{s}', '{s}', 'create', 'box', 'person', " ++
+                "'{{\"y\": 20, \"x\": 10.0, \"w\": 30.5, \"h\": 40}}'::jsonb, 'agent:annotator', 'policy-v1')", .{ ds_id, &box_id, &item_id }, 0);
+            _ = try ptx.exec(&fscope, sql, .{});
+        }
+        try ptx.commit();
     }
-    _ = try db.exec(&fscope, "SET LOCAL ROLE cid_writer", .{});
-    {
-        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
-            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', 'img/a.jpg', 'add', '{s}', decode('{s}', 'hex'), 'train', 'agent:annotator')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &item_id, &hh }, 0);
-        _ = try db.exec(&fscope, sql, .{});
-    }
-    last = cid.uuid7.Uuid.nextAfter(io, last);
-    {
-        // Written messy on purpose: unsorted keys, 10.0 instead of 10.
-        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
-            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'create', 'box', 'person', " ++
-            "'{{\"y\": 20, \"x\": 10.0, \"w\": 30.5, \"h\": 40}}'::jsonb, 'agent:annotator', 'policy-v1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &box_id, &item_id }, 0);
-        _ = try db.exec(&fscope, sql, .{});
-    }
-    _ = try db.exec(&fscope, "COMMIT", .{});
     _ = try remote.commitServer(arena, "main", "one box", "agent:annotator");
 
     // Tag: the stored manifest is version 2 with a JCS annotation row.
@@ -2277,24 +2330,23 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     var last = cid.uuid7.Uuid.now(io);
     const fitem = cid.uuid7.Uuid.now(io).toString();
     const fbox = cid.uuid7.Uuid.now(io).toString();
-    _ = try db.exec(&fscope, "BEGIN", .{});
     {
-        const lock = try std.fmt.allocPrintSentinel(arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{ds_id}, 0);
-        _ = try db.exec(&fscope, lock, .{});
+        var ptx = try db.begin(&fscope, .{});
+        defer ptx.deinit();
+        try platformWrite(&ptx, &fscope, ds_id);
+        {
+            const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
+                "VALUES ('{s}', 'main', 'img/a.jpg', 'add', '{s}', decode('{s}', 'hex'), 'train', 'agent:annotator')", .{ ds_id, &fitem, &hh }, 0);
+            _ = try ptx.exec(&fscope, sql, .{});
+        }
+        last = cid.uuid7.Uuid.nextAfter(io, last);
+        {
+            const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+                "VALUES ('{s}', 'main', '{s}', '{s}', 'create', 'box', 'person', '{{\"x\":32,\"y\":48,\"w\":64,\"h\":96}}'::jsonb, 'agent:annotator', 'p1')", .{ ds_id, &fbox, &fitem }, 0);
+            _ = try ptx.exec(&fscope, sql, .{});
+        }
+        try ptx.commit();
     }
-    _ = try db.exec(&fscope, "SET LOCAL ROLE cid_writer", .{});
-    {
-        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
-            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', 'img/a.jpg', 'add', '{s}', decode('{s}', 'hex'), 'train', 'agent:annotator')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &fitem, &hh }, 0);
-        _ = try db.exec(&fscope, sql, .{});
-    }
-    last = cid.uuid7.Uuid.nextAfter(io, last);
-    {
-        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
-            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', '{s}', '{s}', 'create', 'box', 'person', '{{\"x\":32,\"y\":48,\"w\":64,\"h\":96}}'::jsonb, 'agent:annotator', 'p1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &fbox, &fitem }, 0);
-        _ = try db.exec(&fscope, sql, .{});
-    }
-    _ = try db.exec(&fscope, "COMMIT", .{});
     _ = try remote.commitServer(arena, "main", "one box", "agent:annotator");
 
     // Clone as jsonl: item file plus the sidecar, and a clean status.
@@ -2328,19 +2380,18 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     try std.testing.expect(std.mem.indexOf(u8, yaml, "0: person") != null);
 
     // The platform adds a vehicle box; a pull regenerates the sidecars.
-    _ = try db.exec(&fscope, "BEGIN", .{});
     {
-        const lock = try std.fmt.allocPrintSentinel(arena, "SELECT pg_advisory_xact_lock_shared(hashtextextended('{s}/main', 0))", .{ds_id}, 0);
-        _ = try db.exec(&fscope, lock, .{});
+        var ptx = try db.begin(&fscope, .{});
+        defer ptx.deinit();
+        try platformWrite(&ptx, &fscope, ds_id);
+        last = cid.uuid7.Uuid.nextAfter(io, last);
+        {
+            const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+                "VALUES ('{s}', 'main', gen_random_uuid(), '{s}', 'create', 'box', 'vehicle', '{{\"x\":0,\"y\":0,\"w\":320,\"h\":240}}'::jsonb, 'agent:annotator', 'p1')", .{ ds_id, &fitem }, 0);
+            _ = try ptx.exec(&fscope, sql, .{});
+        }
+        try ptx.commit();
     }
-    _ = try db.exec(&fscope, "SET LOCAL ROLE cid_writer", .{});
-    last = cid.uuid7.Uuid.nextAfter(io, last);
-    {
-        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
-            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', gen_random_uuid(), '{s}', 'create', 'box', 'vehicle', '{{\"x\":0,\"y\":0,\"w\":320,\"h\":240}}'::jsonb, 'agent:annotator', 'p1')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &fitem }, 0);
-        _ = try db.exec(&fscope, sql, .{});
-    }
-    _ = try db.exec(&fscope, "COMMIT", .{});
     _ = try remote.commitServer(arena, "main", "vehicle too", "agent:annotator");
 
     var yo_ws = try cid.client.workspace.open(arena, io, yo_dir.dir);
@@ -2453,20 +2504,23 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
 
     var last = cid.uuid7.Uuid.now(io);
     const gitem = cid.uuid7.Uuid.now(io).toString();
-    _ = try db.exec(&fscope, "BEGIN", .{});
-    _ = try db.exec(&fscope, "SET LOCAL ROLE cid_writer", .{});
     {
-        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
-            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', 'f.jpg', 'add', '{s}', decode('{s}', 'hex'), 'train', 'agent:a')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &gitem, &hh }, 0);
-        _ = try db.exec(&fscope, sql, .{});
+        var ptx = try db.begin(&fscope, .{});
+        defer ptx.deinit();
+        try platformWrite(&ptx, &fscope, ds_id);
+        {
+            const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
+                "VALUES ('{s}', 'main', 'f.jpg', 'add', '{s}', decode('{s}', 'hex'), 'train', 'agent:a')", .{ ds_id, &gitem, &hh }, 0);
+            _ = try ptx.exec(&fscope, sql, .{});
+        }
+        inline for (.{ "person", "person", "vehicle" }) |class| {
+            last = cid.uuid7.Uuid.nextAfter(io, last);
+            const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+                "VALUES ('{s}', 'main', gen_random_uuid(), '{s}', 'create', 'box', '" ++ class ++ "', '{{\"x\":1,\"y\":1,\"w\":2,\"h\":2}}'::jsonb, 'agent:a', 'policy-v3')", .{ ds_id, &gitem }, 0);
+            _ = try ptx.exec(&fscope, sql, .{});
+        }
+        try ptx.commit();
     }
-    inline for (.{ "person", "person", "vehicle" }) |class| {
-        last = cid.uuid7.Uuid.nextAfter(io, last);
-        const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
-            "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', gen_random_uuid(), '{s}', 'create', 'box', '" ++ class ++ "', '{{\"x\":1,\"y\":1,\"w\":2,\"h\":2}}'::jsonb, 'agent:a', 'policy-v3')", .{ &last.toString(), last.unixMs() / 1000, ds_id, &gitem }, 0);
-        _ = try db.exec(&fscope, sql, .{});
-    }
-    _ = try db.exec(&fscope, "COMMIT", .{});
     _ = try remote.commitServer(arena, "main", "labelled", "agent:a");
     _ = try remote.tag(arena, "v1.0.0");
 

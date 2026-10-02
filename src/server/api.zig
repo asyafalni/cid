@@ -1576,32 +1576,26 @@ fn push(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, d
     }
 
     // 4. Record: items, revisions, commits; branch head last. Revision ids
-    // are strictly increasing, floored at the current head's cutoff —
-    // plain UUIDv7 is not ordered within a millisecond and a cutoff must
-    // never be undercut (invariant 3).
-    var rev_floor: ?Uuid = null;
+    // come from the database clock, each strictly above the one before and
+    // above the current head's cutoff (invariant 3).
+    if (try sealBroken(arena, &tx, scope, ds, server_head)) |res| return res;
+    var rev_floor: ?[]const u8 = null;
     if (server_head) |h| {
-        const cutoff = tx.rawOne([]const u8, scope, "SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid", .{h}) catch return error.Db;
-        if (cutoff) |c| rev_floor = Uuid.parse(c) catch null;
+        rev_floor = tx.rawOne([]const u8, scope, "SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid", .{h}) catch return error.Db;
     }
 
     var last_commit_id: []const u8 = undefined;
     for (req.commits) |commit| {
         if (Uuid.parse(commit.id) == error.InvalidUuid) return error.BadRequest;
-        var last_rev: Uuid = undefined;
-        var has_rev = false;
+        if (commit.changes.len == 0) return error.BadRequest;
+        var last_rev: []const u8 = undefined;
         for (commit.changes) |ch| {
-            const rev = Uuid.nextAfter(deps.io, rev_floor);
-            rev_floor = rev;
-            last_rev = rev;
-            has_rev = true;
-            if (eql(ch.op, "add")) {
-                try insertAddRevision(&tx, scope, deps.io, ds, req.branch, rev, ch.path, ch.hash, ch.size, commit.author);
-            } else {
-                try insertDeleteRevision(&tx, scope, ds, req.branch, rev, ch.path, commit.author);
-            }
+            last_rev = if (eql(ch.op, "add"))
+                try insertAddRevision(&tx, scope, deps.io, ds, req.branch, rev_floor, ch.path, ch.hash, ch.size, commit.author)
+            else
+                try insertDeleteRevision(&tx, scope, ds, req.branch, rev_floor, ch.path, commit.author);
+            rev_floor = last_rev;
         }
-        if (!has_rev) return error.BadRequest;
 
         _ = tx.exec(
             scope,
@@ -1612,7 +1606,7 @@ fn push(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, d
                 ds.id,
                 req.branch,
                 commit.parent,
-                @as([]const u8, &last_rev.toString()),
+                last_rev,
                 commit.message,
                 commit.author,
                 @as(i64, @intCast(commit.authored_at_ms)),
@@ -2054,12 +2048,12 @@ fn insertAddRevision(
     io: std.Io,
     ds: Dataset,
     branch: []const u8,
-    rev: Uuid,
+    floor: ?[]const u8,
     path: []const u8,
     hash: []const u8,
     size: u64,
     author: []const u8,
-) HandleError!void {
+) HandleError![]const u8 {
     _ = tx.exec(
         scope,
         "INSERT INTO items (item_hash, size_bytes, media_type) " ++
@@ -2074,34 +2068,25 @@ fn insertAddRevision(
     try enqueuePreview(tx, scope, hash);
     // Item identity: new path → new item_id; existing path keeps its id.
     // On a branch, the path may live on main as of the branch start.
-    _ = tx.exec(
-        scope,
-        "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
-            "SELECT $1::uuid, to_timestamp($2::bigint / 1000.0), $3::uuid, $4, $5, " ++
+    const Landed = struct {
+        pub const nilo_table = .projection;
+        rev: []const u8,
+        item_id: []const u8,
+    };
+    const landed = (tx.rawOne(Landed, scope,
+        "INSERT INTO item_revisions (rev_id, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
+            "SELECT cid_rev_after($1::uuid), $2::uuid, $3, $4, " ++
             "  CASE WHEN prev.item_id IS NULL THEN 'add' ELSE 'update' END, " ++
-            "  COALESCE(prev.item_id, $6::uuid), decode($7, 'hex'), NULL, $8 " ++
+            "  COALESCE(prev.item_id, $5::uuid), decode($6, 'hex'), NULL, $7 " ++
             "FROM (SELECT 1) one LEFT JOIN LATERAL (" ++
             "  SELECT item_id FROM item_revisions " ++
-            "  WHERE dataset_id = $3::uuid AND branch IN ('main', $4) AND path = $5 AND op <> 'delete' " ++
-            "  ORDER BY rev_id DESC LIMIT 1) prev ON true",
-        .{
-            @as([]const u8, &rev.toString()),
-            @as(i64, @intCast(rev.unixMs())),
-            ds.id,
-            branch,
-            path,
-            @as([]const u8, &Uuid.now(io).toString()),
-            hash,
-            author,
-        },
-    ) catch return error.Db;
-    _ = tx.exec(
-        scope,
-        "INSERT INTO dataset_items (item_id, dataset_id) " ++
-            "SELECT r.item_id, $1::uuid FROM item_revisions r WHERE r.rev_id = $2::uuid " ++
-            "ON CONFLICT (item_id) DO NOTHING",
-        .{ ds.id, @as([]const u8, &rev.toString()) },
-    ) catch return error.Db;
+            "  WHERE dataset_id = $2::uuid AND branch IN ('main', $3) AND path = $4 AND op <> 'delete' " ++
+            "  ORDER BY rev_id DESC LIMIT 1) prev ON true " ++
+            "RETURNING rev_id::text AS rev, item_id::text AS item_id",
+        .{ floor, ds.id, branch, path, @as([]const u8, &Uuid.now(io).toString()), hash, author },
+    ) catch return error.Db) orelse return error.Db;
+    _ = tx.exec(scope, "INSERT INTO dataset_items (item_id, dataset_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT (item_id) DO NOTHING", .{ landed.item_id, ds.id }) catch return error.Db;
+    return landed.rev;
 }
 
 fn insertDeleteRevision(
@@ -2109,23 +2094,31 @@ fn insertDeleteRevision(
     scope: anytype,
     ds: Dataset,
     branch: []const u8,
-    rev: Uuid,
+    floor: ?[]const u8,
     path: []const u8,
     author: []const u8,
-) HandleError!void {
-    _ = tx.exec(
-        scope,
-        "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
-            "VALUES ($1::uuid, to_timestamp($2::bigint / 1000.0), $3::uuid, $4, $5, 'delete', NULL, NULL, NULL, $6)",
-        .{
-            @as([]const u8, &rev.toString()),
-            @as(i64, @intCast(rev.unixMs())),
-            ds.id,
-            branch,
-            path,
-            author,
-        },
-    ) catch return error.Db;
+) HandleError![]const u8 {
+    return (tx.rawOne([]const u8, scope,
+        "INSERT INTO item_revisions (rev_id, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
+            "VALUES (cid_rev_after($1::uuid), $2::uuid, $3, $4, 'delete', NULL, NULL, NULL, $5) RETURNING rev_id::text",
+        .{ floor, ds.id, branch, path, author },
+    ) catch return error.Db) orelse error.Db;
+}
+
+/// Invariant 3's backstop, checked as a commit is about to be recorded
+/// (under the branch's exclusive lock): no revision landed at or under
+/// the head commit's cutoff after that commit was sealed. Revision times
+/// are set by the database (writers cannot), so this is exact for every
+/// writer; it answers the refusal to send, or null.
+fn sealBroken(arena: std.mem.Allocator, tx: anytype, scope: anytype, ds: Dataset, head_commit: ?[]const u8) HandleError!?Response {
+    const sealed = head_commit orelse return null;
+    const late = (tx.rawOne(i64, scope, "SELECT (SELECT count(*) FROM item_revisions r WHERE r.dataset_id = c.dataset_id AND r.branch = c.branch " ++
+        "  AND r.ts > c.recorded_at AND r.rev_id <= c.cutoff_rev) + " ++
+        "(SELECT count(*) FROM annotation_revisions a WHERE a.dataset_id = c.dataset_id AND a.branch = c.branch " ++
+        "  AND a.ts > c.recorded_at AND a.rev_id <= c.cutoff_rev) FROM commits c WHERE c.commit_id = $1::uuid", .{sealed}) catch return error.Db) orelse 0;
+    if (late == 0) return null;
+    std.log.err("dataset {s}: {d} revision(s) landed under the sealed cutoff of commit {s} (invariant 3)", .{ ds.name, late, sealed });
+    return errorResponse(arena, .internal_server_error, try std.fmt.allocPrint(arena, "{d} revision(s) landed under commit {s} after it was sealed; history would change, so nothing more is recorded on this branch", .{ late, sealed }), "Tell the administrator: run 'cid admin verify' on this dataset's releases and find the writer that set its own revision ids.");
 }
 
 const BranchBody = struct { name: []const u8 };
@@ -2229,22 +2222,15 @@ fn merge(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, 
         .{ds.id},
     ) catch return error.Db;
 
-    var rev_floor: ?Uuid = null;
-    {
-        const cutoff = tx.rawOne([]const u8, scope, "SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid", .{main_head}) catch return error.Db;
-        if (cutoff) |c| rev_floor = Uuid.parse(c) catch null;
-    }
-
-    var last_rev: Uuid = undefined;
+    if (try sealBroken(arena, &tx, scope, ds, main_head)) |res| return res;
+    var rev_floor: ?[]const u8 = tx.rawOne([]const u8, scope, "SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid", .{main_head}) catch return error.Db;
     for (branch_changes.keys(), branch_changes.values()) |path, change| {
-        const rev = Uuid.nextAfter(deps.io, rev_floor);
-        rev_floor = rev;
-        last_rev = rev;
-        switch (change) {
-            .add => |a| try insertAddRevision(&tx, scope, deps.io, ds, "main", rev, path, a.hash, a.size, req.author),
-            .delete => try insertDeleteRevision(&tx, scope, ds, "main", rev, path, req.author),
-        }
+        rev_floor = switch (change) {
+            .add => |a| try insertAddRevision(&tx, scope, deps.io, ds, "main", rev_floor, path, a.hash, a.size, req.author),
+            .delete => try insertDeleteRevision(&tx, scope, ds, "main", rev_floor, path, req.author),
+        };
     }
+    const last_rev = rev_floor.?;
 
     const merge_id = Uuid.nextAfter(deps.io, Uuid.parse(main_head) catch null);
     const message = try std.fmt.allocPrint(arena, "Merge branch '{s}'", .{req.name});
@@ -2257,7 +2243,7 @@ fn merge(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, 
             ds.id,
             main_head,
             branch_head,
-            @as([]const u8, &last_rev.toString()),
+            last_rev,
             message,
             req.author,
         },
@@ -2411,6 +2397,7 @@ fn serverCommit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: C
     ) catch return error.Db;
 
     const parent = tx.rawOne([]const u8, scope, "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'branch'", .{ ds.id, req.branch }) catch return error.Db;
+    if (try sealBroken(arena, &tx, scope, ds, parent)) |res| return res;
     const parent_cutoff: ?[]const u8 = blk: {
         const p = parent orelse break :blk null;
         break :blk tx.rawOne([]const u8, scope, "SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid", .{p}) catch return error.Db;

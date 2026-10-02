@@ -717,9 +717,10 @@ Full dashboard budgets are in `docs/dashboard.md`.
 
 - The platform uploads item bytes through the server API (presigned PUT, server-side
   hash verification — invariant 2 has one enforcement point), then writes item paths
-  and annotation changes directly with the `cid_writer` role (INSERT only), creating
-  UUIDv7 `rev_id`s, setting `ts` from them, and holding the shared per-branch write
-  lock for each transaction (`docs/data-model.md`).
+  and annotation changes directly with the `cid_writer` role (INSERT only, never
+  `rev_id` or `ts`: the database mints both), holding the shared per-branch write lock
+  for each transaction and inserting a `revision_batches` key with each batch so a
+  retry never writes twice (`docs/data-model.md`).
 - For commit, release, branch, merge, diff and export it calls the cid server API
   (same JSON as `--json`).
 - It commits when a batch finishes a pipeline stage and tags when someone publishes a

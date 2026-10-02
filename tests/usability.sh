@@ -8,7 +8,9 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CID="$ROOT/zig-out/bin/cid"
 WORK="$(mktemp -d)"
-PORT=7878
+# A port of its own per run: a server orphaned by an earlier, killed run
+# can never answer for this one.
+PORT=$((20000 + $$ % 20000))
 export CID_DB='host=127.0.0.1 port=5433 user=cid password=cid-test dbname=cid_test'
 export CID_S3_ENDPOINT='http://127.0.0.1:8333'
 export CID_S3_ACCESS_KEY='cid-test-key' CID_S3_SECRET_KEY='cid-test-secret'
