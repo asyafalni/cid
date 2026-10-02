@@ -409,10 +409,19 @@ pub fn comparePage(arena: std.mem.Allocator, db: *duck.Db, a: Files, b: Files, a
 pub const CompareFiles = struct { items: []const u8, anns: []const u8 };
 
 pub fn compareLines(arena: std.mem.Allocator, db: *duck.Db, a: Files, b: Files, out: CompareFiles) Error!DiffSummary {
-    const ctes = try compareCtes(arena, a, b);
-    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (WITH {s} SELECT change, path, hash_a, hash_b, size_a, size_b FROM ch ORDER BY path) TO '{s}' (FORMAT json)", .{ ctes, try quote(arena, out.items) }));
-    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (WITH {s} SELECT change AS ann, id, kind, class, item_path FROM acp ORDER BY item_path, id) TO '{s}' (FORMAT json)", .{ ctes, try quote(arena, out.anns) }));
-    const text = (try db.scalarText(arena, try std.fmt.allocPrint(arena, "WITH {s} SELECT {s}::VARCHAR", .{ ctes, summary_sql }))) orelse return error.QueryFailed;
+    // The joins once, into temporary tables DuckDB can spill to disk, then
+    // each file and the summary read from them.
+    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "CREATE OR REPLACE TEMP TABLE diff_items AS WITH {s} SELECT change, path, hash_a, hash_b, size_a, size_b FROM ch", .{try compareCtes(arena, a, b)}));
+    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "CREATE OR REPLACE TEMP TABLE diff_anns AS WITH {s} SELECT change AS ann, id, kind, class, item_path FROM acp", .{try compareCtes(arena, a, b)}));
+    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT * FROM diff_items ORDER BY path) TO '{s}' (FORMAT json)", .{try quote(arena, out.items)}));
+    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT * FROM diff_anns ORDER BY item_path, id) TO '{s}' (FORMAT json)", .{try quote(arena, out.anns)}));
+    const text = (try db.scalarText(arena,
+        \\SELECT json_object('added', count(*) FILTER (WHERE change = 'added'),
+        \\  'modified', count(*) FILTER (WHERE change = 'modified'), 'deleted', count(*) FILTER (WHERE change = 'deleted'),
+        \\  'ann_added', (SELECT count(*) FROM diff_anns WHERE ann = 'added'),
+        \\  'ann_changed', (SELECT count(*) FROM diff_anns WHERE ann = 'changed'),
+        \\  'ann_removed', (SELECT count(*) FROM diff_anns WHERE ann = 'removed'))::VARCHAR FROM diff_items
+    )) orelse return error.QueryFailed;
     return std.json.parseFromSliceLeaky(DiffSummary, arena, text, .{}) catch error.QueryFailed;
 }
 

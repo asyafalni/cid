@@ -29,6 +29,8 @@ psql() { docker compose -f docker-compose.test.yml exec -T timescaledb psql -qtA
 
 start() { # a fresh server and an empty browse cache, so each phase's peak is its own
   rm -rf "$BROWSE_DIR"
+  # Only this phase's work: nothing left queued from earlier (or from tests).
+  psql -c "UPDATE version_jobs SET status = 'skipped', reason = 'bench reset' WHERE status IN ('pending', 'building')" >/dev/null 2>&1 || true
   "$CID" admin serve --port "$PORT" >>/tmp/cid-bench-serve.log 2>&1 &
   SERVE=$!
   for _ in $(seq 100); do curl -sf "http://127.0.0.1:$PORT/v0/ping" >/dev/null && break; sleep 0.1; done
@@ -102,54 +104,60 @@ SQL
 }
 
 RUN=$(date +%s)
-echo "Release, fresh server (manifest streamed and hashed, browse index built and stored)"
+# Annotated clones get the dataset's default format: the bench trains yolo.
+psql -c "UPDATE datasets SET default_format = 'yolo' WHERE name = '$NAME'" >/dev/null
+V1=$(curl -sf -H "$AUTH" "$API/releases" | sed -n 's/.*"name":"v1","commit":"\([^"]*\)".*/\1/p')
+
+echo "A release, fresh server (manifest and browse index in one pass, stored)"
 stop; start
 C=$(add_file "release-$RUN")
 timed "release of $N items" -X POST -H 'content-type: application/json' "$API/tag" -d "{\"name\":\"r$RUN\",\"commit\":\"$C\"}"
 echo "  server peak memory: $(peak)"
 
-echo "Pages that read the head's statistics, fresh server"
+echo "A new commit, prepared in the background before anyone asks, fresh server"
 stop; start
-C=$(add_file "stats-$RUN")
-timed "overview (statistics aggregated, first time)" "$API/overview"
-timed "overview again (statistics kept)" "$API/overview"
+s=$(date +%s%N)
+HEAD=$(add_file "head-$RUN")
+until [ "$(psql -c "SELECT status FROM version_jobs WHERE commit_id = '$HEAD'")" != "pending" ] && \
+      [ "$(psql -c "SELECT status FROM version_jobs WHERE commit_id = '$HEAD'")" != "building" ]; do sleep 1; done
+echo "  prepared ($(psql -c "SELECT status FROM version_jobs WHERE commit_id = '$HEAD'")): statistics, browse index, items file, yolo export in $(( ($(date +%s%N) - s) / 1000000 )) ms"
+echo "  server peak memory: $(peak)"
+timed "overview (statistics prepared)" "$API/overview"
 timed "home listing" "http://127.0.0.1:$PORT/v0/datasets"
+timed "first browse of the new head (index prepared)" "$API/browse?commit=$HEAD&limit=120"
+timed "items file for clone/pull (prepared)" "$API/version/$HEAD"
+timed "yolo export for clone/pull (prepared)" "$API/version/$HEAD?kind=yolo"
+timed "yolo export, --split val --class truck (first time)" "$API/version/$HEAD?kind=yolo&split=val&class=truck"
 echo "  server peak memory: $(peak)"
 
-echo "Browse an unreleased version, fresh server"
+echo "The dashboard on release v1 ($V1), fresh server"
 stop; start
-C=$(add_file "browse-$RUN")
-timed "first view: index built from history" "$API/browse?commit=$C&limit=120"
-echo "  server peak memory: $(peak)"
-
-echo "cid diff between two 1M-item versions (compared on the server), fresh server"
-stop; start
-C=$(add_file "diff-$RUN")
-timed "version file, first time (written)" "$API/version/$C"
-timed "version file again (kept)" "$API/version/$C"
-echo "  server peak memory: $(peak)"
-WS=$(mktemp -d)
-mkdir "$WS/.cid"
-printf '.{ .address = "cid@127.0.0.1:%s", .git_url = "g@h:bench.git", .kind = "annotated" }\n' "$NAME" >"$WS/.cid/config.zon"
-for pass in first second; do
-  (cd "$WS" && CID_SERVER="http://127.0.0.1:$PORT" /usr/bin/time -f "  cid diff v1 $pass time: %e s, client peak %M KB" \
-    "$(realpath "$OLDPWD/$CID" 2>/dev/null || echo "$CID")" diff v1 "$C" 2>&1 >/dev/null | tail -1)
-done
-echo "  server peak memory: $(peak)"
-rm -rf "$WS"
-
-stop; start
-COMMIT=$(curl -sf -H "$AUTH" "$API/releases" | sed -n 's/.*"name":"v1","commit":"\([^"]*\)".*/\1/p')
-echo "Browse release v1 ($COMMIT), fresh server"
-timed "first view, empty cache (index from storage)" "$API/browse?commit=$COMMIT&limit=120"
-B="$API/browse?commit=$COMMIT&limit=120"
+B="$API/browse?commit=$V1&limit=120"
+timed "first view, empty cache (index from storage)" "$B"
 timed "unfiltered" "$B"
 timed "split=val" "$B&split=val"
 timed "class=truck" "$B&class=truck"
 timed "path contains cam7/ + train + car" "$B&q=cam7%2F&split=train&class=car"
-timed "type=.png (no match)" "$B&type=.png"
 timed "deep page (after cam42/00500000.jpg)" "$B&after=cam42%2F00500000.jpg"
 timed "open item + unfiltered page" "$B&item=cam7%2F00000007.jpg"
 HASHES=$(curl -sf -H "$AUTH" "$B" | grep -o '"hash":"[0-9a-f]*"' | head -120 | sed 's/"hash"://' | paste -sd,)
 timed "thumbs for the page (120 presigns)" -X POST -H 'content-type: application/json' "$API/thumbs" -d "{\"hashes\":[$HASHES]}"
+timed "subset size: --split train --class car" "$API/browse/size?commit=$V1&split=train&class=car"
+timed "files: the top folder (50 folders)" "$API/browse/dir?commit=$V1&prefix="
+timed "files: cam7/ (20,000 files, first page)" "$API/browse/dir?commit=$V1&prefix=cam7%2F"
+timed "compare v1 → head (index of head prepared)" "$API/browse/compare?a=$V1&b=$HEAD"
+timed "compare, next page of changes" "$API/browse/compare?a=$V1&b=$HEAD&after=zz"
 echo "  server peak memory: $(peak)"
+
+echo "cid diff v1 → head, fresh server"
+stop; start
+WS=$(mktemp -d)
+mkdir "$WS/.cid"
+printf '.{ .address = "cid@127.0.0.1:%s", .git_url = "g@h:bench.git", .kind = "annotated" }\n' "$NAME" >"$WS/.cid/config.zon"
+BIN=$(realpath "$CID")
+for pass in first second; do
+  (cd "$WS" && CID_SERVER="http://127.0.0.1:$PORT" /usr/bin/time -f "  cid diff ($pass): %e s, client peak %M KB" \
+    "$BIN" diff v1 "$HEAD" 2>&1 >/dev/null | tail -1)
+done
+echo "  server peak memory: $(peak)"
+rm -rf "$WS"

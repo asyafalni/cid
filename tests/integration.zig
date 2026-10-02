@@ -2226,7 +2226,7 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
         const key = try std.fmt.allocPrint(arena, "states/{s}/{s}-{s}-{s}.jsonl.gz", .{ ds_id, released.commit, (&std.fmt.bytesToHex(whole, .lower))[0..16], where.sha256[0..16] });
         const genuine = try s3c.getObjectAlloc(&scope, key);
         try s3c.putObject(&scope, key, "not the state you are looking for");
-        try std.testing.expectError(error.ServerRefused, remote.state(arena, released.commit));
+        try std.testing.expectError(error.Corrupt, remote.state(arena, released.commit));
         try s3c.putObject(&scope, key, genuine);
         try std.testing.expectEqual(@as(usize, 1), (try remote.state(arena, released.commit)).len);
     }

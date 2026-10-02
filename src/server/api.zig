@@ -70,6 +70,9 @@ pub const Deps = struct {
     browse_cache_max: u32 = 32,
     /// One index build at a time, server-wide.
     browse_building: std.atomic.Value(bool) = .init(false),
+    /// Which commit holds the slot (the random half of its id; 0 for
+    /// none), so a request for the very version being built waits for it.
+    browse_building_commit: std.atomic.Value(u64) = .init(0),
     /// For memory that outlives no single step but must not grow with a
     /// dataset: each batch of a streamed index build.
     gpa: std.mem.Allocator = std.heap.page_allocator,
@@ -813,9 +816,18 @@ fn paramAll(arena: std.mem.Allocator, route: DatasetRoute, key: []const u8) Hand
 
 const BrowseIndex = struct { dir: []const u8, files: browse_mod.Files };
 
-/// The version's browse index on local disk, fetched from storage (a
-/// release's) or built from history the first time; null while another
-/// build holds the one build slot. Commits are sealed, so an index never
+fn releaseSlot(deps: *Deps) void {
+    deps.browse_building_commit.store(0, .release);
+    deps.browse_building.store(false, .release);
+}
+
+/// How long a request waits for the build of the very version it asked
+/// for (a 1M-item index takes about 25 s).
+const browse_wait_ms = 90_000;
+
+/// The version's browse index on local disk, fetched from storage (kept
+/// there for every version once built) or built from history the first
+/// time; null while another build holds the one build slot. Commits are sealed, so an index never
 /// goes stale; the folder keeps the most recent `browse_cache_max`.
 fn browseIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit: []const u8) HandleError!?BrowseIndex {
     const cwd = std.Io.Dir.cwd();
@@ -824,12 +836,25 @@ fn browseIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
     const index: BrowseIndex = .{ .dir = dir, .files = browse_mod.Files.of(arena, dir, commit) catch return error.OutOfMemory };
     if (cwd.statFile(deps.io, index.files.items, .{})) |_| return index else |_| {}
 
-    if (deps.browse_building.swap(true, .acquire)) return null;
-    defer deps.browse_building.store(false, .release);
+    const wanted = std.mem.readInt(u64, (Uuid.parse(commit) catch return error.BadRequest).bytes[8..16], .big);
+    if (deps.browse_building.swap(true, .acquire)) {
+        // The version asked for is the one being built (the background
+        // worker started on it after the push): wait for it, in a server.
+        if (deps.offload and deps.browse_building_commit.load(.acquire) == wanted) {
+            var waited: u32 = 0;
+            while (waited < browse_wait_ms) : (waited += 250) {
+                nilo.sleep(250) catch break;
+                if (cwd.statFile(deps.io, index.files.items, .{})) |_| return index else |_| {}
+            }
+        }
+        return null;
+    }
+    deps.browse_building_commit.store(wanted, .release);
+    defer releaseSlot(deps);
     if (cwd.statFile(deps.io, index.files.items, .{})) |_| return index else |_| {}
 
-    const released = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM refs WHERE dataset_id = $1::uuid AND commit_id = $2::uuid AND kind = 'release' LIMIT 1", .{ ds.id, commit }) catch return error.Db;
-    if (released != null) fetched: {
+    // Built before, here or by another server: storage keeps every index.
+    fetched: {
         const keys = try browseKeys(arena, ds.id, commit);
         // Annotations first: an index exists once its items file does.
         for ([_][2][]const u8{ .{ keys.anns, index.files.anns }, .{ keys.items, index.files.items } }) |pair| {
@@ -853,7 +878,7 @@ fn browseIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
     };
     lines.close(deps);
     try convertLines(arena, deps, index.files);
-    if (released != null) storeBrowseIndex(arena, deps, scope, ds, commit, index.files);
+    storeBrowseIndex(arena, deps, scope, ds, commit, index.files);
     pruneBrowse(arena, deps, dir);
     return index;
 }
@@ -934,7 +959,7 @@ fn browseKeys(arena: std.mem.Allocator, dataset_id: []const u8, commit: []const 
     };
 }
 
-/// Keeps a release's index in storage, so another server (or this one,
+/// Keeps a version's index in storage, so another server (or this one,
 /// after a restart) fetches it instead of rebuilding. Best-effort: the
 /// index can always be built again from history.
 fn storeBrowseIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit: []const u8, files: browse_mod.Files) void {
@@ -1664,7 +1689,9 @@ fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, p
     defer cwd.deleteFile(deps.io, lines.items) catch {};
     defer cwd.deleteFile(deps.io, lines.anns) catch {};
     const summary = blk: {
-        var db = try duckFor(arena, deps, ia.dir);
+        // A database of its own, one thread, like an index build: the
+        // whole-version joins stay near one memory ceiling, spilling past it.
+        var db = duck.Db.open(arena, .{ .allowed_dir = ia.dir }) catch return error.Storage;
         defer db.close();
         break :blk offload(deps, browse_mod.compareLines, .{ arena, &db, ia.files, ib.files, lines }) catch |err| return duckErr(err);
     };
@@ -1739,13 +1766,24 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
             cached = files;
             break :prepared;
         } else |_| {}
-        lines = openLines(deps, files) catch break :prepared;
+        // The one build slot, as every index build takes it: a build of
+        // this very commit may be under way (the worker started on it
+        // after the push), and then it finishes the index instead.
+        if (deps.browse_building.swap(true, .acquire)) break :prepared;
+        deps.browse_building_commit.store(std.mem.readInt(u64, (Uuid.parse(commit_id) catch return error.BadRequest).bytes[8..16], .big), .release);
+        lines = openLines(deps, files) catch {
+            releaseSlot(deps);
+            break :prepared;
+        };
         index_files = files;
         work.items = lines.?.items();
         work.annotations = lines.?.anns();
     }
     const created = release_mod.create(arena, work, deps.db, scope, deps.s3, ds.id, req.name, commit_id) catch |err| {
-        if (lines) |l| l.discard(deps, index_files.?);
+        if (lines) |l| {
+            l.discard(deps, index_files.?);
+            releaseSlot(deps);
+        }
         return switch (err) {
             error.BadName => errorResponse(arena, .bad_request, "that is not a release name (letters, digits, dot, dash, underscore)", "Pick a name like v1.0.0 and run 'cid tag' again."),
             error.ReleaseExists => errorResponse(arena, .conflict, "that release already exists and releases never move", "Pick a new name, e.g. the next version number."),
@@ -1777,6 +1815,7 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
     // fails the release, and browsing rebuilds it.
     if (lines) |l| {
         l.close(deps);
+        defer releaseSlot(deps);
         if (convertLines(arena, deps, index_files.?)) |_| {
             storeBrowseIndex(arena, deps, scope, ds, created.commit_id, index_files.?);
             pruneBrowse(arena, deps, std.fs.path.dirname(index_files.?.items) orelse deps.browse_dir);

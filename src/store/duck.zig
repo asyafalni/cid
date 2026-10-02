@@ -64,7 +64,10 @@ pub const Db = struct {
             if (ch == '\'') quoted.append(arena, '\'') catch return error.OutOfMemory;
             quoted.append(arena, ch) catch return error.OutOfMemory;
         }
-        const confine = std.fmt.allocPrintSentinel(arena, "SET allowed_directories = ['{s}/']; SET enable_external_access = false; SET lock_configuration = true;", .{quoted.items}, 0) catch return error.OutOfMemory;
+        // A join larger than the memory ceiling spills here, inside the
+        // folder, rather than failing.
+        const confine = std.fmt.allocPrintSentinel(arena, "SET allowed_directories = ['{0s}/']; SET temp_directory = '{0s}/.duckdb-spill'; " ++
+            "SET enable_external_access = false; SET lock_configuration = true;", .{quoted.items}, 0) catch return error.OutOfMemory;
         var locked: c.duckdb_result = undefined;
         defer c.duckdb_destroy_result(&locked);
         if (c.duckdb_query(self.conn, confine, &locked) != c.DuckDBSuccess) {

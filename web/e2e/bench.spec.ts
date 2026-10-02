@@ -11,6 +11,10 @@ const budgetMs = 700;
 
 test.skip(!dataset, 'set BENCH_DATASET to a dataset seeded by tests/bench/browse_1m.sh');
 
+// The gallery renders what is on screen: a screen that shows 60 tiles,
+// so "the first 60 thumbnails" are all there to count.
+test.use({ viewport: { width: 1920, height: 1600 } });
+
 test('filter change to the first 60 thumbnails, at the bench dataset', async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto('/signin');

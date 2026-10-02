@@ -257,7 +257,9 @@ fn runServe(
         io.random(&secret);
     }
 
-    serve_mod.serve(arena, &deps, .{ .port = port, .session_secret = &secret, .signin = signin_cfg }) catch |err| {
+    // A long-running server needs an allocator that frees: the command's
+    // arena never would, and every streamed batch would stay allocated.
+    serve_mod.serve(std.heap.smp_allocator, &deps, .{ .port = port, .session_secret = &secret, .signin = signin_cfg }) catch |err| {
         return fail(io, .network, "the server stopped: {t}. Fix the cause, then run 'cid admin serve' again.", .{err});
     };
     return .ok;

@@ -559,7 +559,8 @@ fn generateExport(
     defer folder.close();
     const subset = workspace.Subset.of(ws.config);
     remote.exportTo(arena, commit_id, ws.config.format, .{ .split = subset.split, .class = subset.class }, .{ .ctx = &folder, .write = ExportFolder.write }) catch |err| return switch (err) {
-        error.ExportImpossible => error.ExportFailed,
+        // Written before its hash could be checked: the sidecars are void.
+        error.ExportImpossible, error.Corrupt => error.ExportFailed,
         else => |e| e,
     };
     folder.close();

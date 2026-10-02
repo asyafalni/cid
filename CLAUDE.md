@@ -317,10 +317,16 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   worker (`version_jobs`, `api.prepareNext`): its statistics, browse index, items file
   and default export, through the same code a request takes.
   An index holds only what the commit seals; media metadata (image dimensions) is
-  joined per page. Measured at 1M items with `tests/bench/browse_1m.sh` (ReleaseFast):
-  release 35 s and 247 MB peak, pages 0.13–0.46 s, filter change to 60 thumbnails in
-  the browser about 0.32 s, two versions compared in about 0.5 s. It never scans raw
-  files on page load.
+  joined per page. It never scans raw files on page load. Every index, once built, is
+  kept in storage as well, so a restart or another server fetches it.
+
+  Measured at 1M items and 1.5M boxes (`tests/bench/browse_1m.sh` and
+  `web/e2e/bench.spec.ts`, ReleaseFast), server memory never above 400 MB:
+  release 38 s; a new head prepared in the background in about 70 s, after which its
+  overview, items file and default export answer in 1–5 ms; browse pages 0.25–0.45 s;
+  filter change to 60 thumbnails in the browser 0.30 s; subset size 64 ms; a folder
+  35–150 ms; compare 2.3 s; `cid diff` 2.6 s the first time and 0.01 s after, with a
+  19 MB client.
 - **The preview worker** (`cid admin previews`) builds thumbnails, waveforms, video
   posters, PDF page images and table statistics, by calling `ffmpeg` (and `vips`
   where present) as external programs. **ffmpeg never scales with users**: the

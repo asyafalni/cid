@@ -117,6 +117,7 @@ pub const Error = error{
     Stale, // someone pushed since you pulled
     MissingContent, // a file was not in storage; re-run push
     ExportImpossible, // the server says why in the log (an item it cannot export)
+    Corrupt, // a downloaded file failed its SHA-256 check (invariant 14)
     ReleaseExists,
     BranchExists,
     NoSuchBranch,
@@ -288,10 +289,10 @@ pub const Remote = struct {
         var reading: StateReading = .{ .arena = arena };
         self.t.getUrl(where.url, .{ .ctx = &reading, .read = StateReading.read }) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
-            error.BadState => error.ServerRefused,
+            error.BadState => error.Corrupt,
             else => error.ServerUnreachable,
         };
-        if (!std.mem.eql(u8, &reading.sha256_hex, where.sha256)) return error.ServerRefused;
+        if (!std.mem.eql(u8, &reading.sha256_hex, where.sha256)) return error.Corrupt;
         return .{ .items = reading.items.items, .total = where.total };
     }
 
@@ -312,10 +313,10 @@ pub const Remote = struct {
         defer reading.scratch.deinit();
         self.t.getUrl(where.url, .{ .ctx = &reading, .read = BundleReading.read }) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
-            error.BadState => error.ServerRefused,
+            error.BadState => error.Corrupt,
             else => error.ServerUnreachable,
         };
-        if (!std.mem.eql(u8, &reading.sha256_hex, where.sha256)) return error.ServerRefused;
+        if (!std.mem.eql(u8, &reading.sha256_hex, where.sha256)) return error.Corrupt;
     }
 
     pub const TagResult = struct { release: []const u8, commit: []const u8, manifest_sha256: []const u8, items: u64 };
@@ -454,10 +455,10 @@ pub const Remote = struct {
         defer reading.scratch.deinit();
         self.t.getUrl(where.url, .{ .ctx = &reading, .read = DiffReading.read }) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
-            error.BadState => error.ServerRefused,
+            error.BadState => error.Corrupt,
             else => error.ServerUnreachable,
         };
-        if (!std.mem.eql(u8, &reading.sha256_hex, where.sha256)) return error.ServerRefused;
+        if (!std.mem.eql(u8, &reading.sha256_hex, where.sha256)) return error.Corrupt;
         return where.summary;
     }
 

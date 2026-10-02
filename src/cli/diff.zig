@@ -105,7 +105,7 @@ fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: [
     ctx.out.print("Comparing {s} → {s}\n", .{ a_label, b_label }) catch return .network;
     var printer: Printer = .{ .ctx = ctx, .remote = remote };
     const sum = remote.compare(ctx.arena, a_commit, b_commit, .{ .ctx = &printer, .visit = Printer.visit }) catch |err| switch (err) {
-        error.ServerRefused => return common.fail(ctx, .integrity, "the diff from the server failed its check; the lines above are void. Run 'cid diff' again.", .{}),
+        error.Corrupt => return common.fail(ctx, .integrity, "the diff from the server failed its check; the lines above are void. Run 'cid diff' again.", .{}),
         else => return common.fail(ctx, .network, "cannot compare '{s}' and '{s}' on the server. Check CID_SERVER, then run 'cid diff' again.", .{ a_label, b_label }),
     };
     if (printer.failed) return .network;
