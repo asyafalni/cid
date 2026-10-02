@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearch } from '@tanstack/react-router';
-import { ApiError, listDatasets, type DatasetSummary } from '../api';
+import { ApiError, getMe, listDatasets, setStar, type DatasetSummary } from '../api';
 import { humanBytes } from '../format';
 import { recentDatasets } from '../recent';
 
@@ -22,6 +22,13 @@ export function Home() {
   const search = useSearch({ strict: false }) as HomeSearch;
   const navigate = useNavigate();
   const query = useQuery({ queryKey: ['datasets'], queryFn: listDatasets });
+  const me = useQuery({ queryKey: ['me'], queryFn: getMe });
+  const person = me.data?.via === 'gitlab';
+  const client = useQueryClient();
+  const toggleStar = useMutation({
+    mutationFn: ({ name, on }: { name: string; on: boolean }) => setStar(name, on),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['datasets'] }),
+  });
 
   const setSearch = (patch: Partial<HomeSearch>) =>
     void navigate({ to: '/', search: (old: Record<string, unknown>) => ({ ...old, ...patch }) });
@@ -71,6 +78,7 @@ export function Home() {
   const anyRestricted = datasets.some((d) => d.restricted);
   const byName = new Map(datasets.map((d) => [d.name, d]));
   const recent = recentDatasets().filter((n) => byName.has(n));
+  const starred = datasets.filter((d) => d.starred);
 
   return (
     <>
@@ -82,6 +90,17 @@ export function Home() {
             : `${datasets.length} ${datasets.length === 1 ? 'dataset' : 'datasets'} on this server`}
         </p>
       </header>
+
+      {!filtered && starred.length > 0 && (
+        <nav className="recent" aria-label="Starred">
+          <span className="quiet">Starred</span>
+          {starred.map((d) => (
+            <Link key={d.name} to="/d/$" params={{ _splat: d.name }} className="chip data">
+              {d.name}
+            </Link>
+          ))}
+        </nav>
+      )}
 
       {!filtered && recent.length > 0 && (
         <nav className="recent" aria-label="Recently viewed">
@@ -98,7 +117,7 @@ export function Home() {
         <input
           type="search"
           className="filter-q data"
-          placeholder="name, class or file type…"
+          placeholder="name, class, file type or owner…"
           aria-label="Search datasets"
           value={typed}
           onChange={(e) => setTyped(e.target.value)}
@@ -166,6 +185,9 @@ export function Home() {
                 </Link>
                 <span className="manifest-kind">{d.kind === 'annotated' ? 'annotated' : 'files'}</span>
                 {d.restricted && <span className="chip restricted-badge">restricted</span>}
+                {d.owners.length > 0 && (
+                  <span className="quiet manifest-owners">owned by {d.owners.join(', ')}</span>
+                )}
                 <p className="manifest-facts quiet data">
                   {d.items.toLocaleString()} {d.items === 1 ? 'item' : 'items'} · {humanBytes(d.bytes)}
                   {d.types.length > 0 && <> · {d.types.slice(0, 4).map((t) => t.ext).join(' ')}</>}
@@ -175,6 +197,16 @@ export function Home() {
                 </p>
               </div>
               <div className="manifest-side">
+                {person && (
+                  <button
+                    className={d.starred ? 'star star--on' : 'star'}
+                    aria-pressed={d.starred}
+                    aria-label={d.starred ? `Unstar ${d.name}` : `Star ${d.name}`}
+                    onClick={() => toggleStar.mutate({ name: d.name, on: !d.starred })}
+                  >
+                    {d.starred ? '★' : '☆'}
+                  </button>
+                )}
                 {d.latest_release ? (
                   <span className="release-tag">{d.latest_release}</span>
                 ) : (
@@ -263,7 +295,8 @@ function matches(d: DatasetSummary, s: HomeSearch): boolean {
     const hit =
       d.name.toLowerCase().includes(q) ||
       d.classes.some((c) => c.toLowerCase().includes(q)) ||
-      d.types.some((t) => t.ext.toLowerCase().includes(q));
+      d.types.some((t) => t.ext.toLowerCase().includes(q)) ||
+      d.owners.some((o) => o.toLowerCase().includes(q));
     if (!hit) return false;
   }
   return true;

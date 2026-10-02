@@ -16,7 +16,16 @@ export type DatasetSummary = {
   classes: string[];
   /** Finished previews only; empty for a restricted dataset. */
   mosaic: { hash: string; url: string }[];
+  /** Starred by the signed-in person (always false for the server token). */
+  starred: boolean;
+  /** Display names of the dataset's owners (Maintainers). */
+  owners: string[];
 };
+
+export async function setStar(name: string, on: boolean): Promise<void> {
+  const res = await fetch(`/v0/datasets/${name}/-/star`, { method: on ? 'PUT' : 'DELETE' });
+  if (!res.ok) throw new ApiError(res.status, `the server answered ${res.status}`, null);
+}
 
 const tokenKey = 'cid-token';
 

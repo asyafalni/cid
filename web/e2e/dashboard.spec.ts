@@ -280,6 +280,34 @@ test('sign in with GitLab: the round trip, the cookie, and only what the role al
   await expect(page).toHaveURL(/\/signin/);
 });
 
+test('a signed-in person stars a dataset, finds it under Starred, and finds owners by name', async ({ page }) => {
+  await page.goto('/signin');
+  await page.getByRole('link', { name: 'Sign in with GitLab' }).click();
+  await expect(page.getByRole('heading', { name: 'Datasets' })).toBeVisible();
+
+  // Owners are searchable by name: Olu maintains boxes.
+  const row = page.locator('.manifest-row', { has: page.getByRole('link', { name: 'e2e/datasets/boxes', exact: true }) });
+  await expect(row.getByText('owned by Olu Owner')).toBeVisible();
+
+  const star = page.getByRole('button', { name: 'Star e2e/datasets/boxes' });
+  await star.click();
+  await expect(page.getByRole('button', { name: 'Unstar e2e/datasets/boxes' })).toHaveAttribute('aria-pressed', 'true');
+  // A star is kept on the server, for this person: a reload still has it.
+  await page.reload();
+  await expect(page.getByRole('navigation', { name: 'Starred' }).getByRole('link', { name: 'e2e/datasets/boxes' })).toBeVisible();
+  await page.getByRole('button', { name: 'Unstar e2e/datasets/boxes' }).click();
+  await expect(page.getByRole('navigation', { name: 'Starred' })).toHaveCount(0);
+
+  await page.getByLabel('Search datasets').fill('olu');
+  await expect(page.getByRole('link', { name: 'e2e/datasets/boxes', exact: true })).toBeVisible();
+});
+
+test('the server token cannot star: a star belongs to a person', async ({ page }) => {
+  await signIn(page);
+  await expect(page.getByRole('heading', { name: 'Datasets' })).toBeVisible();
+  await expect(page.locator('.star')).toHaveCount(0);
+});
+
 test('a GitLab callback with a forged state is refused, in words', async ({ page }) => {
   await page.goto('/auth/gitlab/callback?code=anything&state=forged-state-value-x');
   await expect(page).toHaveURL(/\/signin\?error=/);

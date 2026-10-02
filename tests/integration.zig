@@ -893,6 +893,22 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
     try std.testing.expectEqual(std.http.Status.unauthorized, push_no.status);
     const other_no = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/sync/-/head", rhea, "");
     try std.testing.expectEqual(std.http.Status.unauthorized, other_no.status);
+    // Stars: hers to set, shown in her listing, refused for the token.
+    const starred = cid.api.handleAs(arena, &deps, &scope, "PUT", "/v0/datasets/test/datasets/access/-/star", rhea, "");
+    try std.testing.expectEqual(std.http.Status.ok, starred.status);
+    const with_star = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/datasets", rhea, "");
+    try std.testing.expect(std.mem.indexOf(u8, with_star.body, "\"starred\":true") != null);
+    const unstarred = cid.api.handleAs(arena, &deps, &scope, "DELETE", "/v0/datasets/test/datasets/access/-/star", rhea, "");
+    try std.testing.expectEqual(std.http.Status.ok, unstarred.status);
+    const no_star = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/datasets", rhea, "");
+    try std.testing.expect(std.mem.indexOf(u8, no_star.body, "\"starred\":true") == null);
+    const other_star = cid.api.handleAs(arena, &deps, &scope, "PUT", "/v0/datasets/test/datasets/sync/-/star", rhea, "");
+    try std.testing.expectEqual(std.http.Status.unauthorized, other_star.status); // only what she can read
+    // Owners: the Maintainers, by name. Wade writes, so he is not one yet.
+    try std.testing.expect(std.mem.indexOf(u8, with_star.body, "\"owners\":[]") != null);
+    _ = try db.exec(&fscope, "UPDATE access SET level = 'maintain' WHERE account_id = 'gitlab:7002'", .{});
+    const owned = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/datasets", rhea, "");
+    try std.testing.expect(std.mem.indexOf(u8, owned.body, "\"owners\":[\"Writer Wade\"]") != null);
     const who = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/me", rhea, "");
     try std.testing.expect(std.mem.indexOf(u8, who.body, "Reader Rhea") != null);
     // Nobody signed in: no listing, and /v0/me says so.

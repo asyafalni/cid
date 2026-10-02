@@ -204,6 +204,11 @@ export default function setup() {
       INSERT INTO access (dataset_id, account_id, level, source)
         SELECT dataset_id, 'gitlab:4242', 'read', 'dashboard' FROM datasets WHERE name = 'e2e/datasets/boxes'
         ON CONFLICT (dataset_id, account_id) DO NOTHING;
+      INSERT INTO accounts (account_id, display_name, source) VALUES ('gitlab:5151', 'Olu Owner', 'gitlab')
+        ON CONFLICT (account_id) DO NOTHING;
+      INSERT INTO access (dataset_id, account_id, level, source)
+        SELECT dataset_id, 'gitlab:5151', 'maintain', 'dashboard' FROM datasets WHERE name = 'e2e/datasets/boxes'
+        ON CONFLICT (dataset_id, account_id) DO NOTHING;
     `);
     run(`${cid} admin previews`); // sniff + thumbs for every new png
   } finally {

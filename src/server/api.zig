@@ -139,6 +139,8 @@ fn handleInner(
     const ds = lookupDataset(arena, deps, scope, route.name) orelse
         return errorResponse(arena, .not_found, "no such dataset", "Run 'cid init' to create it, or check the address.");
 
+    if (eql(route.action, "star") and (eql(method, "PUT") or eql(method, "DELETE")))
+        return star(arena, deps, scope, caller, ds, eql(method, "PUT"));
     if (eql(method, "GET") and eql(route.action, "info"))
         return datasetInfo(arena, deps, scope, ds);
     if (eql(method, "GET") and eql(route.action, "overview"))
@@ -280,12 +282,19 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
         kind: []const u8,
         restricted: bool,
         default_format: []const u8,
+        starred: bool,
+        owners: ?[]const u8,
         latest_release: ?[]const u8,
         last_push: ?[]const u8,
         head: ?[]const u8,
         stats: ?[]const u8,
     };
     const rows = deps.db.raw(Row, scope, "SELECT d.dataset_id::text AS dataset_id, d.name, d.kind, d.restricted, d.default_format, " ++
+        "  EXISTS (SELECT 1 FROM stars s WHERE s.dataset_id = d.dataset_id AND s.account_id = $1) AS starred, " ++
+        // Owners are Maintainers (CLAUDE.md, words), by display name.
+        "  (SELECT string_agg(ac.display_name, '\n' ORDER BY ac.display_name) FROM access o " ++
+        "   JOIN accounts ac ON ac.account_id = o.account_id " ++
+        "   WHERE o.dataset_id = d.dataset_id AND o.level = 'maintain') AS owners, " ++
         "  (SELECT r.name FROM refs r WHERE r.dataset_id = d.dataset_id AND r.kind = 'release' " ++
         "   ORDER BY r.commit_id DESC LIMIT 1) AS latest_release, " ++
         "  (SELECT to_char(max(c.recorded_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') " ++
@@ -312,6 +321,8 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
         types: []const CommitStats.Type,
         classes: []const []const u8,
         mosaic: []const Thumb,
+        starred: bool,
+        owners: []const []const u8,
     };
     const list = try arena.alloc(Entry, rows.len);
     for (list, rows) |*e, row| {
@@ -344,9 +355,33 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
             .types = st.types,
             .classes = if (row.restricted) &.{} else st.classes,
             .mosaic = mosaic.items,
+            .starred = row.starred,
+            .owners = try splitLines(arena, row.owners orelse ""),
         };
     }
     return json(arena, .ok, .{ .datasets = list });
+}
+
+/// A star is one person's bookmark — their preference, not the dataset's
+/// data (invariant 17 is about the latter) — so it needs a person: a
+/// dashboard session. The shared server token has no account to star from.
+fn star(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, on: bool) HandleError!Response {
+    const account = caller.account orelse
+        return errorResponse(arena, .unprocessable_entity, "a star belongs to a person, and the server token is not one", "Run 'Sign in with GitLab' on the dashboard, then star it again.");
+    if (on) {
+        _ = deps.db.exec(scope, "INSERT INTO stars (account_id, dataset_id) VALUES ($1, $2::uuid) ON CONFLICT DO NOTHING", .{ account, ds.id }) catch return error.Db;
+    } else {
+        _ = deps.db.exec(scope, "DELETE FROM stars WHERE account_id = $1 AND dataset_id = $2::uuid", .{ account, ds.id }) catch return error.Db;
+    }
+    return json(arena, .ok, .{ .starred = on });
+}
+
+fn splitLines(arena: std.mem.Allocator, text: []const u8) HandleError![]const []const u8 {
+    if (text.len == 0) return &.{};
+    var out: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |line| try out.append(arena, line);
+    return out.items;
 }
 
 /// Who the dashboard is talking to. A session answers with its account;

@@ -182,11 +182,11 @@ accent colours.
   dataset shows type tiles, never a clear thumbnail.
 - Search by name, description, class, media type, owner. Filters: media type, kind,
   restricted, has releases. All in the URL.
-- "Recently viewed" and "Starred" rows. Recently viewed lives in the viewer's browser.
+- "Recently viewed" and "Starred" rows. Recently viewed lives in the viewer's browser;
+  a star is kept on the server for the signed-in person (`stars`), so the server token,
+  which is nobody, cannot star. Owners are the Maintainers, shown and searchable by name.
 - *Waiting on other slices, absent rather than broken:* the health badge (Health tab
-  and the Validator), searching descriptions (card editing) and owners, and Starred
-  (both need the signed-in identity GitLab sign-in brings; the shared server token
-  has no account to star from).
+  and the Validator) and searching descriptions (card editing).
 
 ### 4.2 Dataset › Overview
 - Header: name, version picker, `cid clone` copy button, owners, restricted badge, and a

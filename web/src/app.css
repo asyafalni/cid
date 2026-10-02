@@ -1181,3 +1181,30 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* A star: one person's bookmark. Pressed state in the glyph and in
+   aria-pressed, never color alone. */
+.star {
+  background: none;
+  border: none;
+  padding: 0 var(--space-1);
+  font-size: 1.1rem;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.star--on {
+  color: var(--brass);
+}
+
+.star:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-chip);
+}
+
+.manifest-owners {
+  margin-left: var(--space-2);
+  font-size: 0.8rem;
+}

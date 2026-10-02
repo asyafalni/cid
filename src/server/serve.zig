@@ -52,6 +52,8 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
     try app.get("/v0/*", dispatch);
     try app.post("/v0/datasets", dispatch);
     try app.post("/v0/*", dispatch);
+    try app.put("/v0/*", dispatch);
+    try app.delete("/v0/*", dispatch);
     // The dashboard, embedded at build time: /v0/* wins over these by
     // specificity, and every non-API path falls back to the app shell so
     // deep links (/d/org/datasets/x) open where they point.
