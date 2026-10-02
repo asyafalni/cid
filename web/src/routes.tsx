@@ -41,6 +41,11 @@ const datasetRoute = createRoute({
     a?: string;
     b?: string;
     dir?: string;
+    mode?: 'table';
+    q?: string;
+    split?: string;
+    class?: string;
+    type?: string;
   } => ({
     view:
       search.view === 'browse'
@@ -55,6 +60,13 @@ const datasetRoute = createRoute({
     a: typeof search.a === 'string' ? search.a : undefined,
     b: typeof search.b === 'string' ? search.b : undefined,
     dir: typeof search.dir === 'string' ? search.dir : undefined,
+    // Browse: the gallery is the default, so only the table is spelled;
+    // filters are present only when set, so a clean view has a clean URL.
+    mode: search.mode === 'table' ? 'table' : undefined,
+    q: typeof search.q === 'string' && search.q !== '' ? search.q : undefined,
+    split: typeof search.split === 'string' ? search.split : undefined,
+    class: typeof search.class === 'string' ? search.class : undefined,
+    type: typeof search.type === 'string' ? search.type : undefined,
   }),
   beforeLoad: () => {
     if (!getToken()) throw redirect({ to: '/signin' });

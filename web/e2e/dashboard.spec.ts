@@ -98,9 +98,70 @@ test('a detection dataset: boxes are drawn in the gallery and the drawer', async
   await expect(page.locator('.drawer .ann-list li')).toHaveCount(2);
 });
 
+test('filters narrow browse, count their options, and live in the URL', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/demo?view=browse');
+  await expect(page.getByText('4 items', { exact: true })).toBeVisible();
+
+  // Non-image data first: the text files, by type.
+  await page.getByLabel('Filter by type').selectOption('.txt');
+  await expect(page).toHaveURL(/type=\.txt/);
+  await expect(page.getByText('2 of 4 items')).toBeVisible();
+  await expect(page.locator('.tile')).toHaveCount(2);
+
+  // Path search composes with it, after the debounce, as one URL change.
+  await page.getByLabel('Filter by path').fill('notes');
+  await expect(page).toHaveURL(/q=notes/);
+  await expect(page.getByText('1 of 4 items')).toBeVisible();
+
+  // A filter that matches nothing says so and offers the way back.
+  await page.getByLabel('Filter by path').fill('nothing-is-called-this');
+  await expect(page.getByRole('heading', { name: 'No item matches these filters' })).toBeVisible();
+  await page.getByRole('button', { name: 'Clear filters' }).first().click();
+  await expect(page.getByText('4 items', { exact: true })).toBeVisible();
+
+  // `t` switches to the table, into the URL; `g` back.
+  await page.locator('body').press('t');
+  await expect(page).toHaveURL(/mode=table/);
+  await expect(page.locator('.browse-table')).toBeVisible();
+  await page.locator('body').press('g');
+  await expect(page.locator('.gallery')).toBeVisible();
+});
+
+test('a view opened from its URL in a new browser shows the same release, filters and item', async ({
+  page,
+  browser,
+}) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/demo?view=browse&release=v1.0.0&type=.png&item=img-a.png');
+  await expect(page.getByText('2 of 3 items')).toBeVisible();
+  const url = page.url();
+
+  // docs/dashboard.md §9, literally: a fresh browser, the URL, nothing else.
+  const fresh = await browser.newContext();
+  const other = await fresh.newPage();
+  await signIn(other);
+  await other.goto(url);
+  // The release: v1.0.0 has no notes.txt, so three items, two of them png.
+  await expect(other.getByRole('button', { name: 'v1.0.0' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(other.getByText('2 of 3 items')).toBeVisible();
+  await expect(other.getByLabel('Filter by type')).toHaveValue('.png');
+  // The item: its drawer open, at that release.
+  await expect(other.getByRole('complementary', { name: 'img-a.png' })).toBeVisible();
+  await fresh.close();
+});
+
+test('a class filter keeps the items that carry the class', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/boxes?view=browse');
+  await page.getByLabel('Filter by class').selectOption('person');
+  await expect(page).toHaveURL(/class=person/);
+  await expect(page.getByText('1 of 1 items')).toBeVisible();
+});
+
 test('accessibility: no serious or critical axe findings', async ({ page }) => {
   await signIn(page);
-  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse']) {
+  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table']) {
     await page.goto(path);
     await page.waitForLoadState('networkidle');
     const results = await new AxeBuilder({ page }).analyze();

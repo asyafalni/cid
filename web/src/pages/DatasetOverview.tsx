@@ -20,6 +20,11 @@ export function DatasetOverview() {
     a?: string;
     b?: string;
     dir?: string;
+    mode?: 'table';
+    q?: string;
+    split?: string;
+    class?: string;
+    type?: string;
   };
   const navigate = useNavigate();
   const query = useQuery({
@@ -122,6 +127,8 @@ export function DatasetOverview() {
           commit={pinnedCommit}
           openItem={search.item}
           onOpenItem={(path) => setSearch({ item: path })}
+          filters={{ mode: search.mode, q: search.q, split: search.split, cls: search.class, type: search.type }}
+          onFilters={(patch) => setSearch(patch)}
         />
       ) : view === 'releases' ? (
         <ReleasesTab

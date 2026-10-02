@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   getDownloads,
@@ -10,6 +10,15 @@ import {
 } from '../api';
 import { humanBytes } from '../format';
 import { AnnotationOverlay, classColor } from '../overlays';
+import {
+  anyFilter,
+  applyFilters,
+  classesByItem,
+  extOf,
+  facet,
+  type FilterPatch,
+  type Filters,
+} from '../browseFilter';
 
 // Browse: never "viewer not available". Every item renders — as its
 // thumbnail when the worker has built one, as a type tile when not —
@@ -20,14 +29,42 @@ export function BrowseTab({
   commit,
   openItem,
   onOpenItem,
+  filters,
+  onFilters,
 }: {
   name: string;
   overview: Overview;
   commit: string | null;
   openItem: string | undefined;
   onOpenItem: (path: string | undefined) => void;
+  filters: Filters;
+  onFilters: (patch: FilterPatch) => void;
 }) {
-  const [mode, setMode] = useState<'gallery' | 'table'>('gallery');
+  const mode: 'gallery' | 'table' = filters.mode === 'table' ? 'table' : 'gallery';
+  const setMode = (m: 'gallery' | 'table') => onFilters({ mode: m === 'table' ? 'table' : undefined });
+
+  // `g` and `t`, the toggles docs/dashboard.md names — never while typing.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === 'g') onFilters({ mode: undefined });
+      if (e.key === 't') onFilters({ mode: 'table' });
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onFilters]);
+
+  // The search box commits to the URL after a pause, so typing a word is
+  // one history entry, not one per letter.
+  const [typed, setTyped] = useState(filters.q ?? '');
+  useEffect(() => setTyped(filters.q ?? ''), [filters.q]);
+  useEffect(() => {
+    if (typed === (filters.q ?? '')) return;
+    const timer = setTimeout(() => onFilters({ q: typed === '' ? undefined : typed }), 250);
+    return () => clearTimeout(timer);
+  }, [typed, filters.q, onFilters]);
   // Overlay affordances: which classes are hidden, and how loud the
   // shapes are. View affordances, not filters, so they stay local;
   // the filters that belong in the URL arrive with the filter slice.
@@ -60,12 +97,18 @@ export function BrowseTab({
     );
   }
 
-  const items = state.data.items;
+  const all = state.data.items;
   const annotations = state.data.annotations ?? [];
+  const itemClasses = classesByItem(annotations);
+  const items = applyFilters(all, filters, itemClasses);
+  const splitFacet = facet(all, filters, itemClasses, 'split');
+  const classFacet = facet(all, filters, itemClasses, 'cls');
+  const typeFacet = facet(all, filters, itemClasses, 'type');
+  const filtered = anyFilter(filters);
   const thumbByHash = new Map((thumbs.data?.thumbs ?? []).map((t) => [t.hash, t.url]));
   const annsByItem = groupAnnotations(annotations);
   const classes = classCounts(annotations);
-  const open = items.find((i) => i.path === openItem);
+  const open = all.find((i) => i.path === openItem);
 
   return (
     <div className="browse">
@@ -83,8 +126,58 @@ export function BrowseTab({
             </button>
           ))}
         </div>
-        <p className="quiet data">{items.length.toLocaleString()} items</p>
+        <p className="quiet data" aria-live="polite">
+          {filtered
+            ? `${items.length.toLocaleString()} of ${all.length.toLocaleString()} items`
+            : `${all.length.toLocaleString()} items`}
+        </p>
       </div>
+
+      {all.length > 0 && (
+        <div className="filter-bar" role="search">
+          <input
+            type="search"
+            className="filter-q data"
+            placeholder="path contains…"
+            aria-label="Filter by path"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+          />
+          <FacetSelect
+            label="split"
+            facets={splitFacet}
+            value={filters.split}
+            blank="no split"
+            onChange={(v) => onFilters({ split: v })}
+          />
+          {classFacet.length > 0 && (
+            <FacetSelect
+              label="class"
+              facets={classFacet}
+              value={filters.cls}
+              blank="unlabelled"
+              onChange={(v) => onFilters({ class: v })}
+            />
+          )}
+          <FacetSelect
+            label="type"
+            facets={typeFacet}
+            value={filters.type}
+            blank="no extension"
+            onChange={(v) => onFilters({ type: v })}
+          />
+          {filtered && (
+            <button
+              className="filter-clear"
+              onClick={() =>
+                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined })
+              }
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+      )}
 
       {classes.length > 0 && (
         <div className="overlay-bar">
@@ -124,10 +217,25 @@ export function BrowseTab({
         </div>
       )}
 
-      {items.length === 0 ? (
+      {all.length === 0 ? (
         <div className="empty blueprint">
           <h2>This version is empty</h2>
           <p>Every item was deleted by this point in history.</p>
+        </div>
+      ) : items.length === 0 ? (
+        <div className="empty blueprint">
+          <h2>No item matches these filters</h2>
+          <p>
+            <button
+              className="filter-clear"
+              onClick={() =>
+                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined })
+              }
+            >
+              Clear filters
+            </button>{' '}
+            to see all {all.length.toLocaleString()} items at this version.
+          </p>
         </div>
       ) : mode === 'gallery' ? (
         <ul className="gallery">
@@ -320,6 +428,40 @@ function ItemDrawer({
   );
 }
 
+function FacetSelect({
+  label,
+  facets,
+  value,
+  blank,
+  onChange,
+}: {
+  label: string;
+  facets: { value: string; count: number }[];
+  value: string | undefined;
+  blank: string;
+  onChange: (value: string | undefined) => void;
+}) {
+  return (
+    <label className="facet">
+      <span className="facet-label" aria-hidden="true">
+        {label}
+      </span>
+      <select
+        aria-label={`Filter by ${label}`}
+        value={value === undefined ? '\u0000all' : value}
+        onChange={(e) => onChange(e.target.value === '\u0000all' ? undefined : e.target.value)}
+      >
+        <option value={'\u0000all'}>any</option>
+        {facets.map((f) => (
+          <option key={f.value} value={f.value}>
+            {f.value === '' ? blank : f.value} ({f.count.toLocaleString()})
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function HashChip({ hash }: { hash: string }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -358,12 +500,6 @@ function classCounts(annotations: StateAnnotation[]): { name: string; count: num
   return [...counts.entries()]
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => a.name.localeCompare(b.name));
-}
-
-function extOf(path: string): string {
-  const base = path.slice(path.lastIndexOf('/') + 1);
-  const dot = base.lastIndexOf('.');
-  return dot > 0 ? base.slice(dot) : 'file';
 }
 
 function looksVisual(path: string): boolean {

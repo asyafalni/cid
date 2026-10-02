@@ -902,3 +902,62 @@
 .crumb:hover {
   text-decoration: underline;
 }
+
+/* Browse filters: one calm row of instruments — a search field and
+   counted selects. Every value lives in the URL (browseFilter.ts). */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.filter-q {
+  flex: 1 1 14rem;
+  min-width: 10rem;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.facet {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.85rem;
+}
+
+.facet-label {
+  color: var(--text-muted);
+}
+
+.facet select {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+
+.filter-clear {
+  padding: var(--space-1) var(--space-3);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-chip);
+  background: none;
+  color: var(--aether);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.filter-q:focus-visible,
+.facet select:focus-visible,
+.filter-clear:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
