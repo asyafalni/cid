@@ -5,6 +5,7 @@
 //! storage through presigned URLs (free functions at the bottom).
 
 const std = @import("std");
+const cache_mod = @import("cache.zig");
 const local = @import("local.zig");
 const index_mod = @import("index.zig");
 
@@ -601,9 +602,11 @@ fn parse(T: type, arena: std.mem.Allocator, body: []const u8) ?T {
 // streamed with bounded buffers, never through the API.
 // ---------------------------------------------------------------------------
 
-pub const TransferError = error{ TransferFailed, OutOfMemory };
+pub const TransferError = error{ TransferFailed, CacheDamaged, OutOfMemory };
 
-/// Streams one cached item to a presigned PUT URL.
+/// Streams one cached item to a presigned PUT URL, after checking the
+/// cached copy still holds those bytes: a damaged one is removed and
+/// answers `error.CacheDamaged` (the server would refuse it anyway).
 pub fn uploadFromCache(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -614,7 +617,12 @@ pub fn uploadFromCache(
 ) TransferError!void {
     var path_buf: [96]u8 = undefined;
     const cache_path = std.fmt.bufPrint(&path_buf, "items/{s}/{s}", .{ hash_hex[0..2], hash_hex }) catch unreachable;
-    var file = cache_dir.openFile(io, cache_path, .{}) catch return error.TransferFailed;
+    const cached = cache_mod.hashFile(io, cache_dir, cache_path) catch return error.CacheDamaged;
+    if (cached.size != size or !std.mem.eql(u8, &cached.hash_hex, hash_hex)) {
+        cache_dir.deleteFile(io, cache_path) catch {};
+        return error.CacheDamaged;
+    }
+    var file = cache_dir.openFile(io, cache_path, .{}) catch return error.CacheDamaged;
     defer file.close(io);
 
     var http: std.http.Client = .{ .allocator = allocator, .io = io };
@@ -672,7 +680,6 @@ pub fn downloadToCache(
     }
 
     // Verify, then move into place by hash. A mismatch never lands.
-    const cache_mod = @import("cache.zig");
     const hashed = cache_mod.hashFile(io, cache_dir, tmp_name) catch return error.TransferFailed;
     if (!std.mem.eql(u8, &hashed.hash_hex, expected_hash_hex)) return error.TransferFailed;
 
@@ -693,8 +700,10 @@ pub fn inCache(io: std.Io, cache_dir: std.Io.Dir, hash_hex: []const u8) bool {
     return true;
 }
 
-/// Hard-links a cached item into the working folder, copying when linking
-/// is impossible (different filesystem).
+/// Copies a cached item into the working folder: a copy-on-write clone
+/// where the filesystem has them (copy_file_range), an in-kernel copy
+/// elsewhere, written atomically. Never a hard link: editing a working file
+/// in place (`>>`, `sed -i`) would rewrite the cached bytes under their hash.
 pub fn placeFromCache(
     io: std.Io,
     cache_dir: std.Io.Dir,
@@ -707,11 +716,8 @@ pub fn placeFromCache(
     if (std.mem.lastIndexOfScalar(u8, rel_path, '/')) |sep| {
         work_dir.createDirPath(io, rel_path[0..sep]) catch return error.TransferFailed;
     }
-    work_dir.deleteFile(io, rel_path) catch {};
-    std.Io.Dir.hardLink(cache_dir, cache_path, work_dir, rel_path, io, .{}) catch {
-        std.Io.Dir.copyFile(cache_dir, cache_path, work_dir, rel_path, io, .{}) catch
-            return error.TransferFailed;
-    };
+    std.Io.Dir.copyFile(cache_dir, cache_path, work_dir, rel_path, io, .{ .permissions = .default_file }) catch
+        return error.TransferFailed;
 }
 
 test {

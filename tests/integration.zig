@@ -252,10 +252,46 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     try std.testing.expectEqual(std.http.Status.unprocessable_entity, missing.status);
 
     // Upload B, retry: same body now lands.
-    const key_b = try cid.api.itemKey(arena, &hash_b);
+    const api_id = (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/api'", .{})).?;
+    const key_b = try cid.api.stagedKey(arena, api_id, &hash_b);
     try s3c.putObject(&scope, key_b, content_b);
     const push2 = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/" ++ name ++ "/-/push", "Bearer test-token", push2_body);
     try std.testing.expectEqual(std.http.Status.ok, push2.status);
+
+    // Another dataset is never told the server holds B (invariant 12), and
+    // bytes staged under B's hash that are not B are refused at push, the
+    // stored B untouched (invariant 2).
+    {
+        _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
+        inline for (.{ "refs", "commits", "item_revisions", "dataset_items" }) |table| {
+            _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/api-other')", .{});
+        }
+        _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/api-other'", .{});
+        _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
+        const other = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/api-other\",\"git_url\":\"git@example.invalid:o.git\"}");
+        try std.testing.expectEqual(std.http.Status.created, other.status);
+        const other_id = (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/api-other'", .{})).?;
+
+        const ask_b = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\"]}}", .{&hash_b});
+        const check_other = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/api-other/-/check-hashes", "Bearer test-token", ask_b);
+        try std.testing.expectEqual(std.http.Status.ok, check_other.status);
+        const other_parsed = try std.json.parseFromSliceLeaky(Check, arena, check_other.body, .{ .ignore_unknown_fields = true });
+        try std.testing.expectEqual(@as(usize, 1), other_parsed.missing.len);
+
+        const forged = "not content B at all......";
+        try s3c.putObject(&scope, try cid.api.stagedKey(arena, other_id, &hash_b), forged);
+        const id_f = cid.uuid7.Uuid.now(io).toString();
+        const forged_body = try std.fmt.allocPrint(arena,
+            \\{{"branch":"main","commits":[{{"id":"{s}","parent":null,"message":"forged","author":"user:test","authored_at_ms":1760000002000,"changes":[{{"op":"add","path":"b.txt","hash":"{s}","size":26}}]}}]}}
+        , .{ &id_f, &hash_b });
+        const refused = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/api-other/-/push", "Bearer test-token", forged_body);
+        try std.testing.expectEqual(std.http.Status.unprocessable_entity, refused.status);
+        try std.testing.expect(std.mem.indexOf(u8, refused.body, "does not match") != null);
+        const kept = try s3c.getObjectAlloc(&scope, try cid.api.itemKey(arena, &hash_b));
+        try std.testing.expectEqualStrings(content_b, kept);
+        const heads = try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM commits WHERE dataset_id = $1::uuid", .{other_id});
+        try std.testing.expectEqual(@as(?i64, 0), heads);
+    }
 
     // head and state: only b.txt remains after the delete.
     const head_res = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/" ++ name ++ "/-/head?branch=main", "Bearer test-token", "");
@@ -1679,7 +1715,7 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     var dg: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(pix, &dg, .{});
     const hh = std.fmt.bytesToHex(dg, .lower);
-    try s3c.putObject(&scope, try cid.api.itemKey(arena, &hh), pix);
+    try s3c.putObject(&scope, try cid.api.stagedKey(arena, ds_id, &hh), pix);
     try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len }});
 
     var last = cid.uuid7.Uuid.now(io);
@@ -1781,7 +1817,7 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     var dg: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(pix, &dg, .{});
     const hh = std.fmt.bytesToHex(dg, .lower);
-    try s3c.putObject(&scope, try cid.api.itemKey(arena, &hh), pix);
+    try s3c.putObject(&scope, try cid.api.stagedKey(arena, ds_id, &hh), pix);
     try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len, .media_type = "image/jpeg", .width = 640, .height = 480 }});
 
     // Registering enqueues exactly one preview per content hash, ever —
@@ -1972,7 +2008,7 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
     var dg: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(pix, &dg, .{});
     const hh = std.fmt.bytesToHex(dg, .lower);
-    try s3c.putObject(&scope, try cid.api.itemKey(arena, &hh), pix);
+    try s3c.putObject(&scope, try cid.api.stagedKey(arena, ds_id, &hh), pix);
     try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len, .width = 100, .height = 100 }});
 
     var last = cid.uuid7.Uuid.now(io);
@@ -2066,8 +2102,9 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/fmt" };
-    try s3c.putObject(&scope, try cid.api.itemKey(arena, &png_hash), png);
-    try s3c.putObject(&scope, try cid.api.itemKey(arena, &text_hash), text);
+    const fmt_id = (try db.rawOne([]const u8, &scope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/fmt'", .{})).?;
+    try s3c.putObject(&scope, try cid.api.stagedKey(arena, fmt_id, &png_hash), png);
+    try s3c.putObject(&scope, try cid.api.stagedKey(arena, fmt_id, &text_hash), text);
     try remote.registerItems(arena, &.{
         .{ .hash = &png_hash, .size = png.len, .media_type = "image/png" },
         .{ .hash = &text_hash, .size = text.len, .media_type = "text/plain" },

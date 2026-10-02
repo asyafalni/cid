@@ -425,6 +425,7 @@ If a change would weaken any of these, stop and ask.
 ```
 <bucket>/
   items/sha256/<aa>/<bb>/<hex>                any file, stored once
+  uploads/<dataset_id>/<hex>                  staged uploads, verified then moved
   previews/<aa>/<hex>/…                       thumbnails, waveforms, blurred renditions
   manifests/<dataset_id>/<commit_id>.items.parquet, .anns.parquet
                                               one pair per release: its browse index
@@ -438,7 +439,8 @@ multipart for files over 64 MB (all via nilo_s3), the bucket always named `cid` 
 created by the deployment, SeaweedFS version pinned in the test compose file.
 
 Local cache on user machines: `~/.cache/cid/items/<aa>/<hex>`, shared by every clone and
-release. Working folders use hard links, falling back to copies.
+release. Working folders get copies (copy-on-write clones where the filesystem has
+them), never hard links: editing a file in place must never change the cached bytes.
 
 Local repository state in each folder's `.cid/`:
 
@@ -545,7 +547,7 @@ LICENSE                      GPL-2.0-only, exactly like git
 src/main.zig                 entry point, argument parsing, exit codes
 src/cli/                     one file per command, thin
 src/core/                    commit, refs, state-at-commit, diff, merge, release, gc, purge
-src/client/                  server calls, local cache, hard links, folder scan, ignore rules
+src/client/                  server calls, local cache, folder scan, ignore rules
 src/client/index.zig         staging area (.cid/index)
 src/client/local.zig         local commits, HEAD, resumable push state
 src/client/sync.zig          push, pull, replaying unpushed commits, conflict listing

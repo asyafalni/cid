@@ -627,7 +627,7 @@ fn history(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, r
 /// those come with a logged reveal (invariant 20).
 fn tableStats(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, hash: []const u8) HandleError!Response {
     if (!validHashHex(hash)) return error.BadRequest;
-    const here = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM item_revisions WHERE dataset_id = $1::uuid AND item_hash = decode($2, 'hex') LIMIT 1", .{ ds.id, hash }) catch return error.Db;
+    const here = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM dataset_hashes WHERE dataset_id = $1::uuid AND item_hash = decode($2, 'hex')", .{ ds.id, hash }) catch return error.Db;
     if (here == null) return errorResponse(arena, .not_found, "no such item in this dataset", "Pick the item from this dataset's Browse view.");
 
     const Row = struct {
@@ -1078,7 +1078,7 @@ fn rowDiff(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, b
     const kind_b = table_stats.kindOf(req.path_b) orelse
         return json(arena, .ok, .{ .status = "not_a_table", .reason = @as(?[]const u8, "only CSV, Parquet and JSONL files are compared by rows") });
     for ([_][]const u8{ req.a, req.b }) |hash| {
-        const here = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM item_revisions WHERE dataset_id = $1::uuid AND item_hash = decode($2, 'hex') LIMIT 1", .{ ds.id, hash }) catch return error.Db;
+        const here = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM dataset_hashes WHERE dataset_id = $1::uuid AND item_hash = decode($2, 'hex')", .{ ds.id, hash }) catch return error.Db;
         if (here == null) return errorResponse(arena, .not_found, "no such item in this dataset", "Run 'cid diff <a> <b>' with two versions of this dataset.");
     }
     const ka = @tagName(kind_a);
@@ -1460,7 +1460,6 @@ const HashesBody = struct { hashes: []const []const u8 };
 /// v0 answers for everything the single token can see; the per-dataset
 /// dedup-privacy rule (invariant 12) binds when real auth lands.
 fn checkHashes(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
-    _ = ds;
     const req = parseBody(HashesBody, arena, body) orelse return error.BadRequest;
     if (req.hashes.len > 1000) return error.BadRequest;
 
@@ -1470,12 +1469,19 @@ fn checkHashes(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
         if (!validHashHex(hash)) return error.BadRequest;
         if (try isPurged(deps.db, scope, hash))
             return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then run 'cid push' again.");
-        const key = itemKey(arena, hash) catch return error.OutOfMemory;
-        const exists = deps.s3.headObject(scope, key) catch return error.Storage;
-        if (exists == null) {
-            const url = deps.s3.presignPut(scope, key, presign_secs) catch return error.Storage;
-            try missing.append(arena, .{ .hash = hash, .url = url });
+        if (try heldHere(arena, deps, scope, ds, hash)) {
+            // Told "the server has it": cleanup must not take it now.
+            _ = deps.db.exec(scope, "UPDATE items SET touched_at = now() WHERE item_hash = decode($1, 'hex')", .{hash}) catch return error.Db;
+            continue;
         }
+        // Uploads land in this dataset's staging area, never on the
+        // stored key: the server verifies them when they are recorded. One
+        // already staged (a push that stopped before recording) is not
+        // asked for again.
+        const staged = try stagedKey(arena, ds.id, hash);
+        if ((deps.s3.headObject(scope, staged) catch return error.Storage) != null) continue;
+        const url = deps.s3.presignPut(scope, staged, presign_secs) catch return error.Storage;
+        try missing.append(arena, .{ .hash = hash, .url = url });
     }
     return json(arena, .ok, .{ .missing = missing.items });
 }
@@ -1506,17 +1512,21 @@ fn push(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, d
     const req = parseBody(PushBody, arena, body) orelse return error.BadRequest;
     if (req.commits.len == 0) return error.BadRequest;
 
-    // 1. Every new file must already be in storage, hash-verified by name.
+    // 1. Every new file is admitted: held here already, or uploaded and
+    // its bytes hashed by the server now (invariant 2); once per content.
+    var admitted: std.StringHashMapUnmanaged(void) = .empty;
     for (req.commits) |commit| {
         for (commit.changes) |ch| {
             if (eql(ch.op, "add")) {
                 if (!validHashHex(ch.hash)) return error.BadRequest;
+                if (admitted.contains(ch.hash)) continue;
                 if (try isPurged(deps.db, scope, ch.hash))
                     return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then run 'cid push' again.");
-                const key = itemKey(arena, ch.hash) catch return error.OutOfMemory;
-                const exists = deps.s3.headObject(scope, key) catch return error.Storage;
-                if (exists == null)
-                    return errorResponse(arena, .unprocessable_entity, "a file is missing from storage", "Run 'cid push' again; it re-uploads what is missing.");
+                switch (try admit(arena, deps, scope, ds, ch.hash, null)) {
+                    .admitted => try admitted.put(arena, ch.hash, {}),
+                    .missing => return errorResponse(arena, .unprocessable_entity, "a file is missing from storage", "Run 'cid push' again; it re-uploads what is missing."),
+                    .mismatch => return errorResponse(arena, .unprocessable_entity, "an uploaded file does not match its hash", "Run 'cid push' again; it re-uploads it. If it persists, check the file is not changing while you push."),
+                }
             } else if (!eql(ch.op, "delete")) return error.BadRequest;
         }
     }
@@ -2015,9 +2025,12 @@ fn insertAddRevision(
         scope,
         "INSERT INTO items (item_hash, size_bytes, media_type) " ++
             "VALUES (decode($1, 'hex'), $2::bigint, 'application/octet-stream') " ++
-            "ON CONFLICT (item_hash) DO NOTHING",
+            "ON CONFLICT (item_hash) DO UPDATE SET touched_at = now()",
         .{ hash, @as(i64, @intCast(size)) },
     ) catch return error.Db;
+    // Verified in storage by this push: if cleanup had taken it, it is back.
+    _ = tx.exec(scope, "DELETE FROM collected_items WHERE item_hash = decode($1, 'hex')", .{hash}) catch return error.Db;
+    _ = tx.exec(scope, held_sql, .{ ds.id, hash }) catch return error.Db;
     try enqueuePreview(tx, scope, hash);
     // Item identity: new path → new item_id; existing path keeps its id.
     // On a branch, the path may live on main as of the branch start.
@@ -2237,19 +2250,18 @@ const RegisterItemsBody = struct {
 /// 2 keeps one enforcement point: bytes always enter through the server's
 /// upload flow).
 fn registerItems(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
-    _ = ds;
     const req = parseBody(RegisterItemsBody, arena, body) orelse return error.BadRequest;
     if (req.items.len > 1000) return error.BadRequest;
+    var admitted: std.StringHashMapUnmanaged(void) = .empty;
     for (req.items) |item| {
         if (!validHashHex(item.hash)) return error.BadRequest;
         if (try isPurged(deps.db, scope, item.hash))
             return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then register again.");
-        const key = itemKey(arena, item.hash) catch return error.OutOfMemory;
-        const stored = deps.s3.headObject(scope, key) catch return error.Storage;
-        const size = stored orelse
-            return errorResponse(arena, .unprocessable_entity, "an item is missing from storage", "Upload it through the check-hashes URLs first, then register again.");
-        if (size != item.size)
-            return errorResponse(arena, .unprocessable_entity, "an item's size does not match what storage holds", "Re-upload the file, then register again.");
+        if (!admitted.contains(item.hash)) switch (try admit(arena, deps, scope, ds, item.hash, item.size)) {
+            .admitted => try admitted.put(arena, item.hash, {}),
+            .missing => return errorResponse(arena, .unprocessable_entity, "an item is missing from storage", "Upload it through the check-hashes URLs first, then register again."),
+            .mismatch => return errorResponse(arena, .unprocessable_entity, "an uploaded item does not match its hash or size", "Re-upload the file, then register again."),
+        };
         const meta = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{
             .width = item.width,
             .height = item.height,
@@ -2257,9 +2269,11 @@ fn registerItems(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Data
         _ = deps.db.exec(
             scope,
             "INSERT INTO items (item_hash, size_bytes, media_type, meta) VALUES (decode($1, 'hex'), $2::bigint, $3, $4::jsonb) " ++
-                "ON CONFLICT (item_hash) DO UPDATE SET meta = items.meta || excluded.meta",
+                "ON CONFLICT (item_hash) DO UPDATE SET meta = items.meta || excluded.meta, touched_at = now()",
             .{ item.hash, @as(i64, @intCast(item.size)), item.media_type, meta },
         ) catch return error.Db;
+        _ = deps.db.exec(scope, "DELETE FROM collected_items WHERE item_hash = decode($1, 'hex')", .{item.hash}) catch return error.Db;
+        _ = deps.db.exec(scope, held_sql, .{ ds.id, item.hash }) catch return error.Db;
         try enqueuePreview(deps.db, scope, item.hash);
     }
     return json(arena, .ok, .{ .registered = req.items.len });
@@ -2373,6 +2387,61 @@ fn enqueuePreview(q: anytype, scope: anytype, hash: []const u8) HandleError!void
         "INSERT INTO previews (item_hash) VALUES (decode($1, 'hex')) ON CONFLICT (item_hash) DO NOTHING",
         .{hash},
     ) catch return error.Db;
+}
+
+/// Where a dataset's uploads land before the server verifies them.
+pub fn stagedKey(arena: std.mem.Allocator, dataset_id: []const u8, hash: []const u8) error{OutOfMemory}![]const u8 {
+    return std.fmt.allocPrint(arena, "uploads/{s}/{s}", .{ dataset_id, hash });
+}
+
+/// The hash is this dataset's already and its bytes are stored. Only then
+/// is "the server has it" said (invariant 12): content held only by other
+/// datasets must be uploaded again — proof of possession — so a hash
+/// learned elsewhere opens nothing.
+/// Records that this dataset holds these (admitted) bytes.
+const held_sql = "INSERT INTO dataset_hashes (dataset_id, item_hash) VALUES ($1::uuid, decode($2, 'hex')) ON CONFLICT DO NOTHING";
+
+fn heldHere(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, hash: []const u8) HandleError!bool {
+    const here = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM dataset_hashes WHERE dataset_id = $1::uuid AND item_hash = decode($2, 'hex')", .{ ds.id, hash }) catch return error.Db;
+    if (here == null) return false;
+    const collected = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM collected_items WHERE item_hash = decode($1, 'hex')", .{hash}) catch return error.Db;
+    if (collected != null) return false;
+    return (deps.s3.headObject(scope, itemKey(arena, hash) catch return error.OutOfMemory) catch return error.Storage) != null;
+}
+
+const Admit = enum { admitted, missing, mismatch };
+
+/// Admits an item's bytes (invariant 2): held here already, or uploaded to
+/// this dataset's staging area — then streamed through SHA-256 into a work
+/// file, and only if they match (and the size, when one is claimed) stored
+/// under the item's key, if absent. The staged copy goes either way.
+fn admit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, hash: []const u8, size: ?u64) HandleError!Admit {
+    if (try heldHere(arena, deps, scope, ds, hash)) return .admitted;
+    const staged = try stagedKey(arena, ds.id, hash);
+    const cwd = std.Io.Dir.cwd();
+    cwd.createDirPath(deps.io, deps.work_dir) catch return error.Storage;
+    const path = try std.fmt.allocPrint(arena, "{s}/{s}.upload", .{ deps.work_dir, hash });
+    defer cwd.deleteFile(deps.io, path) catch {};
+    const got = blk: {
+        var file = cwd.createFile(deps.io, path, .{ .truncate = true }) catch return error.Storage;
+        defer file.close(deps.io);
+        var buf: [64 * 1024]u8 = undefined;
+        var fw = file.writer(deps.io, &buf);
+        var hbuf: [64 * 1024]u8 = undefined;
+        var hashed = fw.interface.hashed(std.crypto.hash.sha2.Sha256.init(.{}), &hbuf);
+        const n = deps.s3.streamTo(scope, staged, &hashed.writer) catch return .missing;
+        hashed.writer.flush() catch return error.Storage;
+        fw.interface.flush() catch return error.Storage;
+        var digest: [32]u8 = undefined;
+        hashed.hasher.final(&digest);
+        break :blk .{ n, std.fmt.bytesToHex(digest, .lower) };
+    };
+    defer deps.s3.deleteObject(scope, staged) catch {};
+    if (!eql(&got[1], hash) or (size != null and size.? != got[0])) return .mismatch;
+    const key = itemKey(arena, hash) catch return error.OutOfMemory;
+    if ((deps.s3.headObject(scope, key) catch return error.Storage) == null)
+        deps.s3.putFile(scope, deps.io, key, path) catch return error.Storage;
+    return .admitted;
 }
 
 fn isPurged(db: *dbx.sql.Db, scope: anytype, hash: []const u8) HandleError!bool {

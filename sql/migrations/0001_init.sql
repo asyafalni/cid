@@ -46,7 +46,11 @@ CREATE TABLE items (
   size_bytes  bigint NOT NULL CHECK (size_bytes >= 0),
   media_type  text NOT NULL,
   meta        jsonb NOT NULL DEFAULT '{}',
-  created_at  timestamptz NOT NULL DEFAULT now()
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  -- last time a push or the platform used these bytes: cleanup (gc) only
+  -- takes items untouched for the whole retention period, so it never
+  -- deletes bytes a push in flight has just been told the server has
+  touched_at  timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE dataset_items (
@@ -62,6 +66,25 @@ CREATE TABLE purged_items (
   reason      text NOT NULL,
   purged_by   text NOT NULL,
   purged_at   timestamptz NOT NULL DEFAULT now()
+);
+
+-- Which datasets have had which bytes admitted (verified by the server,
+-- invariant 2). The push dedup check confirms a hash only from here, for
+-- the caller's own dataset, so hash existence is never an oracle across
+-- datasets (invariant 12).
+CREATE TABLE dataset_hashes (
+  dataset_id  uuid  NOT NULL REFERENCES datasets(dataset_id) ON DELETE CASCADE,
+  item_hash   bytea NOT NULL REFERENCES items(item_hash),
+  PRIMARY KEY (dataset_id, item_hash)
+);
+
+-- Bytes removed by cleanup (`cid admin gc`): referenced by no release and
+-- no branch head, untouched for the retention period. History keeps its
+-- rows and hashes; checking out a commit that needs these says so. A
+-- verified re-upload brings an item back (its row here goes).
+CREATE TABLE collected_items (
+  item_hash    bytea PRIMARY KEY REFERENCES items(item_hash),
+  collected_at timestamptz NOT NULL DEFAULT now()
 );
 
 ---------------------------------------------------------------------------

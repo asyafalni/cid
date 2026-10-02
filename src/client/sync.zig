@@ -10,6 +10,7 @@
 //! is merged silently). Branches beyond the current one are untouched.
 
 const std = @import("std");
+const cache = @import("cache.zig");
 const workspace = @import("workspace.zig");
 const local = @import("local.zig");
 const index_mod = @import("index.zig");
@@ -85,7 +86,15 @@ pub fn push(
         const missing = try remote.checkHashes(arena, hashes.items);
         for (missing) |m| {
             const size = sizeOf(unpushed, m.hash) orelse return error.CorruptLocalState;
-            try remote_mod.uploadFromCache(arena, io, cache_dir, m.hash, size, m.url);
+            remote_mod.uploadFromCache(arena, io, cache_dir, m.hash, size, m.url) catch |err| switch (err) {
+                // The cached copy changed after `cid add`: cache the file
+                // again from the folder, if it still holds those bytes.
+                error.CacheDamaged => {
+                    try recache(io, ws, cache_dir, unpushed, m.hash);
+                    try remote_mod.uploadFromCache(arena, io, cache_dir, m.hash, size, m.url);
+                },
+                else => return err,
+            };
             outcome.uploaded_files += 1;
         }
     }
@@ -632,6 +641,19 @@ fn setPosition(io: std.Io, ws: *workspace.Workspace, branch: []const u8, commit_
     const id = Uuid.parse(commit_id) catch return error.CorruptLocalState;
     local.saveHead(io, ws.cid_dir, .{ .branch = branch, .commit = id }) catch
         return error.CorruptLocalState;
+}
+
+/// Copies a committed file back into the cache from the working folder,
+/// when some path committed with `hash` still holds exactly those bytes.
+fn recache(io: std.Io, ws: *workspace.Workspace, cache_dir: std.Io.Dir, commits: []const local.Commit, hash: []const u8) Error!void {
+    for (commits) |commit| {
+        for (commit.changes) |ch| {
+            if (ch.op != .add or !std.mem.eql(u8, &ch.hash_hex, hash)) continue;
+            const stored = cache.storeFile(io, ws.work_dir, ch.path, cache_dir) catch continue;
+            if (std.mem.eql(u8, &stored.hash_hex, hash)) return;
+        }
+    }
+    return error.CacheDamaged;
 }
 
 fn sizeOf(commits: []const local.Commit, hash: []const u8) ?u64 {

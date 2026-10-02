@@ -105,6 +105,11 @@ expect_ok   "third commit" "$CID" commit -am "third"
 expect_ok   "third push"   "$CID" push
 cd "$WORK/reader"
 echo "local edit" >> a.txt
+# Editing a checked-out file in place never reaches the shared cache.
+h=$(printf 'hello\n' | sha256sum | cut -d' ' -f1)
+c="${XDG_CACHE_HOME:-$HOME/.cache}/cid/items/$(printf %.2s "$h")/$h"
+if [ "$(sha256sum < "$c" | cut -d' ' -f1)" = "$h" ]; then say "ok: in-place edit leaves the cache intact"
+else say "FAIL: in-place edit changed the cached copy"; fails=$((fails+1)); fi
 expect_ok   "stage the edit" "$CID" add a.txt
 expect_hint "pull over staged changes"        "$CID" pull
 

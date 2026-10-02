@@ -76,18 +76,32 @@ CREATE TABLE dataset_items (
 );
 ```
 
-How bytes get in: **always through the server** (presigned PUT, then the server
-verifies the hash before inserting the `items` row). This includes the annotation
-platform: its `cid_writer` role INSERTs *revisions* directly, but item bytes and
-`items` rows go through the server's upload API, so invariant 2 (verify every upload)
-has exactly one enforcement point. The preview worker picks up new items from the
-`items` insert.
+How bytes get in: **always through the server**. A presigned PUT never writes an
+item's final key. It writes to the dataset's staging area,
+`uploads/<dataset_id>/<hash>`. When the push (or `register-items`) is recorded, the
+server streams the staged object through SHA-256 and checks the hash and size.
+Only matching bytes are stored at `items/sha256/…`, and only if that key is absent,
+so nothing ever overwrites stored bytes. The staged copy is removed either way.
+A mismatch refuses the whole push before anything is recorded. This includes the
+annotation platform: its `cid_writer` role INSERTs *revisions* directly, but item
+bytes and `items` rows go through the server's upload API, so invariant 2 (verify
+every upload) has exactly one enforcement point. The preview worker picks up new
+items from the `items` insert.
+
+```sql
+CREATE TABLE dataset_hashes (       -- bytes admitted (verified) into each dataset
+  dataset_id  uuid  NOT NULL REFERENCES datasets(dataset_id) ON DELETE CASCADE,
+  item_hash   bytea NOT NULL REFERENCES items(item_hash),
+  PRIMARY KEY (dataset_id, item_hash)
+);
+```
 
 **Deduplication privacy rule:** when a push asks "do you already have hash X?", the
-server answers *yes* only if X is already referenced by a dataset the caller's token
-can read. Otherwise it requests the upload even when the bytes exist (and discards the
-duplicate). Without this, anyone who can push could confirm whether a known file —
-a specific face image, say — exists in a restricted dataset.
+server answers *yes* only if X was already admitted into **this** dataset
+(`dataset_hashes`), whose write token the caller holds. Otherwise it hands out a
+staging URL even when the bytes exist elsewhere, then verifies the upload and keeps
+the one stored copy. Without this, anyone who can push could confirm whether a known
+file (a specific face image, say) exists in a restricted dataset.
 
 ---
 
