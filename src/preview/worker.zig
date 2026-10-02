@@ -66,11 +66,6 @@ pub fn processPending(
 ) Error!Outcome {
     std.Io.Dir.cwd().createDirPath(io, config.tmpdir) catch return error.Storage;
 
-    // A server-build worker picks up the tables a CLI-build worker had to
-    // leave, once: their reason says exactly why they were left.
-    if (comptime duck.enabled) {
-        _ = db.exec(scope, "UPDATE previews SET status = 'pending', attempts = 0, reason = NULL, updated_at = now() WHERE status = 'skipped' AND reason = $1", .{needs_server_build}) catch return error.Db;
-    }
     // Opened on the first table of the pass, confined to the scratch folder.
     var tables: ?duck.Db = null;
     defer if (tables) |*t| t.close();
@@ -112,10 +107,6 @@ pub fn processPending(
     return outcome;
 }
 
-/// The reason a CLI-build worker leaves a table, word for word: a
-/// server-build worker requeues exactly these.
-pub const needs_server_build = "table statistics need the server build (zig build -Dduckdb)";
-
 /// A table file is known by its path, and the queue is keyed by content:
 /// any path this content has held names its kind.
 fn tableKindOf(db: *dbx.sql.Db, scope: anytype, hash: []const u8) ?table_stats.Kind {
@@ -136,7 +127,6 @@ fn buildTable(
     kind: table_stats.Kind,
     size: u64,
 ) BuildResult {
-    if (comptime !duck.enabled) return .{ .skipped = needs_server_build };
     if (size > config.max_input_bytes)
         return .{ .skipped = "too large to preview; raise the worker's limit to include it" };
 

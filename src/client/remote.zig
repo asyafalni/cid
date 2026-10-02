@@ -435,7 +435,7 @@ pub const Remote = struct {
     }
 
     pub const RowDiff = struct {
-        /// done | unreadable | too_large | not_a_table | needs_server_build | busy
+        /// done | unreadable | too_large | not_a_table | busy
         status: []const u8,
         reason: ?[]const u8 = null,
         diff: ?struct {

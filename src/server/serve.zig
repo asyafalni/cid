@@ -31,12 +31,12 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
     deps.offload = true;
     deps.gpa = gpa;
 
-    // The server build's one DuckDB database for browse queries: each takes
+    // The server's one DuckDB database for browse queries: each takes
     // a connection, under one memory ceiling and two threads.
     var duck_arena = std.heap.ArenaAllocator.init(gpa);
     defer duck_arena.deinit();
     var shared: duck.Db = undefined;
-    if (comptime duck.enabled) {
+    {
         const io = deps.io;
         const cwd = std.Io.Dir.cwd();
         const da = duck_arena.allocator();
@@ -47,10 +47,10 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
         shared = try duck.Db.open(da, .{ .allowed_dir = deps.browse_dir, .threads = 2 });
         deps.duck = &shared;
     }
-    defer if (comptime duck.enabled) {
+    defer {
         deps.duck = null;
         shared.close();
-    };
+    }
 
     // The Db, the S3 Store and its Bucket are nilo Services: provided
     // here, started by listen() on the server's own loop, shared by

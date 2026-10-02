@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { getDownloads, getState, type StateItem } from '../api';
+import { useInfiniteQuery } from '@tanstack/react-query';
+import { getDir, getDownloads } from '../api';
 import { humanBytes } from '../format';
 
 // Files: the folder tree exactly as committed, sizes and types, a
-// download per file. The open folder path lives in the URL.
+// download per file. The open folder path lives in the URL. One folder at
+// a time, from the server (DuckDB over the version's index): subfolders
+// with their counts, then the folder's own files a page at a time.
 export function FilesTab({
   name,
   commit,
@@ -16,39 +18,27 @@ export function FilesTab({
   openDir: string | undefined;
   onOpenDir: (dir: string | undefined) => void;
 }) {
-  const state = useQuery({
-    queryKey: ['state', name, commit],
-    queryFn: () => getState(name, commit!),
+  const prefix = openDir ? `${openDir}/` : '';
+  const listing = useInfiniteQuery({
+    queryKey: ['dir', name, commit, prefix],
+    queryFn: ({ pageParam }) => getDir(name, commit!, prefix, pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.next ?? undefined,
     enabled: commit !== null,
   });
 
   if (commit === null) return <p className="quiet">Nothing here until the first push.</p>;
-  if (state.isPending) return <p className="quiet">Reading the manifest…</p>;
-  if (state.isError)
+  if (listing.isPending) return <p className="quiet">Reading the manifest…</p>;
+  if (listing.isError)
     return (
       <div className="panel notice" role="alert">
         <p>Could not read this version. Run the link again, or pick another release.</p>
       </div>
     );
 
-  const prefix = openDir ? `${openDir}/` : '';
-  const here = state.data.items.filter((i) => i.path.startsWith(prefix));
-  const dirs = new Map<string, { count: number; bytes: number }>();
-  const files: StateItem[] = [];
-  for (const item of here) {
-    const rest = item.path.slice(prefix.length);
-    const slash = rest.indexOf('/');
-    if (slash === -1) {
-      files.push(item);
-    } else {
-      const dir = rest.slice(0, slash);
-      const agg = dirs.get(dir) ?? { count: 0, bytes: 0 };
-      agg.count += 1;
-      agg.bytes += item.size;
-      dirs.set(dir, agg);
-    }
-  }
-
+  const first = listing.data.pages[0];
+  const folders = first.folders;
+  const files = listing.data.pages.flatMap((p) => p.files);
   const crumbs = openDir ? openDir.split('/') : [];
 
   return (
@@ -81,32 +71,47 @@ export function FilesTab({
           </tr>
         </thead>
         <tbody>
-          {[...dirs.entries()].sort().map(([dir, agg]) => (
-            <tr key={dir} onClick={() => onOpenDir(prefix + dir)}>
+          {folders.map((f) => (
+            <tr key={f.name} onClick={() => onOpenDir(prefix + f.name)}>
               <td>
-                <span className="data">{dir}/</span>{' '}
+                <span className="data">{f.name}/</span>{' '}
                 <span className="quiet">
-                  {agg.count} {agg.count === 1 ? 'file' : 'files'}
+                  {f.items.toLocaleString()} {f.items === 1 ? 'file' : 'files'}
                 </span>
               </td>
-              <td className="data">{humanBytes(agg.bytes)}</td>
+              <td className="data">{humanBytes(f.bytes)}</td>
               <td></td>
             </tr>
           ))}
-          {files
-            .sort((x, y) => (x.path < y.path ? -1 : 1))
-            .map((item) => (
-              <tr key={item.path}>
-                <td className="data">{item.path.slice(prefix.length)}</td>
-                <td className="data">{humanBytes(item.size)}</td>
-                <td>
-                  <DownloadLink name={name} hash={item.hash} />
-                </td>
-              </tr>
-            ))}
+          {files.map((item) => (
+            <tr key={item.path}>
+              <td className="data">{item.path.slice(prefix.length)}</td>
+              <td className="data">{humanBytes(item.size)}</td>
+              <td>
+                <DownloadLink name={name} hash={item.hash} />
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
-      {dirs.size === 0 && files.length === 0 && (
+      {first.folders_total > folders.length && (
+        <p className="quiet">
+          {(first.folders_total - folders.length).toLocaleString()} more folders are not listed; open a deeper folder,
+          or use Browse to search by path.
+        </p>
+      )}
+      {listing.hasNextPage && (
+        <button
+          className="filter-clear more-items"
+          disabled={listing.isFetchingNextPage}
+          onClick={() => void listing.fetchNextPage()}
+        >
+          {listing.isFetchingNextPage
+            ? 'Loading more…'
+            : `Show more files (${files.length.toLocaleString()} of ${first.files_total.toLocaleString()} shown)`}
+        </button>
+      )}
+      {folders.length === 0 && files.length === 0 && (
         <p className="quiet">This folder is empty at this version.</p>
       )}
     </div>

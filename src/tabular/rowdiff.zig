@@ -7,7 +7,7 @@
 //! compared (they cannot line up) and the column change is the answer.
 //!
 //! One DuckDB query per question, answered as JSON; nothing here parses a
-//! table. Runs on the server only, in the server build.
+//! table. Runs on the server only.
 
 const std = @import("std");
 const duck = @import("../store/duck.zig");
@@ -77,7 +77,6 @@ pub fn compute(
 }
 
 test "rows added and removed, duplicates counted, edits as a pair, across formats" {
-    if (comptime !duck.enabled) return error.SkipZigTest;
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();

@@ -9,7 +9,9 @@
 //!   GET  /v0/datasets/<name>/-/log?branch=main
 //!   POST /v0/datasets/<name>/-/check-hashes   {hashes:[hex]}
 //!   POST /v0/datasets/<name>/-/push           {branch, commits:[…]}
-//!   GET  /v0/datasets/<name>/-/state/<commit>
+//!   GET  /v0/datasets/<name>/-/version/<commit>   presigned version file
+//!   GET  /v0/datasets/<name>/-/compare/<a>/<b>    presigned diff file
+//!   GET  /v0/datasets/<name>/-/browse[/size|/dir|/compare]?commit=…
 //!   POST /v0/datasets/<name>/-/downloads      {hashes:[hex]}
 //!
 //! v0 auth is one bearer token for everything; the SSH front door and
@@ -48,7 +50,7 @@ pub const Deps = struct {
     git: ?git_writer.Config = null,
     /// Whether "Sign in with GitLab" is configured (the sign-in page asks).
     gitlab_signin: bool = false,
-    /// The server's one DuckDB database for browse queries (server build),
+    /// The server's one DuckDB database for browse queries,
     /// confined to browse_dir, opened by `cid admin serve`: every query
     /// takes a connection, so one memory ceiling covers them all at once.
     /// Index builds and row diffs, one at a time each, use a one-thread
@@ -60,7 +62,7 @@ pub const Deps = struct {
     /// One row diff at a time, server-wide: DuckDB work never scales with
     /// requests (each answer is cached, so this is rarely contended).
     rowdiff_busy: std.atomic.Value(bool) = .init(false),
-    /// The server build's browse indexes, one Parquet file per version
+    /// The server's browse indexes, two Parquet files per version
     /// (named by commit id), kept here and in storage for releases.
     browse_dir: []const u8 = "/tmp/cid-browse",
     /// How many indexes the folder keeps; the least recently built go.
@@ -189,6 +191,12 @@ fn handleInner(
         return tableStats(arena, deps, scope, ds, route.queryParam("hash") orelse "");
     if (eql(method, "GET") and eql(route.action, "browse"))
         return browse(arena, deps, scope, ds, route);
+    if (eql(method, "GET") and eql(route.action, "browse/size"))
+        return browseSize(arena, deps, scope, ds, route);
+    if (eql(method, "GET") and eql(route.action, "browse/dir"))
+        return browseDir(arena, deps, scope, ds, route);
+    if (eql(method, "GET") and eql(route.action, "browse/compare"))
+        return browseCompare(arena, deps, scope, ds, route);
     if (eql(method, "POST") and eql(route.action, "rowdiff"))
         return rowDiff(arena, deps, scope, ds, body);
     if (eql(method, "GET") and eql(route.action, "history"))
@@ -215,8 +223,6 @@ fn handleInner(
         return compare(arena, deps, scope, ds, route.action["compare/".len..]);
     if (eql(method, "GET") and std.mem.startsWith(u8, route.action, "version/"))
         return versionFile(arena, deps, scope, ds, route.action["version/".len..]);
-    if (eql(method, "GET") and std.mem.startsWith(u8, route.action, "state/"))
-        return state(arena, deps, scope, ds, route.action["state/".len..]);
     if (eql(method, "POST") and eql(route.action, "downloads"))
         return downloads(arena, deps, scope, caller, ds, body);
     if (eql(method, "POST") and eql(route.action, "thumbs"))
@@ -249,7 +255,7 @@ fn handleInner(
 
 const DatasetRoute = struct {
     name: []const u8,
-    action: []const u8, // "push", "state/<id>", …
+    action: []const u8, // "push", "version/<id>", …
     query: []const u8, // raw query string, no '?'
 
     fn queryParam(self: *const DatasetRoute, key: []const u8) ?[]const u8 {
@@ -552,20 +558,42 @@ fn tableStats(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset
     return json(arena, .ok, .{ .status = "done", .stats = try shapeOnly(arena, stats), .withheld = true });
 }
 
-/// One page of a version, filtered, with facets and a cursor
-/// (browse/browse.zig has the contract). The server build answers from
-/// the version's Parquet index with DuckDB; the CLI build evaluates the
-/// same contract over the state rows.
-fn browse(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, route: DatasetRoute) HandleError!Response {
-    const commit = route.queryParam("commit") orelse
-        return errorResponse(arena, .bad_request, "browse needs a version", "Pick a version from the version picker.");
-    if (Uuid.parse(commit) == error.InvalidUuid)
-        return errorResponse(arena, .bad_request, "that is not a commit id", "Pick a version from the version picker.");
+/// A version's browse index, ready to query, or the answer that says why
+/// not: a bad or foreign commit, or another build holding the slot.
+const Indexed = union(enum) { ready: BrowseIndex, refused: Response };
+
+fn indexFor(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit: ?[]const u8) HandleError!Indexed {
+    const c = commit orelse
+        return .{ .refused = errorResponse(arena, .bad_request, "this needs a version", "Pick a version from the version picker.") };
+    if (Uuid.parse(c) == error.InvalidUuid)
+        return .{ .refused = errorResponse(arena, .bad_request, "that is not a commit id", "Pick a version from the version picker.") };
     // Indexes are cached by commit alone, so the commit is checked to be
     // this dataset's before any cache is consulted.
-    const mine = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM commits WHERE commit_id = $1::uuid AND dataset_id = $2::uuid", .{ commit, ds.id }) catch return error.Db;
-    if (mine == null) return errorResponse(arena, .not_found, "no such version in this dataset", "Pick a version from the version picker.");
+    const mine = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM commits WHERE commit_id = $1::uuid AND dataset_id = $2::uuid", .{ c, ds.id }) catch return error.Db;
+    if (mine == null) return .{ .refused = errorResponse(arena, .not_found, "no such version in this dataset", "Pick a version from the version picker.") };
+    const index = (try browseIndex(arena, deps, scope, ds, c)) orelse
+        return .{ .refused = errorResponse(arena, .service_unavailable, "the server is indexing another version", "Reload in a moment.") };
+    return .{ .ready = index };
+}
 
+fn limitOf(route: DatasetRoute, default: u32) HandleError!u32 {
+    const raw = route.queryParam("limit") orelse return default;
+    const n = std.fmt.parseInt(u32, raw, 10) catch return error.BadRequest;
+    return std.math.clamp(n, 1, browse_mod.max_limit);
+}
+
+/// Maps a DuckDB failure to the API's errors.
+fn duckErr(err: browse_mod.Error) HandleError {
+    return if (err == error.OutOfMemory) error.OutOfMemory else error.Storage;
+}
+
+/// One page of a version, filtered, with facets and a cursor
+/// (browse/browse.zig has the contract), from the version's index.
+fn browse(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, route: DatasetRoute) HandleError!Response {
+    const index = switch (try indexFor(arena, deps, scope, ds, route.queryParam("commit"))) {
+        .ready => |ix| ix,
+        .refused => |res| return res,
+    };
     var q: browse_mod.Query = .{
         .q = try param(arena, route, "q"),
         .split = try param(arena, route, "split"),
@@ -573,44 +601,90 @@ fn browse(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, ro
         .type = try param(arena, route, "type"),
         .after = try param(arena, route, "after"),
         .item = try param(arena, route, "item"),
+        .limit = try limitOf(route, browse_mod.default_limit),
     };
     if (q.q) |text| if (text.len == 0) {
         q.q = null;
     };
-    if (route.queryParam("limit")) |raw| {
-        const n = std.fmt.parseInt(u32, raw, 10) catch return error.BadRequest;
-        q.limit = std.math.clamp(n, 1, browse_mod.max_limit);
-    }
-
-    if (comptime !duck.enabled) {
-        const rows = try browseRows(arena, deps, scope, ds, commit);
-        return json(arena, .ok, try withMedia(arena, deps, scope, try browse_mod.evaluate(arena, rows, q)));
-    }
-    const index = (try browseIndex(arena, deps, scope, ds, commit)) orelse
-        return errorResponse(arena, .service_unavailable, "the server is indexing another version", "Reload in a moment.");
     var db = try duckFor(arena, deps, index.dir);
     defer db.close();
-    const answer = offload(deps, browse_mod.queryIndex, .{ arena, &db, index.files, q }) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.Storage,
-    };
+    const answer = offload(deps, browse_mod.queryIndex, .{ arena, &db, index.files, q }) catch |err| return duckErr(err);
     return json(arena, .ok, try withMedia(arena, deps, scope, answer));
 }
 
-/// The page's media metadata (an image's dimensions), read now: the
-/// worker fills it in after ingest, so it is never part of an index.
-fn withMedia(arena: std.mem.Allocator, deps: *Deps, scope: anytype, answer: browse_mod.Answer) HandleError!browse_mod.Answer {
-    var out = answer;
-    var hashes: std.ArrayList(u8) = .empty;
-    for (answer.items) |item| {
-        if (hashes.items.len > 0) try hashes.append(arena, ',');
-        try hashes.appendSlice(arena, item.hash);
+/// How much a subset would take (`split=` and `class=`, each repeatable):
+/// the overview's "use this dataset" size line.
+fn browseSize(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, route: DatasetRoute) HandleError!Response {
+    const index = switch (try indexFor(arena, deps, scope, ds, route.queryParam("commit"))) {
+        .ready => |ix| ix,
+        .refused => |res| return res,
+    };
+    const splits = try paramAll(arena, route, "split");
+    const classes = try paramAll(arena, route, "class");
+    var db = try duckFor(arena, deps, index.dir);
+    defer db.close();
+    const size = offload(deps, browse_mod.subsetSize, .{ arena, &db, index.files, splits, classes }) catch |err| return duckErr(err);
+    return json(arena, .ok, size);
+}
+
+/// One folder of a version (`prefix=`, "" for the top): subfolders with
+/// their counts, and a page of the files in it.
+fn browseDir(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, route: DatasetRoute) HandleError!Response {
+    const index = switch (try indexFor(arena, deps, scope, ds, route.queryParam("commit"))) {
+        .ready => |ix| ix,
+        .refused => |res| return res,
+    };
+    const prefix = (try param(arena, route, "prefix")) orelse "";
+    if (prefix.len > 0 and prefix[prefix.len - 1] != '/') return error.BadRequest;
+    var db = try duckFor(arena, deps, index.dir);
+    defer db.close();
+    const listing = offload(deps, browse_mod.listDir, .{ arena, &db, index.files, prefix, try param(arena, route, "after"), try limitOf(route, browse_mod.max_limit) }) catch |err| return duckErr(err);
+    return json(arena, .ok, listing);
+}
+
+/// The dashboard's compare of two versions (`a=`, `b=`): the summary, a
+/// page of item changes, and on the first page the visual diff.
+fn browseCompare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, route: DatasetRoute) HandleError!Response {
+    const a = switch (try indexFor(arena, deps, scope, ds, route.queryParam("a"))) {
+        .ready => |ix| ix,
+        .refused => |res| return res,
+    };
+    const b = switch (try indexFor(arena, deps, scope, ds, route.queryParam("b"))) {
+        .ready => |ix| ix,
+        .refused => |res| return res,
+    };
+    var db = try duckFor(arena, deps, a.dir);
+    defer db.close();
+    var page = offload(deps, browse_mod.comparePage, .{ arena, &db, a.files, b.files, try param(arena, route, "after"), try limitOf(route, browse_mod.max_limit) }) catch |err| return duckErr(err);
+    // Dimensions, as everywhere: read now, never frozen into an index.
+    var hashes: std.ArrayList([]const u8) = .empty;
+    for (page.visual) |v| {
+        if (v.before) |x| try hashes.append(arena, x.hash);
+        if (v.after) |x| try hashes.append(arena, x.hash);
     }
-    if (answer.open) |item| {
-        if (hashes.items.len > 0) try hashes.append(arena, ',');
-        try hashes.appendSlice(arena, item.hash);
+    const dims = try dimsOf(arena, deps, scope, hashes.items);
+    const visual = try arena.dupe(@TypeOf(page.visual[0]), page.visual);
+    for (visual) |*v| {
+        inline for (.{ &v.before, &v.after }) |side| if (side.*) |*x| if (dims.get(x.hash)) |d| {
+            x.width = d.width;
+            x.height = d.height;
+        };
     }
-    if (hashes.items.len == 0) return out;
+    page.visual = visual;
+    return json(arena, .ok, page);
+}
+
+const Dims = struct { width: ?u32, height: ?u32 };
+
+/// Image dimensions by content hash, from the items' media metadata.
+fn dimsOf(arena: std.mem.Allocator, deps: *Deps, scope: anytype, hashes: []const []const u8) HandleError!std.StringHashMapUnmanaged(Dims) {
+    var out: std.StringHashMapUnmanaged(Dims) = .empty;
+    if (hashes.len == 0) return out;
+    var joined: std.ArrayList(u8) = .empty;
+    for (hashes, 0..) |h, i| {
+        if (i > 0) try joined.append(arena, ',');
+        try joined.appendSlice(arena, h);
+    }
     const Meta = struct {
         pub const nilo_table = .projection;
         hash: []const u8,
@@ -618,23 +692,32 @@ fn withMedia(arena: std.mem.Allocator, deps: *Deps, scope: anytype, answer: brow
         height: ?i32,
     };
     const metas = deps.db.raw(Meta, scope, "SELECT encode(item_hash, 'hex') AS hash, (meta->>'width')::int AS width, (meta->>'height')::int AS height " ++
-        "FROM items WHERE item_hash IN (SELECT decode(h, 'hex') FROM unnest(string_to_array($1, ',')) h)", .{hashes.items}) catch return error.Db;
-    var by_hash: std.StringHashMapUnmanaged(Meta) = .empty;
-    for (metas) |m| try by_hash.put(arena, try arena.dupe(u8, m.hash), m);
-    const dims = struct {
-        fn of(map: std.StringHashMapUnmanaged(Meta), item: browse_mod.Item) browse_mod.Item {
-            var it = item;
-            if (map.get(item.hash)) |m| {
-                it.width = if (m.width) |w| (if (w > 0) @intCast(w) else null) else null;
-                it.height = if (m.height) |h| (if (h > 0) @intCast(h) else null) else null;
-            }
-            return it;
-        }
-    }.of;
-    const items = try arena.alloc(browse_mod.Item, answer.items.len);
-    for (items, answer.items) |*dst, src| dst.* = dims(by_hash, src);
+        "FROM items WHERE item_hash IN (SELECT decode(h, 'hex') FROM unnest(string_to_array($1, ',')) h)", .{joined.items}) catch return error.Db;
+    for (metas) |m| try out.put(arena, try arena.dupe(u8, m.hash), .{
+        .width = if (m.width) |w| (if (w > 0) @intCast(w) else null) else null,
+        .height = if (m.height) |h| (if (h > 0) @intCast(h) else null) else null,
+    });
+    return out;
+}
+
+/// The page's media metadata (an image's dimensions), read now: the
+/// worker fills it in after ingest, so it is never part of an index.
+fn withMedia(arena: std.mem.Allocator, deps: *Deps, scope: anytype, answer: browse_mod.Answer) HandleError!browse_mod.Answer {
+    var out = answer;
+    var hashes: std.ArrayList([]const u8) = .empty;
+    for (answer.items) |item| try hashes.append(arena, item.hash);
+    if (answer.open) |item| try hashes.append(arena, item.hash);
+    const dims = try dimsOf(arena, deps, scope, hashes.items);
+    const items = try arena.dupe(browse_mod.Item, answer.items);
+    for (items) |*item| if (dims.get(item.hash)) |d| {
+        item.width = d.width;
+        item.height = d.height;
+    };
     out.items = items;
-    if (answer.open) |item| out.open = dims(by_hash, item);
+    if (out.open) |*item| if (dims.get(item.hash)) |d| {
+        item.width = d.width;
+        item.height = d.height;
+    };
     return out;
 }
 
@@ -645,19 +728,16 @@ fn param(arena: std.mem.Allocator, route: DatasetRoute, key: []const u8) HandleE
     return std.Uri.percentDecodeInPlace(try arena.dupe(u8, raw));
 }
 
-fn browseRows(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit: []const u8) HandleError![]browse_mod.Row {
-    const state_rows = release_mod.stateRows(arena, deps.db, scope, ds.id, commit) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.Db,
-    };
-    const anns: []const release_mod.AnnotationRow = if (eql(ds.kind, "annotated"))
-        release_mod.annotationRows(arena, deps.db, scope, ds.id, commit) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return error.Db,
-        }
-    else
-        &.{};
-    return browse_mod.rowsOf(arena, state_rows, anns);
+/// Every value of a repeated query parameter, percent-decoded.
+fn paramAll(arena: std.mem.Allocator, route: DatasetRoute, key: []const u8) HandleError![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.splitScalar(u8, route.query, '&');
+    while (it.next()) |pair| {
+        const eq_at = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
+        if (!std.mem.eql(u8, pair[0..eq_at], key)) continue;
+        try out.append(arena, std.Uri.percentDecodeInPlace(try arena.dupe(u8, pair[eq_at + 1 ..])));
+    }
+    return out.items;
 }
 
 const BrowseIndex = struct { dir: []const u8, files: browse_mod.Files };
@@ -856,8 +936,6 @@ fn rowDiff(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, b
     var cached = deps.db.rawOne(Cached, scope, lookup, .{ req.a, req.b, ka, kb }) catch return error.Db;
 
     if (cached == null) {
-        if (comptime !duck.enabled)
-            return json(arena, .ok, .{ .status = "needs_server_build", .reason = @as(?[]const u8, "this server is built without row-level diffs") });
         const Size = struct {
             pub const nilo_table = .projection;
             size_bytes: i64,
@@ -1411,9 +1489,9 @@ const GzFile = struct {
 };
 
 /// What changed from one version to another, as the CLI reads it (`cid
-/// diff`): computed on the server in one streamed pass over both
-/// (core/version.zig), kept in storage as a gzip file of JSON lines with
-/// its SHA-256, and handed out presigned with the summary counts. Both
+/// diff`): DuckDB joins the two versions' browse indexes (0.5 s at 1M
+/// items), the change lines are kept in storage as a gzip file with its
+/// SHA-256, and handed out presigned with the summary counts. Both
 /// versions are sealed, so a diff is written once and kept.
 fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, pair: []const u8) HandleError!Response {
     const slash = std.mem.indexOfScalar(u8, pair, '/') orelse return error.BadRequest;
@@ -1431,16 +1509,39 @@ fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, p
         return json(arena, .ok, .{ .url = url, .sha256 = kept.sha256, .summary = jsonValue(arena, kept.summary) });
     }
 
+    // Both versions' indexes, joined by DuckDB into change lines (items by
+    // path, annotations by item path), then gzipped into one file here.
+    const ia = switch (try indexFor(arena, deps, scope, ds, a)) {
+        .ready => |ix| ix,
+        .refused => |res| return res,
+    };
+    const ib = switch (try indexFor(arena, deps, scope, ds, b)) {
+        .ready => |ix| ix,
+        .refused => |res| return res,
+    };
+    const lines: browse_mod.CompareFiles = .{
+        .items = try std.fmt.allocPrint(arena, "{s}/{s}-{s}.changes.jsonl", .{ ia.dir, a, b }),
+        .anns = try std.fmt.allocPrint(arena, "{s}/{s}-{s}.annchanges.jsonl", .{ ia.dir, a, b }),
+    };
+    const cwd = std.Io.Dir.cwd();
+    defer cwd.deleteFile(deps.io, lines.items) catch {};
+    defer cwd.deleteFile(deps.io, lines.anns) catch {};
+    const summary = blk: {
+        var db = try duckFor(arena, deps, ia.dir);
+        defer db.close();
+        break :blk offload(deps, browse_mod.compareLines, .{ arena, &db, ia.files, ib.files, lines }) catch |err| return duckErr(err);
+    };
     const path = try std.fmt.allocPrint(arena, "{s}/{s}-{s}.diff.gz", .{ deps.work_dir, a, b });
     const gz = try GzFile.open(deps, path);
     defer gz.close(deps);
-    versions.diffHeader(gz.writer(), a, b) catch return error.Storage;
-    const summary = versions.diffPass(deps.gpa, deps.db, scope, ds.id, a, b, eql(ds.kind, "annotated"), gz.writer()) catch |err| return switch (err) {
-        error.NoSuchCommit => errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits."),
-        error.OutOfMemory => error.OutOfMemory,
-        error.WriteFailed => error.Storage,
-        else => error.Db,
-    };
+    gz.writer().print("{{\"cid\":\"diff\",\"v\":1,\"a\":\"{s}\",\"b\":\"{s}\"}}\n", .{ a, b }) catch return error.Storage;
+    for ([_][]const u8{ lines.items, lines.anns }) |part| {
+        var file = cwd.openFile(deps.io, part, .{}) catch return error.Storage;
+        defer file.close(deps.io);
+        var buf: [64 * 1024]u8 = undefined;
+        var fr = file.reader(deps.io, &buf);
+        _ = fr.interface.streamRemaining(gz.writer()) catch return error.Storage;
+    }
     const sha = try gz.finish();
     deps.s3.putFile(scope, deps.io, try diffKey(arena, ds.id, a, b, &sha), path) catch return error.Storage;
     const summary_text = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(summary, .{})});
@@ -1456,67 +1557,6 @@ fn diffKey(arena: std.mem.Allocator, dataset_id: []const u8, a: []const u8, b: [
 
 fn stateKey(arena: std.mem.Allocator, dataset_id: []const u8, commit_id: []const u8, sha: []const u8) HandleError![]const u8 {
     return std.fmt.allocPrint(arena, "states/{s}/{s}-{s}.jsonl.gz", .{ dataset_id, commit_id, sha[0..16] });
-}
-
-/// The largest version the dashboard's JSON state answers in one reply;
-/// beyond it the server would hold the whole version, so it says so
-/// instead. (The CLI reads version/<commit>, which has no ceiling.)
-const json_state_max_items = 200_000;
-
-fn state(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit_id: []const u8) HandleError!Response {
-    if (Uuid.parse(commit_id) == error.InvalidUuid)
-        return errorResponse(arena, .bad_request, "that is not a commit id", "Run 'cid log' to list commits.");
-    const size = versions.stats(arena, deps.db, scope, ds.id, commit_id) catch |err| switch (err) {
-        error.NoSuchCommit => return errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits."),
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.Db,
-    };
-    if (size.items > json_state_max_items)
-        return errorResponse(arena, .payload_too_large, "this version is too large to send in one reply", "Use the CLI: cid clone, cid diff.");
-
-    const rows = release_mod.stateRows(arena, deps.db, scope, ds.id, commit_id) catch |err| switch (err) {
-        error.NoSuchCommit => return errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits."),
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.Db,
-    };
-
-    const Item = struct { path: []const u8, hash: []const u8, size: u64, split: ?[]const u8, item_id: ?[]const u8, width: ?u32, height: ?u32 };
-    const items = try arena.alloc(Item, rows.len);
-    for (items, 0..) |*item, i| {
-        item.* = .{ .path = rows[i].path, .hash = rows[i].hash_hex, .size = rows[i].size, .split = rows[i].split, .item_id = rows[i].item_id, .width = rows[i].width, .height = rows[i].height };
-    }
-
-    if (eql(ds.kind, "annotated")) {
-        const anns = release_mod.annotationRows(arena, deps.db, scope, ds.id, commit_id) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return error.Db,
-        };
-        const WireAnn = struct {
-            id: []const u8,
-            item_id: []const u8,
-            kind: ?[]const u8,
-            class: ?[]const u8,
-            geometry: ?std.json.Value,
-            attrs: ?std.json.Value,
-            author: []const u8,
-            policy_ver: []const u8,
-        };
-        const wire = try arena.alloc(WireAnn, anns.len);
-        for (wire, 0..) |*w, i| {
-            w.* = .{
-                .id = anns[i].annotation_id,
-                .item_id = anns[i].item_id,
-                .kind = anns[i].kind,
-                .class = anns[i].class,
-                .geometry = jsonValue(arena, anns[i].geometry),
-                .attrs = jsonValue(arena, anns[i].attrs),
-                .author = anns[i].author,
-                .policy_ver = anns[i].policy_ver,
-            };
-        }
-        return json(arena, .ok, .{ .commit = commit_id, .items = items, .annotations = wire });
-    }
-    return json(arena, .ok, .{ .commit = commit_id, .items = items });
 }
 
 /// Stored jsonb text → a JSON value for the response (never re-encoded as
@@ -1548,7 +1588,7 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
             return errorResponse(arena, .unprocessable_entity, "nothing to tag: the branch has no commits", "Run 'cid push' first, then 'cid tag' again.");
     };
 
-    // The server build writes the release's browse index lines in the same
+    // The server writes the release's browse index lines in the same
     // pass as its manifest: the version is read from history once.
     var work: release_mod.Work = .{ .gpa = deps.gpa, .io = deps.io, .dir = deps.work_dir };
     var index_files: ?browse_mod.Files = null;
@@ -1557,7 +1597,7 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
     // only its copy in storage is missing.
     var cached: ?browse_mod.Files = null;
     defer if (lines) |l| deps.gpa.destroy(l);
-    if (comptime duck.enabled) prepared: {
+    prepared: {
         const cwd = std.Io.Dir.cwd();
         cwd.createDirPath(deps.io, deps.browse_dir) catch break :prepared;
         const dir = cwd.realPathFileAlloc(deps.io, deps.browse_dir, arena) catch break :prepared;
@@ -2096,9 +2136,9 @@ fn eql(a: []const u8, b: []const u8) bool {
 }
 
 test "route parsing finds names with slashes and actions with arguments" {
-    const r = parseDatasetRoute("/v0/datasets/org/datasets/calls/-/state/0192-abc?x=1").?;
+    const r = parseDatasetRoute("/v0/datasets/org/datasets/calls/-/version/0192-abc?x=1").?;
     try std.testing.expectEqualStrings("org/datasets/calls", r.name);
-    try std.testing.expectEqualStrings("state/0192-abc", r.action);
+    try std.testing.expectEqualStrings("version/0192-abc", r.action);
     try std.testing.expectEqualStrings("x=1", r.query);
     try std.testing.expectEqualStrings("1", r.queryParam("x").?);
     try std.testing.expect(parseDatasetRoute("/v0/other") == null);

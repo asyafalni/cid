@@ -1,7 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
-import { getRowDiff, getState, getThumbs, type Overview, type StateAnnotation, type StateItem, type TapeCommit } from '../api';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { getCompare, getRowDiff, getThumbs, type CompareSide, type Overview, type StateAnnotation, type TapeCommit } from '../api';
 import { AnnotationOverlay } from '../overlays';
-import { diffAnnotations, diffItems, type AnnChange } from '../diff';
 import { humanBytes } from '../format';
 
 // Releases & history: the timeline, and compare between any two
@@ -114,100 +113,92 @@ function Comparison({
 }) {
   const aCommit = resolve(overview.commits, aLabel);
   const bCommit = resolve(overview.commits, bLabel);
-  const stateA = useQuery({
-    queryKey: ['state', name, aCommit],
-    queryFn: () => getState(name, aCommit!),
-    enabled: aCommit !== null,
+  // Compared on the server (DuckDB over both versions' indexes): the
+  // summary and the visual diff come with the first page; further item
+  // changes a page at a time. Nothing here holds either version.
+  const pages = useInfiniteQuery({
+    queryKey: ['compare', name, aCommit, bCommit],
+    queryFn: ({ pageParam }) => getCompare(name, aCommit!, bCommit!, pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.next ?? undefined,
+    enabled: aCommit !== null && bCommit !== null,
   });
-  const stateB = useQuery({
-    queryKey: ['state', name, bCommit],
-    queryFn: () => getState(name, bCommit!),
-    enabled: bCommit !== null,
-  });
-
-  const changes =
-    stateA.data && stateB.data ? diffItems(stateA.data.items, stateB.data.items) : [];
-  const annChanges =
-    stateA.data && stateB.data && overview.kind === 'annotated'
-      ? diffAnnotations(
-          stateA.data.items,
-          stateB.data.items,
-          stateA.data.annotations ?? [],
-          stateB.data.annotations ?? [],
-        )
-      : [];
-
-  // The visual diff: every item an annotation changed on, with the
-  // shapes as each version had them. Items come from both sides, so an
-  // item re-encoded between the versions shows each side's own pixels.
-  const visual = visualDiff(stateA.data?.items ?? [], stateB.data?.items ?? [], annChanges).slice(0, 60);
+  const first = pages.data?.pages[0];
+  const changes = pages.data?.pages.flatMap((p) => p.changes) ?? [];
+  const visual = first?.visual ?? [];
 
   // Before/after thumbs: changed files, and the items behind the visual diff.
   const pairHashes = [
     ...new Set([
-      ...changes.filter((c) => c.kind === 'modified').flatMap((c) => [c.hash_a!, c.hash_b!]),
+      ...changes.filter((c) => c.change === 'modified').flatMap((c) => [c.hash_a!, c.hash_b!]),
       ...visual.flatMap((v) => [v.before?.hash, v.after?.hash].filter((h): h is string => !!h)),
     ]),
-  ].slice(0, 200);
+  ].slice(0, 400);
   const thumbs = useQuery({
-    queryKey: ['thumbs', name, 'cmp', pairHashes.join(',').slice(0, 64)],
+    queryKey: ['thumbs', name, 'cmp', aCommit, bCommit, pairHashes.length],
     queryFn: () => getThumbs(name, pairHashes),
     enabled: pairHashes.length > 0,
   });
   const thumbBy = new Map((thumbs.data?.thumbs ?? []).map((t) => [t.hash, t.url]));
 
-  if (stateA.isPending || stateB.isPending) return <p className="quiet">Comparing…</p>;
-  if (stateA.isError || stateB.isError)
+  if (pages.isPending) return <p className="quiet">Comparing…</p>;
+  if (pages.isError || !first)
     return (
       <p className="quiet" role="alert">
-        Could not read one of the versions; pick again or reload.
+        Could not compare these versions; pick again or reload.
       </p>
     );
 
-  const added = changes.filter((c) => c.kind === 'added').length;
-  const modified = changes.filter((c) => c.kind === 'modified').length;
-  const deleted = changes.filter((c) => c.kind === 'deleted').length;
+  const s = first.summary;
+  const anyItems = s.added + s.modified + s.deleted > 0;
+  const anyAnns = s.ann_added + s.ann_changed + s.ann_removed > 0;
 
   return (
     <div className="comparison">
       <p className="engraved data">
-        {added} added · {modified} modified · {deleted} deleted
+        {s.added.toLocaleString()} added · {s.modified.toLocaleString()} modified · {s.deleted.toLocaleString()} deleted
         {overview.kind === 'annotated' && (
           <>
             {' '}
-            — annotations: {annChanges.filter((c) => c.kind === 'added').length} added ·{' '}
-            {annChanges.filter((c) => c.kind === 'changed').length} changed ·{' '}
-            {annChanges.filter((c) => c.kind === 'removed').length} removed
+            — annotations: {s.ann_added.toLocaleString()} added · {s.ann_changed.toLocaleString()} changed ·{' '}
+            {s.ann_removed.toLocaleString()} removed
           </>
         )}
       </p>
 
-      {changes.length === 0 && annChanges.length === 0 && (
-        <p className="quiet">These two versions hold exactly the same data.</p>
-      )}
+      {!anyItems && !anyAnns && <p className="quiet">These two versions hold exactly the same data.</p>}
 
       {changes.length > 0 && (
         <ul className="change-list">
-          {changes.slice(0, 200).map((c) => (
+          {changes.map((c) => (
             <li key={c.path} className="change">
-              <span className={`change-verb change-verb--${c.kind}`}>{c.kind}</span>
+              <span className={`change-verb change-verb--${c.change}`}>{c.change}</span>
               <span className="data change-path">{c.path}</span>
-              {c.size_b !== undefined && (
-                <span className="quiet data">{humanBytes(c.size_b)}</span>
-              )}
-              {c.kind === 'modified' && thumbBy.has(c.hash_a!) && thumbBy.has(c.hash_b!) && (
+              {c.size_b !== null && <span className="quiet data">{humanBytes(c.size_b)}</span>}
+              {c.change === 'modified' && thumbBy.has(c.hash_a!) && thumbBy.has(c.hash_b!) && (
                 <span className="before-after">
                   <img src={thumbBy.get(c.hash_a!)} alt={`${c.path} before`} />
                   <span aria-hidden="true">→</span>
                   <img src={thumbBy.get(c.hash_b!)} alt={`${c.path} after`} />
                 </span>
               )}
-              {c.kind === 'modified' && isTable(c.path) && (
+              {c.change === 'modified' && isTable(c.path) && (
                 <RowChanges name={name} path={c.path} a={c.hash_a!} b={c.hash_b!} />
               )}
             </li>
           ))}
         </ul>
+      )}
+      {pages.hasNextPage && (
+        <button
+          className="filter-clear more-items"
+          disabled={pages.isFetchingNextPage}
+          onClick={() => void pages.fetchNextPage()}
+        >
+          {pages.isFetchingNextPage
+            ? 'Loading more…'
+            : `Show more changes (${changes.length.toLocaleString()} of ${(s.added + s.modified + s.deleted).toLocaleString()} shown)`}
+        </button>
       )}
 
       {visual.length > 0 && (
@@ -218,20 +209,20 @@ function Comparison({
           </p>
           <ul className="visual-diff-list">
             {visual.map((v) => (
-              <li key={v.itemId} className="visual-diff-item">
-                <p className="data change-path">{(v.after ?? v.before)!.path}</p>
+              <li key={v.path} className="visual-diff-item">
+                <p className="data change-path">{v.path}</p>
                 <div className="before-after-pair">
                   <DiffSide
                     label={aLabel}
-                    item={v.before}
-                    annotations={v.shapesBefore}
+                    item={v.before ?? undefined}
+                    annotations={v.shapes_before}
                     variant="before"
                     thumb={v.before ? thumbBy.get(v.before.hash) : undefined}
                   />
                   <DiffSide
                     label={bLabel}
-                    item={v.after}
-                    annotations={v.shapesAfter}
+                    item={v.after ?? undefined}
+                    annotations={v.shapes_after}
                     variant="after"
                     thumb={v.after ? thumbBy.get(v.after.hash) : undefined}
                   />
@@ -242,51 +233,28 @@ function Comparison({
         </section>
       )}
 
-      {annChanges.length > 0 && (
+      {first.ann_changes.length > 0 && (
         <ul className="change-list">
-          {annChanges.slice(0, 200).map((c, i) => (
+          {first.ann_changes.map((c, i) => (
             <li key={i} className="change">
-              <span className={`change-verb change-verb--${c.kind === 'removed' ? 'deleted' : c.kind === 'changed' ? 'modified' : 'added'}`}>
-                {c.kind}
+              <span className={`change-verb change-verb--${c.change === 'removed' ? 'deleted' : c.change === 'changed' ? 'modified' : 'added'}`}>
+                {c.change}
               </span>
               <span>
-                {c.annKind ?? '?'} {c.cls ?? ''}
+                {c.kind ?? '?'} {c.class ?? ''}
               </span>
-              <span className="quiet data">on {c.itemPath}</span>
+              <span className="quiet data">on {c.item_path ?? '?'}</span>
             </li>
           ))}
         </ul>
       )}
+      {s.ann_added + s.ann_changed + s.ann_removed > first.ann_changes.length && (
+        <p className="quiet">
+          The first {first.ann_changes.length.toLocaleString()} annotation changes are listed. For all of them, run{' '}
+          <code className="data">cid diff {aLabel} {bLabel}</code>.
+        </p>
+      )}
     </div>
-  );
-}
-
-type VisualRow = {
-  itemId: string;
-  before?: StateItem;
-  after?: StateItem;
-  shapesBefore: StateAnnotation[];
-  shapesAfter: StateAnnotation[];
-};
-
-function visualDiff(aItems: StateItem[], bItems: StateItem[], changes: AnnChange[]): VisualRow[] {
-  const aBy = new Map(aItems.filter((i) => i.item_id).map((i) => [i.item_id!, i]));
-  const bBy = new Map(bItems.filter((i) => i.item_id).map((i) => [i.item_id!, i]));
-  const rows = new Map<string, VisualRow>();
-  for (const c of changes) {
-    const row = rows.get(c.itemId) ?? {
-      itemId: c.itemId,
-      before: aBy.get(c.itemId),
-      after: bBy.get(c.itemId),
-      shapesBefore: [],
-      shapesAfter: [],
-    };
-    if (c.before) row.shapesBefore.push(c.before);
-    if (c.after) row.shapesAfter.push(c.after);
-    rows.set(c.itemId, row);
-  }
-  return [...rows.values()].sort((x, y) =>
-    ((x.after ?? x.before)?.path ?? '').localeCompare((y.after ?? y.before)?.path ?? ''),
   );
 }
 
@@ -301,7 +269,7 @@ function DiffSide({
   thumb,
 }: {
   label: string;
-  item: StateItem | undefined;
+  item: CompareSide | undefined;
   annotations: StateAnnotation[];
   variant: 'before' | 'after';
   thumb: string | undefined;

@@ -1,28 +1,24 @@
-//! The browse engine (docs/dashboard.md §4.3 and "Browse API"): one page
-//! of a version's items with their annotations, how many there are and
-//! how many match, the options each filter offers — each counted against
-//! every *other* active filter — and a cursor to the next page.
+//! The browse engine (docs/dashboard.md §4.3 and "Browse API"): each version kept as a browse index — its items in path
+//! order, its annotations by item, two Parquet files — and every question
+//! the dashboard and the CLI ask of versions answered by one DuckDB query
+//! over them:
 //!
-//! One contract, two engines. The server build keeps each version as a
-//! Parquet browse index and answers with one DuckDB query (filters,
-//! facets, cursor), which is what holds the 1M-item budget. The CLI build
-//! has no DuckDB and evaluates the same contract over the state rows in
-//! memory, fine at the sizes such a server sees. The integration test
-//! runs the same assertions against both, so they cannot drift.
+//!   page        one page of items with their annotations, the counts, the
+//!               facets (each counted against every *other* filter), a cursor
+//!   size        how many items and bytes a subset (splits × classes) holds
+//!   dir         one folder's subfolders (counted) and files (paged)
+//!   compare     what changed between two versions: items and annotations,
+//!               as a page for the dashboard or as lines for `cid diff`
 //!
 //! An index holds only what the sealed commit fixes: paths, hashes,
 //! sizes, splits and annotations. Media metadata (an image's dimensions)
 //! arrives later, when the preview worker sniffs the bytes, so it is
-//! joined per page by the caller, never frozen into an index.
-//!
-//! Paths order bytewise in both engines, so a cursor means the same
-//! thing to each. A file's type is its lowercased extension ("file" for
-//! none), computed here once and stored in the index.
+//! joined per page by the caller, never frozen into an index. Paths order
+//! bytewise, so a cursor is a path. Every request value is a bound
+//! parameter, never SQL.
 
 const std = @import("std");
 const duck = @import("../../store/duck.zig");
-const release = @import("../../core/release.zig");
-const version = @import("../../core/version.zig");
 
 pub const default_limit = 60;
 pub const max_limit = 200;
@@ -39,16 +35,6 @@ pub const Query = struct {
     /// The open item's path, answered beside the page (it may be on no
     /// page loaded yet: a shared link opens straight onto it).
     item: ?[]const u8 = null,
-};
-
-pub const Row = struct {
-    path: []const u8,
-    hash: []const u8,
-    size: u64,
-    split: ?[]const u8,
-    item_id: ?[]const u8,
-    ext: []const u8,
-    anns: []const release.AnnotationRow,
 };
 
 pub const Ann = struct {
@@ -81,9 +67,6 @@ pub const Facet = struct { value: []const u8, count: u64 };
 pub const Facets = struct { split: []Facet, class: []Facet, type: []Facet };
 
 pub const Answer = struct {
-    /// "duckdb" or "state": which engine answered (for the curious and
-    /// for tests; the contract is the same).
-    engine: []const u8,
     total: u64,
     matched: u64,
     items: []const Item,
@@ -94,172 +77,14 @@ pub const Answer = struct {
     classes: []Facet,
 };
 
-pub const Error = error{ OutOfMemory, QueryFailed, Unavailable, OpenFailed, WriteFailed };
+pub const Error = error{ OutOfMemory, QueryFailed, OpenFailed, WriteFailed };
 
 /// DuckDB threads for one browse query: two halve an unfiltered page at
 /// 1M items (0.48 s to 0.27 s); index builds keep to one.
 pub const query_threads = 2;
 
-/// The file type the type filter speaks: the one rule (version.zig).
-pub const extOf = version.extOfPath;
-
-fn classOf(a: release.AnnotationRow) []const u8 {
-    return a.class orelse "";
-}
-
-fn lessPath(_: void, a: Row, b: Row) bool {
-    return std.mem.lessThan(u8, a.path, b.path);
-}
-
-/// A version's rows: the state items, each with its annotations, sorted
-/// bytewise by path.
-pub fn rowsOf(
-    arena: std.mem.Allocator,
-    state: []const release.StateRow,
-    anns: []const release.AnnotationRow,
-) ![]Row {
-    var by_item: std.StringHashMapUnmanaged(std.ArrayList(release.AnnotationRow)) = .empty;
-    for (anns) |a| {
-        const entry = try by_item.getOrPut(arena, a.item_id);
-        if (!entry.found_existing) entry.value_ptr.* = .empty;
-        try entry.value_ptr.append(arena, a);
-    }
-    const rows = try arena.alloc(Row, state.len);
-    for (rows, state) |*row, s| {
-        row.* = .{
-            .path = s.path,
-            .hash = s.hash_hex,
-            .size = s.size,
-            .split = s.split,
-            .item_id = s.item_id,
-            .ext = try extOf(arena, s.path),
-            .anns = if (s.item_id) |id| (if (by_item.get(id)) |list| list.items else &.{}) else &.{},
-        };
-    }
-    std.mem.sort(Row, rows, {}, lessPath);
-    return rows;
-}
-
-// ---------------------------------------------------------------------------
-// The state engine: the contract, evaluated in memory.
-// ---------------------------------------------------------------------------
-
-const Skip = enum { none, split, class, type };
-
-fn matches(row: Row, q: Query, skip: Skip) bool {
-    // ASCII case folding; DuckDB folds Unicode. Only non-ASCII letters in
-    // a search can tell the engines apart.
-    if (q.q) |text| if (std.ascii.indexOfIgnoreCase(row.path, text) == null) return false;
-    if (skip != .split) if (q.split) |want| if (!std.mem.eql(u8, row.split orelse "", want)) return false;
-    if (skip != .type) if (q.type) |want| if (!std.mem.eql(u8, row.ext, want)) return false;
-    if (skip != .class) if (q.class) |want| {
-        for (row.anns) |a| {
-            if (std.mem.eql(u8, classOf(a), want)) break;
-        } else return false;
-    };
-    return true;
-}
-
-pub fn evaluate(arena: std.mem.Allocator, rows: []const Row, q: Query) !Answer {
-    var page: std.ArrayList(Item) = .empty;
-    var matched: u64 = 0;
-    var next: ?[]const u8 = null;
-    var open: ?Item = null;
-    for (rows) |row| {
-        if (q.item) |want| if (std.mem.eql(u8, row.path, want)) {
-            open = try itemOf(arena, row);
-        };
-        if (!matches(row, q, .none)) continue;
-        matched += 1;
-        if (q.after) |after| if (!std.mem.lessThan(u8, after, row.path)) continue;
-        if (page.items.len < q.limit) {
-            try page.append(arena, try itemOf(arena, row));
-        } else if (next == null and page.items.len > 0) {
-            next = page.items[page.items.len - 1].path;
-        }
-    }
-
-    var split: Counter = .{};
-    var class: Counter = .{};
-    var kind: Counter = .{};
-    var chips: Counter = .{};
-    for (rows) |row| {
-        if (matches(row, q, .split)) try split.add(arena, row.split orelse "", 1);
-        if (matches(row, q, .type)) try kind.add(arena, row.ext, 1);
-        if (matches(row, q, .class)) {
-            var seen: std.StringHashMapUnmanaged(void) = .empty;
-            for (row.anns) |a| {
-                if ((try seen.getOrPut(arena, classOf(a))).found_existing) continue;
-                try class.add(arena, classOf(a), 1);
-            }
-        }
-        for (row.anns) |a| try chips.add(arena, classOf(a), 1);
-    }
-
-    return finish(arena, .{
-        .engine = "state",
-        .total = rows.len,
-        .matched = matched,
-        .items = page.items,
-        .next = next,
-        .open = open,
-        .facets = .{ .split = try split.facets(arena), .class = try class.facets(arena), .type = try kind.facets(arena) },
-        .classes = try chips.facets(arena),
-    }, q);
-}
-
-const Counter = struct {
-    map: std.StringArrayHashMapUnmanaged(u64) = .empty,
-
-    fn add(self: *Counter, arena: std.mem.Allocator, key: []const u8, n: u64) !void {
-        const entry = try self.map.getOrPut(arena, key);
-        if (!entry.found_existing) entry.value_ptr.* = 0;
-        entry.value_ptr.* += n;
-    }
-
-    fn facets(self: *Counter, arena: std.mem.Allocator) ![]Facet {
-        const out = try arena.alloc(Facet, self.map.count());
-        for (out, self.map.keys(), self.map.values()) |*f, k, v| f.* = .{ .value = k, .count = v };
-        return out;
-    }
-};
-
-fn itemOf(arena: std.mem.Allocator, row: Row) !Item {
-    const anns = try arena.alloc(Ann, row.anns.len);
-    for (anns, row.anns) |*out, a| {
-        out.* = .{
-            .id = a.annotation_id,
-            .item_id = a.item_id,
-            .kind = a.kind,
-            .class = a.class,
-            .geometry = try jsonOf(arena, a.geometry),
-            .attrs = try jsonOf(arena, a.attrs),
-            .author = a.author,
-            .policy_ver = a.policy_ver,
-        };
-    }
-    return .{
-        .path = row.path,
-        .hash = row.hash,
-        .size = row.size,
-        .split = row.split,
-        .item_id = row.item_id,
-        .annotations = anns,
-    };
-}
-
-fn jsonOf(arena: std.mem.Allocator, text: ?[]const u8) !?std.json.Value {
-    const t = text orelse return null;
-    return std.json.parseFromSliceLeaky(std.json.Value, arena, t, .{}) catch |err| switch (err) {
-        error.OutOfMemory => error.OutOfMemory,
-        else => null,
-    };
-}
-
-/// What both engines do last, so the order and the rules are one: an
-/// active filter value stays listed even with no matches (a shared link
-/// never shows a filter you cannot clear); facets by count, then value;
-/// class chips by name.
+/// What one place in the dashboard calls "the answer": facets ordered,
+/// active filters kept listed.
 fn finish(arena: std.mem.Allocator, answer: Answer, q: Query) !Answer {
     var a = answer;
     a.facets.split = try keepActive(arena, a.facets.split, q.split);
@@ -311,46 +136,6 @@ pub const Files = struct {
         };
     }
 };
-
-/// The index for `rows`, written the way the server's pass writes it:
-/// the lines, then convertIndex.
-pub fn writeIndex(arena: std.mem.Allocator, io: std.Io, db: *duck.Db, files: Files, rows: []const Row) Error!void {
-    try writeLines(io, files, rows);
-    try convertIndex(arena, io, db, files);
-}
-
-/// Item and annotation lines in the shapes core/version.zig's pass
-/// writes them (the server's path); here for rows already in memory.
-pub fn writeLines(io: std.Io, files: Files, rows: []const Row) Error!void {
-    const cwd = std.Io.Dir.cwd();
-    var items_file = cwd.createFile(io, files.items_lines, .{ .truncate = true }) catch return error.WriteFailed;
-    defer items_file.close(io);
-    var anns_file = cwd.createFile(io, files.ann_lines, .{ .truncate = true }) catch return error.WriteFailed;
-    defer anns_file.close(io);
-    var ibuf: [64 * 1024]u8 = undefined;
-    var abuf: [64 * 1024]u8 = undefined;
-    var iw = items_file.writer(io, &ibuf);
-    var aw = anns_file.writer(io, &abuf);
-    for (rows) |row| {
-        iw.interface.print("{{\"path\":{f},\"hash\":{f},\"size\":{d},\"split\":{f},\"item_id\":{f},\"ext\":{f},\"classes\":[", .{
-            std.json.fmt(row.path, .{}),  std.json.fmt(row.hash, .{}),    row.size,
-            std.json.fmt(row.split, .{}), std.json.fmt(row.item_id, .{}), std.json.fmt(row.ext, .{}),
-        }) catch return error.WriteFailed;
-        for (row.anns, 0..) |a, i| {
-            if (i > 0) iw.interface.writeByte(',') catch return error.WriteFailed;
-            iw.interface.print("{f}", .{std.json.fmt(classOf(a), .{})}) catch return error.WriteFailed;
-            aw.interface.print("{{\"id\":{f},\"item_id\":{f},\"kind\":{f},\"class\":{f},\"geometry\":{s},\"attrs\":{s},\"author\":{f},\"policy_ver\":{f}}}\n", .{
-                std.json.fmt(a.annotation_id, .{}), std.json.fmt(a.item_id, .{}),
-                std.json.fmt(a.kind, .{}),          std.json.fmt(a.class, .{}),
-                a.geometry orelse "null",           a.attrs orelse "null",
-                std.json.fmt(a.author, .{}),        std.json.fmt(a.policy_ver, .{}),
-            }) catch return error.WriteFailed;
-        }
-        iw.interface.writeAll("]}\n") catch return error.WriteFailed;
-    }
-    iw.interface.flush() catch return error.WriteFailed;
-    aw.interface.flush() catch return error.WriteFailed;
-}
 
 /// The lines → the two Parquet files, each renamed into place when
 /// complete, annotations first: an index exists once its items file does.
@@ -454,7 +239,6 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
     const raw = std.json.parseFromSliceLeaky(Raw, arena, text, .{ .ignore_unknown_fields = true }) catch
         return error.QueryFailed;
     return finish(arena, .{
-        .engine = "duckdb",
         .total = raw.total,
         .matched = raw.matched,
         .items = raw.items,
@@ -466,24 +250,197 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
 }
 
 // ---------------------------------------------------------------------------
+// Subset size, folder listing, compare.
+// ---------------------------------------------------------------------------
 
-/// A small annotated version both engines are tested on: three items in
-/// two splits, one without an extension, boxes of two classes, one
-/// annotation with no class.
-fn fixtureRows(arena: std.mem.Allocator) ![]Row {
-    const state = [_]release.StateRow{
-        .{ .path = "img/b.JPG", .hash_hex = "bb", .size = 2, .split = "train", .item_id = "i2", .width = 4, .height = 3 },
-        .{ .path = "img/a.jpg", .hash_hex = "aa", .size = 1, .split = "train", .item_id = "i1", .width = 4, .height = 3 },
-        .{ .path = "img/c.png", .hash_hex = "cc", .size = 3, .split = "val", .item_id = "i3", .width = 4, .height = 3 },
-        .{ .path = "README", .hash_hex = "dd", .size = 4, .split = null },
-    };
-    const anns = [_]release.AnnotationRow{
-        .{ .annotation_id = "x1", .item_id = "i1", .kind = "box", .class = "person", .geometry = "{\"x\":1,\"y\":2,\"w\":3,\"h\":4}", .attrs = null, .author = "agent", .policy_ver = "p1" },
-        .{ .annotation_id = "x2", .item_id = "i1", .kind = "box", .class = "person", .geometry = "{\"x\":0,\"y\":0,\"w\":1,\"h\":1}", .attrs = null, .author = "agent", .policy_ver = "p1" },
-        .{ .annotation_id = "x3", .item_id = "i2", .kind = "box", .class = "car", .geometry = null, .attrs = "{\"occluded\":true}", .author = "agent", .policy_ver = "p1" },
-        .{ .annotation_id = "x4", .item_id = "i3", .kind = "point", .class = null, .geometry = null, .attrs = null, .author = "user:r", .policy_ver = "p1" },
-    };
-    return rowsOf(arena, try arena.dupe(release.StateRow, &state), try arena.dupe(release.AnnotationRow, &anns));
+/// How much of a version a clone with `--split`/`--class` would take:
+/// items in any of `splits` (none given: every item, split or not) that
+/// carry at least one of `classes` (none given: all), with their bytes.
+pub const Size = struct { items: u64, bytes: u64, total: u64 };
+
+pub fn subsetSize(arena: std.mem.Allocator, db: *duck.Db, files: Files, splits: []const []const u8, classes: []const []const u8) Error!Size {
+    const sql = try std.fmt.allocPrint(arena,
+        \\SELECT json_object('items', count(*) FILTER (WHERE kept), 'bytes', coalesce(sum(size) FILTER (WHERE kept), 0), 'total', count(*))::VARCHAR
+        \\FROM (SELECT size,
+        \\  (len(from_json($1::VARCHAR, '["VARCHAR"]')) = 0 OR (split IS NOT NULL AND list_contains(from_json($1::VARCHAR, '["VARCHAR"]'), split)))
+        \\  AND (len(from_json($2::VARCHAR, '["VARCHAR"]')) = 0 OR list_has_any(classes, from_json($2::VARCHAR, '["VARCHAR"]'))) AS kept
+        \\  FROM read_parquet('{s}'))
+    , .{try quote(arena, files.items)});
+    const text = (try db.scalarTextArgs(arena, sql, &.{
+        .{ .text = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(splits, .{})}) },
+        .{ .text = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(classes, .{})}) },
+    })) orelse return error.QueryFailed;
+    return std.json.parseFromSliceLeaky(Size, arena, text, .{}) catch error.QueryFailed;
+}
+
+/// One folder of a version: its subfolders, each with the items and bytes
+/// under it (at most `max_folders`, by name), and a page of the files
+/// directly in it, by path. `prefix` is "" for the top, else ends in '/'.
+pub const max_folders = 1000;
+
+pub const Listing = struct {
+    folders: []const struct { name: []const u8, items: u64, bytes: u64 },
+    folders_total: u64,
+    files: []const struct { path: []const u8, size: u64, hash: []const u8 },
+    files_total: u64,
+    next: ?[]const u8,
+};
+
+pub fn listDir(arena: std.mem.Allocator, db: *duck.Db, files: Files, prefix: []const u8, after: ?[]const u8, limit: u32) Error!Listing {
+    const sql = try std.fmt.allocPrint(arena,
+        \\WITH under AS (SELECT path, size, hash, substr(path, length($1::VARCHAR) + 1) AS rest
+        \\  FROM read_parquet('{s}') WHERE starts_with(path, $1::VARCHAR)),
+        \\folders AS (SELECT split_part(rest, '/', 1) AS name, count(*) AS items, sum(size) AS bytes
+        \\  FROM under WHERE contains(rest, '/') GROUP BY 1),
+        \\here AS (SELECT path, size, hash FROM under WHERE NOT contains(rest, '/')),
+        \\page AS (SELECT * FROM here WHERE $2::VARCHAR IS NULL OR path > $2::VARCHAR ORDER BY path LIMIT $3),
+        \\last AS (SELECT max(path) AS p, count(*) AS n FROM page)
+        \\SELECT json_object(
+        \\  'folders', (SELECT coalesce(to_json(list(json_object('name', name, 'items', items, 'bytes', bytes) ORDER BY name)), '[]'::JSON)
+        \\     FROM (SELECT * FROM folders ORDER BY name LIMIT {d})),
+        \\  'folders_total', (SELECT count(*) FROM folders),
+        \\  'files', (SELECT coalesce(to_json(list(json_object('path', path, 'size', size, 'hash', hash) ORDER BY path)), '[]'::JSON) FROM page),
+        \\  'files_total', (SELECT count(*) FROM here),
+        \\  'next', (SELECT CASE WHEN n = $3 AND EXISTS (SELECT 1 FROM here WHERE here.path > last.p) THEN p END FROM last)
+        \\)::VARCHAR
+    , .{ try quote(arena, files.items), max_folders });
+    const text = (try db.scalarTextArgs(arena, sql, &.{ .{ .text = prefix }, .{ .text = after }, .{ .int = limit } })) orelse return error.QueryFailed;
+    return std.json.parseFromSliceLeaky(Listing, arena, text, .{ .ignore_unknown_fields = true }) catch error.QueryFailed;
+}
+
+pub const DiffSummary = struct {
+    added: u64 = 0,
+    modified: u64 = 0,
+    deleted: u64 = 0,
+    ann_added: u64 = 0,
+    ann_changed: u64 = 0,
+    ann_removed: u64 = 0,
+};
+
+/// The joins every compare shares, after WITH: `ch` (items whose bytes
+/// differ, by path), `acp` (annotations added, removed, or changed in
+/// kind, class, geometry or attributes, with their item's path and both
+/// versions of the shape). Geometry compares as stored text, which
+/// Postgres normalized from jsonb, so formatting never counts.
+fn compareCtes(arena: std.mem.Allocator, a: Files, b: Files) Error![]const u8 {
+    return std.fmt.allocPrint(arena,
+        \\ia AS (SELECT path, hash, size, item_id FROM read_parquet('{0s}')),
+        \\ib AS (SELECT path, hash, size, item_id FROM read_parquet('{1s}')),
+        \\ch AS (SELECT coalesce(x.path, y.path) AS path,
+        \\    CASE WHEN x.path IS NULL THEN 'added' WHEN y.path IS NULL THEN 'deleted' ELSE 'modified' END AS change,
+        \\    x.hash AS hash_a, y.hash AS hash_b, x.size AS size_a, y.size AS size_b
+        \\  FROM ia x FULL JOIN ib y USING (path) WHERE x.hash IS DISTINCT FROM y.hash),
+        \\ac AS (SELECT coalesce(x.id, y.id) AS id,
+        \\    CASE WHEN x.id IS NULL THEN 'added' WHEN y.id IS NULL THEN 'removed' ELSE 'changed' END AS change,
+        \\    coalesce(y.kind, x.kind) AS kind, coalesce(y.class, x.class) AS class,
+        \\    coalesce(y.item_id, x.item_id) AS item,
+        \\    CASE WHEN x.id IS NULL THEN NULL ELSE json_object('id', x.id, 'item_id', x.item_id, 'kind', x.kind, 'class', x.class,
+        \\      'geometry', x.geometry, 'attrs', x.attrs, 'author', x.author, 'policy_ver', x.policy_ver) END AS before,
+        \\    CASE WHEN y.id IS NULL THEN NULL ELSE json_object('id', y.id, 'item_id', y.item_id, 'kind', y.kind, 'class', y.class,
+        \\      'geometry', y.geometry, 'attrs', y.attrs, 'author', y.author, 'policy_ver', y.policy_ver) END AS after
+        \\  FROM read_parquet('{2s}') x FULL JOIN read_parquet('{3s}') y USING (id)
+        \\  WHERE x.id IS NULL OR y.id IS NULL OR x.kind IS DISTINCT FROM y.kind OR x.class IS DISTINCT FROM y.class
+        \\    OR x.geometry::VARCHAR IS DISTINCT FROM y.geometry::VARCHAR OR x.attrs::VARCHAR IS DISTINCT FROM y.attrs::VARCHAR),
+        \\acp AS (SELECT ac.*, coalesce(yi.path, xi.path) AS item_path
+        \\  FROM ac LEFT JOIN ib yi ON yi.item_id = ac.item LEFT JOIN ia xi ON xi.item_id = ac.item)
+    , .{ try quote(arena, a.items), try quote(arena, b.items), try quote(arena, a.anns), try quote(arena, b.anns) });
+}
+
+const summary_sql =
+    \\json_object('added', (SELECT count(*) FROM ch WHERE change = 'added'),
+    \\  'modified', (SELECT count(*) FROM ch WHERE change = 'modified'),
+    \\  'deleted', (SELECT count(*) FROM ch WHERE change = 'deleted'),
+    \\  'ann_added', (SELECT count(*) FROM ac WHERE change = 'added'),
+    \\  'ann_changed', (SELECT count(*) FROM ac WHERE change = 'changed'),
+    \\  'ann_removed', (SELECT count(*) FROM ac WHERE change = 'removed'))
+;
+
+/// The dashboard's compare: the summary, a page of item changes by path,
+/// and — on the first page — the visual diff: the first `visual_items`
+/// items an annotation changed on, by path, each at both versions with
+/// its changed shapes before and after.
+pub const visual_items = 60;
+
+pub const VisualSide = struct { path: []const u8, hash: []const u8, item_id: ?[]const u8 = null, width: ?u32 = null, height: ?u32 = null };
+
+pub const ComparePage = struct {
+    summary: DiffSummary,
+    changes: []const struct { change: []const u8, path: []const u8, hash_a: ?[]const u8, hash_b: ?[]const u8, size_b: ?u64 },
+    next: ?[]const u8,
+    visual: []const struct {
+        path: []const u8,
+        before: ?VisualSide,
+        after: ?VisualSide,
+        shapes_before: []const Ann,
+        shapes_after: []const Ann,
+    },
+    /// The first annotation changes, by item path (first page only).
+    ann_changes: []const struct { change: []const u8, kind: ?[]const u8, class: ?[]const u8, item_path: ?[]const u8 },
+};
+
+pub fn comparePage(arena: std.mem.Allocator, db: *duck.Db, a: Files, b: Files, after: ?[]const u8, limit: u32) Error!ComparePage {
+    const sql = try std.fmt.allocPrint(arena,
+        \\WITH {s},
+        \\page AS (SELECT * FROM ch WHERE $1::VARCHAR IS NULL OR path > $1::VARCHAR ORDER BY path LIMIT $2),
+        \\last AS (SELECT max(path) AS p, count(*) AS n FROM page),
+        \\vis AS (SELECT item, min(item_path) AS item_path FROM acp WHERE $1::VARCHAR IS NULL GROUP BY item ORDER BY 2 LIMIT {d})
+        \\SELECT json_object(
+        \\  'summary', {s},
+        \\  'changes', (SELECT coalesce(to_json(list(json_object('change', change, 'path', path, 'hash_a', hash_a, 'hash_b', hash_b, 'size_b', size_b) ORDER BY path)), '[]'::JSON) FROM page),
+        \\  'next', (SELECT CASE WHEN n = $2 AND EXISTS (SELECT 1 FROM ch WHERE ch.path > last.p) THEN p END FROM last),
+        \\  'visual', (SELECT coalesce(to_json(list(json_object('path', v.item_path,
+        \\      'before', (SELECT json_object('path', path, 'hash', hash, 'item_id', item_id) FROM ia WHERE ia.item_id = v.item LIMIT 1),
+        \\      'after', (SELECT json_object('path', path, 'hash', hash, 'item_id', item_id) FROM ib WHERE ib.item_id = v.item LIMIT 1),
+        \\      'shapes_before', (SELECT coalesce(to_json(list(before ORDER BY id) FILTER (WHERE before IS NOT NULL)), '[]'::JSON) FROM acp WHERE acp.item = v.item),
+        \\      'shapes_after', (SELECT coalesce(to_json(list(after ORDER BY id) FILTER (WHERE after IS NOT NULL)), '[]'::JSON) FROM acp WHERE acp.item = v.item))
+        \\    ORDER BY v.item_path)), '[]'::JSON) FROM vis v),
+        \\  'ann_changes', (SELECT coalesce(to_json(list(json_object('change', change, 'kind', kind, 'class', class, 'item_path', item_path)
+        \\      ORDER BY item_path, id)), '[]'::JSON)
+        \\    FROM (SELECT * FROM acp WHERE $1::VARCHAR IS NULL ORDER BY item_path, id LIMIT {d}))
+        \\)::VARCHAR
+    , .{ try compareCtes(arena, a, b), visual_items, summary_sql, max_limit });
+    const text = (try db.scalarTextArgs(arena, sql, &.{ .{ .text = after }, .{ .int = limit } })) orelse return error.QueryFailed;
+    return std.json.parseFromSliceLeaky(ComparePage, arena, text, .{ .ignore_unknown_fields = true }) catch error.QueryFailed;
+}
+
+/// The CLI's compare: every change, as two JSON-lines files DuckDB writes
+/// in its folder (items by path; annotations by item path and id), and
+/// the summary. The caller turns the files into the diff `cid diff` reads.
+pub const CompareFiles = struct { items: []const u8, anns: []const u8 };
+
+pub fn compareLines(arena: std.mem.Allocator, db: *duck.Db, a: Files, b: Files, out: CompareFiles) Error!DiffSummary {
+    const ctes = try compareCtes(arena, a, b);
+    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (WITH {s} SELECT change, path, hash_a, hash_b, size_a, size_b FROM ch ORDER BY path) TO '{s}' (FORMAT json)", .{ ctes, try quote(arena, out.items) }));
+    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (WITH {s} SELECT change AS ann, id, kind, class, item_path FROM acp ORDER BY item_path, id) TO '{s}' (FORMAT json)", .{ ctes, try quote(arena, out.anns) }));
+    const text = (try db.scalarText(arena, try std.fmt.allocPrint(arena, "WITH {s} SELECT {s}::VARCHAR", .{ ctes, summary_sql }))) orelse return error.QueryFailed;
+    return std.json.parseFromSliceLeaky(DiffSummary, arena, text, .{}) catch error.QueryFailed;
+}
+
+// ---------------------------------------------------------------------------
+
+/// A small annotated version, as index lines: three items in two splits,
+/// one without an extension, boxes of two classes, one with no class.
+const fixture_items =
+    \\{"path":"README","hash":"dd","size":4,"split":null,"item_id":null,"ext":"file","classes":[]}
+    \\{"path":"img/a.jpg","hash":"aa","size":1,"split":"train","item_id":"i1","ext":".jpg","classes":["person","person"]}
+    \\{"path":"img/b.JPG","hash":"bb","size":2,"split":"train","item_id":"i2","ext":".jpg","classes":["car"]}
+    \\{"path":"img/c.png","hash":"cc","size":3,"split":"val","item_id":"i3","ext":".png","classes":[""]}
+    \\
+;
+const fixture_anns =
+    \\{"id":"x1","item_id":"i1","kind":"box","class":"person","geometry":{"x":1,"y":2,"w":3,"h":4},"attrs":null,"author":"agent","policy_ver":"p1"}
+    \\{"id":"x2","item_id":"i1","kind":"box","class":"person","geometry":{"x":0,"y":0,"w":1,"h":1},"attrs":null,"author":"agent","policy_ver":"p1"}
+    \\{"id":"x3","item_id":"i2","kind":"box","class":"car","geometry":null,"attrs":{"occluded":true},"author":"agent","policy_ver":"p1"}
+    \\{"id":"x4","item_id":"i3","kind":"point","class":null,"geometry":null,"attrs":null,"author":"user:r","policy_ver":"p1"}
+    \\
+;
+
+fn writeFixture(arena: std.mem.Allocator, io: std.Io, db: *duck.Db, dir: []const u8, name: []const u8, items: []const u8, anns: []const u8) !Files {
+    const files = try Files.of(arena, dir, name);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = files.items_lines, .data = items });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = files.ann_lines, .data = anns });
+    try convertIndex(arena, io, db, files);
+    return files;
 }
 
 fn countOf(list: []const Facet, value: []const u8) ?u64 {
@@ -491,116 +448,123 @@ fn countOf(list: []const Facet, value: []const u8) ?u64 {
     return null;
 }
 
-/// The contract, checked against whichever engine `run` is.
-fn expectContract(arena: std.mem.Allocator, ctx: anytype, run: fn (@TypeOf(ctx), std.mem.Allocator, Query) anyerror!Answer) !void {
-    // Everything: bytewise path order (uppercase sorts first), counts,
-    // facets and the class chips.
-    const all = try run(ctx, arena, .{});
-    try std.testing.expectEqual(@as(u64, 4), all.total);
-    try std.testing.expectEqual(@as(u64, 4), all.matched);
-    try std.testing.expectEqualStrings("README", all.items[0].path);
-    try std.testing.expectEqualStrings("img/a.jpg", all.items[1].path);
-    try std.testing.expect(all.next == null);
-    try std.testing.expectEqual(@as(?u64, 2), countOf(all.facets.split, "train"));
-    try std.testing.expectEqual(@as(?u64, 1), countOf(all.facets.split, ""));
-    try std.testing.expectEqual(@as(?u64, 2), countOf(all.facets.type, ".jpg")); // a.jpg and b.JPG
-    try std.testing.expectEqual(@as(?u64, 1), countOf(all.facets.type, "file"));
-    try std.testing.expectEqual(@as(?u64, 1), countOf(all.facets.class, "person")); // items, not boxes
-    try std.testing.expectEqual(@as(?u64, 1), countOf(all.facets.class, ""));
-    try std.testing.expectEqualStrings("train", all.facets.split[0].value); // biggest first
-    try std.testing.expectEqualStrings("", all.classes[0].value); // chips by name
-    try std.testing.expectEqual(@as(?u64, 2), countOf(all.classes, "person")); // boxes, not items
-    const a = all.items[1];
-    try std.testing.expectEqual(@as(usize, 2), a.annotations.len);
-    try std.testing.expectEqual(@as(i64, 3), a.annotations[0].geometry.?.object.get("w").?.integer);
-
-    // Each facet counts against the other filters, never its own.
-    const train = try run(ctx, arena, .{ .split = "train" });
-    try std.testing.expectEqual(@as(u64, 2), train.matched);
-    try std.testing.expectEqual(@as(?u64, 1), countOf(train.facets.split, "val"));
-    try std.testing.expectEqual(@as(?u64, 1), countOf(train.facets.class, "car"));
-    try std.testing.expectEqual(@as(?u64, null), countOf(train.facets.class, ""));
-
-    const cars = try run(ctx, arena, .{ .class = "car", .q = "IMG/" });
-    try std.testing.expectEqual(@as(u64, 1), cars.matched);
-    try std.testing.expectEqualStrings("img/b.JPG", cars.items[0].path);
-    try std.testing.expectEqualStrings("{\"occluded\":true}", try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(cars.items[0].annotations[0].attrs.?, .{})}));
-
-    // An active value with no match stays listed, at zero.
-    const none = try run(ctx, arena, .{ .type = ".wav" });
-    try std.testing.expectEqual(@as(u64, 0), none.matched);
-    try std.testing.expectEqual(@as(usize, 0), none.items.len);
-    try std.testing.expectEqual(@as(?u64, 0), countOf(none.facets.type, ".wav"));
-
-    // The cursor walks every match exactly once.
-    var seen: usize = 0;
-    var after: ?[]const u8 = null;
-    while (true) {
-        const page = try run(ctx, arena, .{ .limit = 3, .after = after });
-        seen += page.items.len;
-        after = page.next orelse break;
-        try std.testing.expectEqualStrings(page.items[page.items.len - 1].path, after.?);
-    }
-    try std.testing.expectEqual(@as(usize, 4), seen);
-
-    // The open item comes with any page, whatever the filters.
-    const open = try run(ctx, arena, .{ .split = "val", .item = "README" });
-    try std.testing.expectEqualStrings("README", open.open.?.path);
-    try std.testing.expectEqual(@as(usize, 0), open.open.?.annotations.len);
-}
-
-test "file types by extension, the dashboard's way" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    try std.testing.expectEqualStrings(".jpg", try extOf(arena, "a/b/C.JPG"));
-    try std.testing.expectEqualStrings("file", try extOf(arena, "a.d/README"));
-    try std.testing.expectEqualStrings("file", try extOf(arena, ".cidignore"));
-    try std.testing.expectEqualStrings(".gz", try extOf(arena, "x.tar.gz"));
-}
-
-test "the state engine keeps the contract" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const rows = try fixtureRows(arena);
-    try expectContract(arena, rows, struct {
-        fn run(r: []Row, al: std.mem.Allocator, q: Query) anyerror!Answer {
-            return evaluate(al, r, q);
-        }
-    }.run);
-}
-
-test "the DuckDB engine keeps the same contract, from a Parquet index" {
-    if (comptime !duck.enabled) return error.SkipZigTest;
+test "browse: pages, facets, cursor, the open item, sizes, folders and compare" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const io = std.testing.io;
-
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const dir = try tmp.dir.realPathFileAlloc(io, ".", arena);
     var db = try duck.Db.open(arena, .{ .allowed_dir = dir });
     defer db.close();
+    const v1 = try writeFixture(arena, io, &db, dir, "v1", fixture_items, fixture_anns);
 
-    const v1 = try Files.of(arena, dir, "v1");
-    try writeIndex(arena, io, &db, v1, try fixtureRows(arena));
-    const Ctx = struct { db: *duck.Db, files: Files };
-    try expectContract(arena, Ctx{ .db = &db, .files = v1 }, struct {
-        fn run(c: Ctx, al: std.mem.Allocator, q: Query) anyerror!Answer {
-            return queryIndex(al, c.db, c.files, q);
-        }
-    }.run);
+    // Everything: bytewise path order (uppercase sorts first), counts,
+    // facets and the class chips.
+    const all = try queryIndex(arena, &db, v1, .{});
+    try std.testing.expectEqual(@as(u64, 4), all.total);
+    try std.testing.expectEqualStrings("README", all.items[0].path);
+    try std.testing.expectEqualStrings("img/a.jpg", all.items[1].path);
+    try std.testing.expect(all.next == null);
+    try std.testing.expectEqual(@as(?u64, 2), countOf(all.facets.split, "train"));
+    try std.testing.expectEqual(@as(?u64, 1), countOf(all.facets.split, ""));
+    try std.testing.expectEqual(@as(?u64, 2), countOf(all.facets.type, ".jpg"));
+    try std.testing.expectEqual(@as(?u64, 1), countOf(all.facets.class, "person")); // items, not boxes
+    try std.testing.expectEqualStrings("train", all.facets.split[0].value); // biggest first
+    try std.testing.expectEqualStrings("", all.classes[0].value); // chips by name
+    try std.testing.expectEqual(@as(?u64, 2), countOf(all.classes, "person")); // boxes, not items
+    try std.testing.expectEqual(@as(usize, 2), all.items[1].annotations.len);
+    try std.testing.expectEqual(@as(i64, 3), all.items[1].annotations[0].geometry.?.object.get("w").?.integer);
 
-    // An empty version is an index too.
-    const none = try Files.of(arena, dir, "empty");
-    try writeIndex(arena, io, &db, none, &.{});
-    const empty = try queryIndex(arena, &db, none, .{});
-    try std.testing.expectEqual(@as(u64, 0), empty.total);
-    try std.testing.expectEqual(@as(usize, 0), empty.facets.split.len);
-
+    // Each facet counts against the other filters, never its own.
+    const train = try queryIndex(arena, &db, v1, .{ .split = "train" });
+    try std.testing.expectEqual(@as(u64, 2), train.matched);
+    try std.testing.expectEqual(@as(?u64, 1), countOf(train.facets.split, "val"));
+    try std.testing.expectEqual(@as(?u64, null), countOf(train.facets.class, ""));
+    const cars = try queryIndex(arena, &db, v1, .{ .class = "car", .q = "IMG/" });
+    try std.testing.expectEqualStrings("img/b.JPG", cars.items[0].path);
+    // An active value with no match stays listed, at zero.
+    const none = try queryIndex(arena, &db, v1, .{ .type = ".wav" });
+    try std.testing.expectEqual(@as(?u64, 0), countOf(none.facets.type, ".wav"));
+    // The cursor walks every match exactly once.
+    var seen: usize = 0;
+    var after: ?[]const u8 = null;
+    while (true) {
+        const page = try queryIndex(arena, &db, v1, .{ .limit = 3, .after = after });
+        seen += page.items.len;
+        after = page.next orelse break;
+    }
+    try std.testing.expectEqual(@as(usize, 4), seen);
+    // The open item comes with any page, whatever the filters.
+    const open = try queryIndex(arena, &db, v1, .{ .split = "val", .item = "README" });
+    try std.testing.expectEqualStrings("README", open.open.?.path);
     // A hostile filter is a value, not SQL.
-    const odd = try queryIndex(arena, &db, v1, .{ .q = "'); DROP TABLE x; --" });
-    try std.testing.expectEqual(@as(u64, 0), odd.matched);
+    try std.testing.expectEqual(@as(u64, 0), (try queryIndex(arena, &db, v1, .{ .q = "'); DROP TABLE x; --" })).matched);
+
+    // Subset sizes: splits × classes, as `cid clone --split --class` keeps.
+    const everything = try subsetSize(arena, &db, v1, &.{}, &.{});
+    try std.testing.expectEqual(Size{ .items = 4, .bytes = 10, .total = 4 }, everything);
+    try std.testing.expectEqual(Size{ .items = 2, .bytes = 3, .total = 4 }, try subsetSize(arena, &db, v1, &.{"train"}, &.{}));
+    try std.testing.expectEqual(Size{ .items = 1, .bytes = 2, .total = 4 }, try subsetSize(arena, &db, v1, &.{ "train", "val" }, &.{"car"}));
+
+    // Folders: the top holds README and one folder of three.
+    const top = try listDir(arena, &db, v1, "", null, 100);
+    try std.testing.expectEqual(@as(usize, 1), top.folders.len);
+    try std.testing.expectEqualStrings("img", top.folders[0].name);
+    try std.testing.expectEqual(@as(u64, 3), top.folders[0].items);
+    try std.testing.expectEqual(@as(u64, 6), top.folders[0].bytes);
+    try std.testing.expectEqualStrings("README", top.files[0].path);
+    const img = try listDir(arena, &db, v1, "img/", null, 2);
+    try std.testing.expectEqual(@as(u64, 3), img.files_total);
+    try std.testing.expectEqualStrings("img/b.JPG", img.next.?);
+    const rest = try listDir(arena, &db, v1, "img/", img.next, 2);
+    try std.testing.expectEqualStrings("img/c.png", rest.files[0].path);
+
+    // Compare: README gone, a.jpg's bytes changed, d.txt new; box x1
+    // moved, x3 removed, x5 added on b.JPG.
+    const v2 = try writeFixture(arena, io, &db, dir, "v2",
+        \\{"path":"d.txt","hash":"ee","size":5,"split":null,"item_id":null,"ext":".txt","classes":[]}
+        \\{"path":"img/a.jpg","hash":"a2","size":1,"split":"train","item_id":"i1","ext":".jpg","classes":["person","person"]}
+        \\{"path":"img/b.JPG","hash":"bb","size":2,"split":"train","item_id":"i2","ext":".jpg","classes":["car"]}
+        \\{"path":"img/c.png","hash":"cc","size":3,"split":"val","item_id":"i3","ext":".png","classes":[""]}
+        \\
+    ,
+        \\{"id":"x1","item_id":"i1","kind":"box","class":"person","geometry":{"y":2,"x":9,"h":4,"w":3},"attrs":null,"author":"user:r","policy_ver":"p1"}
+        \\{"id":"x2","item_id":"i1","kind":"box","class":"person","geometry":{"x":0,"y":0,"w":1,"h":1},"attrs":null,"author":"agent","policy_ver":"p1"}
+        \\{"id":"x4","item_id":"i3","kind":"point","class":null,"geometry":null,"attrs":null,"author":"user:r","policy_ver":"p1"}
+        \\{"id":"x5","item_id":"i2","kind":"box","class":"car","geometry":{"x":5,"y":5,"w":5,"h":5},"attrs":null,"author":"user:r","policy_ver":"p1"}
+        \\
+    );
+    const cmp = try comparePage(arena, &db, v1, v2, null, 2);
+    try std.testing.expectEqual(DiffSummary{ .added = 1, .modified = 1, .deleted = 1, .ann_added = 1, .ann_changed = 1, .ann_removed = 1 }, cmp.summary);
+    try std.testing.expectEqualStrings("README", cmp.changes[0].path);
+    try std.testing.expectEqualStrings("deleted", cmp.changes[0].change);
+    try std.testing.expectEqualStrings("d.txt", cmp.changes[1].path);
+    try std.testing.expectEqualStrings("d.txt", cmp.next.?);
+    try std.testing.expectEqual(@as(usize, 2), cmp.visual.len); // a.jpg (moved box), b.JPG (one gone, one new)
+    try std.testing.expectEqualStrings("img/a.jpg", cmp.visual[0].path);
+    try std.testing.expectEqual(@as(i64, 1), cmp.visual[0].shapes_before[0].geometry.?.object.get("x").?.integer);
+    try std.testing.expectEqual(@as(i64, 9), cmp.visual[0].shapes_after[0].geometry.?.object.get("x").?.integer);
+    try std.testing.expectEqualStrings("aa", cmp.visual[0].before.?.hash);
+    try std.testing.expectEqualStrings("a2", cmp.visual[0].after.?.hash);
+    const page2 = try comparePage(arena, &db, v1, v2, cmp.next, 2);
+    try std.testing.expectEqualStrings("img/a.jpg", page2.changes[0].path);
+    try std.testing.expectEqual(@as(usize, 0), page2.visual.len);
+    try std.testing.expectEqual(@as(usize, 3), cmp.ann_changes.len);
+    try std.testing.expectEqualStrings("img/a.jpg", cmp.ann_changes[0].item_path.?);
+    try std.testing.expectEqual(@as(usize, 0), page2.ann_changes.len);
+
+    // The CLI's lines: the same changes, in files DuckDB writes.
+    const out: CompareFiles = .{
+        .items = try std.fmt.allocPrint(arena, "{s}/c.items.jsonl", .{dir}),
+        .anns = try std.fmt.allocPrint(arena, "{s}/c.anns.jsonl", .{dir}),
+    };
+    const sum = try compareLines(arena, &db, v1, v2, out);
+    try std.testing.expectEqual(cmp.summary, sum);
+    const lines = try std.Io.Dir.cwd().readFileAlloc(io, out.items, arena, .limited(1 << 20));
+    try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, lines, "\n"));
+    try std.testing.expect(std.mem.startsWith(u8, lines, "{\"change\":\"deleted\",\"path\":\"README\""));
+    const ann_lines = try std.Io.Dir.cwd().readFileAlloc(io, out.anns, arena, .limited(1 << 20));
+    try std.testing.expect(std.mem.indexOf(u8, ann_lines, "\"ann\":\"changed\",\"id\":\"x1\",\"kind\":\"box\",\"class\":\"person\",\"item_path\":\"img/a.jpg\"") != null);
 }

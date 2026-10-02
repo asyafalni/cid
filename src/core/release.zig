@@ -6,7 +6,7 @@
 //! (manifests/<dataset_id>/<commit_id>.manifest), which is what the hash
 //! covers, written in one streamed pass over history (version.zig) at any
 //! size. The release's browse index (.items.parquet, .anns.parquet) sits
-//! beside it, written in the same pass by the server build: derived,
+//! beside it, written in the same pass by the server: derived,
 //! rebuildable, never hashed, so it cannot break a release.
 
 const std = @import("std");
@@ -60,7 +60,7 @@ const RawState = struct {
 
 /// The whole state at a commit, in memory, bytewise by path. For what
 /// still answers with a whole version at once (the CLI's state route,
-/// merges, the CLI build's browse engine); releases, statistics and
+/// merges); releases, statistics and
 /// browse indexes stream through version.zig instead.
 pub fn stateRows(
     arena: std.mem.Allocator,
@@ -153,7 +153,7 @@ pub const Work = struct {
     io: std.Io,
     dir: []const u8,
     /// The browse index lines, written in the same pass when given (the
-    /// server build turns them into the release's Parquet index).
+    /// server turns them into the release's Parquet index).
     items: ?*std.Io.Writer = null,
     annotations: ?*std.Io.Writer = null,
 };

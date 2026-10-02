@@ -15,7 +15,6 @@ const purge_mod = @import("../core/purge.zig");
 const preview_worker = @import("../preview/worker.zig");
 const serve_mod = @import("../server/serve.zig");
 const signin_mod = @import("../server/signin.zig");
-const duck_mod = @import("../store/duck.zig");
 
 const ExitCode = root.ExitCode;
 
@@ -36,7 +35,7 @@ const admin_help =
     \\  CID_S3_REGION (optional), CID_TOKEN    (serve)
     \\  CID_GITLAB_OAUTH_ID, CID_GITLAB_OAUTH_SECRET, CID_PUBLIC_URL,
     \\  CID_SESSION_SECRET  "Sign in with GitLab" on the dashboard (serve)
-    \\  CID_BROWSE_DIR  where the server build keeps browse indexes, one
+    \\  CID_BROWSE_DIR  where the server keeps browse indexes, one
     \\             Parquet file per version (default /tmp/cid-browse) (serve)
     \\  CID_WORK_DIR  files in flight: manifests going up, tables a row
     \\             diff compares (default /tmp/cid-work) (serve)
@@ -258,11 +257,6 @@ fn runServe(
         io.random(&secret);
     }
 
-    if (!duck_mod.enabled) std.log.info(
-        "serving without DuckDB: table previews, row-level diffs and the 1M-item browse engine are off. " ++
-            "Use the server build (zig build -Dduckdb) to turn them on.",
-        .{},
-    );
     serve_mod.serve(arena, &deps, .{ .port = port, .session_secret = &secret, .signin = signin_cfg }) catch |err| {
         return fail(io, .network, "the server stopped: {t}. Fix the cause, then run 'cid admin serve' again.", .{err});
     };

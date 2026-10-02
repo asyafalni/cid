@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { getState, type Overview, type StateAnnotation, type StateItem } from '../api';
+import { getSubsetSize, type Overview } from '../api';
 import { humanBytes } from '../format';
 
 export function OverviewTab({ overview: o, pinned }: { overview: Overview; pinned: string | null }) {
@@ -60,16 +60,15 @@ function UseThisDataset({ overview: o, pinned }: { overview: Overview; pinned: s
   const [copied, setCopied] = useState<'command' | 'snippet' | null>(null);
 
   // The pinned version's real items, so the size line is a sum, not a
-  // guess. The same query Browse makes, so it is usually cached already.
+  // guess: counted on the server with the CLI's subset rule (src/client/
+  // sync.zig, `narrow`), so it is exactly what the copied command takes.
   const commit = o.commits.find((c) => c.release === pinned)?.id ?? o.commits[0]?.id ?? null;
-  const state = useQuery({
-    queryKey: ['state', o.name, commit],
-    queryFn: () => getState(o.name, commit!),
+  const size = useQuery({
+    queryKey: ['size', o.name, commit, [...splits].sort().join(','), [...classes].sort().join(',')],
+    queryFn: () => getSubsetSize(o.name, commit!, [...splits], [...classes]),
     enabled: commit !== null,
   });
-  const kept = state.data
-    ? subsetOf(state.data.items, state.data.annotations ?? [], splits, classes)
-    : null;
+  const kept = size.data ?? null;
 
   const folder = o.name.slice(o.name.lastIndexOf('/') + 1);
   const command = [
@@ -194,29 +193,6 @@ function SubsetPicker({
       {chosen.size === 0 && <span className="quiet">all</span>}
     </div>
   );
-}
-
-// The CLI's subset rule (src/client/sync.zig, `narrow`), so the size line
-// counts exactly what the copied command will download.
-function subsetOf(
-  items: StateItem[],
-  annotations: StateAnnotation[],
-  splits: ReadonlySet<string>,
-  classes: ReadonlySet<string>,
-): { items: number; total: number; bytes: number } {
-  const carrying = new Set<string>();
-  if (classes.size > 0) {
-    for (const a of annotations) if (classes.has(a.class ?? '')) carrying.add(a.item_id);
-  }
-  let count = 0;
-  let bytes = 0;
-  for (const item of items) {
-    if (splits.size > 0 && !splits.has(item.split ?? '\u0000')) continue;
-    if (classes.size > 0 && !(item.item_id && carrying.has(item.item_id))) continue;
-    count += 1;
-    bytes += item.size;
-  }
-  return { items: count, total: items.length, bytes };
 }
 
 // Two lines that read the folder the command just wrote. Documentation

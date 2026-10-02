@@ -8,7 +8,7 @@
 # and their thumbnails.
 #
 # Needs: docker compose -f docker-compose.test.yml up -d --wait, and the
-# server build (zig build -Dduckdb). From the repository root:
+# a build (zig build -Doptimize=ReleaseFast for real numbers). From the repository root:
 #   tests/bench/browse_1m.sh             # seed once, then measure
 #   N=100000 tests/bench/browse_1m.sh    # a smaller run
 # The dataset stays for reruns (and for a browser at /d/<name>).

@@ -82,7 +82,6 @@ test "table kinds by extension" {
 }
 
 test "statistics for every table fixture, read the same way" {
-    if (comptime !duck.enabled) return error.SkipZigTest;
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();

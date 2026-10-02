@@ -62,14 +62,6 @@ pub fn extOf(comptime path: []const u8) []const u8 {
     return "CASE WHEN " ++ base ++ " ~ '^\\.?[^.]*$' THEN 'file' ELSE lower(substring(" ++ base ++ " FROM '(\\.[^.]*)$')) END";
 }
 
-/// The same rule in Zig, for the few places that hold a path already.
-pub fn extOfPath(arena: std.mem.Allocator, path: []const u8) ![]const u8 {
-    const base = if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| path[i + 1 ..] else path;
-    const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse return "file";
-    if (dot == 0) return "file";
-    return std.ascii.allocLowerString(arena, base[dot..]);
-}
-
 // ---------------------------------------------------------------------------
 // One pass over a version: manifest, browse index files, statistics.
 // ---------------------------------------------------------------------------
@@ -377,117 +369,6 @@ pub fn firstItems(arena: std.mem.Allocator, db: *dbx.sql.Db, scope: anytype, dat
 }
 
 // ---------------------------------------------------------------------------
-// Comparing two versions, on the server, streamed.
-// ---------------------------------------------------------------------------
-
-pub const DiffSummary = struct {
-    added: u64 = 0,
-    modified: u64 = 0,
-    deleted: u64 = 0,
-    ann_added: u64 = 0,
-    ann_changed: u64 = 0,
-    ann_removed: u64 = 0,
-};
-
-const ItemChange = struct {
-    pub const nilo_table = .projection;
-    path: []const u8,
-    hash_a: ?[]const u8,
-    hash_b: ?[]const u8,
-    size_a: ?i64,
-    size_b: ?i64,
-};
-
-const AnnChange = struct {
-    pub const nilo_table = .projection;
-    id: []const u8,
-    change: []const u8,
-    kind: ?[]const u8,
-    class: ?[]const u8,
-    item_path: ?[]const u8,
-};
-
-/// The first line of a diff file.
-pub fn diffHeader(w: *std.Io.Writer, a: []const u8, b: []const u8) !void {
-    try w.print("{{\"cid\":\"diff\",\"v\":1,\"a\":\"{s}\",\"b\":\"{s}\"}}\n", .{ a, b });
-}
-
-/// What changed from version `a` to version `b`: one line per item that
-/// was added, modified (other bytes) or deleted, by path; then, in
-/// annotated datasets, one per annotation added, changed (kind, class,
-/// geometry or attributes — compared as values, so formatting never
-/// counts) or removed, with its item's path. Both versions are
-/// materialized once in one transaction and joined there; nothing of
-/// either is held here beyond one batch.
-pub fn diffPass(
-    gpa: std.mem.Allocator,
-    db: *dbx.sql.Db,
-    scope: anytype,
-    dataset_id: []const u8,
-    commit_a: []const u8,
-    commit_b: []const u8,
-    annotated: bool,
-    out: *std.Io.Writer,
-) Error!DiffSummary {
-    const where_a = try at(db, scope, dataset_id, commit_a);
-    const where_b = try at(db, scope, dataset_id, commit_b);
-    var tx = db.begin(scope, .{}) catch return error.Db;
-    defer tx.deinit();
-    try materialize(&tx, scope, dataset_id, where_a, "da");
-    try materialize(&tx, scope, dataset_id, where_b, "db");
-
-    var sum: DiffSummary = .{};
-    _ = tx.exec(scope, "DECLARE diff_items NO SCROLL CURSOR FOR SELECT coalesce(a.path, b.path) AS path, " ++
-        "encode(a.item_hash, 'hex') AS hash_a, encode(b.item_hash, 'hex') AS hash_b, a.size_bytes AS size_a, b.size_bytes AS size_b " ++
-        "FROM da_live a FULL JOIN db_live b USING (path) WHERE a.item_hash IS DISTINCT FROM b.item_hash " ++
-        "ORDER BY coalesce(a.path, b.path) COLLATE \"C\"", .{}) catch return error.Db;
-    while (true) {
-        var batch = dbx.Run.init(gpa);
-        defer batch.deinit();
-        const rows = tx.raw(ItemChange, &batch, "FETCH 5000 FROM diff_items", .{}) catch return error.Db;
-        for (rows) |r| {
-            const change = if (r.hash_a == null) "added" else if (r.hash_b == null) "deleted" else "modified";
-            if (r.hash_a == null) sum.added += 1 else if (r.hash_b == null) sum.deleted += 1 else sum.modified += 1;
-            out.print("{{\"change\":\"{s}\",\"path\":{f},\"hash_a\":{f},\"hash_b\":{f},\"size_a\":{f},\"size_b\":{f}}}\n", .{
-                change,                      std.json.fmt(r.path, .{}),
-                std.json.fmt(r.hash_a, .{}), std.json.fmt(r.hash_b, .{}),
-                std.json.fmt(r.size_a, .{}), std.json.fmt(r.size_b, .{}),
-            }) catch return error.WriteFailed;
-        }
-        if (rows.len < batch_rows) break;
-    }
-
-    if (annotated) {
-        _ = tx.exec(scope, "DECLARE diff_anns NO SCROLL CURSOR FOR SELECT d.id::text AS id, d.change, d.kind, d.class, " ++
-            "coalesce(lb.path, la.path) AS item_path FROM (" ++
-            "  SELECT coalesce(a.annotation_id, b.annotation_id) AS id, " ++
-            "    CASE WHEN a.annotation_id IS NULL THEN 'added' WHEN b.annotation_id IS NULL THEN 'removed' ELSE 'changed' END AS change, " ++
-            "    coalesce(b.kind, a.kind) AS kind, coalesce(b.class, a.class) AS class, a.item_id AS item_a, b.item_id AS item_b " ++
-            "  FROM da_alive a FULL JOIN db_alive b USING (annotation_id) " ++
-            "  WHERE a.annotation_id IS NULL OR b.annotation_id IS NULL OR a.kind IS DISTINCT FROM b.kind " ++
-            "    OR a.class IS DISTINCT FROM b.class OR a.geometry IS DISTINCT FROM b.geometry OR a.attrs IS DISTINCT FROM b.attrs) d " ++
-            "LEFT JOIN db_live lb ON lb.item_id = d.item_b LEFT JOIN da_live la ON la.item_id = d.item_a " ++
-            "ORDER BY coalesce(lb.path, la.path) COLLATE \"C\", d.id", .{}) catch return error.Db;
-        while (true) {
-            var batch = dbx.Run.init(gpa);
-            defer batch.deinit();
-            const rows = tx.raw(AnnChange, &batch, "FETCH 5000 FROM diff_anns", .{}) catch return error.Db;
-            for (rows) |r| {
-                if (std.mem.eql(u8, r.change, "added")) sum.ann_added += 1 else if (std.mem.eql(u8, r.change, "removed")) sum.ann_removed += 1 else sum.ann_changed += 1;
-                out.print("{{\"ann\":\"{s}\",\"id\":\"{s}\",\"kind\":{f},\"class\":{f},\"item_path\":{f}}}\n", .{
-                    r.change,                       r.id,
-                    std.json.fmt(r.kind, .{}),      std.json.fmt(r.class, .{}),
-                    std.json.fmt(r.item_path, .{}),
-                }) catch return error.WriteFailed;
-            }
-            if (rows.len < batch_rows) break;
-        }
-    }
-    out.flush() catch return error.WriteFailed;
-    return sum;
-}
-
-// ---------------------------------------------------------------------------
 // Merging: only the paths a branch touched.
 // ---------------------------------------------------------------------------
 
@@ -526,15 +407,4 @@ pub fn branchPaths(
         "  CASE WHEN m.op IS NULL OR m.op = 'delete' THEN NULL ELSE encode(m.item_hash, 'hex') END AS ours " ++
         "FROM t LEFT JOIN b USING (path) LEFT JOIN m USING (path) LEFT JOIN items i ON i.item_hash = t.item_hash " ++
         "ORDER BY t.path COLLATE \"C\"", .{ dataset_id, branch, branch_cutoff, start_cutoff, main_cutoff }) catch error.Db;
-}
-
-test "file types: one rule" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    try std.testing.expectEqualStrings(".jpg", try extOfPath(arena, "a/b/C.JPG"));
-    try std.testing.expectEqualStrings("file", try extOfPath(arena, "a.d/README"));
-    try std.testing.expectEqualStrings("file", try extOfPath(arena, ".cidignore"));
-    try std.testing.expectEqualStrings(".gz", try extOfPath(arena, "x.tar.gz"));
-    try std.testing.expectEqualStrings(".", try extOfPath(arena, "trailing."));
 }

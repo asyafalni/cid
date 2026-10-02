@@ -263,21 +263,19 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     const head_parsed = try std.json.parseFromSliceLeaky(Head, arena, head_res.body, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqualStrings(&id2, head_parsed.commit.?);
 
-    const state_target = try std.fmt.allocPrint(arena, "/v0/datasets/{s}/-/state/{s}", .{ name, &id2 });
-    const state_res = cid.api.handle(arena, &deps, &scope, "GET", state_target, "Bearer test-token", "");
-    try std.testing.expectEqual(std.http.Status.ok, state_res.status);
-    const State = struct { commit: []const u8, items: []const struct { path: []const u8, hash: []const u8, size: u64 } };
-    const state_parsed = try std.json.parseFromSliceLeaky(State, arena, state_res.body, .{ .ignore_unknown_fields = true });
-    try std.testing.expectEqual(@as(usize, 1), state_parsed.items.len);
-    try std.testing.expectEqualStrings("b.txt", state_parsed.items[0].path);
-    try std.testing.expectEqualStrings(&hash_b, state_parsed.items[0].hash);
-    try std.testing.expectEqual(@as(u64, 26), state_parsed.items[0].size);
+    // The version as the CLI reads it: a file in storage, hash-checked.
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = name };
+    const items2 = try remote.state(arena, &id2);
+    try std.testing.expectEqual(@as(usize, 1), items2.len);
+    try std.testing.expectEqualStrings("b.txt", items2[0].path);
+    try std.testing.expectEqualStrings(&hash_b, items2[0].hash);
+    try std.testing.expectEqual(@as(u64, 26), items2[0].size);
 
     // State at the first commit still shows a.txt: history is intact.
-    const state1_target = try std.fmt.allocPrint(arena, "/v0/datasets/{s}/-/state/{s}", .{ name, &id1 });
-    const state1_parsed = try std.json.parseFromSliceLeaky(State, arena, cid.api.handle(arena, &deps, &scope, "GET", state1_target, "Bearer test-token", "").body, .{ .ignore_unknown_fields = true });
-    try std.testing.expectEqual(@as(usize, 1), state1_parsed.items.len);
-    try std.testing.expectEqualStrings("a.txt", state1_parsed.items[0].path);
+    const items1 = try remote.state(arena, &id1);
+    try std.testing.expectEqual(@as(usize, 1), items1.len);
+    try std.testing.expectEqualStrings("a.txt", items1[0].path);
 
     // downloads: a presigned GET for B round-trips the bytes.
     const dl_body = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\"]}}", .{&hash_b});
@@ -1476,14 +1474,40 @@ test "annotated: the platform writes revisions, the server commits, state compos
     const sum3 = try remote.compare(arena, c2, c1, .{ .ctx = &back, .visit = Collected.visit });
     try std.testing.expectEqual(@as(u64, 1), sum3.ann_added);
 
-    // Browse: each version as it was, a page at a time, the same contract
-    // in both builds (DuckDB over a Parquet index; state rows without).
+    // The dashboard's views of a version: a subset's size, a folder, and the
+    // compare page with its visual diff (dimensions joined per page).
+    {
+        const size_res = cid.api.handle(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/ann/-/browse/size?commit={s}&split=train&class=vehicle", .{c1}), "Bearer test-token", "");
+        try std.testing.expectEqual(std.http.Status.ok, size_res.status);
+        const size = try std.json.parseFromSliceLeaky(struct { items: u64, bytes: u64, total: u64 }, arena, size_res.body, .{});
+        try std.testing.expectEqual(@as(u64, 1), size.items);
+        try std.testing.expectEqual(@as(u64, frame1.len), size.bytes);
+        try std.testing.expectEqual(@as(u64, 2), size.total);
+        const dir_res = cid.api.handle(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/ann/-/browse/dir?commit={s}&prefix=", .{c1}), "Bearer test-token", "");
+        const listing = try std.json.parseFromSliceLeaky(struct { folders: []const struct { name: []const u8, items: u64 } }, arena, dir_res.body, .{ .ignore_unknown_fields = true });
+        try std.testing.expectEqualStrings("frames", listing.folders[0].name);
+        try std.testing.expectEqual(@as(u64, 2), listing.folders[0].items);
+        const cmp_res = cid.api.handle(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/ann/-/browse/compare?a={s}&b={s}", .{ c1, c2 }), "Bearer test-token", "");
+        try std.testing.expectEqual(std.http.Status.ok, cmp_res.status);
+        const Side = struct { path: []const u8, hash: []const u8 };
+        const cmp = try std.json.parseFromSliceLeaky(struct {
+            summary: struct { ann_changed: u64, ann_removed: u64 },
+            visual: []const struct { path: []const u8, before: ?Side, after: ?Side, shapes_before: []const std.json.Value, shapes_after: []const std.json.Value },
+        }, arena, cmp_res.body, .{ .ignore_unknown_fields = true });
+        try std.testing.expectEqual(@as(u64, 1), cmp.summary.ann_changed);
+        try std.testing.expectEqual(@as(usize, 1), cmp.visual.len);
+        try std.testing.expectEqualStrings("frames/0001.jpg", cmp.visual[0].path);
+        try std.testing.expectEqual(@as(usize, 2), cmp.visual[0].shapes_before.len); // the moved box and the removed one
+        try std.testing.expectEqual(@as(usize, 1), cmp.visual[0].shapes_after.len);
+    }
+
+    // Browse: each version as it was, a page at a time (DuckDB over the
+    // version's browse index).
     var browse_tmp = std.testing.tmpDir(.{ .iterate = true });
     defer browse_tmp.cleanup();
     deps.browse_dir = try browse_tmp.dir.realPathFileAlloc(io, ".", arena);
     deps.browse_cache_max = 1;
     const Browsed = struct {
-        engine: []const u8,
         total: u64,
         matched: u64,
         items: []const struct { path: []const u8, split: ?[]const u8, annotations: []const struct { class: ?[]const u8, geometry: ?std.json.Value } },
@@ -1504,7 +1528,6 @@ test "annotated: the platform writes revisions, the server commits, state compos
         }
     }.get;
     const b1 = try browseAt(arena, &deps, &scope, c1, "");
-    try std.testing.expectEqualStrings(if (cid.duck.enabled) "duckdb" else "state", b1.engine);
     try std.testing.expectEqual(@as(u64, 2), b1.total);
     try std.testing.expectEqualStrings("frames/0001.jpg", b1.items[0].path);
     try std.testing.expectEqual(@as(usize, 2), b1.items[0].annotations.len);
@@ -1526,17 +1549,21 @@ test "annotated: the platform writes revisions, the server commits, state compos
     try std.testing.expectEqualStrings("frames/0001.jpg", paged.next.?);
     const page2 = try browseAt(arena, &deps, &scope, c2, "&limit=1&after=frames%2F0001.jpg");
     try std.testing.expectEqualStrings("frames/0002.jpg", page2.items[0].path);
-    // The index computes file types in SQL; the state engine in Zig. One rule.
-    for ([_][]const u8{ "a/b/C.JPG", "README", ".cidignore", "x.tar.gz", ".hidden.txt", "dir.d/noext", "trailing." }) |p| {
-        const sql_ext = (try db.rawOne([]const u8, &fscope, "SELECT " ++ comptime cid.state.extOf("$1::text"), .{p})).?;
-        try std.testing.expectEqualStrings(try cid.browse.extOf(arena, p), sql_ext);
+    // File types: one rule, in SQL, as every view spells them.
+    for ([_][2][]const u8{
+        .{ "a/b/C.JPG", ".jpg" }, .{ "README", "file" },      .{ ".cidignore", "file" },
+        .{ "x.tar.gz", ".gz" },   .{ ".hidden.txt", ".txt" }, .{ "dir.d/noext", "file" },
+        .{ "trailing.", "." },
+    }) |case| {
+        const sql_ext = (try db.rawOne([]const u8, &fscope, "SELECT " ++ comptime cid.state.extOf("$1::text"), .{case[0]})).?;
+        try std.testing.expectEqualStrings(case[1], sql_ext);
     }
 
     // Another dataset's version, or none at all, is not browsable here.
     const stranger = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/ann/-/browse?commit=01890000-0000-7000-8000-000000000000", "Bearer test-token", "");
     try std.testing.expectEqual(std.http.Status.not_found, stranger.status);
 
-    if (comptime cid.duck.enabled) {
+    {
         // The cache kept one index (the limit), the most recent: both of
         // its files, and neither of the evicted one's.
         var kept: usize = 0;
@@ -2245,7 +2272,7 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     try std.testing.expect(std.mem.indexOf(u8, log.body, "server-token") != null);
 }
 
-test "table statistics: CSV, Parquet and JSONL in the server build, said plainly in the CLI build" {
+test "table statistics: CSV, Parquet and JSONL, withheld when restricted" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -2318,18 +2345,12 @@ test "table statistics: CSV, Parquet and JSONL in the server build, said plainly
         const res = cid.api.handle(arena, &deps, &scope, "GET", target, "Bearer test-token", "");
         try std.testing.expectEqual(std.http.Status.ok, res.status);
         const a = try std.json.parseFromSliceLeaky(Answer, arena, res.body, .{ .ignore_unknown_fields = true });
-        if (comptime cid.duck.enabled) {
-            try std.testing.expectEqualStrings("done", a.status);
-            try std.testing.expectEqual(expected_rows[i], a.stats.?.rows);
-            try std.testing.expectEqual(expected_rows[i], a.stats.?.sample.len);
-        } else {
-            // The CLI build says exactly why, and a server build picks it up.
-            try std.testing.expectEqualStrings("skipped", a.status);
-            try std.testing.expectEqualStrings(cid.preview.needs_server_build, a.reason.?);
-        }
+        try std.testing.expectEqualStrings("done", a.status);
+        try std.testing.expectEqual(expected_rows[i], a.stats.?.rows);
+        try std.testing.expectEqual(expected_rows[i], a.stats.?.sample.len);
     }
 
-    if (comptime cid.duck.enabled) {
+    {
         // Restricted: the shape, never the values, until a logged reveal.
         _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = 'test/datasets/tables'", .{});
         defer _ = db.exec(&fscope, "UPDATE datasets SET restricted = false WHERE name = 'test/datasets/tables'", .{}) catch {};
@@ -2444,12 +2465,6 @@ test "row diffs: rows added and removed between versions, cached, withheld when 
     }
 
     const rd = try remote.rowDiff(arena, &hashes[0], "people.csv", &hashes[1], "people.csv");
-    if (comptime !cid.duck.enabled) {
-        try std.testing.expectEqualStrings("needs_server_build", rd.status);
-        const none = try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM row_diffs WHERE hash_a = decode($1, 'hex')", .{@as([]const u8, &hashes[0])});
-        try std.testing.expectEqual(@as(i64, 0), none.?);
-        return;
-    }
     try std.testing.expectEqualStrings("done", rd.status);
     const d = rd.diff.?;
     try std.testing.expect(!d.columns_changed);

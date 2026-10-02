@@ -1,7 +1,4 @@
-//! DuckDB, in-process, for the server build only (CLAUDE.md, DuckDB;
-//! `zig build -Dduckdb`). The CLI build compiles this file without the C
-//! library, and every call answers `error.Unavailable`, so callers say in
-//! words that the feature needs the server build rather than failing.
+//! DuckDB, in-process (CLAUDE.md, DuckDB): always linked.
 //!
 //! Each `Db` is an in-memory database held to the same discipline the
 //! preview worker holds ffmpeg to: one thread, a memory ceiling, no
@@ -9,12 +6,9 @@
 //! the configuration locked so a query cannot loosen any of it.
 
 const std = @import("std");
-const build_options = @import("build_options");
+const c = @import("duckdb_c");
 
-pub const enabled = build_options.duckdb;
-const c = if (enabled) @import("duckdb_c") else struct {};
-
-pub const Error = error{ Unavailable, OpenFailed, QueryFailed, OutOfMemory };
+pub const Error = error{ OpenFailed, QueryFailed, OutOfMemory };
 
 pub const Limits = struct {
     /// The one directory queries may read and write files in.
@@ -27,13 +21,12 @@ pub const Limits = struct {
 /// request a connection of its own (`connect`): one memory ceiling and one
 /// thread count then cover every query at once, however many run.
 pub const Db = struct {
-    db: if (enabled) c.duckdb_database else void,
-    conn: if (enabled) c.duckdb_connection else void,
+    db: c.duckdb_database,
+    conn: c.duckdb_connection,
     /// Whether closing this also closes the database (false for `connect`'s).
     owns_db: bool = true,
 
     pub fn open(arena: std.mem.Allocator, limits: Limits) Error!Db {
-        if (comptime !enabled) return error.Unavailable;
         var config: c.duckdb_config = null;
         if (c.duckdb_create_config(&config) != c.DuckDBSuccess) return error.OpenFailed;
         defer c.duckdb_destroy_config(&config);
@@ -86,14 +79,12 @@ pub const Db = struct {
     /// Another connection to this database, under its confinement and
     /// limits; closing it leaves the database open.
     pub fn connect(self: *Db) Error!Db {
-        if (comptime !enabled) return error.Unavailable;
         var other: Db = .{ .db = self.db, .conn = undefined, .owns_db = false };
         if (c.duckdb_connect(self.db, &other.conn) != c.DuckDBSuccess) return error.OpenFailed;
         return other;
     }
 
     pub fn close(self: *Db) void {
-        if (comptime !enabled) return;
         c.duckdb_disconnect(&self.conn);
         if (self.owns_db) c.duckdb_close(&self.db);
     }
@@ -102,7 +93,6 @@ pub const Db = struct {
     /// query answered no rows or a SQL NULL. A failed query logs DuckDB's
     /// own words (never the data) and answers QueryFailed.
     pub fn scalarText(self: *Db, arena: std.mem.Allocator, sql: []const u8) Error!?[]const u8 {
-        if (comptime !enabled) return error.Unavailable;
         const sql_z = arena.dupeZ(u8, sql) catch return error.OutOfMemory;
         var result: c.duckdb_result = undefined;
         defer c.duckdb_destroy_result(&result);
@@ -121,7 +111,6 @@ pub const Db = struct {
 
     /// scalarText for a query with `$1…$n` bound to `args`, in order.
     pub fn scalarTextArgs(self: *Db, arena: std.mem.Allocator, sql: []const u8, args: []const Arg) Error!?[]const u8 {
-        if (comptime !enabled) return error.Unavailable;
         const sql_z = arena.dupeZ(u8, sql) catch return error.OutOfMemory;
         var stmt: c.duckdb_prepared_statement = null;
         defer c.duckdb_destroy_prepare(&stmt);
@@ -159,15 +148,11 @@ pub const Db = struct {
     }
 };
 
-test "the CLI build answers Unavailable; the server build runs a query under its limits" {
+test "a query runs under its limits, confined and locked" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    if (comptime !enabled) {
-        try std.testing.expectError(error.Unavailable, Db.open(arena, .{ .allowed_dir = "/tmp" }));
-        return;
-    }
     var db = try Db.open(arena, .{ .allowed_dir = "/nonexistent-cid-dir" });
     defer db.close();
     try std.testing.expectEqualStrings("42", (try db.scalarText(arena, "SELECT 40 + 2")).?);

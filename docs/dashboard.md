@@ -290,13 +290,15 @@ accent colours.
 - **Browse API** (in `cid serve`, `GET …/-/browse?commit=…`): one page of a version —
   items with their annotations, total and matched counts, the split/class/type facets
   (each counted against the other filters), the class counts, a cursor, and the open
-  item. The server build answers with DuckDB from the version's browse index, two
+  item. The server answers with DuckDB from the version's browse index, two
   Parquet files (items in path order; annotations by item, never nested into item
   rows): written in the same pass as a release's manifest and kept in storage beside
   it, built from TimescaleDB state-at-commit on first view for any other commit, cached
   on the server's disk by commit id (commits are sealed, so an index never goes stale). Media
-  metadata is joined per page, because the worker fills it in after ingest. The CLI
-  build answers the same contract from state rows. Thumbnails come per page, as
+  metadata is joined per page, because the worker fills it in after ingest. The same
+  index answers `…/browse/size` (the overview's subset size), `…/browse/dir` (the Files
+  tab, one folder at a time) and `…/browse/compare` (Compare: the summary, item changes
+  a page at a time, the visual diff). Thumbnails come per page, as
   presigned URLs; the gallery loads the next page as the end scrolls into view.
 - **Preview worker** (`cid admin previews`): builds thumbnails (WebP), audio waveform
   peaks, video poster frames and short previews, PDF page thumbnails, and per-file
@@ -358,9 +360,9 @@ shareable URLs · restricted blur and reveal log · preview worker for images an
 
 *Delivered ahead of Phase 2:* table statistics. A CSV, Parquet or JSONL item opens as a
 table in the drawer: rows, per-column type, range, distinct count and nulls, and its
-first rows, built once per content hash by the preview worker in the server build.
+first rows, built once per content hash by the preview worker.
 A restricted dataset shows the shape only (rows, names, types, nulls) until a logged
-reveal; a CLI-build server says the view needs the server build.
+reveal.
 
 **Phase 2 — every media type**
 Audio (waveform + transcript segments), video (player + segment/track timeline), text

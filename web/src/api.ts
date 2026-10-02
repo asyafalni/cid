@@ -121,12 +121,6 @@ export type StateAnnotation = {
   policy_ver: string;
 };
 
-export function getState(
-  name: string,
-  commit: string,
-): Promise<{ commit: string; items: StateItem[]; annotations?: StateAnnotation[] }> {
-  return request(`/v0/datasets/${name}/-/state/${commit}`);
-}
 
 /** An item as browse answers it: the state item and its annotations at
  * that version. */
@@ -135,7 +129,6 @@ export type BrowseItem = StateItem & { annotations: StateAnnotation[] };
 export type BrowseFacet = { value: string; count: number };
 
 export type BrowsePage = {
-  engine: 'duckdb' | 'state';
   total: number;
   matched: number;
   items: BrowseItem[];
@@ -171,6 +164,80 @@ export function getBrowse(name: string, commit: string, query: BrowseQuery): Pro
   if (query.limit !== undefined) params.set('limit', String(query.limit));
   // The server decodes %XX only: spaces must not travel as '+'.
   return request(`/v0/datasets/${name}/-/browse?${params.toString().replace(/\+/g, '%20')}`);
+}
+
+/** How much a `cid clone --split … --class …` would take. */
+export type SubsetSize = { items: number; bytes: number; total: number };
+
+export function getSubsetSize(
+  name: string,
+  commit: string,
+  splits: string[],
+  classes: string[],
+): Promise<SubsetSize> {
+  const params = new URLSearchParams({ commit });
+  for (const v of splits) params.append('split', v);
+  for (const v of classes) params.append('class', v);
+  return request(`/v0/datasets/${name}/-/browse/size?${params.toString().replace(/\+/g, '%20')}`);
+}
+
+/** One folder of a version: subfolders counted, files a page at a time. */
+export type DirListing = {
+  folders: { name: string; items: number; bytes: number }[];
+  folders_total: number;
+  files: { path: string; size: number; hash: string }[];
+  files_total: number;
+  next: string | null;
+};
+
+export function getDir(name: string, commit: string, prefix: string, after?: string): Promise<DirListing> {
+  const params = new URLSearchParams({ commit, prefix });
+  if (after !== undefined) params.set('after', after);
+  return request(`/v0/datasets/${name}/-/browse/dir?${params.toString().replace(/\+/g, '%20')}`);
+}
+
+export type CompareSide = {
+  path: string;
+  hash: string;
+  item_id: string | null;
+  width: number | null;
+  height: number | null;
+};
+
+/** Two versions compared on the server (DuckDB over their indexes): the
+ * summary, a page of item changes, and on the first page the visual diff
+ * and the first annotation changes. */
+export type ComparePage = {
+  summary: {
+    added: number;
+    modified: number;
+    deleted: number;
+    ann_added: number;
+    ann_changed: number;
+    ann_removed: number;
+  };
+  changes: {
+    change: 'added' | 'modified' | 'deleted';
+    path: string;
+    hash_a: string | null;
+    hash_b: string | null;
+    size_b: number | null;
+  }[];
+  next: string | null;
+  visual: {
+    path: string;
+    before: CompareSide | null;
+    after: CompareSide | null;
+    shapes_before: StateAnnotation[];
+    shapes_after: StateAnnotation[];
+  }[];
+  ann_changes: { change: 'added' | 'changed' | 'removed'; kind: string | null; class: string | null; item_path: string | null }[];
+};
+
+export function getCompare(name: string, a: string, b: string, after?: string): Promise<ComparePage> {
+  const params = new URLSearchParams({ a, b });
+  if (after !== undefined) params.set('after', after);
+  return request(`/v0/datasets/${name}/-/browse/compare?${params.toString().replace(/\+/g, '%20')}`);
 }
 
 export function getThumbs(

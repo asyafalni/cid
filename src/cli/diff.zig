@@ -255,7 +255,7 @@ test "row lines: counts, a column change, the same rows, and words when not comp
         .{ .rd = .{ .status = "done", .diff = .{ .rows_a = 5, .rows_b = 6, .columns_changed = false, .added = 3, .removed = 2 } }, .want = "rows: 3 added, 2 removed (5 → 6)\n" },
         .{ .rd = .{ .status = "done", .diff = .{ .rows_a = 5, .rows_b = 1, .columns_a = &.{ "id BIGINT", "name VARCHAR" }, .columns_b = &.{ "id BIGINT", "name VARCHAR", "team VARCHAR" }, .columns_changed = true } }, .want = "columns changed, so rows are not compared: +team VARCHAR (5 → 1 rows)\n" },
         .{ .rd = .{ .status = "done", .diff = .{ .rows_a = 5, .rows_b = 5, .columns_changed = false } }, .want = "rows: the same 5 rows, in another order or format\n" },
-        .{ .rd = .{ .status = "needs_server_build", .reason = "this server is built without row-level diffs" }, .want = "rows: not compared: this server is built without row-level diffs\n" },
+        .{ .rd = .{ .status = "too_large", .reason = "over 128 MB; split large tables into partitioned files to compare them by rows" }, .want = "rows: not compared: over 128 MB; split large tables into partitioned files to compare them by rows\n" },
     };
     for (cases) |case| {
         var w: std.Io.Writer = .fixed(&buf);

@@ -293,9 +293,9 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   HTTPS with a short-lived token for everything else (`docs/access.md`). HTTP serving,
   Postgres and S3 all go through **Nilo** (see Zig conventions); TLS terminates at a
   reverse proxy (`deploy/`).
-- **DuckDB** (C API, in-process on the server) writes and reads Parquet manifests,
-  computes large diffs, and gives row-level diffs of CSV, Parquet and JSONL files.
-  It is in the **server build** only (`zig build -Dduckdb`, `src/store/duck.zig`):
+- **DuckDB** (C API, in-process on the server) answers every question asked of a
+  version: browse pages, subset sizes, folder listings, comparing two versions, table
+  statistics and row-level diffs. It is **always linked** (`src/store/duck.zig`):
   libduckdb is a lazy dependency, linked dynamically and installed beside the binary.
   `cid admin serve` opens **one** database for browse queries, confined to its browse
   folder (`CID_BROWSE_DIR`) with a locked configuration, two threads and one memory
@@ -304,21 +304,20 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   database of their own (one thread keeps a 1M-item conversion near 250 MB, two near
   600 MB), in `CID_WORK_DIR` / the browse folder. Long calls go to nilo's blocking
   pool (`nilo.blocking`, its ADR 013) so no request thread waits on them. The preview
-  worker opens its own. The plain build is the CLI download and
-  never fetches DuckDB; there every DuckDB call answers `error.Unavailable` and the
-  feature says, in words, that it needs the server build.
+  worker opens its own.
 - **The dashboard** is served by the cid server. Its browse API (`src/server/browse/`)
-  answers a page of a version at a time: items with their annotations, counts, facets
-  counted against the other filters, and a cursor. In the server build each version
-  has a browse index — its items in path order and its annotations by item, two
-  Parquet files — queried by DuckDB: filters and facets read only the light columns,
-  and only the page's rows fetch hashes and annotations. A release's index is
-  written in the same pass as its manifest and kept in storage; other commits' are
-  built on first view into a bounded local cache. Measured at 1M items with
-  `tests/bench/browse_1m.sh` (ReleaseFast): release 35 s and 247 MB peak, pages
-  0.13–0.46 s, filter change to 60 thumbnails in the browser about 0.32 s. An index holds only what the commit seals; media metadata (image
-  dimensions) is joined per page. The CLI build answers the same contract from state
-  rows in memory. It never scans raw files on page load.
+  answers from each version's browse index — its items in path order and its
+  annotations by item, two Parquet files — with one DuckDB query per request: a page
+  (items with annotations, counts, facets counted against the other filters, a
+  cursor), a subset's size, a folder's listing, or the compare of two versions.
+  Filters and facets read only the light columns; only the page's rows fetch hashes
+  and annotations. A release's index is written in the same pass as its manifest and
+  kept in storage; other commits' are built on first view into a bounded local cache.
+  An index holds only what the commit seals; media metadata (image dimensions) is
+  joined per page. Measured at 1M items with `tests/bench/browse_1m.sh` (ReleaseFast):
+  release 35 s and 247 MB peak, pages 0.13–0.46 s, filter change to 60 thumbnails in
+  the browser about 0.32 s, two versions compared in about 0.5 s. It never scans raw
+  files on page load.
 - **The preview worker** (`cid admin previews`) builds thumbnails, waveforms, video
   posters, PDF page images and table statistics, by calling `ffmpeg` (and `vips`
   where present) as external programs. **ffmpeg never scales with users**: the
@@ -460,10 +459,11 @@ records the commits.
 **Row-level diff** (`cid diff`) for `.csv`, `.parquet` and `.jsonl`: rows added, removed
 and changed, using a key column when the dataset declares one, otherwise whole-row
 comparison. Row-level diffs are computed **on the server** (where DuckDB lives); the
-CLI itself compares by hash only, which keeps it a small static binary. Comparing two
-versions is the server's job too: one pass joins both in Postgres (annotations compared
-as jsonb values, so formatting never counts) and writes the changes once to storage as
-gzip JSON lines, which `cid diff` prints as they stream in. A merge reads only the paths
+CLI itself never reads a table. Comparing two versions is the server's job too: DuckDB
+joins their browse indexes (annotations compared as stored jsonb text, so formatting
+never counts) and the changes are written once to storage as gzip JSON lines, which
+`cid diff` prints as they stream in; the dashboard's compare pages through the same
+join. A merge reads only the paths
 the branch touched; every other path is the base's by construction. Other files are
 compared by hash only everywhere. Until a dataset can declare a key column, an edited
 row shows as one removed plus one added; when the columns changed, the column change
@@ -563,8 +563,7 @@ docker-compose.test.yml      timescaledb + seaweedfs, pinned versions
 ## Build and test
 
 ```bash
-zig build                          # debug (the CLI build: no DuckDB)
-zig build -Dduckdb                 # the server build: links DuckDB (Linux x86-64)
+zig build                          # debug; links DuckDB (beside the binary)
 zig build -Doptimize=ReleaseFast   # release
 zig build test                     # unit tests, no services
 docker compose -f docker-compose.test.yml up -d
@@ -573,7 +572,7 @@ zig build integration              # needs the services
 pnpm --dir web install
 pnpm --dir web dev                 # dashboard dev server, proxies the API to cid serve
 pnpm --dir web build               # builds web/dist, embedded by `zig build`
-pnpm --dir web test:e2e            # Playwright, against the server build (zig build -Dduckdb)
+pnpm --dir web test:e2e            # Playwright, against zig-out/bin/cid
 ```
 
 Dashboard changes must pass `pnpm --dir web lint`, `pnpm --dir web typecheck` and the
@@ -586,8 +585,7 @@ test binary directly to see the truth; re-check when a 0.16.x patch lands.
 Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
 `zig-pkg/` holds unpacked dependencies), `zig build test`, and
 `zig build integration` when touching `store/`, `core/`, `client/`, `server/`,
-`manifest/`, `tabular/` or SQL. Run the tests in **both builds** (`-Dduckdb` too)
-when touching anything that calls DuckDB: each build has its own branch to keep true.
+`manifest/`, `tabular/` or SQL.
 
 **Tests that must always exist and pass**
 - Release round trip, for both dataset kinds: changes → commit → release →
@@ -670,9 +668,11 @@ when touching anything that calls DuckDB: each build has its own branch to keep 
   system `git` for the one `.cid`-marker fetch in `cid clone <git-url>`.
   Call them with explicit arguments, never through a shell, with timeouts and memory
   limits; treat their output as untrusted.
-- **Single static binary** for the CLI where possible, cross-compiled for Linux, macOS
-  and Windows from one build. (This is why the CLI carries neither DuckDB nor keychain
-  libraries.)
+- **One binary, DuckDB beside it**: client and server are one `cid`, always linked
+  against libduckdb (shipped next to it), for the platforms DuckDB publishes
+  libraries for (Linux x86-64 and arm64, macOS, Windows). No build conditions: a
+  feature never asks whether DuckDB is there. Client code never imports DuckDB, so a
+  client-only target could be added later without one. No keychain libraries.
 - `zig fmt`; `snake_case` functions and variables, `PascalCase` types.
 - `std.log` with scoped loggers; no secrets, no restricted-dataset content.
 
