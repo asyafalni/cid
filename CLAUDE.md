@@ -321,14 +321,13 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   kept in storage as well, so a restart or another server fetches it.
 
   Measured at 1M items and 1.5M boxes (`tests/bench/browse_1m.sh` and
-  `web/e2e/bench.spec.ts`, ReleaseFast), server memory never above 400 MB:
-  release 38 s; a new head prepared in the background in about 70 s, after which its
-  overview, items file and default export answer in 1–5 ms; browse pages 0.25–0.45 s;
-  filter change to 60 thumbnails in the browser 0.30 s; subset size 64 ms; a folder
-  35–150 ms; compare 2.3 s the first time a pair is compared (the pair's diff is then
-  kept, beside the indexes, and a release's diff with the release before it is
-  prepared in the background); `cid diff` 2.6 s the first time and 0.01 s after, with
-  a 19 MB client.
+  `web/e2e/bench.spec.ts`, ReleaseFast), server memory never above 480 MB:
+  release 30–35 s; a new head prepared in the background in about 60 s, after which its
+  overview, items file and default export answer in 1–5 ms; browse pages 0.18–0.33 s;
+  filter change to 60 thumbnails in the browser 0.30 s; subset size 51 ms; a folder
+  26–120 ms; compare 1.9 s the first time a pair is compared and 51 ms after (the
+  pair's diff is kept beside the indexes, and a release's diff with the release before
+  it is prepared in the background); `cid diff` 0.4 s, with a 19 MB client.
 - **The preview worker** (`cid admin previews`) builds thumbnails, waveforms, video
   posters, PDF page images and table statistics, by calling `ffmpeg` (and `vips`
   where present) as external programs. **ffmpeg never scales with users**: the
