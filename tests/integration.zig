@@ -879,6 +879,27 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
     // With no static token configured, the old shared-token style fails.
     const static_res = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/access/-/head", "Bearer test-token", "");
     try std.testing.expectEqual(std.http.Status.unauthorized, static_res.status);
+
+    // A dashboard session: identity from the cookie, permission from the
+    // same access table. gitlab:7001 reads test/datasets/access only.
+    const rhea: cid.api.Caller = .{ .account = "gitlab:7001" };
+    const listing = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/datasets", rhea, "");
+    try std.testing.expectEqual(std.http.Status.ok, listing.status);
+    try std.testing.expect(std.mem.indexOf(u8, listing.body, "\"test/datasets/access\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listing.body, "\"test/datasets/sync\"") == null);
+    const read_ok = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/access/-/head", rhea, "");
+    try std.testing.expectEqual(std.http.Status.ok, read_ok.status);
+    const push_no = cid.api.handleAs(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/access/-/push", rhea, "{}");
+    try std.testing.expectEqual(std.http.Status.unauthorized, push_no.status);
+    const other_no = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/sync/-/head", rhea, "");
+    try std.testing.expectEqual(std.http.Status.unauthorized, other_no.status);
+    const who = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/me", rhea, "");
+    try std.testing.expect(std.mem.indexOf(u8, who.body, "Reader Rhea") != null);
+    // Nobody signed in: no listing, and /v0/me says so.
+    const anon = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/datasets", .{}, "");
+    try std.testing.expectEqual(std.http.Status.unauthorized, anon.status);
+    const anon_me = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/me", .{}, "");
+    try std.testing.expectEqual(std.http.Status.unauthorized, anon_me.status);
 }
 
 test "gitlab sync: members and keys applied, removals revoke access" {

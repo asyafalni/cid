@@ -196,6 +196,15 @@ export default function setup() {
       `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/boxes/-/releases -H "Authorization: Bearer ${token}"`,
     );
     if (!boxReleases.includes('"v1.1.0"')) seedBoxesMoved();
+    // The fake GitLab's user may read the boxes dataset and nothing else,
+    // granted the way an owner would in the dashboard. Idempotent.
+    psql(`
+      INSERT INTO accounts (account_id, display_name, source) VALUES ('gitlab:4242', 'Rhea Reviewer', 'gitlab')
+        ON CONFLICT (account_id) DO NOTHING;
+      INSERT INTO access (dataset_id, account_id, level, source)
+        SELECT dataset_id, 'gitlab:4242', 'read', 'dashboard' FROM datasets WHERE name = 'e2e/datasets/boxes'
+        ON CONFLICT (dataset_id, account_id) DO NOTHING;
+    `);
     run(`${cid} admin previews`); // sniff + thumbs for every new png
   } finally {
     serve.kill();

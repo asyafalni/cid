@@ -24,6 +24,7 @@ pub const db = @import("store/db.zig");
 pub const blob = @import("store/blob.zig");
 pub const api = @import("server/api.zig");
 pub const serve = @import("server/serve.zig");
+pub const signin = @import("server/signin.zig");
 pub const migrate = @import("core/migrate.zig");
 pub const release = @import("core/release.zig");
 pub const purge = @import("core/purge.zig");
@@ -76,6 +77,7 @@ test {
     _ = blob;
     _ = api;
     _ = serve;
+    _ = signin;
     _ = migrate;
     _ = release;
     _ = canonical;

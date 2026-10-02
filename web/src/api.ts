@@ -149,3 +149,19 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 export function ping(): Promise<{ ok: boolean }> {
   return request('/v0/ping');
 }
+
+export type Me = {
+  via: 'gitlab' | 'token';
+  account: string | null;
+  display_name: string;
+};
+
+/** Who the dashboard is signed in as: a GitLab session (cookie, sent by
+ *  the browser on its own) or a pasted server token. 401 when neither. */
+export function getMe(): Promise<Me> {
+  return request('/v0/me');
+}
+
+export function getAuthConfig(): Promise<{ gitlab: boolean }> {
+  return request('/v0/auth/config');
+}

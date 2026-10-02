@@ -7,12 +7,18 @@
 const std = @import("std");
 const nilo = @import("nilo_http");
 const api = @import("api.zig");
+const fetch = @import("nilo_fetch");
+const signin = @import("signin.zig");
 const blob = @import("../store/blob.zig");
 const assets = @import("web_assets");
 
 pub const Options = struct {
     host: []const u8 = "127.0.0.1",
     port: u16,
+    /// Seals dashboard sessions; exactly 32 bytes (nilo's rule).
+    session_secret: []const u8,
+    /// "Sign in with GitLab", when configured.
+    signin: ?signin.Config = null,
 };
 
 const max_body = 64 * 1024 * 1024;
@@ -28,6 +34,17 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
     try app.provide(&deps.s3.store);
     try app.provide(&deps.s3.items);
     try app.provide(deps);
+    // One outbound client for the whole server (nilo_fetch): GitLab's
+    // OAuth calls ride it, under a deadline, never blocking a thread.
+    var client: fetch.Client = .init(gpa, .{});
+    defer client.deinit();
+    try app.provide(&client);
+    if (options.signin) |*cfg| {
+        try app.provide(cfg);
+        try app.get("/auth/gitlab", signin.start);
+        try app.get("/auth/gitlab/callback", signin.callback);
+    }
+    try app.post("/auth/signout", signin.signout);
     // Refuse to start without the 'cid' bucket, with the fix named,
     // instead of every upload failing later.
     try app.before(checkBucket, .{deps.s3});
@@ -43,6 +60,7 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
 
     std.log.info("cid server listening on {s}:{d}", .{ options.host, options.port });
     try app.listen(.{
+        .session_secret = options.session_secret,
         .address = options.host,
         .port = options.port,
         .max_body = max_body,
@@ -92,7 +110,7 @@ fn sendAsset(c: *nilo.Ctx, name: []const u8) !void {
 /// One door for every /v0 route: rebuild the target exactly as
 /// api.handle has always read it (path plus query), hand over the raw
 /// body and the authorization header, send back status and JSON.
-fn dispatch(deps: *api.Deps, c: *nilo.Ctx) !void {
+fn dispatch(deps: *api.Deps, s: signin.Session, c: *nilo.Ctx) !void {
     const arena = c.arena();
     const qs = c.queryString();
     const target = if (qs.len() == 0)
@@ -106,6 +124,11 @@ fn dispatch(deps: *api.Deps, c: *nilo.Ctx) !void {
     // The Ctx is the Scope every query runs under; the pool underneath
     // makes requests genuinely concurrent (the old single-connection
     // mutex is gone).
-    const response = api.handle(arena, deps, c, @tagName(c.method), target, auth, body);
+    // A session names its account; the access table decides the rest.
+    const account: ?[]const u8 = if (s.get()) |signed|
+        (if (signed.gitlab_user != 0) try signin.accountOf(signed.gitlab_user, arena) else null)
+    else
+        null;
+    const response = api.handleAs(arena, deps, c, @tagName(c.method), target, .{ .header = auth, .account = account }, body);
     try c.send(@intFromEnum(response.status), "application/json", response.body);
 }

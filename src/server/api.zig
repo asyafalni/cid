@@ -40,6 +40,8 @@ pub const Deps = struct {
     /// after tagging; otherwise git_writes rows wait for
     /// 'cid admin git <dataset> --resync'.
     git: ?git_writer.Config = null,
+    /// Whether "Sign in with GitLab" is configured (the sign-in page asks).
+    gitlab_signin: bool = false,
 };
 
 pub const Response = struct {
@@ -59,7 +61,28 @@ pub fn handle(
     auth_header: ?[]const u8,
     body: []const u8,
 ) Response {
-    return handleInner(arena, deps, scope, method, target, auth_header, body) catch |err| switch (err) {
+    return handleAs(arena, deps, scope, method, target, .{ .header = auth_header }, body);
+}
+
+/// Who is asking: a bearer token (static, or SSH-issued and scoped), or a
+/// dashboard session's account (`gitlab:<id>`). A session carries identity
+/// only; what it may read or write comes from the `access` table on every
+/// request, the same table an SSH token is minted from.
+pub const Caller = struct {
+    header: ?[]const u8 = null,
+    account: ?[]const u8 = null,
+};
+
+pub fn handleAs(
+    arena: std.mem.Allocator,
+    deps: *Deps,
+    scope: anytype,
+    method: []const u8,
+    target: []const u8,
+    caller: Caller,
+    body: []const u8,
+) Response {
+    return handleInner(arena, deps, scope, method, target, caller, body) catch |err| switch (err) {
         error.OutOfMemory => errorResponse(arena, .internal_server_error, "out of memory", "Try again."),
         error.Db => errorResponse(arena, .internal_server_error, "database error", "Check the server logs, then try again."),
         error.Storage => errorResponse(arena, .internal_server_error, "storage error", "Check the server logs, then try again."),
@@ -75,11 +98,16 @@ fn handleInner(
     scope: anytype,
     method: []const u8,
     target: []const u8,
-    auth_header: ?[]const u8,
+    caller: Caller,
     body: []const u8,
 ) HandleError!Response {
+    const auth_header = caller.header;
     if (eql(method, "GET") and eql(target, "/v0/ping"))
         return json(arena, .ok, .{ .ok = true });
+    // Public: the sign-in page asks which ways in this server offers.
+    if (eql(method, "GET") and eql(target, "/v0/auth/config"))
+        return json(arena, .ok, .{ .gitlab = deps.gitlab_signin });
+    if (eql(method, "GET") and eql(target, "/v0/me")) return me(arena, deps, scope, caller);
 
     if (eql(method, "POST") and eql(target, "/v0/datasets")) {
         // The dataset's name is in the body; createDataset checks scope.
@@ -88,9 +116,9 @@ fn handleInner(
     if (eql(method, "GET") and eql(target, "/v0/datasets")) {
         // Listing crosses datasets, so a per-dataset token cannot do it:
         // the static token only, until OAuth brings account-level views.
-        if (!tokenOk(deps.token, auth_header))
-            return errorResponse(arena, .unauthorized, "listing needs the server token", "Sign in with the server token, or browse one dataset by its address.");
-        return listDatasets(arena, deps, scope);
+        if (tokenOk(deps.token, auth_header)) return listDatasets(arena, deps, scope, null);
+        if (caller.account) |account| return listDatasets(arena, deps, scope, account);
+        return errorResponse(arena, .unauthorized, "listing needs you signed in", "Run the sign-in again: 'Sign in with GitLab' on the dashboard, or the server token.");
     }
 
     const route = parseDatasetRoute(target) orelse
@@ -105,7 +133,7 @@ fn handleInner(
         .write
     else
         .read;
-    if (!authorized(arena, deps, auth_header, route.name, needed))
+    if (!authorized(arena, deps, scope, caller, route.name, needed))
         return errorResponse(arena, .unauthorized, "missing, wrong or expired token for this dataset", "Run the command again; cid fetches a fresh token over SSH. CI: check CID_TOKEN.");
 
     const ds = lookupDataset(arena, deps, scope, route.name) orelse
@@ -200,11 +228,20 @@ fn tokenOk(expected: []const u8, auth_header: ?[]const u8) bool {
 fn authorized(
     arena: std.mem.Allocator,
     deps: *Deps,
-    auth_header: ?[]const u8,
+    scope: anytype,
+    caller: Caller,
     dataset: []const u8,
     needed: token_mod.Level,
 ) bool {
+    const auth_header = caller.header;
     if (tokenOk(deps.token, auth_header)) return true;
+    if (caller.account) |account| {
+        const level = deps.db.rawOne([]const u8, scope, "SELECT a.level FROM access a JOIN datasets d USING (dataset_id) WHERE d.name = $1 AND a.account_id = $2", .{ dataset, account }) catch return false;
+        const have = level orelse return false;
+        // read < write < maintain; maintain covers write.
+        const as: token_mod.Level = if (eql(have, "read")) .read else .write;
+        return as.covers(needed);
+    }
     const secret = deps.token_secret orelse return false;
     const h = auth_header orelse return false;
     if (!std.mem.startsWith(u8, h, "Bearer ")) return false;
@@ -235,7 +272,7 @@ fn lookupDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, name: []
     return .{ .id = row.dataset_id, .name = name, .kind = row.kind };
 }
 
-fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype) HandleError!Response {
+fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: ?[]const u8) HandleError!Response {
     const Row = struct {
         pub const nilo_table = .projection;
         dataset_id: []const u8,
@@ -257,7 +294,10 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype) HandleErr
         "FROM datasets d " ++
         "LEFT JOIN refs h ON h.dataset_id = d.dataset_id AND h.name = 'main' AND h.kind = 'branch' " ++
         "LEFT JOIN commits c ON c.commit_id = h.commit_id " ++
-        "ORDER BY d.name", .{}) catch return error.Db;
+        // A signed-in person sees the datasets they may read; the static
+        // token (NULL here) sees every one.
+        "WHERE $1::text IS NULL OR EXISTS (SELECT 1 FROM access a WHERE a.dataset_id = d.dataset_id AND a.account_id = $1) " ++
+        "ORDER BY d.name", .{account}) catch return error.Db;
 
     const Thumb = struct { hash: []const u8, url: []const u8 };
     const Entry = struct {
@@ -307,6 +347,18 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype) HandleErr
         };
     }
     return json(arena, .ok, .{ .datasets = list });
+}
+
+/// Who the dashboard is talking to. A session answers with its account;
+/// the shared server token answers as itself, with no account behind it.
+fn me(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller) HandleError!Response {
+    if (caller.account) |account| {
+        const name = deps.db.rawOne([]const u8, scope, "SELECT display_name FROM accounts WHERE account_id = $1", .{account}) catch return error.Db;
+        return json(arena, .ok, .{ .via = "gitlab", .account = account, .display_name = name orelse account });
+    }
+    if (tokenOk(deps.token, caller.header))
+        return json(arena, .ok, .{ .via = "token", .account = @as(?[]const u8, null), .display_name = "server token" });
+    return errorResponse(arena, .unauthorized, "not signed in", "Run the sign-in again from the dashboard.");
 }
 
 /// What a dataset card needs about a commit, cached in `commits.stats`.
@@ -421,7 +473,7 @@ const CreateDatasetBody = struct {
 fn createDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, auth_header: ?[]const u8, body: []const u8) HandleError!Response {
     const req = parseBody(CreateDatasetBody, arena, body) orelse return error.BadRequest;
     if (req.name.len == 0 or req.git_url.len == 0) return error.BadRequest;
-    if (!authorized(arena, deps, auth_header, req.name, .write))
+    if (!authorized(arena, deps, scope, .{ .header = auth_header }, req.name, .write))
         return errorResponse(arena, .unauthorized, "missing, wrong or expired token for this dataset", "Run the command again; cid fetches a fresh token over SSH. CI: check CID_TOKEN.");
     if (!eql(req.kind, "files") and !eql(req.kind, "annotated")) return error.BadRequest;
 

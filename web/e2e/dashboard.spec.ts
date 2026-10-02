@@ -11,7 +11,7 @@ const token = 'e2e-dashboard-token';
 
 async function signIn(page: import('@playwright/test').Page) {
   await page.goto('/signin');
-  await page.getByLabel('Access token').fill(token);
+  await page.getByLabel(/server token|access token/i).fill(token);
   await page.getByRole('button', { name: 'Open the dashboard' }).click();
   await expect(page.getByRole('heading', { name: 'Datasets' })).toBeVisible();
 }
@@ -245,6 +245,45 @@ test('home: a visited dataset appears under Recently viewed', async ({ page }) =
   await page.goto('/');
   const recent = page.getByRole('navigation', { name: 'Recently viewed' });
   await expect(recent.getByRole('link', { name: 'e2e/datasets/boxes' })).toBeVisible();
+});
+
+test('sign in with GitLab: the round trip, the cookie, and only what the role allows', async ({ page, context }) => {
+  await page.goto('/');
+  await expect(page).toHaveURL(/\/signin/);
+  await page.getByRole('link', { name: 'Sign in with GitLab' }).click();
+
+  // Through the (strict) fake GitLab and back: PKCE, state, token, user.
+  await expect(page.getByRole('heading', { name: 'Datasets' })).toBeVisible();
+  await expect(page.locator('.rail-who')).toHaveText('Rhea Reviewer');
+
+  // The session cookie, exactly as docs/dashboard.md specifies it.
+  const cookie = (await context.cookies()).find((c) => c.name === '__Host-session');
+  expect(cookie).toBeDefined();
+  expect(cookie!.httpOnly).toBe(true);
+  expect(cookie!.secure).toBe(true);
+  expect(cookie!.sameSite).toBe('Lax');
+  const hours = (cookie!.expires * 1000 - Date.now()) / 3_600_000;
+  expect(hours).toBeGreaterThan(11.9);
+  expect(hours).toBeLessThanOrEqual(12);
+
+  // Rhea's GitLab role reads boxes and nothing else: that is all she sees.
+  await expect(page.getByRole('link', { name: 'e2e/datasets/boxes', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'e2e/datasets/demo', exact: true })).toHaveCount(0);
+  await page.goto('/d/e2e/datasets/demo');
+  await expect(page.getByRole('alert')).toContainText(/token|signed in|dataset/i);
+
+  // Sign out ends it: the guard sends the next visit to the sign-in page.
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page).toHaveURL(/\/signin/);
+  await page.goto('/');
+  await expect(page).toHaveURL(/\/signin/);
+});
+
+test('a GitLab callback with a forged state is refused, in words', async ({ page }) => {
+  await page.goto('/auth/gitlab/callback?code=anything&state=forged-state-value-x');
+  await expect(page).toHaveURL(/\/signin\?error=/);
+  await expect(page.getByRole('alert')).toContainText('Run the sign-in again');
 });
 
 test('accessibility: no serious or critical axe findings', async ({ page }) => {

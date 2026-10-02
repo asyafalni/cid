@@ -8,7 +8,21 @@ import { Shell } from './Shell';
 import { SignIn } from './pages/SignIn';
 import { Home } from './pages/Home';
 import { DatasetOverview } from './pages/DatasetOverview';
-import { getToken } from './api';
+import { getMe } from './api';
+
+// Signed in means the server says so: a GitLab session cookie or a pasted
+// token, either way answered by /v0/me. Asked once per page load; signing
+// in or out reloads the page.
+let signedIn: Promise<boolean> | null = null;
+function requireSignIn() {
+  signedIn ??= getMe().then(
+    () => true,
+    () => false,
+  );
+  return signedIn.then((ok) => {
+    if (!ok) throw redirect({ to: '/signin' });
+  });
+}
 
 const rootRoute = createRootRoute({ component: Shell });
 
@@ -31,9 +45,7 @@ const homeRoute = createRoute({
     released: search.released === 'yes' || search.released === 'no' ? search.released : undefined,
     restricted: search.restricted === 'yes' || search.restricted === 'no' ? search.restricted : undefined,
   }),
-  beforeLoad: () => {
-    if (!getToken()) throw redirect({ to: '/signin' });
-  },
+  beforeLoad: requireSignIn,
   component: Home,
 });
 
@@ -78,9 +90,7 @@ const datasetRoute = createRoute({
     class: typeof search.class === 'string' ? search.class : undefined,
     type: typeof search.type === 'string' ? search.type : undefined,
   }),
-  beforeLoad: () => {
-    if (!getToken()) throw redirect({ to: '/signin' });
-  },
+  beforeLoad: requireSignIn,
   component: DatasetOverview,
 });
 

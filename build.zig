@@ -36,6 +36,7 @@ pub fn build(b: *std.Build) void {
     lib_mod.addImport("nilo_http", nilo_dep.module("nilo_http"));
     lib_mod.addImport("nilo_sql", nilo_dep.module("nilo_sql"));
     lib_mod.addImport("nilo_s3", nilo_dep.module("nilo_s3"));
+    lib_mod.addImport("nilo_fetch", nilo_dep.module("nilo_fetch"));
     lib_mod.addImport("migrations", migrations_mod);
     lib_mod.addImport("web_assets", assets_mod);
 

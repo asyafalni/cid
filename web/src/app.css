@@ -1160,3 +1160,24 @@
   padding: 2px var(--space-3);
   font-size: 0.8rem;
 }
+
+/* Sign-in: GitLab first when offered, the token beneath it. */
+.signin-gitlab {
+  display: block;
+  text-align: center;
+  margin: var(--space-6) 0 var(--space-4);
+}
+
+.signin-token--secondary {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
+.rail-who {
+  margin: 0 0 var(--space-2);
+  font-size: 0.85rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -301,10 +301,16 @@ accent colours.
   the browse API will presign until the viewer hits the reveal endpoint — which logs
   the reveal (`activity_events`) and only then returns the clear URL. Client-side
   blur is forbidden: a presigned URL to the clear image *is* the content.
-- **Sign-in:** "Sign in with GitLab" (OAuth, scope `read_user`), the same identity and
-  roles the SSH front door uses, so the dashboard and the CLI always agree on who may
-  see what. Session cookie: HttpOnly, Secure, SameSite=Lax, 12-hour expiry. Where there
-  is no GitLab, owners invite people by email and they sign in with a one-time link.
+- **Sign-in:** "Sign in with GitLab" (OAuth, scope `read_user`, PKCE), the same
+  `gitlab:<id>` account and roles the SSH front door uses, so the dashboard and the CLI
+  always agree on who may see what. The session holds identity only; every request is
+  checked against the `access` table, so a person sees exactly the datasets their
+  GitLab role lets them read. Session cookie: nilo's sealed `__Host-session`, HttpOnly,
+  Secure, SameSite=Lax, 12-hour expiry sealed inside it, nothing stored on the server.
+  Configure with `CID_GITLAB_OAUTH_ID`, `CID_GITLAB_OAUTH_SECRET`, `CID_PUBLIC_URL`
+  (the GitLab application's redirect URI is `<it>/auth/gitlab/callback`) and
+  `CID_SESSION_SECRET` (32 bytes, base64). Where there is no GitLab, the server token
+  signs in (email one-time links are "not now", `docs/access.md`).
 - **Health data** comes from the Validator's reports and from the manifest; the
   dashboard never recomputes heavy statistics on page load.
 - **Semantic search** (Phase 3) calls an external embedding service over HTTP (e.g.

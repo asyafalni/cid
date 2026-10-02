@@ -14,6 +14,7 @@ const gitlab_sync = @import("../access/gitlab_sync.zig");
 const purge_mod = @import("../core/purge.zig");
 const preview_worker = @import("../preview/worker.zig");
 const serve_mod = @import("../server/serve.zig");
+const signin_mod = @import("../server/signin.zig");
 
 const ExitCode = root.ExitCode;
 
@@ -32,6 +33,8 @@ const admin_help =
     \\  CID_DB     the TimescaleDB connection (setup, migrate, serve)
     \\  CID_S3_ENDPOINT, CID_S3_ACCESS_KEY, CID_S3_SECRET_KEY,
     \\  CID_S3_REGION (optional), CID_TOKEN    (serve)
+    \\  CID_GITLAB_OAUTH_ID, CID_GITLAB_OAUTH_SECRET, CID_PUBLIC_URL,
+    \\  CID_SESSION_SECRET  "Sign in with GitLab" on the dashboard (serve)
     \\  The bucket is always named 'cid'; create it on the store first
     \\  (docker-compose.test.yml shows how).
     \\
@@ -215,7 +218,40 @@ fn runServe(
     } else {
         std.log.info("CID_GIT_WORKDIR not set: releases queue their git copy for 'cid admin git --resync'", .{});
     }
-    serve_mod.serve(arena, &deps, .{ .port = port }) catch |err| {
+    // Dashboard sign-in. GitLab OAuth when its application is configured;
+    // sessions are sealed with CID_SESSION_SECRET, which must then be set
+    // (a per-start secret would sign everybody out on every deploy).
+    const signin_cfg: ?signin_mod.Config = if (env.get("CID_GITLAB_OAUTH_ID")) |client_id| blk: {
+        const client_secret = env.get("CID_GITLAB_OAUTH_SECRET") orelse
+            return fail(io, .usage, "CID_GITLAB_OAUTH_ID is set but CID_GITLAB_OAUTH_SECRET is not. Export the GitLab application's secret, then run 'cid admin serve' again.", .{});
+        const public_url = env.get("CID_PUBLIC_URL") orelse
+            return fail(io, .usage, "GitLab sign-in needs CID_PUBLIC_URL (where browsers reach this server; the GitLab application's redirect URI is <it>/auth/gitlab/callback). Export it, then run 'cid admin serve' again.", .{});
+        if (env.get("CID_SESSION_SECRET") == null)
+            return fail(io, .usage, "GitLab sign-in needs CID_SESSION_SECRET (32 random bytes, base64; e.g. from 'head -c 32 /dev/urandom | base64'), the same on every instance and across restarts. Export it, then run 'cid admin serve' again.", .{});
+        break :blk .{
+            .gitlab_url = env.get("CID_GITLAB_URL") orelse "https://gitlab.com",
+            .client_id = client_id,
+            .client_secret = client_secret,
+            .public_url = public_url,
+        };
+    } else null;
+    deps.gitlab_signin = signin_cfg != null;
+
+    var secret: [32]u8 = undefined;
+    if (env.get("CID_SESSION_SECRET")) |text| {
+        const trimmed = std.mem.trim(u8, text, " \n");
+        const len = std.base64.standard.Decoder.calcSizeForSlice(trimmed) catch
+            return fail(io, .usage, "CID_SESSION_SECRET is not base64. Make one with 'head -c 32 /dev/urandom | base64', then run 'cid admin serve' again.", .{});
+        if (len != 32)
+            return fail(io, .usage, "CID_SESSION_SECRET decodes to {d} bytes; it must be exactly 32. Make one with 'head -c 32 /dev/urandom | base64', then run 'cid admin serve' again.", .{len});
+        std.base64.standard.Decoder.decode(&secret, trimmed) catch
+            return fail(io, .usage, "CID_SESSION_SECRET is not base64. Make one with 'head -c 32 /dev/urandom | base64', then run 'cid admin serve' again.", .{});
+    } else {
+        // No GitLab sign-in, so no session outlives this process anyway.
+        io.random(&secret);
+    }
+
+    serve_mod.serve(arena, &deps, .{ .port = port, .session_secret = &secret, .signin = signin_cfg }) catch |err| {
         return fail(io, .network, "the server stopped: {t}. Fix the cause, then run 'cid admin serve' again.", .{err});
     };
     return .ok;
