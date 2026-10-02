@@ -357,6 +357,11 @@ Audio (waveform + transcript segments), video (player + segment/track timeline),
 (span highlights), PDFs · Health tab · row-level table diff · SQL console · card
 completeness checklist · keyboard shortcuts everywhere.
 
+*Built:* the row-level table diff. Compare shows, under each modified CSV, Parquet or
+JSONL file, its rows added and removed, with the rows themselves one click away (the
+first 20 each way); it is the same answer `cid diff` prints. Whole-row comparison
+until a dataset can declare a key, so cell-level "changed" waits for that.
+
 **Phase 3 — find anything**
 Semantic search and "more like this" · embedding map with lasso filter · near-duplicate
 and outlier explorer · saved views.

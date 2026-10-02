@@ -1,8 +1,9 @@
 //! `cid diff [<a>] [<b>]`: what changed. No arguments = unstaged edits,
 //! --staged = staged changes, one or two versions = compare them (a
 //! release name or commit id; one argument compares against the folder's
-//! current commit). File-level here; row-level tabular diffs are computed
-//! on the server and arrive with the tabular slice.
+//! current commit). Files compare by hash here; a modified CSV, Parquet
+//! or JSONL file also shows its rows added and removed, which the server
+//! computes (CLAUDE.md, Formats) — the CLI never reads a table.
 
 const std = @import("std");
 const common = @import("common.zig");
@@ -84,6 +85,8 @@ pub const Change = struct {
     path: []const u8,
     size_a: ?u64,
     size_b: ?u64,
+    hash_a: ?[]const u8 = null,
+    hash_b: ?[]const u8 = null,
 };
 
 /// Pure two-state comparison; both inputs sorted by path (as the server
@@ -114,7 +117,7 @@ pub fn diffStates(
             },
             .eq => {
                 if (!std.mem.eql(u8, a[i].hash, b[j].hash))
-                    try out.append(arena, .{ .kind = .modified, .path = a[i].path, .size_a = a[i].size, .size_b = b[j].size });
+                    try out.append(arena, .{ .kind = .modified, .path = a[i].path, .size_a = a[i].size, .size_b = b[j].size, .hash_a = a[i].hash, .hash_b = b[j].hash });
                 i += 1;
                 j += 1;
             },
@@ -233,6 +236,7 @@ fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: [
             },
             .modified => {
                 printLine(ctx, "modified", ch.path, ch.size_b) catch return .network;
+                if (isTable(ch.path)) printRows(ctx, remote, ch) catch return .network;
                 modified += 1;
             },
             .deleted => {
@@ -276,6 +280,62 @@ fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: [
         }) catch return .network;
     }
     return .ok;
+}
+
+fn isTable(path: []const u8) bool {
+    const dot = std.mem.lastIndexOfScalar(u8, path, '.') orelse return false;
+    const ext = path[dot..];
+    for ([_][]const u8{ ".csv", ".parquet", ".jsonl", ".ndjson" }) |t| {
+        if (std.ascii.eqlIgnoreCase(ext, t)) return true;
+    }
+    return false;
+}
+
+/// The row-level line under a modified table file. Whatever the server
+/// cannot say about rows, the file line above already said the file
+/// changed, so this line explains and never fails the command.
+fn printRows(ctx: *const common.Context, remote: *const remote_mod.Remote, ch: Change) !void {
+    const indent = "              ";
+    var tries: u32 = 0;
+    const rd = while (true) : (tries += 1) {
+        const got = remote.rowDiff(ctx.arena, ch.hash_a.?, ch.path, ch.hash_b.?, ch.path) catch {
+            try ctx.out.print("{s}rows: the server could not compare them; run 'cid diff' again\n", .{indent});
+            return;
+        };
+        if (!std.mem.eql(u8, got.status, "busy") or tries == 40) break got;
+        std.Io.sleep(ctx.io, .fromMilliseconds(250), .awake) catch {};
+    };
+    try ctx.out.print("{s}", .{indent});
+    try formatRows(ctx.out, rd);
+}
+
+fn formatRows(out: *std.Io.Writer, rd: remote_mod.Remote.RowDiff) !void {
+    if (!std.mem.eql(u8, rd.status, "done") or rd.diff == null) {
+        if (std.mem.eql(u8, rd.status, "busy")) return out.writeAll("rows: the server is busy; run 'cid diff' again\n");
+        return out.print("rows: not compared: {s}\n", .{rd.reason orelse rd.status});
+    }
+    const d = rd.diff.?;
+    if (d.columns_changed) {
+        try out.writeAll("columns changed, so rows are not compared:");
+        for (d.columns_a) |col| if (!contains(d.columns_b, col)) try out.print(" -{s}", .{col});
+        for (d.columns_b) |col| if (!contains(d.columns_a, col)) try out.print(" +{s}", .{col});
+        if (sameSet(d.columns_a, d.columns_b)) try out.writeAll(" reordered");
+        return out.print(" ({d} → {d} rows)\n", .{ d.rows_a, d.rows_b });
+    }
+    if (d.added == 0 and d.removed == 0)
+        return out.print("rows: the same {d} rows, in another order or format\n", .{d.rows_b});
+    try out.print("rows: {d} added, {d} removed ({d} → {d})\n", .{ d.added, d.removed, d.rows_a, d.rows_b });
+}
+
+fn contains(list: []const []const u8, item: []const u8) bool {
+    for (list) |x| if (std.mem.eql(u8, x, item)) return true;
+    return false;
+}
+
+fn sameSet(a: []const []const u8, b: []const []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a) |x| if (!contains(b, x)) return false;
+    return true;
 }
 
 fn resolve(ctx: *const common.Context, remote: *const remote_mod.Remote, label: []const u8) ?[]const u8 {
@@ -334,6 +394,22 @@ test "diffStates walks both sorted lists" {
     try std.testing.expect(changes[0].kind == .deleted);
     try std.testing.expect(changes[1].kind == .modified);
     try std.testing.expect(changes[2].kind == .added);
+}
+
+test "row lines: counts, a column change, the same rows, and words when not compared" {
+    var buf: [256]u8 = undefined;
+    const Rd = remote_mod.Remote.RowDiff;
+    const cases = [_]struct { rd: Rd, want: []const u8 }{
+        .{ .rd = .{ .status = "done", .diff = .{ .rows_a = 5, .rows_b = 6, .columns_changed = false, .added = 3, .removed = 2 } }, .want = "rows: 3 added, 2 removed (5 → 6)\n" },
+        .{ .rd = .{ .status = "done", .diff = .{ .rows_a = 5, .rows_b = 1, .columns_a = &.{ "id BIGINT", "name VARCHAR" }, .columns_b = &.{ "id BIGINT", "name VARCHAR", "team VARCHAR" }, .columns_changed = true } }, .want = "columns changed, so rows are not compared: +team VARCHAR (5 → 1 rows)\n" },
+        .{ .rd = .{ .status = "done", .diff = .{ .rows_a = 5, .rows_b = 5, .columns_changed = false } }, .want = "rows: the same 5 rows, in another order or format\n" },
+        .{ .rd = .{ .status = "needs_server_build", .reason = "this server is built without row-level diffs" }, .want = "rows: not compared: this server is built without row-level diffs\n" },
+    };
+    for (cases) |case| {
+        var w: std.Io.Writer = .fixed(&buf);
+        try formatRows(&w, case.rd);
+        try std.testing.expectEqualStrings(case.want, w.buffered());
+    }
 }
 
 test "human sizes" {

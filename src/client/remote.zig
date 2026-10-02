@@ -351,6 +351,33 @@ pub const Remote = struct {
         const parsed = parse(Dl, arena, res.body) orelse return error.ServerRefused;
         return parsed.downloads;
     }
+
+    pub const RowDiff = struct {
+        /// done | unreadable | too_large | not_a_table | needs_server_build | busy
+        status: []const u8,
+        reason: ?[]const u8 = null,
+        diff: ?struct {
+            rows_a: u64,
+            rows_b: u64,
+            columns_a: []const []const u8 = &.{},
+            columns_b: []const []const u8 = &.{},
+            columns_changed: bool,
+            added: u64 = 0,
+            removed: u64 = 0,
+        } = null,
+        withheld: bool = false,
+    };
+
+    /// Row-level diff of two contents of a table file, by the server.
+    pub fn rowDiff(self: *const Remote, arena: std.mem.Allocator, a: []const u8, path_a: []const u8, b: []const u8, path_b: []const u8) Error!RowDiff {
+        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .a = a, .b = b, .path_a = path_a, .path_b = path_b }, .{})});
+        const res = self.t.call(arena, "POST", try self.target(arena, "rowdiff", .{}), body) catch
+            return error.ServerUnreachable;
+        if (res.status == .service_unavailable) return .{ .status = "busy" };
+        if (res.status == .not_found) return error.NoSuchDataset;
+        if (res.status != .ok) return error.ServerRefused;
+        return parse(RowDiff, arena, res.body) orelse error.ServerRefused;
+    }
 };
 
 fn parse(T: type, arena: std.mem.Allocator, body: []const u8) ?T {

@@ -25,6 +25,9 @@ const blob = @import("../store/blob.zig");
 const release_mod = @import("../core/release.zig");
 const git_writer = @import("../gitrepo/writer.zig");
 const preview_worker = @import("../preview/worker.zig");
+const duck = @import("../store/duck.zig");
+const table_stats = @import("../tabular/stats.zig");
+const rowdiff_mod = @import("../tabular/rowdiff.zig");
 const token_mod = @import("../access/token.zig");
 const Uuid = @import("../util/uuid7.zig").Uuid;
 
@@ -42,6 +45,12 @@ pub const Deps = struct {
     git: ?git_writer.Config = null,
     /// Whether "Sign in with GitLab" is configured (the sign-in page asks).
     gitlab_signin: bool = false,
+    /// Where row diffs put the two table files while DuckDB reads them;
+    /// DuckDB is confined to it.
+    scratch_dir: []const u8 = "/tmp/cid-rowdiff",
+    /// One row diff at a time, server-wide: DuckDB work never scales with
+    /// requests (each answer is cached, so this is rarely contended).
+    rowdiff_busy: std.atomic.Value(bool) = .init(false),
 };
 
 pub const Response = struct {
@@ -141,6 +150,8 @@ fn handleInner(
 
     if (eql(method, "GET") and eql(route.action, "table"))
         return tableStats(arena, deps, scope, ds, route.queryParam("hash") orelse "");
+    if (eql(method, "POST") and eql(route.action, "rowdiff"))
+        return rowDiff(arena, deps, scope, ds, body);
     if (eql(method, "GET") and eql(route.action, "history"))
         return history(arena, deps, scope, ds, route.queryParam("path") orelse "");
     if (eql(method, "POST") and eql(route.action, "reveal"))
@@ -401,7 +412,7 @@ fn history(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, r
         message: ?[]const u8,
         release: ?[]const u8,
     };
-    const changes = deps.db.raw(Change, scope, "SELECT to_char(r.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS at, " ++
+    const changes = deps.db.raw(Change, scope, "SELECT to_char(r.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS at, " ++
         "r.branch, r.op, encode(r.item_hash, 'hex') AS hash, r.author, sc.commit_id::text AS commit, sc.message, " ++
         "(SELECT f.name FROM refs f WHERE f.commit_id = sc.commit_id AND f.kind = 'release' ORDER BY f.name LIMIT 1) AS release " ++
         "FROM item_revisions r LEFT JOIN commits sc ON sc.commit_id = " ++ sealed_by ++ " " ++
@@ -423,7 +434,7 @@ fn history(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, r
     };
     // Annotations attach to item identity (invariant 4): every item_id
     // this path has held.
-    const ann_changes = deps.db.raw(AnnChange, scope, "SELECT to_char(r.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS at, " ++
+    const ann_changes = deps.db.raw(AnnChange, scope, "SELECT to_char(r.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS at, " ++
         "r.branch, r.annotation_id::text AS annotation_id, r.op, r.kind, r.class, r.geometry::text AS geometry, r.author, r.policy_ver, " ++
         "sc.commit_id::text AS commit, " ++
         "(SELECT f.name FROM refs f WHERE f.commit_id = sc.commit_id AND f.kind = 'release' ORDER BY f.name LIMIT 1) AS release " ++
@@ -486,6 +497,102 @@ fn tableStats(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset
         return json(arena, .ok, .{ .status = "skipped", .reason = @as(?[]const u8, "the stored statistics could not be read") });
     if (!ds.restricted) return json(arena, .ok, .{ .status = "done", .stats = stats, .withheld = false });
     return json(arena, .ok, .{ .status = "done", .stats = try shapeOnly(arena, stats), .withheld = true });
+}
+
+const RowDiffBody = struct { a: []const u8, b: []const u8, path_a: []const u8, path_b: []const u8 };
+
+/// The largest table file a row diff reads. Larger tables belong in
+/// partitioned files (CLAUDE.md, non-goals), which diff one by one.
+pub const rowdiff_max_bytes: u64 = 128 * 1024 * 1024;
+
+/// Row-level diff of two contents of a table file (CLAUDE.md, Formats):
+/// rows added and removed, or the column change. Computed in the server
+/// build the first time anyone asks, then answered from `row_diffs`.
+/// Both contents must belong to this dataset (invariant 12). A restricted
+/// dataset is answered with counts and columns only: rows are content.
+fn rowDiff(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
+    const req = parseBody(RowDiffBody, arena, body) orelse return error.BadRequest;
+    if (!validHashHex(req.a) or !validHashHex(req.b)) return error.BadRequest;
+    const kind_a = table_stats.kindOf(req.path_a) orelse
+        return json(arena, .ok, .{ .status = "not_a_table", .reason = @as(?[]const u8, "only CSV, Parquet and JSONL files are compared by rows") });
+    const kind_b = table_stats.kindOf(req.path_b) orelse
+        return json(arena, .ok, .{ .status = "not_a_table", .reason = @as(?[]const u8, "only CSV, Parquet and JSONL files are compared by rows") });
+    for ([_][]const u8{ req.a, req.b }) |hash| {
+        const here = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM item_revisions WHERE dataset_id = $1::uuid AND item_hash = decode($2, 'hex') LIMIT 1", .{ ds.id, hash }) catch return error.Db;
+        if (here == null) return errorResponse(arena, .not_found, "no such item in this dataset", "Run 'cid diff <a> <b>' with two versions of this dataset.");
+    }
+    const ka = @tagName(kind_a);
+    const kb = @tagName(kind_b);
+
+    const Cached = struct {
+        pub const nilo_table = .projection;
+        status: []const u8,
+        result: ?[]const u8,
+        reason: ?[]const u8,
+    };
+    const lookup = "SELECT status, result::text AS result, reason FROM row_diffs WHERE hash_a = decode($1, 'hex') AND hash_b = decode($2, 'hex') AND kind_a = $3 AND kind_b = $4";
+    var cached = deps.db.rawOne(Cached, scope, lookup, .{ req.a, req.b, ka, kb }) catch return error.Db;
+
+    if (cached == null) {
+        if (comptime !duck.enabled)
+            return json(arena, .ok, .{ .status = "needs_server_build", .reason = @as(?[]const u8, "this server is built without row-level diffs") });
+        const Size = struct {
+            pub const nilo_table = .projection;
+            size_bytes: i64,
+        };
+        for ([_][]const u8{ req.a, req.b }) |hash| {
+            const size = deps.db.rawOne(Size, scope, "SELECT size_bytes FROM items WHERE item_hash = decode($1, 'hex')", .{hash}) catch return error.Db;
+            if (size) |sz| if (sz.size_bytes > rowdiff_max_bytes)
+                return json(arena, .ok, .{ .status = "too_large", .reason = @as(?[]const u8, "over 128 MB; split large tables into partitioned files to compare them by rows") });
+        }
+        if (deps.rowdiff_busy.swap(true, .acquire))
+            return errorResponse(arena, .service_unavailable, "the server is comparing another table", "Run the command again in a moment.");
+        defer deps.rowdiff_busy.store(false, .release);
+
+        const outcome = try computeRowDiff(arena, deps, scope, req, kind_a, kind_b);
+        _ = deps.db.exec(scope, "INSERT INTO row_diffs (hash_a, hash_b, kind_a, kind_b, status, result, reason) " ++
+            "VALUES (decode($1, 'hex'), decode($2, 'hex'), $3, $4, $5, $6::jsonb, $7) ON CONFLICT DO NOTHING", .{ req.a, req.b, ka, kb, outcome.status, outcome.result, outcome.reason }) catch return error.Db;
+        cached = .{ .status = outcome.status, .result = outcome.result, .reason = outcome.reason };
+    }
+
+    const c = cached.?;
+    const diff: ?std.json.Value = jsonValue(arena, c.result);
+    if (diff == null or !ds.restricted)
+        return json(arena, .ok, .{ .status = c.status, .reason = c.reason, .diff = diff, .withheld = false });
+    var kept = diff.?;
+    if (kept == .object) {
+        _ = kept.object.orderedRemove("added_sample");
+        _ = kept.object.orderedRemove("removed_sample");
+    }
+    return json(arena, .ok, .{ .status = c.status, .reason = c.reason, .diff = kept, .withheld = true });
+}
+
+const RowDiffOutcome = struct { status: []const u8, result: ?[]const u8 = null, reason: ?[]const u8 = null };
+
+/// Fetches both contents into the scratch folder and has DuckDB compare
+/// them there. Storage trouble is an error (asked again, computed again);
+/// a file DuckDB cannot read is an answer, kept like any other.
+fn computeRowDiff(arena: std.mem.Allocator, deps: *Deps, scope: anytype, req: RowDiffBody, kind_a: table_stats.Kind, kind_b: table_stats.Kind) HandleError!RowDiffOutcome {
+    const cwd = std.Io.Dir.cwd();
+    cwd.createDirPath(deps.io, deps.scratch_dir) catch return error.Storage;
+    const dir = cwd.realPathFileAlloc(deps.io, deps.scratch_dir, arena) catch return error.Storage;
+    const path_a = try std.fmt.allocPrint(arena, "{s}/{s}.a.{t}", .{ dir, req.a, kind_a });
+    const path_b = try std.fmt.allocPrint(arena, "{s}/{s}.b.{t}", .{ dir, req.b, kind_b });
+    defer cwd.deleteFile(deps.io, path_a) catch {};
+    defer cwd.deleteFile(deps.io, path_b) catch {};
+    for ([_][2][]const u8{ .{ req.a, path_a }, .{ req.b, path_b } }) |pair| {
+        const bytes = deps.s3.getObjectAlloc(scope, itemKey(arena, pair[0]) catch return error.OutOfMemory) catch return error.Storage;
+        cwd.writeFile(deps.io, .{ .sub_path = pair[1], .data = bytes }) catch return error.Storage;
+    }
+
+    var db = duck.Db.open(arena, .{ .allowed_dir = dir }) catch return error.Storage;
+    defer db.close();
+    const text = rowdiff_mod.compute(arena, &db, path_a, kind_a, path_b, kind_b) catch |err| switch (err) {
+        error.QueryFailed => return .{ .status = "unreadable", .reason = "not a readable table: DuckDB could not read one of the two versions as its file name says" },
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.Storage,
+    };
+    return .{ .status = "done", .result = text };
 }
 
 /// A table's statistics without its content: rows, and per column only

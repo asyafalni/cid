@@ -390,7 +390,7 @@ test('a COCO RLE mask is drawn exactly: 1,200 pixels where the mask says', async
 
 test('a table file is shown as a table: columns, ranges, nulls and its first rows', async ({ page }) => {
   await signIn(page);
-  await page.goto('/d/e2e/datasets/tables?view=browse&item=people.csv');
+  await page.goto('/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv');
   const table = page.getByRole('region', { name: 'Table' });
   await expect(table.getByText('5 rows · 4 columns')).toBeVisible();
   const score = table.locator('.table-columns tr', { hasText: 'score' });
@@ -405,9 +405,21 @@ test('a table file is shown as a table: columns, ranges, nulls and its first row
   await expect(page.getByRole('region', { name: 'Table' }).getByText('3 rows · 4 columns')).toBeVisible();
 });
 
+test('compare shows a modified table by its rows: counts, then the rows themselves', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0');
+  const change = page.locator('.change', { hasText: 'people.csv' });
+  await expect(change).toContainText('modified');
+  await expect(change.locator('.row-changes')).toContainText('2 rows added, 2 removed');
+  await expect(change.locator('.row-changes')).toContainText('5 → 5 rows');
+  await change.getByText('Show the changed rows').click();
+  await expect(change.locator('table', { hasText: 'Removed' })).toContainText('Budi');
+  await expect(change.locator('table', { hasText: 'Added' })).toContainText('Fajar');
+});
+
 test('accessibility: no serious or critical axe findings', async ({ page }) => {
   await signIn(page);
-  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&item=people.csv']) {
+  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0']) {
     await page.goto(path);
     await page.waitForLoadState('networkidle');
     const results = await new AxeBuilder({ page }).analyze();

@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { getState, getThumbs, type Overview, type StateAnnotation, type StateItem, type TapeCommit } from '../api';
+import { getRowDiff, getState, getThumbs, type Overview, type StateAnnotation, type StateItem, type TapeCommit } from '../api';
 import { AnnotationOverlay } from '../overlays';
 import { diffAnnotations, diffItems, type AnnChange } from '../diff';
 import { humanBytes } from '../format';
@@ -202,6 +202,9 @@ function Comparison({
                   <img src={thumbBy.get(c.hash_b!)} alt={`${c.path} after`} />
                 </span>
               )}
+              {c.kind === 'modified' && isTable(c.path) && (
+                <RowChanges name={name} path={c.path} a={c.hash_a!} b={c.hash_b!} />
+              )}
             </li>
           ))}
         </ul>
@@ -330,6 +333,112 @@ function DiffSide({
         {label} · {annotations.length} shape{annotations.length === 1 ? '' : 's'}
       </figcaption>
     </figure>
+  );
+}
+
+const tableExt = /\.(csv|parquet|jsonl|ndjson)$/i;
+function isTable(path: string): boolean {
+  return tableExt.test(path);
+}
+
+// A modified table file, by rows (CLAUDE.md, Formats): what was added and
+// removed, with the rows themselves one click away. Computed once on the
+// server; when it cannot be, the line says why, and the file line above
+// already says the file changed.
+function RowChanges({ name, path, a, b }: { name: string; path: string; a: string; b: string }) {
+  const answer = useQuery({
+    queryKey: ['rowdiff', name, a, b],
+    queryFn: () => getRowDiff(name, path, a, b),
+    staleTime: Infinity,
+  });
+  if (answer.isPending) return <p className="row-changes quiet">Comparing rows…</p>;
+  if (answer.isError)
+    return <p className="row-changes quiet">The rows could not be compared just now; reload to try again.</p>;
+  const r = answer.data;
+  if (r.status !== 'done' || !r.diff)
+    return <p className="row-changes quiet">Rows not compared: {r.reason ?? r.status}.</p>;
+  const d = r.diff;
+  if (d.columns_changed) {
+    const gone = d.columns_a.filter((col) => !d.columns_b.includes(col));
+    const came = d.columns_b.filter((col) => !d.columns_a.includes(col));
+    return (
+      <div className="row-changes">
+        <p className="data">
+          Columns changed, so rows are not compared ({d.rows_a.toLocaleString()} → {d.rows_b.toLocaleString()} rows)
+        </p>
+        <ul className="row-columns data">
+          {gone.map((col) => (
+            <li key={`-${col}`} className="change-verb--deleted">
+              removed {col}
+            </li>
+          ))}
+          {came.map((col) => (
+            <li key={`+${col}`} className="change-verb--added">
+              added {col}
+            </li>
+          ))}
+          {gone.length === 0 && came.length === 0 && <li className="quiet">same columns, new order</li>}
+        </ul>
+      </div>
+    );
+  }
+  const added = d.added ?? 0;
+  const removed = d.removed ?? 0;
+  if (added === 0 && removed === 0)
+    return (
+      <p className="row-changes quiet">The same {d.rows_b.toLocaleString()} rows, in another order or format.</p>
+    );
+  return (
+    <div className="row-changes">
+      <p className="data">
+        <span className="change-verb--added">{added.toLocaleString()} rows added</span>,{' '}
+        <span className="change-verb--deleted">{removed.toLocaleString()} removed</span>{' '}
+        <span className="quiet">
+          ({d.rows_a.toLocaleString()} → {d.rows_b.toLocaleString()} rows; an edited row counts as one removed and one added)
+        </span>
+      </p>
+      {r.withheld ? (
+        <p className="quiet">The rows themselves are withheld: this dataset is restricted.</p>
+      ) : (
+        <details>
+          <summary>Show the changed rows</summary>
+          <SampleTable caption="Removed" total={removed} rows={d.removed_sample ?? []} />
+          <SampleTable caption="Added" total={added} rows={d.added_sample ?? []} />
+        </details>
+      )}
+    </div>
+  );
+}
+
+function SampleTable({ caption, total, rows }: { caption: string; total: number; rows: Record<string, unknown>[] }) {
+  if (rows.length === 0) return null;
+  const cols = Object.keys(rows[0]);
+  return (
+    <div className="table-scroll">
+      <table className="browse-table">
+        <caption className="quiet">
+          {caption}: {rows.length < total ? `first ${rows.length} of ${total.toLocaleString()}` : `${total.toLocaleString()}`}
+        </caption>
+        <thead>
+          <tr>
+            {cols.map((c) => (
+              <th key={c}>{c}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i}>
+              {cols.map((c) => (
+                <td key={c} className="data">
+                  {row[c] === null || row[c] === undefined ? '—' : String(row[c])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

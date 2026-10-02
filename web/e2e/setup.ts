@@ -273,6 +273,20 @@ function seedTables(dir: string) {
   run(`${cid} tag v1.0.0`, tables);
 }
 
+// The tables' second release, made the way a person would: clone, edit
+// people.csv (Budi gone, Citra's score fixed, Fajar in), push, release.
+function seedTablesEdited(dir: string) {
+  run(`${cid} clone cid@127.0.0.1:e2e/datasets/tables tables-edit`, dir);
+  const folder = join(dir, 'tables-edit');
+  writeFileSync(
+    join(folder, 'people.csv'),
+    'id,name,city,score\n1,Ana Wijaya,Bandung,91.5\n3,Citra,Bandung,79\n4,Dewi,Surabaya,88.25\n5,Eko,Jakarta,64\n6,Fajar,Medan,70\n',
+  );
+  run(`${cid} commit -a -m "Fix Citra's score, add Fajar"`, folder);
+  run(`${cid} push`, folder);
+  run(`${cid} tag v1.1.0`, folder);
+}
+
 // A restricted dataset: previews blurred until a logged reveal.
 function seedFaces(dir: string) {
   const faces = join(dir, 'faces');
@@ -326,6 +340,10 @@ export default function setup() {
     if (!already.includes('e2e/datasets/faces')) seedFaces(dir);
     if (!already.includes('e2e/datasets/masks')) seedMasks(dir);
     if (!already.includes('e2e/datasets/tables')) seedTables(dir);
+    const tableReleases = run(
+      `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/tables/-/releases -H "Authorization: Bearer ${token}"`,
+    );
+    if (!tableReleases.includes('"v1.1.0"')) seedTablesEdited(dir);
     // Sniff, thumbnail and blur every new png. One pass takes a batch, and
     // a migration can requeue many, so drain the queue.
     for (let i = 0; i < 40; i++) {

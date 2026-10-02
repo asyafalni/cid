@@ -2172,3 +2172,114 @@ test "table statistics: CSV, Parquet and JSONL in the server build, said plainly
         try std.testing.expect(std.mem.indexOf(u8, revealed.body, "\"logged\":true") != null);
     }
 }
+
+test "row diffs: rows added and removed between versions, cached, withheld when restricted" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var scratch = std.testing.tmpDir(.{});
+    defer scratch.cleanup();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token", .scratch_dir = try scratch.dir.realPathFileAlloc(io, ".", arena) };
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/rowdiff" };
+
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
+    inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/rowdiff')", .{});
+    }
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/rowdiff'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
+
+    // v1: the people fixture. v2: Budi gone, Citra's score edited, Fajar in.
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    const v1 = try std.Io.Dir.cwd().readFileAlloc(io, "tests/fixtures/people.csv", arena, .limited(1 << 20));
+    const v2 =
+        \\id,name,city,score
+        \\1,Ana Wijaya,Bandung,91.5
+        \\3,Citra,Bandung,79
+        \\4,Dewi,Surabaya,88.25
+        \\5,Eko,Jakarta,64
+        \\6,Fajar,Medan,70
+        \\
+    ;
+    var hashes: [2][64]u8 = undefined;
+    for ([_][]const u8{ v1, v2 }, 0..) |bytes, i| {
+        var dg: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(bytes, &dg, .{});
+        hashes[i] = std.fmt.bytesToHex(dg, .lower);
+    }
+    // Computed afresh each run.
+    _ = try db.exec(&fscope, "DELETE FROM row_diffs WHERE hash_a = decode($1, 'hex')", .{@as([]const u8, &hashes[0])});
+
+    try cid.client.workspace.init(arena, io, producer.dir, "cid@test:test/datasets/rowdiff", "g@h:rd.git");
+    for ([_][]const u8{ v1, v2 }, 0..) |bytes, i| {
+        try producer.dir.writeFile(io, .{ .sub_path = "people.csv", .data = bytes });
+        try producer.dir.writeFile(io, .{ .sub_path = "notes.txt", .data = if (i == 0) "one" else "two" });
+        var pws = try cid.client.workspace.open(arena, io, producer.dir);
+        _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+        _ = try cid.client.workspace.commit(arena, io, &pws, "people", "user:test");
+        _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    }
+
+    const rd = try remote.rowDiff(arena, &hashes[0], "people.csv", &hashes[1], "people.csv");
+    if (comptime !cid.duck.enabled) {
+        try std.testing.expectEqualStrings("needs_server_build", rd.status);
+        const none = try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM row_diffs WHERE hash_a = decode($1, 'hex')", .{@as([]const u8, &hashes[0])});
+        try std.testing.expectEqual(@as(i64, 0), none.?);
+        return;
+    }
+    try std.testing.expectEqualStrings("done", rd.status);
+    const d = rd.diff.?;
+    try std.testing.expect(!d.columns_changed);
+    try std.testing.expectEqual(@as(u64, 5), d.rows_a);
+    try std.testing.expectEqual(@as(u64, 5), d.rows_b);
+    try std.testing.expectEqual(@as(u64, 2), d.added); // Citra (new score), Fajar
+    try std.testing.expectEqual(@as(u64, 2), d.removed); // Budi, Citra (old score)
+
+    // Kept: asked again, answered from row_diffs, the same.
+    const kept = try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM row_diffs WHERE hash_a = decode($1, 'hex') AND status = 'done'", .{@as([]const u8, &hashes[0])});
+    try std.testing.expectEqual(@as(i64, 1), kept.?);
+    const again = try remote.rowDiff(arena, &hashes[0], "people.csv", &hashes[1], "people.csv");
+    try std.testing.expectEqual(@as(u64, 2), again.diff.?.added);
+
+    // The samples carry the rows; a restricted dataset gets counts only.
+    const body = try std.fmt.allocPrint(arena, "{{\"a\":\"{s}\",\"b\":\"{s}\",\"path_a\":\"people.csv\",\"path_b\":\"people.csv\"}}", .{ &hashes[0], &hashes[1] });
+    const open = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/rowdiff/-/rowdiff", "Bearer test-token", body);
+    try std.testing.expect(std.mem.indexOf(u8, open.body, "Fajar") != null);
+    _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = 'test/datasets/rowdiff'", .{});
+    defer _ = db.exec(&fscope, "UPDATE datasets SET restricted = false WHERE name = 'test/datasets/rowdiff'", .{}) catch {};
+    const closed = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/rowdiff/-/rowdiff", "Bearer test-token", body);
+    try std.testing.expectEqual(std.http.Status.ok, closed.status);
+    try std.testing.expect(std.mem.indexOf(u8, closed.body, "Fajar") == null);
+    try std.testing.expect(std.mem.indexOf(u8, closed.body, "\"withheld\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, closed.body, "\"added\":2") != null);
+
+    // Another dataset's content is not an oracle (invariant 12), and a
+    // file that is not a table is said so in words.
+    const foreign = try std.fmt.allocPrint(arena, "{{\"a\":\"{s}\",\"b\":\"{s}\",\"path_a\":\"people.csv\",\"path_b\":\"people.csv\"}}", .{ "ab" ** 32, &hashes[1] });
+    const refused = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/rowdiff/-/rowdiff", "Bearer test-token", foreign);
+    try std.testing.expectEqual(std.http.Status.not_found, refused.status);
+    const text = try remote.rowDiff(arena, &hashes[0], "notes.txt", &hashes[1], "notes.txt");
+    try std.testing.expectEqualStrings("not_a_table", text.status);
+}

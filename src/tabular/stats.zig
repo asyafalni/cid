@@ -38,17 +38,23 @@ pub fn compute(arena: std.mem.Allocator, db: *duck.Db, path: []const u8, kind: K
 /// What one table's statistics may weigh in `previews.table_stats`.
 pub const max_bytes = 64 * 1024;
 
-fn query(arena: std.mem.Allocator, path: []const u8, kind: Kind, sample_rows: u32) duck.Error![]const u8 {
+/// The DuckDB reader for a table file: `read_csv('…')` and its kin, with
+/// the path quoted as a SQL string.
+pub fn sourceOf(arena: std.mem.Allocator, path: []const u8, kind: Kind) duck.Error![]const u8 {
     var quoted: std.ArrayList(u8) = .empty;
     for (path) |ch| {
         if (ch == '\'') quoted.append(arena, '\'') catch return error.OutOfMemory;
         quoted.append(arena, ch) catch return error.OutOfMemory;
     }
-    const source = switch (kind) {
+    return switch (kind) {
         .csv => std.fmt.allocPrint(arena, "read_csv('{s}')", .{quoted.items}),
         .parquet => std.fmt.allocPrint(arena, "read_parquet('{s}')", .{quoted.items}),
         .jsonl => std.fmt.allocPrint(arena, "read_json('{s}', format = 'newline_delimited')", .{quoted.items}),
-    } catch return error.OutOfMemory;
+    } catch error.OutOfMemory;
+}
+
+fn query(arena: std.mem.Allocator, path: []const u8, kind: Kind, sample_rows: u32) duck.Error![]const u8 {
+    const source = try sourceOf(arena, path, kind);
     const sample = if (sample_rows == 0)
         "'[]'::JSON"
     else

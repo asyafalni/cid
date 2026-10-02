@@ -903,6 +903,31 @@
   overflow-wrap: anywhere;
 }
 
+.row-changes {
+  flex-basis: 100%;
+  margin: 0 0 0 calc(4.5rem + var(--space-3));
+  font-size: 0.875rem;
+}
+
+.row-changes p {
+  margin: 0;
+}
+
+.row-changes details {
+  margin-top: var(--space-1);
+}
+
+.row-changes summary {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.row-columns {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+}
+
 .before-after {
   display: inline-flex;
   align-items: center;

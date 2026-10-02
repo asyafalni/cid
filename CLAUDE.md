@@ -435,7 +435,11 @@ records the commits.
 and changed, using a key column when the dataset declares one, otherwise whole-row
 comparison. Row-level diffs are computed **on the server** (where DuckDB lives); the
 CLI itself compares by hash only, which keeps it a small static binary. Other files are
-compared by hash only everywhere.
+compared by hash only everywhere. Until a dataset can declare a key column, an edited
+row shows as one removed plus one added; when the columns changed, the column change
+is the answer and rows are not compared. Each pair of contents is diffed once, ever
+(`row_diffs`), one at a time, files up to 128 MB; a restricted dataset gets counts and
+columns, never rows.
 
 ---
 

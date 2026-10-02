@@ -24,6 +24,7 @@ pub const db = @import("store/db.zig");
 pub const blob = @import("store/blob.zig");
 pub const duck = @import("store/duck.zig");
 pub const table_stats = @import("tabular/stats.zig");
+pub const rowdiff = @import("tabular/rowdiff.zig");
 pub const api = @import("server/api.zig");
 pub const serve = @import("server/serve.zig");
 pub const signin = @import("server/signin.zig");
@@ -79,6 +80,7 @@ test {
     _ = blob;
     _ = duck;
     _ = table_stats;
+    _ = rowdiff;
     _ = api;
     _ = serve;
     _ = signin;

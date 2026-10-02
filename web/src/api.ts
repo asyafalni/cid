@@ -191,6 +191,32 @@ export function getTable(name: string, hash: string): Promise<TableAnswer> {
   return request(`/v0/datasets/${name}/-/table?hash=${hash}`);
 }
 
+export type RowDiff = {
+  rows_a: number;
+  rows_b: number;
+  columns_a: string[];
+  columns_b: string[];
+  columns_changed: boolean;
+  added?: number;
+  removed?: number;
+  added_sample?: Record<string, unknown>[];
+  removed_sample?: Record<string, unknown>[];
+};
+
+export type RowDiffAnswer = {
+  status: 'done' | 'unreadable' | 'too_large' | 'not_a_table' | 'needs_server_build';
+  reason?: string | null;
+  diff?: RowDiff | null;
+  /** Restricted: counts and columns only; rows are content. */
+  withheld?: boolean;
+};
+
+/** Rows added and removed between two contents of a table file; the
+ * server computes it once, ever, and keeps it. */
+export function getRowDiff(name: string, path: string, a: string, b: string): Promise<RowDiffAnswer> {
+  return post(`/v0/datasets/${name}/-/rowdiff`, { a, b, path_a: path, path_b: path });
+}
+
 export type Revealed = {
   hash: string;
   thumb: string | null;
