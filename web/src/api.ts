@@ -5,9 +5,17 @@
 export type DatasetSummary = {
   name: string;
   kind: 'files' | 'annotated';
+  restricted: boolean;
   default_format: string;
   latest_release: string | null;
   last_push: string | null; // ISO date or null
+  /** At the head of main, from the commit's cached stats. */
+  items: number;
+  bytes: number;
+  types: { ext: string; count: number }[];
+  classes: string[];
+  /** Finished previews only; empty for a restricted dataset. */
+  mosaic: { hash: string; url: string }[];
 };
 
 const tokenKey = 'cid-token';

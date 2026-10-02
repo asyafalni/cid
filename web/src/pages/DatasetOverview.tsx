@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { ApiError, getOverview } from '../api';
@@ -7,6 +8,7 @@ import { OverviewTab } from './OverviewTab';
 import { BrowseTab } from './BrowseTab';
 import { ReleasesTab } from './ReleasesTab';
 import { FilesTab } from './FilesTab';
+import { noteVisit } from '../recent';
 
 // The dataset page: sky-band header, the release tape, then the tabs.
 // The tab, the pinned release and the open item all live in the URL, so
@@ -31,6 +33,11 @@ export function DatasetOverview() {
     queryKey: ['overview', name],
     queryFn: () => getOverview(name),
   });
+  // Remembered only once the dataset answered: a mistyped link is not a visit.
+  const found = query.isSuccess;
+  useEffect(() => {
+    if (found) noteVisit(name);
+  }, [found, name]);
 
   if (query.isPending) return <p className="quiet">Reading {name}…</p>;
   if (query.isError) {

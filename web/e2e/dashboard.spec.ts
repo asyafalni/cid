@@ -216,9 +216,40 @@ test('the command copied from "Use this dataset" works as pasted, subset and all
   expect(readFileSync(resolve(dir, 'boxes/labels/frames/street.txt'), 'utf8').trim().split('\n')).toHaveLength(1);
 });
 
+test('home: each dataset row is a card, and search reaches classes and types', async ({ page }) => {
+  await signIn(page);
+  const demo = page.locator('.manifest-row', { has: page.getByRole('link', { name: 'e2e/datasets/demo', exact: true }) });
+  // The mosaic is the dataset's own finished previews; the facts line
+  // agrees with the dataset card.
+  await expect(demo.locator('.mosaic img')).toHaveCount(2);
+  await expect(demo.getByText(/4 items · 5\.8 KB · /)).toBeVisible();
+
+  // A class name finds the dataset whose name never says it.
+  await page.getByLabel('Search datasets').fill('person');
+  await expect(page).toHaveURL(/q=person/);
+  await expect(page.getByRole('link', { name: 'e2e/datasets/boxes', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'e2e/datasets/demo', exact: true })).toHaveCount(0);
+
+  // A file type: the text files live in demo, not in boxes.
+  await page.getByLabel('Search datasets').fill('');
+  await page.getByLabel('Filter by type').selectOption('.txt');
+  await expect(page.getByRole('link', { name: 'e2e/datasets/demo', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'e2e/datasets/boxes', exact: true })).toHaveCount(0);
+});
+
+test('home: a visited dataset appears under Recently viewed', async ({ page }) => {
+  await signIn(page);
+  await expect(page.getByRole('navigation', { name: 'Recently viewed' })).toHaveCount(0);
+  await page.goto('/d/e2e/datasets/boxes');
+  await expect(page.getByRole('region', { name: 'Use this dataset' })).toBeVisible();
+  await page.goto('/');
+  const recent = page.getByRole('navigation', { name: 'Recently viewed' });
+  await expect(recent.getByRole('link', { name: 'e2e/datasets/boxes' })).toBeVisible();
+});
+
 test('accessibility: no serious or critical axe findings', async ({ page }) => {
   await signIn(page);
-  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes']) {
+  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt']) {
     await page.goto(path);
     await page.waitForLoadState('networkidle');
     const results = await new AxeBuilder({ page }).analyze();

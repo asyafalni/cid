@@ -21,6 +21,16 @@ const signInRoute = createRoute({
 const homeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
+  // The home's search and filters are a link too.
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { q?: string; kind?: 'files' | 'annotated'; type?: string; released?: 'yes' | 'no'; restricted?: 'yes' | 'no' } => ({
+    q: typeof search.q === 'string' && search.q !== '' ? search.q : undefined,
+    kind: search.kind === 'files' || search.kind === 'annotated' ? search.kind : undefined,
+    type: typeof search.type === 'string' ? search.type : undefined,
+    released: search.released === 'yes' || search.released === 'no' ? search.released : undefined,
+    restricted: search.restricted === 'yes' || search.restricted === 'no' ? search.restricted : undefined,
+  }),
   beforeLoad: () => {
     if (!getToken()) throw redirect({ to: '/signin' });
   },

@@ -9,7 +9,8 @@ import {
   type StateItem,
 } from '../api';
 import { humanBytes } from '../format';
-import { AnnotationOverlay, classColor } from '../overlays';
+import { AnnotationOverlay } from '../overlays';
+import { classColor } from '../shapes';
 import {
   anyFilter,
   applyFilters,
@@ -59,7 +60,13 @@ export function BrowseTab({
   // The search box commits to the URL after a pause, so typing a word is
   // one history entry, not one per letter.
   const [typed, setTyped] = useState(filters.q ?? '');
-  useEffect(() => setTyped(filters.q ?? ''), [filters.q]);
+  // The URL moved under the box (back button, a pasted link): follow it.
+  // Adjusted during render, React's pattern for state derived from props.
+  const [seenQ, setSeenQ] = useState(filters.q);
+  if (filters.q !== seenQ) {
+    setSeenQ(filters.q);
+    setTyped(filters.q ?? '');
+  }
   useEffect(() => {
     if (typed === (filters.q ?? '')) return;
     const timer = setTimeout(() => onFilters({ q: typed === '' ? undefined : typed }), 250);

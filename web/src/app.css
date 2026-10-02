@@ -79,9 +79,90 @@
 .manifest-row {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   gap: var(--space-4);
   padding: var(--space-3) var(--space-4);
+}
+
+.manifest-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.manifest-facts {
+  margin: var(--space-1) 0 0;
+  font-size: 0.8rem;
+}
+
+/* The card's mosaic: a fixed small window onto the data — four real
+   previews, or the dataset's file types engraved as tiles. */
+.mosaic {
+  flex: none;
+  display: grid;
+  width: 4.5rem;
+  height: 4.5rem;
+  gap: 2px;
+  border-radius: var(--radius-chip);
+  overflow: hidden;
+  background: var(--line);
+}
+
+.mosaic--1 {
+  grid-template-columns: 1fr;
+}
+
+.mosaic--2 {
+  grid-template-columns: 1fr 1fr;
+}
+
+.mosaic--3,
+.mosaic--4 {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+.mosaic--3 > :first-child {
+  grid-row: span 2;
+}
+
+.mosaic img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.mosaic-type {
+  display: grid;
+  place-items: center;
+  background: var(--panel-raised);
+  color: var(--text-muted);
+  font-size: 0.65rem;
+}
+
+.restricted-badge {
+  margin-left: var(--space-2);
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.recent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 560px) {
+  .manifest-row {
+    flex-wrap: wrap;
+  }
+
+  .manifest-side {
+    width: 100%;
+  }
 }
 
 .manifest-name {

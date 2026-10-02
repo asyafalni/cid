@@ -176,9 +176,17 @@ accent colours.
 ### 4.1 Datasets (home)
 - Cards: thumbnail mosaic (or a type icon for non-visual data), name, kind (file or
   annotated), media types, latest release, size, health badge, last activity.
+  Built as rows rather than a grid (a manifest reads downward), each row the card.
+  The counts come from the head commit's `stats`, computed once per commit and cached
+  on it, so the page costs one query however many people open it. A restricted
+  dataset shows type tiles, never a clear thumbnail.
 - Search by name, description, class, media type, owner. Filters: media type, kind,
-  restricted, has releases.
-- "Recently viewed" and "Starred" rows.
+  restricted, has releases. All in the URL.
+- "Recently viewed" and "Starred" rows. Recently viewed lives in the viewer's browser.
+- *Waiting on other slices, absent rather than broken:* the health badge (Health tab
+  and the Validator), searching descriptions (card editing) and owners, and Starred
+  (both need the signed-in identity GitLab sign-in brings; the shared server token
+  has no account to star from).
 
 ### 4.2 Dataset › Overview
 - Header: name, version picker, `cid clone` copy button, owners, restricted badge, and a

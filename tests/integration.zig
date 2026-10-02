@@ -1914,4 +1914,40 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     }
     const thumb = try s3c.getObjectAlloc(&scope, try cid.preview.thumbKey(arena, &hh));
     try std.testing.expect(thumb.len > 100);
+
+    // The home listing: the card's counts come from the head commit's
+    // stats, computed once and cached on the commit, and its mosaic is
+    // the finished preview, presigned.
+    const Card = struct {
+        name: []const u8,
+        items: u64,
+        types: []const struct { ext: []const u8, count: u64 },
+        mosaic: []const struct { hash: []const u8, url: []const u8 },
+    };
+    const Listing = struct { datasets: []const Card };
+    const first = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets", "Bearer test-token", "");
+    try std.testing.expectEqual(std.http.Status.ok, first.status);
+    const listed = try std.json.parseFromSliceLeaky(Listing, arena, first.body, .{ .ignore_unknown_fields = true });
+    const card = for (listed.datasets) |d| {
+        if (std.mem.eql(u8, d.name, "test/datasets/sniff")) break d;
+    } else return error.CardMissing;
+    try std.testing.expectEqual(@as(u64, 1), card.items);
+    try std.testing.expectEqualStrings(".png", card.types[0].ext);
+    try std.testing.expectEqual(@as(usize, 1), card.mosaic.len);
+    try std.testing.expectEqualStrings(&hh, card.mosaic[0].hash);
+
+    const cached = try db.rawOne([]const u8, &fscope, "SELECT c.stats::text FROM refs r JOIN commits c ON c.commit_id = r.commit_id " ++
+        "JOIN datasets d ON d.dataset_id = r.dataset_id WHERE d.name = 'test/datasets/sniff' AND r.name = 'main'", .{});
+    const Stored = struct { v: u32, items: u64 };
+    const stored = try std.json.parseFromSliceLeaky(Stored, arena, cached.?, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(@as(u64, 1), stored.items);
+
+    // A restricted dataset's card shows no clear thumbnail (invariant 20).
+    _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = 'test/datasets/sniff'", .{});
+    defer _ = db.exec(&fscope, "UPDATE datasets SET restricted = false WHERE name = 'test/datasets/sniff'", .{}) catch {};
+    const second = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets", "Bearer test-token", "");
+    const relisted = try std.json.parseFromSliceLeaky(Listing, arena, second.body, .{ .ignore_unknown_fields = true });
+    for (relisted.datasets) |d| {
+        if (std.mem.eql(u8, d.name, "test/datasets/sniff")) try std.testing.expectEqual(@as(usize, 0), d.mosaic.len);
+    }
 }

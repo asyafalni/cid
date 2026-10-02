@@ -236,21 +236,180 @@ fn lookupDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, name: []
 }
 
 fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype) HandleError!Response {
-    const Entry = struct {
+    const Row = struct {
         pub const nilo_table = .projection;
+        dataset_id: []const u8,
         name: []const u8,
         kind: []const u8,
+        restricted: bool,
         default_format: []const u8,
         latest_release: ?[]const u8,
         last_push: ?[]const u8,
+        head: ?[]const u8,
+        stats: ?[]const u8,
     };
-    const list = deps.db.raw(Entry, scope, "SELECT d.name, d.kind, d.default_format, " ++
+    const rows = deps.db.raw(Row, scope, "SELECT d.dataset_id::text AS dataset_id, d.name, d.kind, d.restricted, d.default_format, " ++
         "  (SELECT r.name FROM refs r WHERE r.dataset_id = d.dataset_id AND r.kind = 'release' " ++
         "   ORDER BY r.commit_id DESC LIMIT 1) AS latest_release, " ++
         "  (SELECT to_char(max(c.recorded_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') " ++
-        "   FROM commits c WHERE c.dataset_id = d.dataset_id) AS last_push " ++
-        "FROM datasets d ORDER BY d.name", .{}) catch return error.Db;
+        "   FROM commits c WHERE c.dataset_id = d.dataset_id) AS last_push, " ++
+        "  h.commit_id::text AS head, c.stats::text AS stats " ++
+        "FROM datasets d " ++
+        "LEFT JOIN refs h ON h.dataset_id = d.dataset_id AND h.name = 'main' AND h.kind = 'branch' " ++
+        "LEFT JOIN commits c ON c.commit_id = h.commit_id " ++
+        "ORDER BY d.name", .{}) catch return error.Db;
+
+    const Thumb = struct { hash: []const u8, url: []const u8 };
+    const Entry = struct {
+        name: []const u8,
+        kind: []const u8,
+        restricted: bool,
+        default_format: []const u8,
+        latest_release: ?[]const u8,
+        last_push: ?[]const u8,
+        items: u64,
+        bytes: u64,
+        types: []const CommitStats.Type,
+        classes: []const []const u8,
+        mosaic: []const Thumb,
+    };
+    const list = try arena.alloc(Entry, rows.len);
+    for (list, rows) |*e, row| {
+        const st: CommitStats = if (row.head) |head_commit|
+            try commitStats(arena, deps, scope, row.dataset_id, row.kind, head_commit, row.stats)
+        else
+            .{};
+        // Only previews that already exist are handed out (the structural
+        // ffmpeg guarantee), and a restricted dataset shows none until the
+        // blurred rendition exists (invariant 20): its card gets type tiles.
+        var mosaic: std.ArrayList(Thumb) = .empty;
+        if (!row.restricted) {
+            for (st.visual) |hash| {
+                const done = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM previews WHERE item_hash = decode($1, 'hex') AND status = 'done'", .{hash}) catch return error.Db;
+                if (done == null) continue;
+                const key = preview_worker.thumbKey(arena, hash) catch return error.OutOfMemory;
+                const url = deps.s3.presignGet(scope, key, presign_secs) catch return error.Storage;
+                try mosaic.append(arena, .{ .hash = hash, .url = url });
+            }
+        }
+        e.* = .{
+            .name = row.name,
+            .kind = row.kind,
+            .restricted = row.restricted,
+            .default_format = row.default_format,
+            .latest_release = row.latest_release,
+            .last_push = row.last_push,
+            .items = st.items,
+            .bytes = st.bytes,
+            .types = st.types,
+            .classes = if (row.restricted) &.{} else st.classes,
+            .mosaic = mosaic.items,
+        };
+    }
     return json(arena, .ok, .{ .datasets = list });
+}
+
+/// What a dataset card needs about a commit, cached in `commits.stats`.
+/// A commit never changes, so this is computed once — the first time a
+/// page needs it — and stored with `WHERE stats IS NULL`: the work scales
+/// with commits, never with visitors, the rule the preview queue follows.
+/// It is a derived cache of an immutable row, not history; a version it
+/// cannot read is recomputed and simply not stored.
+const CommitStats = struct {
+    v: u32 = stats_version,
+    items: u64 = 0,
+    bytes: u64 = 0,
+    /// File types by count, the eight most common; the extension with its
+    /// dot, or "file" for none — the same spelling Browse's type filter uses.
+    types: []const Type = &.{},
+    /// Up to four visual items, the first by path: a stable sample.
+    visual: []const []const u8 = &.{},
+    /// Every class name at the commit (annotated datasets), sorted, at
+    /// most fifty — what the home page searches.
+    classes: []const []const u8 = &.{},
+
+    const Type = struct { ext: []const u8, count: u64 };
+};
+
+const stats_version: u32 = 1;
+
+fn commitStats(
+    arena: std.mem.Allocator,
+    deps: *Deps,
+    scope: anytype,
+    dataset_id: []const u8,
+    kind: []const u8,
+    commit_id: []const u8,
+    stored: ?[]const u8,
+) HandleError!CommitStats {
+    if (stored) |text| {
+        if (std.json.parseFromSliceLeaky(CommitStats, arena, text, .{ .ignore_unknown_fields = true })) |cached| {
+            if (cached.v == stats_version) return cached;
+        } else |_| {}
+    }
+
+    const rows = release_mod.stateRows(arena, deps.db, scope, dataset_id, commit_id) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.Db,
+    };
+    var st: CommitStats = .{ .items = rows.len };
+    var by_type: std.StringArrayHashMapUnmanaged(u64) = .empty;
+    var visual: std.ArrayList([]const u8) = .empty;
+    for (rows) |row| {
+        st.bytes += row.size;
+        const ext = extOf(row.path);
+        const gop = try by_type.getOrPut(arena, ext);
+        if (!gop.found_existing) gop.value_ptr.* = 0;
+        gop.value_ptr.* += 1;
+        if (visual.items.len < 4 and looksVisual(ext)) try visual.append(arena, row.hash_hex);
+    }
+    const types = try arena.alloc(CommitStats.Type, by_type.count());
+    for (types, by_type.keys(), by_type.values()) |*t, ext, count| t.* = .{ .ext = ext, .count = count };
+    std.mem.sort(CommitStats.Type, types, {}, struct {
+        fn lessThan(_: void, a: CommitStats.Type, b: CommitStats.Type) bool {
+            if (a.count != b.count) return a.count > b.count;
+            return std.mem.lessThan(u8, a.ext, b.ext);
+        }
+    }.lessThan);
+    st.types = types[0..@min(types.len, 8)];
+    st.visual = visual.items;
+
+    if (eql(kind, "annotated")) {
+        const anns = release_mod.annotationRows(arena, deps.db, scope, dataset_id, commit_id) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.Db,
+        };
+        var names: std.StringArrayHashMapUnmanaged(void) = .empty;
+        for (anns) |ann| if (ann.class) |c| try names.put(arena, c, {});
+        const list = try arena.dupe([]const u8, names.keys());
+        std.mem.sort([]const u8, list, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.lessThan(u8, a, b);
+            }
+        }.lessThan);
+        st.classes = list[0..@min(list.len, 50)];
+    }
+
+    const text = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(st, .{})});
+    _ = deps.db.exec(
+        scope,
+        "UPDATE commits SET stats = $2::jsonb WHERE commit_id = $1::uuid AND stats IS NULL",
+        .{ commit_id, text },
+    ) catch {}; // a cache that failed to store is recomputed next time
+    return st;
+}
+
+fn extOf(path: []const u8) []const u8 {
+    const base = path[(if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| i + 1 else 0)..];
+    const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse return "file";
+    if (dot == 0) return "file";
+    return base[dot..];
+}
+
+fn looksVisual(ext: []const u8) bool {
+    const kinds = [_][]const u8{ ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".mp4", ".mov", ".webm", ".mkv" };
+    for (kinds) |k| if (std.ascii.eqlIgnoreCase(ext, k)) return true;
+    return false;
 }
 
 const CreateDatasetBody = struct {
@@ -1151,6 +1310,14 @@ test "token comparison is exact" {
     try std.testing.expect(!tokenOk("secret", "Bearer secre"));
     try std.testing.expect(!tokenOk("secret", "secret"));
     try std.testing.expect(!tokenOk("secret", null));
+}
+
+test "file types are spelled as Browse spells them" {
+    try std.testing.expectEqualStrings(".png", extOf("frames/a.png"));
+    try std.testing.expectEqualStrings("file", extOf("README"));
+    try std.testing.expectEqualStrings("file", extOf("dir.v2/.hidden"));
+    try std.testing.expect(looksVisual(".JPG"));
+    try std.testing.expect(!looksVisual(".csv"));
 }
 
 test "hash and key helpers" {
