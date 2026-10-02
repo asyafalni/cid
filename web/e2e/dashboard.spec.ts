@@ -159,9 +159,32 @@ test('a class filter keeps the items that carry the class', async ({ page }) => 
   await expect(page.getByText('1 of 1 items')).toBeVisible();
 });
 
+test('compare: a changed box shows before and after on the same image', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0');
+  // The sentence: no file changed, one annotation did.
+  await expect(page.getByText(/0 added · 0 modified · 0 deleted/)).toBeVisible();
+  await expect(page.getByText(/annotations: 0 added · 1 changed · 0 removed/)).toBeVisible();
+
+  // docs/dashboard.md §9: the same image twice, the box where each
+  // version had it — dashed for the old, solid for the new.
+  const pair = page.locator('.visual-diff-item');
+  await expect(pair).toHaveCount(1);
+  await expect(pair.locator('img')).toHaveCount(2);
+  const before = pair.locator('.overlay--before rect');
+  const after = pair.locator('.overlay--after rect');
+  await expect(before).toHaveCount(1);
+  await expect(after).toHaveCount(1);
+  await expect(before).toHaveAttribute('x', '20');
+  await expect(after).toHaveAttribute('x', '45');
+  // Only the changed shape is drawn: the vehicle that did not move is not.
+  await expect(pair.getByText('v1.0.0 · 1 shape')).toBeVisible();
+  await expect(pair.getByText('v1.1.0 · 1 shape')).toBeVisible();
+});
+
 test('accessibility: no serious or critical axe findings', async ({ page }) => {
   await signIn(page);
-  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table']) {
+  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0']) {
     await page.goto(path);
     await page.waitForLoadState('networkidle');
     const results = await new AxeBuilder({ page }).analyze();

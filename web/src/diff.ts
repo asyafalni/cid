@@ -48,6 +48,11 @@ export type AnnChange = {
   annKind: string | null;
   cls: string | null;
   itemPath: string;
+  itemId: string;
+  /** The annotation as version A had it (changed, removed). */
+  before?: StateAnnotation;
+  /** The annotation as version B has it (added, changed). */
+  after?: StateAnnotation;
 };
 
 export function diffAnnotations(
@@ -70,6 +75,8 @@ export function diffAnnotations(
         annKind: ann.kind,
         cls: ann.class,
         itemPath: paths.get(ann.item_id) ?? '?',
+        itemId: ann.item_id,
+        after: ann,
       });
       continue;
     }
@@ -85,6 +92,9 @@ export function diffAnnotations(
         annKind: ann.kind,
         cls: ann.class,
         itemPath: paths.get(ann.item_id) ?? '?',
+        itemId: ann.item_id,
+        before: old,
+        after: ann,
       });
     }
   }
@@ -94,6 +104,8 @@ export function diffAnnotations(
       annKind: old.kind,
       cls: old.class,
       itemPath: paths.get(old.item_id) ?? '?',
+      itemId: old.item_id,
+      before: old,
     });
   }
   return out;

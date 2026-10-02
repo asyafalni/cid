@@ -59,7 +59,7 @@
     --text: #1a2033;
     --text-muted: #545b70;
     --aether: #0c717a; /* 5.1:1 on the parchment bg — AA with margin */
-    --brass: #9a6b12;
+    --brass: #875d0f; /* 5.2:1 on parchment — AA with margin */
     --sky-1: #bfd9f2;
     --sky-2: #dcd2e4;
     --sky-3: #f6e3c8;
@@ -85,7 +85,7 @@
   --text: #1a2033;
   --text-muted: #545b70;
   --aether: #0c717a; /* 5.1:1 on the parchment bg — AA with margin */
-  --brass: #9a6b12;
+  --brass: #875d0f; /* 5.2:1 on parchment — AA with margin */
   --sky-1: #bfd9f2;
   --sky-2: #dcd2e4;
   --sky-3: #f6e3c8;

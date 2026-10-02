@@ -44,6 +44,14 @@ function api(method: string, path: string, body?: unknown): unknown {
   return out ? JSON.parse(out) : {};
 }
 
+function psqlValue(sql: string): string {
+  return execSync(`docker compose -f ${compose} exec -T timescaledb psql -tA -U cid -d cid_test -c "${sql}"`, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+    .toString()
+    .trim();
+}
+
 function psql(sql: string) {
   execSync(`docker compose -f ${compose} exec -T timescaledb psql -q -U cid -d cid_test -v ON_ERROR_STOP=1`, {
     input: sql,
@@ -147,6 +155,31 @@ function seedBoxes(dir: string) {
   api('POST', `/v0/datasets/${name}/-/tag`, { name: 'v1.0.0' });
 }
 
+// v1.1.0 of the boxes dataset: the person box moves, the platform's way
+// — an `update` revision on the same annotation_id — so Compare has a
+// changed box to show before and after on the same image.
+function seedBoxesMoved() {
+  const name = 'e2e/datasets/boxes';
+  const datasetId = psqlValue(`SELECT dataset_id FROM datasets WHERE name = '${name}'`);
+  const head = api('GET', `/v0/datasets/${name}/-/head`) as { commit: string };
+  const state = api('GET', `/v0/datasets/${name}/-/state/${head.commit}`) as {
+    annotations: { id: string; item_id: string; class: string }[];
+  };
+  const person = state.annotations.find((a) => a.class === 'person');
+  if (!person) throw new Error('the boxes dataset has no person box to move');
+  const rev = uuid7();
+  psql(`
+    INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver)
+    VALUES ('${rev}'::uuid, now(), '${datasetId}'::uuid, 'main', '${person.id}'::uuid, '${person.item_id}'::uuid,
+            'update', 'box', 'person', '{"x":45,"y":30,"w":60,"h":50}'::jsonb, 'user:reviewer', 'p1');
+  `);
+  api('POST', `/v0/datasets/${name}/-/commit`, {
+    message: 'reviewer moved the person box',
+    author: 'user:reviewer',
+  });
+  api('POST', `/v0/datasets/${name}/-/tag`, { name: 'v1.1.0' });
+}
+
 export default function setup() {
   // A serve must be up for the CLI and the API; playwright's webServer
   // starts its own before tests but after globalSetup, so run one briefly.
@@ -159,6 +192,10 @@ export default function setup() {
     const dir = mkdtempSync(join(tmpdir(), 'cid-e2e-'));
     if (!already.includes('e2e/datasets/demo')) seedDemo(dir);
     if (!already.includes('e2e/datasets/boxes')) seedBoxes(dir);
+    const boxReleases = run(
+      `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/boxes/-/releases -H "Authorization: Bearer ${token}"`,
+    );
+    if (!boxReleases.includes('"v1.1.0"')) seedBoxesMoved();
     run(`${cid} admin previews`); // sniff + thumbs for every new png
   } finally {
     serve.kill();

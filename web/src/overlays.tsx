@@ -56,12 +56,16 @@ export function AnnotationOverlay({
   annotations,
   hidden,
   opacity,
+  variant,
 }: {
   width: number;
   height: number;
   annotations: StateAnnotation[];
   hidden: ReadonlySet<string>;
   opacity: number;
+  /** In a compare: version A's shapes are drawn dashed, B's solid, so
+   *  the difference reads without relying on color. */
+  variant?: 'before' | 'after';
 }) {
   const drawn = annotations
     .filter((a) => !hidden.has(a.class ?? ''))
@@ -71,7 +75,7 @@ export function AnnotationOverlay({
 
   return (
     <svg
-      className="overlay"
+      className={variant ? `overlay overlay--${variant}` : 'overlay'}
       viewBox={`0 0 ${width} ${height}`}
       preserveAspectRatio="none"
       style={{ opacity }}

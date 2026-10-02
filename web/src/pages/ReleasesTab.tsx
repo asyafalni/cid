@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
-import { getState, getThumbs, type Overview, type TapeCommit } from '../api';
-import { diffAnnotations, diffItems } from '../diff';
+import { getState, getThumbs, type Overview, type StateAnnotation, type StateItem, type TapeCommit } from '../api';
+import { AnnotationOverlay } from '../overlays';
+import { diffAnnotations, diffItems, type AnnChange } from '../diff';
 import { humanBytes } from '../format';
 
 // Releases & history: the timeline, and compare between any two
@@ -136,11 +137,18 @@ function Comparison({
         )
       : [];
 
-  // Before/after thumbs for changed images, where previews exist.
-  const pairHashes = changes
-    .filter((c) => c.kind === 'modified')
-    .flatMap((c) => [c.hash_a!, c.hash_b!])
-    .slice(0, 100);
+  // The visual diff: every item an annotation changed on, with the
+  // shapes as each version had them. Items come from both sides, so an
+  // item re-encoded between the versions shows each side's own pixels.
+  const visual = visualDiff(stateA.data?.items ?? [], stateB.data?.items ?? [], annChanges).slice(0, 60);
+
+  // Before/after thumbs: changed files, and the items behind the visual diff.
+  const pairHashes = [
+    ...new Set([
+      ...changes.filter((c) => c.kind === 'modified').flatMap((c) => [c.hash_a!, c.hash_b!]),
+      ...visual.flatMap((v) => [v.before?.hash, v.after?.hash].filter((h): h is string => !!h)),
+    ]),
+  ].slice(0, 200);
   const thumbs = useQuery({
     queryKey: ['thumbs', name, 'cmp', pairHashes.join(',').slice(0, 64)],
     queryFn: () => getThumbs(name, pairHashes),
@@ -199,6 +207,38 @@ function Comparison({
         </ul>
       )}
 
+      {visual.length > 0 && (
+        <section className="visual-diff" aria-label="Changed items, before and after">
+          <p className="quiet visual-diff-key">
+            <span className="key-before">dashed</span> {aLabel} ·{' '}
+            <span className="key-after">solid</span> {bLabel}
+          </p>
+          <ul className="visual-diff-list">
+            {visual.map((v) => (
+              <li key={v.itemId} className="visual-diff-item">
+                <p className="data change-path">{(v.after ?? v.before)!.path}</p>
+                <div className="before-after-pair">
+                  <DiffSide
+                    label={aLabel}
+                    item={v.before}
+                    annotations={v.shapesBefore}
+                    variant="before"
+                    thumb={v.before ? thumbBy.get(v.before.hash) : undefined}
+                  />
+                  <DiffSide
+                    label={bLabel}
+                    item={v.after}
+                    annotations={v.shapesAfter}
+                    variant="after"
+                    thumb={v.after ? thumbBy.get(v.after.hash) : undefined}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {annChanges.length > 0 && (
         <ul className="change-list">
           {annChanges.slice(0, 200).map((c, i) => (
@@ -215,6 +255,81 @@ function Comparison({
         </ul>
       )}
     </div>
+  );
+}
+
+type VisualRow = {
+  itemId: string;
+  before?: StateItem;
+  after?: StateItem;
+  shapesBefore: StateAnnotation[];
+  shapesAfter: StateAnnotation[];
+};
+
+function visualDiff(aItems: StateItem[], bItems: StateItem[], changes: AnnChange[]): VisualRow[] {
+  const aBy = new Map(aItems.filter((i) => i.item_id).map((i) => [i.item_id!, i]));
+  const bBy = new Map(bItems.filter((i) => i.item_id).map((i) => [i.item_id!, i]));
+  const rows = new Map<string, VisualRow>();
+  for (const c of changes) {
+    const row = rows.get(c.itemId) ?? {
+      itemId: c.itemId,
+      before: aBy.get(c.itemId),
+      after: bBy.get(c.itemId),
+      shapesBefore: [],
+      shapesAfter: [],
+    };
+    if (c.before) row.shapesBefore.push(c.before);
+    if (c.after) row.shapesAfter.push(c.after);
+    rows.set(c.itemId, row);
+  }
+  return [...rows.values()].sort((x, y) =>
+    ((x.after ?? x.before)?.path ?? '').localeCompare((y.after ?? y.before)?.path ?? ''),
+  );
+}
+
+// One side of a before/after pair. A side whose version lacks the item
+// says so in words; a side with no preview yet says that instead —
+// never a blank box (one bad file never breaks a view).
+function DiffSide({
+  label,
+  item,
+  annotations,
+  variant,
+  thumb,
+}: {
+  label: string;
+  item: StateItem | undefined;
+  annotations: StateAnnotation[];
+  variant: 'before' | 'after';
+  thumb: string | undefined;
+}) {
+  return (
+    <figure className="diff-side">
+      {!item ? (
+        <div className="diff-side-none blueprint">
+          <span className="quiet">Not in {label}</span>
+        </div>
+      ) : thumb && item.width && item.height ? (
+        <span className="overlay-fit" style={{ aspectRatio: `${item.width} / ${item.height}` }}>
+          <img src={thumb} alt={`${item.path} at ${label}`} />
+          <AnnotationOverlay
+            width={item.width}
+            height={item.height}
+            annotations={annotations}
+            hidden={new Set()}
+            opacity={1}
+            variant={variant}
+          />
+        </span>
+      ) : (
+        <div className="diff-side-none blueprint">
+          <span className="quiet">No preview yet</span>
+        </div>
+      )}
+      <figcaption className="data">
+        {label} · {annotations.length} shape{annotations.length === 1 ? '' : 's'}
+      </figcaption>
+    </figure>
   );
 }
 

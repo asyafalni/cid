@@ -961,3 +961,75 @@
   outline: none;
   box-shadow: var(--focus-ring);
 }
+
+/* Compare's visual diff: each changed item twice, version A beside B.
+   Dashed against solid carries the difference; color only repeats it. */
+.visual-diff {
+  margin: var(--space-6) 0;
+}
+
+.visual-diff-key .key-before,
+.visual-diff-key .key-after {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  border: 2px var(--text-muted);
+  border-radius: var(--radius-chip);
+}
+
+.visual-diff-key .key-before {
+  border-style: dashed;
+}
+
+.visual-diff-key .key-after {
+  border-style: solid;
+}
+
+.visual-diff-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-6);
+}
+
+.before-after-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.diff-side {
+  margin: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.diff-side .overlay-fit {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.diff-side figcaption {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.diff-side-none {
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-panel);
+}
+
+.overlay--before rect,
+.overlay--before polygon {
+  stroke-dasharray: 6 4;
+}
+
+@media (max-width: 560px) {
+  .before-after-pair {
+    grid-template-columns: 1fr;
+  }
+}
