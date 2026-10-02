@@ -1231,3 +1231,30 @@
   padding-top: var(--space-2);
   font-size: 0.8rem;
 }
+
+/* The drawer's history: a quiet timeline, newest first. */
+.item-history {
+  margin-top: var(--space-4);
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--space-3);
+  border-left: 1px solid var(--line);
+  display: grid;
+  gap: var(--space-3);
+  font-size: 0.85rem;
+}
+
+.history-list p {
+  margin: 0;
+}
+
+.history-change {
+  color: var(--text);
+}
+
+.history-where {
+  font-size: 0.8rem;
+}

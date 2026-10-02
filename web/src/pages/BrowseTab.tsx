@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   getDownloads,
+  getHistory,
   getState,
   getThumbs,
   reveal,
@@ -13,6 +14,7 @@ import {
 import { humanBytes } from '../format';
 import { AnnotationOverlay } from '../overlays';
 import { classColor } from '../shapes';
+import { timeline } from '../history';
 import {
   anyFilter,
   applyFilters,
@@ -441,6 +443,7 @@ function ItemDrawer({
           )}
         </section>
       )}
+      <ItemHistoryList name={name} path={item.path} />
       {restricted && !revealed && (
         <div className="reveal panel">
           <p>
@@ -468,6 +471,33 @@ function ItemDrawer({
         </a>
       )}
     </aside>
+  );
+}
+
+// The item's history: every change to the file and its annotations,
+// newest first, with what changed and where it landed.
+function ItemHistoryList({ name, path }: { name: string; path: string }) {
+  const h = useQuery({ queryKey: ['history', name, path], queryFn: () => getHistory(name, path) });
+  if (h.isPending) return <p className="quiet">Reading the history…</p>;
+  if (h.isError) return <p className="quiet">The history could not be read; the rest of the item is above.</p>;
+  const entries = timeline(h.data);
+  return (
+    <section aria-label="History" className="item-history">
+      <h3>History</h3>
+      <ol className="history-list">
+        {entries.map((e, i) => (
+          <li key={i}>
+            <p>
+              <strong>{e.what}</strong> <span className="quiet">by {e.who}</span>
+            </p>
+            {e.change && <p className="data history-change">{e.change}</p>}
+            <p className="quiet history-where">
+              {e.where} · <time dateTime={e.at}>{e.at.slice(0, 10)}</time>
+            </p>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 

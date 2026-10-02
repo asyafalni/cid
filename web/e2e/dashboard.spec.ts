@@ -349,6 +349,19 @@ test('a GitLab callback with a forged state is refused, in words', async ({ page
   await expect(page.getByRole('alert')).toContainText('Run the sign-in again');
 });
 
+test("the drawer tells an item's history: what changed, by whom, in which release", async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/boxes?view=browse&item=frames/street.png');
+  const history = page.getByRole('region', { name: 'History' });
+  const moved = history.getByRole('listitem').filter({ hasText: 'box person moved' });
+  await expect(moved).toContainText('by user:reviewer');
+  await expect(moved).toContainText('x 20 → 45');
+  await expect(moved).toContainText('in v1.1.0');
+  await expect(history.getByRole('listitem').filter({ hasText: 'file added' })).toContainText('in v1.0.0');
+  // Newest first: the move heads the list.
+  await expect(history.getByRole('listitem').first()).toContainText('box person moved');
+});
+
 test('accessibility: no serious or critical axe findings', async ({ page }) => {
   await signIn(page);
   for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png']) {

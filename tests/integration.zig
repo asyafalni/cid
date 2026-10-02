@@ -1396,6 +1396,40 @@ test "annotated: the platform writes revisions, the server commits, state compos
     const s1_again = try remote.stateAnnotated(arena, c1);
     try std.testing.expectEqual(@as(usize, 2), s1_again.annotations.len);
     try std.testing.expectEqual(@as(i64, 10), s1_again.annotations[0].geometry.?.object.get("x").?.integer);
+
+    // The drawer's history: the item's one change, sealed by the first
+    // commit, and its annotations' changes newest first — the box's move
+    // by the reviewer in the second commit, both versions on record.
+    const hist = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/ann/-/history?path=frames%2F0001.jpg", "Bearer test-token", "");
+    try std.testing.expectEqual(std.http.Status.ok, hist.status);
+    const History = struct {
+        path: []const u8,
+        changes: []const struct { op: []const u8, commit: ?[]const u8 },
+        annotations: []const struct {
+            annotation_id: []const u8,
+            op: []const u8,
+            author: []const u8,
+            geometry: ?std.json.Value,
+            commit: ?[]const u8,
+        },
+    };
+    const h = try std.json.parseFromSliceLeaky(History, arena, hist.body, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqualStrings("frames/0001.jpg", h.path);
+    try std.testing.expectEqual(@as(usize, 1), h.changes.len);
+    try std.testing.expectEqualStrings("add", h.changes[0].op);
+    try std.testing.expectEqualStrings(c1, h.changes[0].commit.?);
+    try std.testing.expect(h.annotations.len >= 3);
+    const moved = for (h.annotations) |a| {
+        if (std.mem.eql(u8, a.op, "update")) break a;
+    } else return error.NoUpdateInHistory;
+    try std.testing.expectEqualStrings("user:reviewer", moved.author);
+    try std.testing.expectEqualStrings(c2, moved.commit.?);
+    try std.testing.expectEqual(@as(i64, 11), moved.geometry.?.object.get("x").?.integer);
+    const original = for (h.annotations) |a| {
+        if (std.mem.eql(u8, a.annotation_id, moved.annotation_id) and std.mem.eql(u8, a.op, "create")) break a;
+    } else return error.NoCreateInHistory;
+    try std.testing.expectEqual(@as(i64, 10), original.geometry.?.object.get("x").?.integer);
+    try std.testing.expectEqualStrings(c1, original.commit.?);
 }
 
 test "annotated releases: v2 manifest with JCS rows, verify catches smuggled boxes" {

@@ -139,6 +139,8 @@ fn handleInner(
     const ds = lookupDataset(arena, deps, scope, route.name) orelse
         return errorResponse(arena, .not_found, "no such dataset", "Run 'cid init' to create it, or check the address.");
 
+    if (eql(method, "GET") and eql(route.action, "history"))
+        return history(arena, deps, scope, ds, route.queryParam("path") orelse "");
     if (eql(method, "POST") and eql(route.action, "reveal"))
         return reveal(arena, deps, scope, caller, ds, body);
     if (eql(method, "GET") and eql(route.action, "activity"))
@@ -368,6 +370,94 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
         };
     }
     return json(arena, .ok, .{ .datasets = list });
+}
+
+/// One item's history (docs/dashboard.md §4.3, the drawer): every change
+/// to its path and every change to its annotations, newest first, each
+/// with the commit that sealed it and that commit's release — or none,
+/// when the platform wrote it and nobody has committed since. The client
+/// pairs consecutive versions into before/after.
+fn history(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, raw_path: []const u8) HandleError!Response {
+    // The client sends encodeURIComponent's spelling: %XX, and `+` stays
+    // a plus (a path may hold one), so std's decoder, not a form's.
+    const path = std.Uri.percentDecodeInPlace(try arena.dupe(u8, raw_path));
+    if (path.len == 0) return error.BadRequest;
+
+    // The commit a revision landed in: the first one on its branch whose
+    // cutoff reaches it (cutoffs only move forward, invariant 3).
+    const sealed_by =
+        "(SELECT c.commit_id FROM commits c WHERE c.dataset_id = r.dataset_id AND c.branch = r.branch " ++
+        " AND c.cutoff_rev >= r.rev_id ORDER BY c.cutoff_rev LIMIT 1)";
+    const Change = struct {
+        pub const nilo_table = .projection;
+        at: []const u8,
+        branch: []const u8,
+        op: []const u8,
+        hash: ?[]const u8,
+        author: []const u8,
+        commit: ?[]const u8,
+        message: ?[]const u8,
+        release: ?[]const u8,
+    };
+    const changes = deps.db.raw(Change, scope, "SELECT to_char(r.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS at, " ++
+        "r.branch, r.op, encode(r.item_hash, 'hex') AS hash, r.author, sc.commit_id::text AS commit, sc.message, " ++
+        "(SELECT f.name FROM refs f WHERE f.commit_id = sc.commit_id AND f.kind = 'release' ORDER BY f.name LIMIT 1) AS release " ++
+        "FROM item_revisions r LEFT JOIN commits sc ON sc.commit_id = " ++ sealed_by ++ " " ++
+        "WHERE r.dataset_id = $1::uuid AND r.path = $2 ORDER BY r.rev_id DESC LIMIT 200", .{ ds.id, path }) catch return error.Db;
+
+    const AnnChange = struct {
+        pub const nilo_table = .projection;
+        at: []const u8,
+        branch: []const u8,
+        annotation_id: []const u8,
+        op: []const u8,
+        kind: ?[]const u8,
+        class: ?[]const u8,
+        geometry: ?[]const u8,
+        author: []const u8,
+        policy_ver: []const u8,
+        commit: ?[]const u8,
+        release: ?[]const u8,
+    };
+    // Annotations attach to item identity (invariant 4): every item_id
+    // this path has held.
+    const ann_changes = deps.db.raw(AnnChange, scope, "SELECT to_char(r.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS at, " ++
+        "r.branch, r.annotation_id::text AS annotation_id, r.op, r.kind, r.class, r.geometry::text AS geometry, r.author, r.policy_ver, " ++
+        "sc.commit_id::text AS commit, " ++
+        "(SELECT f.name FROM refs f WHERE f.commit_id = sc.commit_id AND f.kind = 'release' ORDER BY f.name LIMIT 1) AS release " ++
+        "FROM annotation_revisions r LEFT JOIN commits sc ON sc.commit_id = " ++ sealed_by ++ " " ++
+        "WHERE r.dataset_id = $1::uuid AND r.item_id IN (SELECT DISTINCT item_id FROM item_revisions " ++
+        "  WHERE dataset_id = $1::uuid AND path = $2 AND item_id IS NOT NULL) " ++
+        "ORDER BY r.rev_id DESC LIMIT 200", .{ ds.id, path }) catch return error.Db;
+
+    const WireAnn = struct {
+        at: []const u8,
+        branch: []const u8,
+        annotation_id: []const u8,
+        op: []const u8,
+        kind: ?[]const u8,
+        class: ?[]const u8,
+        geometry: ?std.json.Value,
+        author: []const u8,
+        policy_ver: []const u8,
+        commit: ?[]const u8,
+        release: ?[]const u8,
+    };
+    const wire = try arena.alloc(WireAnn, ann_changes.len);
+    for (wire, ann_changes) |*w, a| w.* = .{
+        .at = a.at,
+        .branch = a.branch,
+        .annotation_id = a.annotation_id,
+        .op = a.op,
+        .kind = a.kind,
+        .class = a.class,
+        .geometry = jsonValue(arena, a.geometry),
+        .author = a.author,
+        .policy_ver = a.policy_ver,
+        .commit = a.commit,
+        .release = a.release,
+    };
+    return json(arena, .ok, .{ .path = path, .changes = changes, .annotations = wire });
 }
 
 const RevealBody = struct { hash: []const u8 };

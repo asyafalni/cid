@@ -135,6 +135,37 @@ export function getThumbs(
   return post(`/v0/datasets/${name}/-/thumbs`, { hashes });
 }
 
+export type ItemHistory = {
+  path: string;
+  changes: {
+    at: string;
+    branch: string;
+    op: 'add' | 'update' | 'delete';
+    hash: string | null;
+    author: string;
+    commit: string | null;
+    message: string | null;
+    release: string | null;
+  }[];
+  annotations: {
+    at: string;
+    branch: string;
+    annotation_id: string;
+    op: 'create' | 'update' | 'delete';
+    kind: string | null;
+    class: string | null;
+    geometry: unknown;
+    author: string;
+    policy_ver: string;
+    commit: string | null;
+    release: string | null;
+  }[];
+};
+
+export function getHistory(name: string, path: string): Promise<ItemHistory> {
+  return request(`/v0/datasets/${name}/-/history?path=${encodeURIComponent(path)}`);
+}
+
 export type Revealed = { hash: string; thumb: string | null; download: string; logged: boolean };
 
 /** The one way to a clear restricted preview: logged on the server first. */
