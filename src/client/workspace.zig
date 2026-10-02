@@ -3,6 +3,7 @@
 //! Everything here is offline; the server enters at `push`.
 
 const std = @import("std");
+const Progress = @import("../util/progress.zig").Progress;
 const index_mod = @import("index.zig");
 const local = @import("local.zig");
 const scan = @import("scan.zig");
@@ -86,6 +87,8 @@ pub const Workspace = struct {
     work_dir: std.Io.Dir,
     cid_dir: std.Io.Dir,
     config: Config,
+    /// Where `add` reports the hashing of large changes (the CLI sets it).
+    progress: ?*Progress = null,
 
     /// Closes `.cid/`; `work_dir` is caller-owned and stays open.
     pub fn close(self: *Workspace, io: std.Io) void {
@@ -215,23 +218,35 @@ fn stage(
     @memset(matched, false);
     var summary: AddSummary = .{};
 
-    // Present files under the given paths: stage when new or changed.
-    for (files) |f| {
+    // What has to be hashed: new files and ones whose size or time moved.
+    const fresh = try arena.alloc(bool, files.len);
+    var hash_files: u64 = 0;
+    var hash_bytes: u64 = 0;
+    for (files, fresh) |f, *must| {
+        must.* = false;
         const spec_i = matchSpec(specs, f.path) orelse continue;
         matched[spec_i] = true;
         if (tracked_only and tracked.get(f.path) == null) continue;
-
-        if (tracked.get(f.path)) |t| {
-            if (t.size == f.size and t.mtime_ns == f.mtime_ns) {
-                // Unchanged since last commit; drop any stale staged entry.
-                if (idx.get(f.path)) |staged| {
-                    if (staged.op == .delete) _ = idx.remove(f.path);
-                }
-                continue;
+        if (tracked.get(f.path)) |t| if (t.size == f.size and t.mtime_ns == f.mtime_ns) {
+            // Unchanged since last commit; drop any stale staged entry.
+            if (idx.get(f.path)) |staged| {
+                if (staged.op == .delete) _ = idx.remove(f.path);
             }
-        }
-        const stored = cache.storeFile(io, ws.work_dir, f.path, cache_dir) catch
+            continue;
+        };
+        must.* = true;
+        hash_files += 1;
+        hash_bytes += f.size;
+    }
+    if (ws.progress) |p| p.begin("Hashing", hash_files, hash_bytes);
+    defer if (ws.progress) |p| p.end();
+
+    // Present files under the given paths: stage when new or changed.
+    for (files, fresh) |f, must| {
+        if (!must) continue;
+        const stored = cache.storeFile(io, ws.work_dir, f.path, cache_dir, ws.progress) catch
             return error.StoreFailed;
+        if (ws.progress) |p| p.fileDone();
         if (tracked.get(f.path)) |t| {
             if (std.mem.eql(u8, &t.hash_hex, &stored.hash_hex)) {
                 // Touched but identical; remember the new mtime to keep status fast.

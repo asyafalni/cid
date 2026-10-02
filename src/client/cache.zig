@@ -3,6 +3,7 @@
 //! what makes `cid commit` instant and offline (CLAUDE.md, storage layout).
 
 const std = @import("std");
+const Progress = @import("../util/progress.zig").Progress;
 
 pub const Error = error{CacheWriteFailed} || std.mem.Allocator.Error ||
     std.Io.File.OpenError || std.Io.File.Reader.Error;
@@ -19,6 +20,7 @@ pub fn storeFile(
     work_dir: std.Io.Dir,
     rel_path: []const u8,
     cache_dir: std.Io.Dir,
+    progress: ?*Progress,
 ) Error!Stored {
     var file = try work_dir.openFile(io, rel_path, .{});
     defer file.close(io);
@@ -50,6 +52,7 @@ pub fn storeFile(
             hasher.update(chunk[0..n]);
             fw.interface.writeAll(chunk[0..n]) catch return error.CacheWriteFailed;
             size += n;
+            if (progress) |p| p.addBytes(n);
         }
         fw.interface.flush() catch return error.CacheWriteFailed;
     }
@@ -104,7 +107,7 @@ test "store computes the right hash, deduplicates, and survives re-adds" {
 
     try tmp.dir.writeFile(io, .{ .sub_path = "hello.txt", .data = "hello cid\n" });
 
-    const first = try storeFile(io, tmp.dir, "hello.txt", cache_tmp.dir);
+    const first = try storeFile(io, tmp.dir, "hello.txt", cache_tmp.dir, null);
     try std.testing.expectEqual(@as(u64, 10), first.size);
 
     // Verify against a known-good SHA-256 of "hello cid\n".
@@ -121,7 +124,7 @@ test "store computes the right hash, deduplicates, and survives re-adds" {
     try std.testing.expectEqualStrings("hello cid\n", bytes);
 
     // Storing again is a no-op that still reports the same hash.
-    const again = try storeFile(io, tmp.dir, "hello.txt", cache_tmp.dir);
+    const again = try storeFile(io, tmp.dir, "hello.txt", cache_tmp.dir, null);
     try std.testing.expectEqualStrings(&first.hash_hex, &again.hash_hex);
 
     // hashFile agrees without writing anything.

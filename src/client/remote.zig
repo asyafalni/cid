@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const cache_mod = @import("cache.zig");
+const Progress = @import("../util/progress.zig").Progress;
 const local = @import("local.zig");
 const index_mod = @import("index.zig");
 
@@ -136,6 +137,8 @@ pub const Remote = struct {
     /// Line buffers and per-file scratch while a version streams in:
     /// reused and freed as it goes, so not an arena.
     gpa: std.mem.Allocator,
+    /// Where transfers report their bytes (the CLI sets it; tests leave it).
+    progress: ?*Progress = null,
 
     fn target(self: *const Remote, arena: std.mem.Allocator, comptime action_fmt: []const u8, args: anytype) ![]u8 {
         return std.fmt.allocPrint(arena, "/v0/datasets/{s}/-/" ++ action_fmt, .{self.name} ++ args);
@@ -642,6 +645,7 @@ pub fn uploadFromCache(
     cache_dir: std.Io.Dir,
     size: u64,
     missing: Remote.Missing,
+    progress: ?*Progress,
 ) TransferError!void {
     var path_buf: [96]u8 = undefined;
     const hash_hex = missing.hash;
@@ -656,18 +660,19 @@ pub fn uploadFromCache(
 
     var http: std.http.Client = .{ .allocator = allocator, .io = io };
     defer http.deinit();
-    if (missing.url) |url| return putRange(&http, io, file, 0, size, url);
+    defer if (progress) |p| p.fileDone();
+    if (missing.url) |url| return putRange(&http, io, file, 0, size, url, progress);
     const part_size = missing.part_size orelse return error.TransferFailed;
     for (missing.parts orelse &.{}) |piece| {
         if (piece.n == 0 or part_size == 0) return error.TransferFailed;
         const from = (@as(u64, piece.n) - 1) * part_size;
         if (from >= size) return error.TransferFailed;
-        try putRange(&http, io, file, from, @min(part_size, size - from), piece.url);
+        try putRange(&http, io, file, from, @min(part_size, size - from), piece.url, progress);
     }
 }
 
 /// PUTs `len` bytes of `file` from `from` to a presigned URL, streamed.
-fn putRange(http: *std.http.Client, io: std.Io, file: std.Io.File, from: u64, len: u64, url: []const u8) TransferError!void {
+fn putRange(http: *std.http.Client, io: std.Io, file: std.Io.File, from: u64, len: u64, url: []const u8, progress: ?*Progress) TransferError!void {
     const uri = std.Uri.parse(url) catch return error.TransferFailed;
     var req = http.request(.PUT, uri, .{ .keep_alive = false }) catch return error.TransferFailed;
     defer req.deinit();
@@ -678,7 +683,12 @@ fn putRange(http: *std.http.Client, io: std.Io, file: std.Io.File, from: u64, le
     var read_buf: [64 * 1024]u8 = undefined;
     var fr = file.reader(io, &read_buf);
     fr.seekTo(from) catch return error.TransferFailed;
-    fr.interface.streamExact64(&body.writer, len) catch return error.TransferFailed;
+    var left = len;
+    while (left > 0) {
+        const n = fr.interface.stream(&body.writer, .limited64(@min(left, read_buf.len))) catch return error.TransferFailed;
+        left -= n;
+        if (progress) |p| p.addBytes(n);
+    }
     body.end() catch return error.TransferFailed;
 
     var redirect_buf: [1024]u8 = undefined;
@@ -696,7 +706,9 @@ pub fn downloadToCache(
     cache_dir: std.Io.Dir,
     expected_hash_hex: []const u8,
     url: []const u8,
+    progress: ?*Progress,
 ) TransferError!void {
+    defer if (progress) |p| p.fileDone();
     var tmp_random: [8]u8 = undefined;
     io.random(&tmp_random);
     var tmp_buf: [64]u8 = undefined;
@@ -711,14 +723,25 @@ pub fn downloadToCache(
         var fw = tmp_file.writer(io, &wbuf);
         var http: std.http.Client = .{ .allocator = allocator, .io = io };
         defer http.deinit();
-        const res = http.fetch(.{
-            .location = .{ .url = url },
-            .raw_uri = true,
-            .keep_alive = false,
-            .response_writer = &fw.interface,
-        }) catch return error.TransferFailed;
+        const uri = std.Uri.parse(url) catch return error.TransferFailed;
+        var req = http.request(.GET, uri, .{ .keep_alive = false }) catch return error.TransferFailed;
+        defer req.deinit();
+        req.sendBodiless() catch return error.TransferFailed;
+        var redirect_buf: [1024]u8 = undefined;
+        var response = req.receiveHead(&redirect_buf) catch return error.TransferFailed;
+        if (response.head.status != .ok) return error.TransferFailed;
+        // Streamed into the temp file a buffer at a time, so a large file
+        // shows its progress as it comes.
+        var transfer_buf: [64 * 1024]u8 = undefined;
+        const body = response.reader(&transfer_buf);
+        while (true) {
+            const n = body.stream(&fw.interface, .limited(transfer_buf.len)) catch |err| switch (err) {
+                error.EndOfStream => break,
+                else => return error.TransferFailed,
+            };
+            if (progress) |p| p.addBytes(n);
+        }
         fw.interface.flush() catch return error.TransferFailed;
-        if (res.status != .ok) return error.TransferFailed;
     }
 
     // Verify, then move into place by hash. A mismatch never lands.

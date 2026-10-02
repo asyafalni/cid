@@ -3,6 +3,7 @@
 //! cache-directory and author resolution.
 
 const std = @import("std");
+const progress_mod = @import("../util/progress.zig");
 const root = @import("../cid.zig");
 const workspace = @import("../client/workspace.zig");
 const remote_mod = @import("../client/remote.zig");
@@ -39,7 +40,20 @@ pub fn fail(ctx: *const Context, code: ExitCode, comptime fmt: []const u8, args:
 pub fn openWorkspace(ctx: *const Context) workspace.OpenError!workspace.Workspace {
     const work_dir = std.Io.Dir.cwd().openDir(ctx.io, ".", .{ .iterate = true }) catch
         return error.NotADataset;
-    return workspace.open(ctx.arena, ctx.io, work_dir);
+    var ws = try workspace.open(ctx.arena, ctx.io, work_dir);
+    ws.progress = stderrProgress(ctx);
+    return ws;
+}
+
+/// A progress line on stderr for this command (drawn only on a terminal,
+/// only for work over a second); null if it cannot be made.
+pub fn stderrProgress(ctx: *const Context) ?*progress_mod.Progress {
+    const buf = ctx.arena.alloc(u8, 512) catch return null;
+    const w = ctx.arena.create(std.Io.File.Writer) catch return null;
+    w.* = std.Io.File.stderr().writer(ctx.io, buf);
+    const p = ctx.arena.create(progress_mod.Progress) catch return null;
+    p.* = progress_mod.forStderr(ctx.io, &w.interface);
+    return p;
 }
 
 pub const not_a_dataset_msg =
@@ -99,7 +113,7 @@ pub fn remoteFor(
     const transport = try ctx.arena.create(remote_mod.HttpTransport);
     transport.* = remote_mod.HttpTransport.init(ctx.arena, ctx.io, server, tok);
     const r = try ctx.arena.create(remote_mod.Remote);
-    r.* = .{ .t = transport.transport(), .name = dataset_name, .gpa = ctx.gpa };
+    r.* = .{ .t = transport.transport(), .name = dataset_name, .gpa = ctx.gpa, .progress = stderrProgress(ctx) };
     return r;
 }
 

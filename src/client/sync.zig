@@ -65,43 +65,48 @@ pub fn push(
         else => return err,
     };
 
-    // Unique hashes across the unpushed adds.
-    var hashes: std.ArrayList([]const u8) = .empty;
+    // Unique hashes across the unpushed adds, with their sizes (a map: a
+    // push of 100k files must not compare every hash with every other).
+    var sized: std.StringArrayHashMapUnmanaged(u64) = .empty;
     for (unpushed) |commit| {
-        for (commit.changes) |ch| {
+        // By pointer: the key must point into the commit, not at a copy.
+        for (commit.changes) |*ch| {
             if (ch.op != .add) continue;
-            var seen = false;
-            for (hashes.items) |h| {
-                if (std.mem.eql(u8, h, &ch.hash_hex)) {
-                    seen = true;
-                    break;
-                }
-            }
-            if (!seen) try hashes.append(arena, try arena.dupe(u8, &ch.hash_hex));
+            const slot = try sized.getOrPut(arena, &ch.hash_hex);
+            if (!slot.found_existing) slot.value_ptr.* = ch.size;
         }
     }
 
     var outcome: PushOutcome = .{};
-    if (hashes.items.len > 0) {
-        const sizes = try arena.alloc(u64, hashes.items.len);
-        for (sizes, hashes.items) |*sz, h| sz.* = sizeOf(unpushed, h) orelse return error.CorruptLocalState;
-        // Whatever the server already holds, whole files and the pieces of
-        // a large one alike, is not asked for: re-running a push that
-        // stopped half-way through a file carries on from there.
-        const missing = try remote.checkHashes(arena, hashes.items, sizes);
-        for (missing) |m| {
-            const size = sizeOf(unpushed, m.hash) orelse return error.CorruptLocalState;
-            remote_mod.uploadFromCache(arena, io, cache_dir, size, m) catch |err| switch (err) {
-                // The cached copy changed after `cid add`: cache the file
-                // again from the folder, if it still holds those bytes.
-                error.CacheDamaged => {
-                    try recache(io, ws, cache_dir, unpushed, m.hash);
-                    try remote_mod.uploadFromCache(arena, io, cache_dir, size, m);
-                },
-                else => return err,
-            };
-            outcome.uploaded_files += 1;
-        }
+    // Whatever the server already holds, whole files and the pieces of a
+    // large one alike, is not asked for: re-running a push that stopped
+    // half-way through a file carries on from there. Asked in chunks of
+    // the server's limit per request.
+    var missing: std.ArrayList(remote_mod.Remote.Missing) = .empty;
+    var i: usize = 0;
+    while (i < sized.count()) : (i += check_chunk) {
+        const end = @min(i + check_chunk, sized.count());
+        try missing.appendSlice(arena, try remote.checkHashes(arena, sized.keys()[i..end], sized.values()[i..end]));
+    }
+    var upload_bytes: u64 = 0;
+    for (missing.items) |m| {
+        const size = sized.get(m.hash) orelse return error.CorruptLocalState;
+        upload_bytes += if (m.url != null) size else @min(size, (m.part_size orelse 0) * (if (m.parts) |ps| ps.len else 0));
+    }
+    if (remote.progress) |p| p.begin("Uploading", missing.items.len, upload_bytes);
+    defer if (remote.progress) |p| p.end();
+    for (missing.items) |m| {
+        const size = sized.get(m.hash) orelse return error.CorruptLocalState;
+        remote_mod.uploadFromCache(arena, io, cache_dir, size, m, remote.progress) catch |err| switch (err) {
+            // The cached copy changed after `cid add`: cache the file
+            // again from the folder, if it still holds those bytes.
+            error.CacheDamaged => {
+                try recache(io, ws, cache_dir, unpushed, m.hash);
+                try remote_mod.uploadFromCache(arena, io, cache_dir, size, m, remote.progress);
+            },
+            else => return err,
+        };
+        outcome.uploaded_files += 1;
     }
 
     try remote.push(arena, head.branch, unpushed);
@@ -504,23 +509,23 @@ fn materialize(
         }
     }
 
-    // Download what the cache lacks, in one presign batch.
-    var need: std.ArrayList([]const u8) = .empty;
+    // Download what the cache lacks, each content once, presigned in
+    // chunks of the server's limit per request.
+    var need: std.StringArrayHashMapUnmanaged(u64) = .empty;
+    var need_bytes: u64 = 0;
     for (items) |item| {
-        if (!remote_mod.inCache(io, cache_dir, item.hash)) {
-            var seen = false;
-            for (need.items) |h| {
-                if (std.mem.eql(u8, h, item.hash)) {
-                    seen = true;
-                    break;
-                }
-            }
-            if (!seen) try need.append(arena, item.hash);
-        }
+        if (need.contains(item.hash) or remote_mod.inCache(io, cache_dir, item.hash)) continue;
+        try need.put(arena, item.hash, item.size);
+        need_bytes += item.size;
     }
-    if (need.items.len > 0) {
-        const urls = try remote.downloads(arena, need.items);
-        for (urls) |dl| try remote_mod.downloadToCache(arena, io, cache_dir, dl.hash, dl.url);
+    if (need.count() > 0) {
+        if (remote.progress) |p| p.begin("Downloading", need.count(), need_bytes);
+        defer if (remote.progress) |p| p.end();
+        var i: usize = 0;
+        while (i < need.count()) : (i += check_chunk) {
+            const urls = try remote.downloads(arena, need.keys()[i..@min(i + check_chunk, need.count())]);
+            for (urls) |dl| try remote_mod.downloadToCache(arena, io, cache_dir, dl.hash, dl.url, remote.progress);
+        }
     }
 
     // Place changed and new files; drop vanished ones; rebuild tracked.
@@ -654,21 +659,15 @@ fn recache(io: std.Io, ws: *workspace.Workspace, cache_dir: std.Io.Dir, commits:
     for (commits) |commit| {
         for (commit.changes) |ch| {
             if (ch.op != .add or !std.mem.eql(u8, &ch.hash_hex, hash)) continue;
-            const stored = cache.storeFile(io, ws.work_dir, ch.path, cache_dir) catch continue;
+            const stored = cache.storeFile(io, ws.work_dir, ch.path, cache_dir, null) catch continue;
             if (std.mem.eql(u8, &stored.hash_hex, hash)) return;
         }
     }
     return error.CacheDamaged;
 }
 
-fn sizeOf(commits: []const local.Commit, hash: []const u8) ?u64 {
-    for (commits) |commit| {
-        for (commit.changes) |ch| {
-            if (ch.op == .add and std.mem.eql(u8, &ch.hash_hex, hash)) return ch.size;
-        }
-    }
-    return null;
-}
+/// The server's limit on hashes per check-hashes or downloads request.
+const check_chunk = 1000;
 
 fn findFile(files: []const scan.FileInfo, path: []const u8) ?scan.FileInfo {
     return scan.findByPath(scan.FileInfo, files, path);

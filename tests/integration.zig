@@ -3360,7 +3360,7 @@ test "resume: a push killed halfway finishes on the next run, no file uploaded t
     }
     const first = try remote.checkHashes(arena, &hashes, &sizes);
     try std.testing.expectEqual(@as(usize, 3), first.len);
-    try cid.client.remote.uploadFromCache(arena, io, cache.dir, sizes[0], first[0]);
+    try cid.client.remote.uploadFromCache(arena, io, cache.dir, sizes[0], first[0], null);
 
     // Run again, and the connection drops while recording: the other two
     // go up, nothing is recorded.
@@ -3435,7 +3435,7 @@ test "large files go up in pieces, and a push stopped mid-file carries on from t
     try std.testing.expectEqual(@as(usize, 4), asked[0].parts.?.len);
     var partial = asked[0];
     partial.parts = asked[0].parts.?[0..2];
-    try cid.client.remote.uploadFromCache(arena, io, cache.dir, big.len, partial);
+    try cid.client.remote.uploadFromCache(arena, io, cache.dir, big.len, partial, null);
 
     // Asked again, only the two still missing.
     const again = try remote.checkHashes(arena, &.{&hash}, &.{big.len});

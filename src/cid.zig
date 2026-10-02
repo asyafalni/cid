@@ -48,6 +48,7 @@ pub const gitrepo = struct {
     pub const writer = @import("gitrepo/writer.zig");
 };
 pub const uuid7 = @import("util/uuid7.zig");
+pub const progress = @import("util/progress.zig");
 pub const access = struct {
     pub const token = @import("access/token.zig");
     pub const auth = @import("access/auth.zig");
@@ -105,6 +106,7 @@ test {
     _ = access.gitlab;
     _ = gitrepo.writer;
     _ = uuid7;
+    _ = progress;
     _ = client.index;
     _ = client.local;
     _ = client.cache;
