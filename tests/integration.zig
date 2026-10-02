@@ -1780,6 +1780,125 @@ test "annotated: the platform writes revisions, the server commits, state compos
     }
 }
 
+/// One platform-style revision writer for the cutoff race: each
+/// transaction takes the shared write lock, mints its revision id, waits a
+/// little (a slow writer), inserts as cid_writer, and — still holding the
+/// lock — checks no sealed commit already covers the row it just wrote.
+const RaceWriter = struct {
+    ds_id: []const u8,
+    rounds: u32,
+    seed: u64,
+    written: u32 = 0,
+    violations: u32 = 0,
+    failed: ?anyerror = null,
+
+    fn run(self: *RaceWriter) void {
+        self.loop() catch |err| {
+            self.failed = err;
+        };
+    }
+
+    fn loop(self: *RaceWriter) !void {
+        const io = std.testing.io;
+        var conn: cid.db.Standalone = undefined;
+        try conn.open(std.testing.allocator, conninfo);
+        defer conn.close();
+        var prng: std.Random.DefaultPrng = .init(self.seed);
+        for (0..self.rounds) |n| {
+            var scope = cid.db.Run.init(std.testing.allocator);
+            defer scope.deinit();
+            const a = scope.arena();
+            var tx = try conn.db.begin(&scope, .{});
+            defer tx.deinit();
+            _ = try tx.exec(&scope, "SELECT pg_advisory_xact_lock_shared(hashtextextended($1 || '/main', 0))", .{self.ds_id});
+            const rev = cid.uuid7.Uuid.now(io);
+            try std.Io.sleep(io, .fromMilliseconds(2 + prng.random().uintLessThan(u32, 9)), .awake);
+            _ = try tx.exec(&scope, "SET LOCAL ROLE cid_writer", .{});
+            const path = try std.fmt.allocPrint(a, "w{d}/{d}", .{ self.seed, n });
+            _ = try tx.exec(&scope, "INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, author) " ++
+                "VALUES ($1::uuid, to_timestamp($2::bigint / 1000.0), $3::uuid, 'main', $4, 'add', $5::uuid, decode(repeat('ab', 32), 'hex'), 'agent:race')", .{
+                @as([]const u8, &rev.toString()), @as(i64, @intCast(rev.unixMs())), self.ds_id, path, @as([]const u8, &cid.uuid7.Uuid.now(io).toString()),
+            });
+            _ = try tx.exec(&scope, "RESET ROLE", .{});
+            const covered = try tx.rawOne(i64, &scope, "SELECT count(*)::bigint FROM commits WHERE dataset_id = $1::uuid AND branch = 'main' AND cutoff_rev >= $2::uuid", .{ self.ds_id, @as([]const u8, &rev.toString()) });
+            if (covered.? > 0) self.violations += 1;
+            try tx.commit();
+            self.written += 1;
+        }
+    }
+};
+
+test "cutoff lock: revision writers racing commits never land under a sealed cutoff" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/race" };
+
+    const created = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/race\",\"kind\":\"annotated\",\"git_url\":\"g@h:race.git\"}");
+    try std.testing.expectEqual(std.http.Status.created, created.status);
+    const ds_id = (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/race'", .{})).?;
+    _ = try db.exec(&fscope, "INSERT INTO items (item_hash, size_bytes, media_type) VALUES (decode(repeat('ab', 32), 'hex'), 1, 'application/octet-stream') ON CONFLICT DO NOTHING", .{});
+
+    // Four writers, while the server commits as fast as it can.
+    var writers: [4]RaceWriter = undefined;
+    var threads: [4]std.Thread = undefined;
+    for (&writers, &threads, 0..) |*w, *t, i| {
+        w.* = .{ .ds_id = ds_id, .rounds = 100, .seed = i + 1 };
+        t.* = try std.Thread.spawn(.{}, RaceWriter.run, .{w});
+    }
+    var commits: u32 = 0;
+    var cutoffs_seen: u32 = 0;
+    while (true) {
+        const done = for (writers) |w| {
+            if (w.written + @intFromBool(w.failed != null) * w.rounds < w.rounds) break false;
+        } else true;
+        if (remote.commitServer(arena, "main", "race", "agent:race")) |_| {
+            commits += 1;
+        } else |err| switch (err) {
+            error.NothingToTag => {},
+            else => return err,
+        }
+        cutoffs_seen += 1;
+        if (done) break;
+    }
+    for (threads) |t| t.join();
+    for (writers) |w| {
+        if (w.failed) |err| return err;
+        try std.testing.expectEqual(@as(u32, 0), w.violations);
+    }
+    try std.testing.expect(commits >= 5);
+
+    // Every row is under the last commit, and each commit's own rows are
+    // exactly those up to its cutoff: nothing joined a sealed commit late.
+    _ = remote.commitServer(arena, "main", "the rest", "agent:race") catch |err| switch (err) {
+        error.NothingToTag => "",
+        else => return err,
+    };
+    const outside = try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM item_revisions r WHERE r.dataset_id = $1::uuid " ++
+        "AND r.rev_id > (SELECT cutoff_rev FROM commits WHERE dataset_id = $1::uuid ORDER BY cutoff_rev DESC LIMIT 1)", .{ds_id});
+    try std.testing.expectEqual(@as(?i64, 0), outside);
+}
+
 test "item identity: re-encoding keeps annotations; identical files at two paths share none" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
