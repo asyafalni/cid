@@ -192,8 +192,12 @@ accent colours.
 - **Card completeness** (owner-only): a checklist like Kaggle's usability score: purpose,
   collection method, license, provenance, known gaps, cover image, column descriptions.
 - **Sample strip:** a random but stable sample of items, rendered media-native.
-- **Use this dataset:** format picker, split/class subset picker, and the resulting
-  `cid clone …` command and Python snippet; estimated download size. The command uses
+- **Use this dataset:** format picker, split/class subset picker (the same
+  `--split`/`--class` flags `cid clone` takes, so the subset is real), and the resulting
+  `cid clone …` command; the download size, summed exactly from the pinned release's
+  items rather than estimated; and a Python snippet that loads the folder the command
+  writes (ultralytics for yolo, `json` for jsonl, `pathlib` for files). cid ships no
+  Python package; the snippet is documentation shaped as code. The command uses
   the SSH address, e.g.
   `cid clone cid@cidhub.com:your-org/datasets/person-vehicle --release v5.0.0 --format yolo`,
   so it works as pasted with no login.

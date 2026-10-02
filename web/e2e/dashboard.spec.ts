@@ -1,7 +1,9 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { gzipSync } from 'node:zlib';
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -32,7 +34,7 @@ test('the overview carries the tape, the card and the paste-ready command', asyn
     'true',
   );
   // The engraved count line and the command.
-  await expect(page.getByText(/4 items ·/)).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Dataset card' }).getByText(/4 items ·/)).toBeVisible();
   await expect(page.getByText(/cid clone cid@.*e2e\/datasets\/demo --release v1\.1\.0/)).toBeVisible();
   // Picking the older release repins and lands in the URL (every view is a link).
   await page.getByRole('button', { name: 'v1.0.0' }).click();
@@ -182,9 +184,41 @@ test('compare: a changed box shows before and after on the same image', async ({
   await expect(pair.getByText('v1.1.0 · 1 shape')).toBeVisible();
 });
 
+test('the command copied from "Use this dataset" works as pasted, subset and all', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/boxes');
+  const panel = page.getByRole('region', { name: 'Use this dataset' });
+
+  await panel.getByRole('radio', { name: 'yolo' }).click();
+  await panel.getByRole('group', { name: 'Splits' }).getByRole('button', { name: 'train' }).click();
+  await panel.getByRole('group', { name: 'Classes' }).getByRole('button', { name: 'person' }).click();
+  // The size line is the sum the command will download, not a guess.
+  await expect(panel.getByText(/^1 of 1 items · /)).toBeVisible();
+  await expect(panel.locator('pre')).toContainText('boxes/dataset.yaml');
+
+  const command = (await panel.locator('code.command').textContent())!.trim();
+  expect(command).toBe(
+    'cid clone cid@127.0.0.1:e2e/datasets/boxes --release v1.1.0 --format yolo --split train --class person',
+  );
+
+  // docs/dashboard.md §9, literally: run what was copied. Token auth
+  // stands in for the SSH key the e2e machine does not have.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const cid = resolve(here, '../../zig-out/bin/cid');
+  const dir = mkdtempSync(resolve(tmpdir(), 'cid-pasted-'));
+  execSync(command.replace(/^cid /, `${cid} `), {
+    cwd: dir,
+    env: { ...process.env, CID_SERVER: 'http://127.0.0.1:7177', CID_TOKEN: token },
+    stdio: 'pipe',
+  });
+  // Only the class it asked for, re-indexed from zero.
+  expect(readFileSync(resolve(dir, 'boxes/classes.txt'), 'utf8')).toBe('person\n');
+  expect(readFileSync(resolve(dir, 'boxes/labels/frames/street.txt'), 'utf8').trim().split('\n')).toHaveLength(1);
+});
+
 test('accessibility: no serious or critical axe findings', async ({ page }) => {
   await signIn(page);
-  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0']) {
+  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes']) {
     await page.goto(path);
     await page.waitForLoadState('networkidle');
     const results = await new AxeBuilder({ page }).analyze();

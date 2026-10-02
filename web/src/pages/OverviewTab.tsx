@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import type { Overview } from '../api';
+import { useQuery } from '@tanstack/react-query';
+import { getState, type Overview, type StateAnnotation, type StateItem } from '../api';
 import { humanBytes } from '../format';
 
 export function OverviewTab({ overview: o, pinned }: { overview: Overview; pinned: string | null }) {
@@ -52,19 +53,43 @@ export function OverviewTab({ overview: o, pinned }: { overview: Overview; pinne
 function UseThisDataset({ overview: o, pinned }: { overview: Overview; pinned: string | null }) {
   const formats =
     o.kind === 'annotated' ? (['files', 'jsonl', 'yolo'] as const) : (['files'] as const);
-  const [format, setFormat] = useState<string>(
-    o.kind === 'annotated' ? o.default_format : 'files',
-  );
-  const [copied, setCopied] = useState(false);
+  const defaultFormat = o.kind === 'annotated' ? o.default_format : 'files';
+  const [format, setFormat] = useState<string>(defaultFormat);
+  const [splits, setSplits] = useState<ReadonlySet<string>>(new Set());
+  const [classes, setClasses] = useState<ReadonlySet<string>>(new Set());
+  const [copied, setCopied] = useState<'command' | 'snippet' | null>(null);
 
+  // The pinned version's real items, so the size line is a sum, not a
+  // guess. The same query Browse makes, so it is usually cached already.
+  const commit = o.commits.find((c) => c.release === pinned)?.id ?? o.commits[0]?.id ?? null;
+  const state = useQuery({
+    queryKey: ['state', o.name, commit],
+    queryFn: () => getState(o.name, commit!),
+    enabled: commit !== null,
+  });
+  const kept = state.data
+    ? subsetOf(state.data.items, state.data.annotations ?? [], splits, classes)
+    : null;
+
+  const folder = o.name.slice(o.name.lastIndexOf('/') + 1);
   const command = [
     'cid clone',
     `cid@${location.hostname}:${o.name}`,
     pinned ? `--release ${pinned}` : null,
-    format !== (o.kind === 'annotated' ? o.default_format : 'files') ? `--format ${format}` : null,
+    format !== defaultFormat ? `--format ${format}` : null,
+    ...[...splits].sort().map((v) => `--split ${v}`),
+    ...[...classes].sort().map((v) => `--class ${v}`),
   ]
     .filter(Boolean)
     .join(' ');
+  const snippet = pythonFor(format, folder);
+
+  function copy(what: 'command' | 'snippet', text: string) {
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopied(what);
+      setTimeout(() => setCopied(null), 1600);
+    });
+  }
 
   return (
     <section className="panel panel--release card" aria-label="Use this dataset">
@@ -84,24 +109,124 @@ function UseThisDataset({ overview: o, pinned }: { overview: Overview; pinned: s
           ))}
         </div>
       )}
+
+      {o.splits.length > 0 && (
+        <SubsetPicker
+          label="Splits"
+          values={o.splits.map((x) => x.name)}
+          chosen={splits}
+          onChange={setSplits}
+        />
+      )}
+      {o.classes.length > 0 && (
+        <SubsetPicker
+          label="Classes"
+          values={o.classes.map((x) => x.name)}
+          chosen={classes}
+          onChange={setClasses}
+        />
+      )}
+
       <div className="command-row">
         <code className="command data">{command}</code>
-        <button
-          className="action"
-          onClick={() => {
-            void navigator.clipboard.writeText(command).then(() => {
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1600);
-            });
-          }}
-        >
-          {copied ? 'Copied' : 'Copy'}
+        <button className="action" onClick={() => copy('command', command)}>
+          {copied === 'command' ? 'Copied' : 'Copy'}
         </button>
       </div>
+      <p className="quiet data subset-size" aria-live="polite">
+        {kept === null
+          ? 'Counting…'
+          : kept.items === 0
+            ? 'No item matches this subset. Pick fewer splits or classes.'
+            : splits.size + classes.size > 0
+              ? `${kept.items.toLocaleString()} of ${kept.total.toLocaleString()} items · ${humanBytes(kept.bytes)}`
+              : `${kept.items.toLocaleString()} items · ${humanBytes(kept.bytes)}`}
+      </p>
       <p className="quiet">
         Works as pasted: your SSH key is the login.{' '}
         {pinned ? `Pinned to ${pinned}.` : 'No releases yet, so this clones the newest commit.'}
       </p>
+
+      <div className="snippet">
+        <div className="snippet-head">
+          <span className="quiet">Then, in Python</span>
+          <button className="action action--quiet" onClick={() => copy('snippet', snippet)}>
+            {copied === 'snippet' ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+        <pre className="data">
+          <code>{snippet}</code>
+        </pre>
+      </div>
     </section>
   );
+}
+
+function SubsetPicker({
+  label,
+  values,
+  chosen,
+  onChange,
+}: {
+  label: string;
+  values: string[];
+  chosen: ReadonlySet<string>;
+  onChange: (next: ReadonlySet<string>) => void;
+}) {
+  return (
+    <div className="subset-picker" role="group" aria-label={label}>
+      <span className="quiet subset-label">{label}</span>
+      {values.map((v) => (
+        <button
+          key={v}
+          className={chosen.has(v) ? 'class-chip' : 'class-chip class-chip--off'}
+          aria-pressed={chosen.has(v)}
+          onClick={() => {
+            const next = new Set(chosen);
+            if (next.has(v)) next.delete(v);
+            else next.add(v);
+            onChange(next);
+          }}
+        >
+          {v}
+        </button>
+      ))}
+      {chosen.size === 0 && <span className="quiet">all</span>}
+    </div>
+  );
+}
+
+// The CLI's subset rule (src/client/sync.zig, `narrow`), so the size line
+// counts exactly what the copied command will download.
+function subsetOf(
+  items: StateItem[],
+  annotations: StateAnnotation[],
+  splits: ReadonlySet<string>,
+  classes: ReadonlySet<string>,
+): { items: number; total: number; bytes: number } {
+  const carrying = new Set<string>();
+  if (classes.size > 0) {
+    for (const a of annotations) if (classes.has(a.class ?? '')) carrying.add(a.item_id);
+  }
+  let count = 0;
+  let bytes = 0;
+  for (const item of items) {
+    if (splits.size > 0 && !splits.has(item.split ?? '\u0000')) continue;
+    if (classes.size > 0 && !(item.item_id && carrying.has(item.item_id))) continue;
+    count += 1;
+    bytes += item.size;
+  }
+  return { items: count, total: items.length, bytes };
+}
+
+// Two lines that read the folder the command just wrote. Documentation
+// shaped as code: cid ships no Python package, and needs none.
+function pythonFor(format: string, folder: string): string {
+  if (format === 'yolo') {
+    return `from ultralytics import YOLO\n\nYOLO("yolov8n.pt").train(data="${folder}/dataset.yaml")`;
+  }
+  if (format === 'jsonl') {
+    return `import json\n\nitems = [json.loads(line) for line in open("${folder}/annotations.jsonl")]`;
+  }
+  return `from pathlib import Path\n\nfiles = sorted(p for p in Path("${folder}").rglob("*")\n               if p.is_file() and ".cid" not in p.parts)`;
 }
