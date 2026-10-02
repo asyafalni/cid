@@ -362,6 +362,32 @@ test("the drawer tells an item's history: what changed, by whom, in which releas
   await expect(history.getByRole('listitem').first()).toContainText('box person moved');
 });
 
+test('a COCO RLE mask is drawn exactly: 1,200 pixels where the mask says', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/masks?view=browse&item=frames/masked.png');
+  const mask = page.locator('.drawer .overlay image.overlay-mask');
+  await expect(mask).toHaveCount(1);
+  // Decode correctness, not just presence: count the painted pixels and
+  // check one inside and one outside the 40×30 rectangle at (40, 30).
+  const probe = await mask.evaluate(async (el) => {
+    const href = el.getAttribute('href')!;
+    const img = new Image();
+    img.src = href;
+    await img.decode();
+    const c = document.createElement('canvas');
+    c.width = img.width;
+    c.height = img.height;
+    const ctx = c.getContext('2d')!;
+    ctx.drawImage(img, 0, 0);
+    const d = ctx.getImageData(0, 0, c.width, c.height).data;
+    let set = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 0) set += 1;
+    const at = (x: number, y: number) => d[(y * c.width + x) * 4 + 3];
+    return { w: c.width, h: c.height, set, inside: at(50, 40), outside: at(10, 10) };
+  });
+  expect(probe).toEqual({ w: 200, h: 150, set: 1200, inside: 140, outside: 0 });
+});
+
 test('accessibility: no serious or critical axe findings', async ({ page }) => {
   await signIn(page);
   for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png']) {

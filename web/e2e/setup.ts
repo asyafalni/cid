@@ -180,6 +180,84 @@ function seedBoxesMoved() {
   api('POST', `/v0/datasets/${name}/-/tag`, { name: 'v1.1.0' });
 }
 
+// pycocotools rleToString, line for line: the compressed form every
+// detection tool writes, so the dashboard's decoder is tested on it.
+function rleToString(counts: number[]): string {
+  let out = '';
+  for (let i = 0; i < counts.length; i++) {
+    let x = counts[i];
+    if (i > 2) x -= counts[i - 2];
+    let more = true;
+    while (more) {
+      let c = x & 0x1f;
+      x >>= 5;
+      more = c & 0x10 ? x !== -1 : x !== 0;
+      if (more) c |= 0x20;
+      out += String.fromCharCode(c + 48);
+    }
+  }
+  return out;
+}
+
+/** COCO runs for a filled rectangle, column-major, starting with background. */
+function rectangleRuns(h: number, w: number, x0: number, y0: number, mw: number, mh: number): number[] {
+  const runs: number[] = [];
+  let value = 0;
+  let run = 0;
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) {
+      const v = x >= x0 && x < x0 + mw && y >= y0 && y < y0 + mh ? 1 : 0;
+      if (v === value) run += 1;
+      else {
+        runs.push(run);
+        value = v;
+        run = 1;
+      }
+    }
+  }
+  runs.push(run);
+  return runs;
+}
+
+// A dataset with one mask: 40×30 pixels at (40, 30) on a 200×150 frame.
+function seedMasks(dir: string) {
+  const name = 'e2e/datasets/masks';
+  const created = api('POST', '/v0/datasets', { name, kind: 'annotated', git_url: 'g@h:masks.git' }) as {
+    dataset_id?: string;
+  };
+  const datasetId = created.dataset_id;
+  if (!datasetId) throw new Error('could not create the masks dataset');
+  const png = join(dir, 'masked.png');
+  run(`ffmpeg -nostdin -loglevel error -f lavfi -i smptebars=size=200x150:rate=1 -frames:v 1 -y ${png}`);
+  const hash = createHash('sha256').update(readFileSync(png)).digest('hex');
+  const check = api('POST', `/v0/datasets/${name}/-/check-hashes`, { hashes: [hash] }) as {
+    missing: { hash: string; url: string }[];
+  };
+  for (const m of check.missing) run(`curl -s -X PUT --data-binary @${png} '${m.url}'`);
+  api('POST', `/v0/datasets/${name}/-/register-items`, {
+    items: [{ hash, size: statSync(png).size, media_type: 'image/png', width: 200, height: 150 }],
+  });
+  api('POST', `/v0/datasets/${name}/-/policy`, { version: 'p1', body: { rule: 'mask every person' } });
+  const counts = rleToString(rectangleRuns(150, 200, 40, 30, 40, 30));
+  const geometry = JSON.stringify({ size: [150, 200], counts }).replace(/'/g, "''");
+  const itemId = uuid7();
+  const rev1 = uuid7();
+  const ann = uuid7();
+  const rev2 = uuid7();
+  psql(`
+    INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author)
+    VALUES ('${rev1}'::uuid, now(), '${datasetId}'::uuid, 'main', 'frames/masked.png', 'add',
+            '${itemId}'::uuid, decode('${hash}', 'hex'), 'train', 'agent:annotator');
+    INSERT INTO dataset_items (item_id, dataset_id) VALUES ('${itemId}'::uuid, '${datasetId}'::uuid)
+      ON CONFLICT (item_id) DO NOTHING;
+    INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver)
+    VALUES ('${rev2}'::uuid, now(), '${datasetId}'::uuid, 'main', '${ann}'::uuid, '${itemId}'::uuid,
+            'create', 'mask', 'person', '${geometry}'::jsonb, 'agent:annotator', 'p1');
+  `);
+  api('POST', `/v0/datasets/${name}/-/commit`, { message: 'one mask', author: 'agent:annotator' });
+  api('POST', `/v0/datasets/${name}/-/tag`, { name: 'v1.0.0' });
+}
+
 // A restricted dataset: previews blurred until a logged reveal.
 function seedFaces(dir: string) {
   const faces = join(dir, 'faces');
@@ -231,6 +309,7 @@ export default function setup() {
         ON CONFLICT (dataset_id, account_id) DO NOTHING;
     `);
     if (!already.includes('e2e/datasets/faces')) seedFaces(dir);
+    if (!already.includes('e2e/datasets/masks')) seedMasks(dir);
     // Sniff, thumbnail and blur every new png. One pass takes a batch, and
     // a migration can requeue many, so drain the queue.
     for (let i = 0; i < 40; i++) {

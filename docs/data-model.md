@@ -134,6 +134,22 @@ CREATE TABLE annotation_revisions (
 Writers have INSERT only; a trigger rejects UPDATE/DELETE for every role except the
 migration owner (and `cid admin purge`, below).
 
+### Geometry, per kind (image annotations)
+
+Coordinates are pixels of the item as stored (its recorded `width` × `height`), origin
+top-left. The platform writes these shapes; the dashboard draws them and the exports
+read them, so both sides hold to exactly this:
+
+| kind | geometry |
+|---|---|
+| `box` | `{"x": 10, "y": 20, "w": 30, "h": 40}` — top-left corner, width, height |
+| `polygon` | `{"points": [[x, y], …]}` — one ring, closed implicitly |
+| `points`, `keypoints` | `{"points": [[x, y], …]}` |
+| `mask` | `{"size": [h, w], "counts": "<COCO compressed RLE>"}` — exactly pycocotools' encoding: column-major runs starting with background, `size` in pixels of the item. Also accepted: `counts` as an array of run lengths (COCO's uncompressed RLE) |
+
+COCO RLE was chosen so a mask stays a few hundred bytes of `jsonb` and a COCO export
+needs no conversion; every detection tool reads it.
+
 ---
 
 ## Commits, refs, and the cutoff lock

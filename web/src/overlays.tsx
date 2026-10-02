@@ -1,5 +1,7 @@
 import type { StateAnnotation } from './api';
-import { classColor, parseShape, type Shape } from './shapes';
+import { useMemo } from 'react';
+import { classColor, classColorValue, parseShape, type Shape } from './shapes';
+import { decodeMask } from './rle';
 
 // Annotation overlays (docs/dashboard.md §4.3): shapes drawn on the
 // media, scaled from the item's recorded pixel space. Parsing is
@@ -56,6 +58,11 @@ export function AnnotationOverlay({
             </rect>
           );
         }
+        if (shape.kind === 'mask') {
+          return (
+            <MaskImage key={a.id} shape={shape} cls={a.class} width={width} height={height} label={label} />
+          );
+        }
         if (shape.kind === 'polygon') {
           return (
             <polygon
@@ -79,5 +86,50 @@ export function AnnotationOverlay({
         );
       })}
     </svg>
+  );
+}
+
+// A mask, painted once into a canvas in its class colour and placed in the
+// overlay's own coordinate space, so it scales with the image exactly as
+// a box does. A mask whose runs do not fit its size draws nothing.
+function MaskImage({
+  shape,
+  cls,
+  width,
+  height,
+  label,
+}: {
+  shape: Extract<Shape, { kind: 'mask' }>;
+  cls: string | null;
+  width: number;
+  height: number;
+  label: string;
+}) {
+  const href = useMemo(() => {
+    const bits = decodeMask(shape.h, shape.w, shape.runs);
+    if (!bits) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = shape.w;
+    canvas.height = shape.h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    const img = ctx.createImageData(shape.w, shape.h);
+    const hex = classColorValue(cls).replace('#', '');
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
+    for (let i = 0; i < bits.length; i++) {
+      if (!bits[i]) continue;
+      img.data[i * 4] = r;
+      img.data[i * 4 + 1] = g;
+      img.data[i * 4 + 2] = b;
+      img.data[i * 4 + 3] = 140;
+    }
+    ctx.putImageData(img, 0, 0);
+    return canvas.toDataURL('image/png');
+  }, [shape, cls]);
+  if (!href) return null;
+  return (
+    <image className="overlay-mask" href={href} x={0} y={0} width={width} height={height} preserveAspectRatio="none">
+      <title>{label}</title>
+    </image>
   );
 }
