@@ -38,13 +38,16 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     if (stage_all) {
         const cache_dir = common.openCacheDir(ctx) catch
             return common.fail(ctx, .network, "cannot open the cache folder (~/.cache/cid). Check HOME, then run 'cid commit -a' again.", .{});
-        _ = workspace.add(ctx.arena, ctx.io, &ws, cache_dir, &.{"."}) catch
+        _ = workspace.addTracked(ctx.arena, ctx.io, &ws, cache_dir) catch
             return common.fail(ctx, .integrity, "could not stage changes. Run 'cid status' for details.", .{});
     }
 
     const author = common.author(ctx) catch return .network;
     const summary = workspace.commit(ctx.arena, ctx.io, &ws, msg, author) catch |err| switch (err) {
-        error.NothingStaged => return common.fail(ctx, .usage, "nothing staged. Run 'cid add <path>' first, or 'cid commit -a -m \"...\"'.", .{}),
+        error.NothingStaged => if (stage_all)
+            return common.fail(ctx, .usage, "nothing to commit: -a takes changes to files already committed, and new files need staging. Run 'cid add <path>', then 'cid commit -m \"...\"'.", .{})
+        else
+            return common.fail(ctx, .usage, "nothing staged. Run 'cid add <path>' first, or 'cid commit -a -m \"...\"'.", .{}),
         else => return common.fail(ctx, .integrity, ".cid/ state is unreadable. Run 'cid status' for details.", .{}),
     };
 

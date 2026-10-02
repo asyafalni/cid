@@ -637,6 +637,110 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     try std.testing.expectEqualSlices(u8, "producer e wins", try readWholeFile(io, reader_dir.dir, "e.txt", arena));
 }
 
+/// The folder holds exactly these files (ignoring .cid/), byte for byte.
+fn expectTree(arena: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, want: []const [2][]const u8) !void {
+    var walker = try dir.walk(arena);
+    defer walker.deinit();
+    var seen: usize = 0;
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file or std.mem.startsWith(u8, entry.path, ".cid")) continue;
+        const expected = for (want) |w| {
+            if (std.mem.eql(u8, w[0], entry.path)) break w[1];
+        } else {
+            std.debug.print("unexpected file in the folder: {s}\n", .{entry.path});
+            return error.TreeDiffers;
+        };
+        try std.testing.expectEqualSlices(u8, expected, try readWholeFile(io, dir, entry.path, arena));
+        seen += 1;
+    }
+    if (seen != want.len) {
+        std.debug.print("the folder has {d} files, expected {d}\n", .{ seen, want.len });
+        return error.TreeDiffers;
+    }
+}
+
+test "clone round trip: clone, checkout and pull give exactly the release's files, for every fixture type" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    _ = try runMigrations();
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/fixtures" };
+
+    // Every fixture, in folders: image, audio, PDF, text, CSV, Parquet,
+    // JSONL and a binary no sniffer knows.
+    const fixtures = try std.Io.Dir.cwd().openDir(io, "tests/fixtures", .{});
+    const placed = [_][2][]const u8{
+        .{ "media/pixels.png", "pixels.png" },      .{ "media/tone.wav", "tone.wav" },
+        .{ "docs/page.pdf", "page.pdf" },           .{ "docs/notes.txt", "notes.txt" },
+        .{ "tables/people.csv", "people.csv" },     .{ "tables/people.parquet", "people.parquet" },
+        .{ "tables/events.jsonl", "events.jsonl" }, .{ "misc/unknown.bin", "unknown.bin" },
+    };
+    var v1: [placed.len][2][]const u8 = undefined;
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    for (placed, &v1) |p, *f| {
+        const bytes = try fixtures.readFileAlloc(io, p[1], arena, .limited(1 << 20));
+        try producer.dir.createDirPath(io, std.fs.path.dirname(p[0]).?);
+        try producer.dir.writeFile(io, .{ .sub_path = p[0], .data = bytes });
+        f.* = .{ p[0], bytes };
+    }
+    try cid.client.workspace.init(arena, io, producer.dir, "cid@test:test/datasets/fixtures", "git@example.invalid:fixtures.git");
+    var ws = try cid.client.workspace.open(arena, io, producer.dir);
+    _ = try cid.client.workspace.add(arena, io, &ws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &ws, "every fixture", "user:test");
+    _ = try cid.client.sync.push(arena, io, &ws, cache.dir, &remote);
+    const r1 = try remote.tag(arena, "v1");
+
+    // v2: an edit, a delete, and the image again under another name.
+    const notes2 = try std.fmt.allocPrint(arena, "{s}one more line\n", .{v1[3][1]});
+    try producer.dir.writeFile(io, .{ .sub_path = "docs/notes.txt", .data = notes2 });
+    try producer.dir.deleteFile(io, "misc/unknown.bin");
+    try producer.dir.writeFile(io, .{ .sub_path = "media/copy.png", .data = v1[0][1] });
+    _ = try cid.client.workspace.add(arena, io, &ws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &ws, "edit, delete, copy", "user:test");
+    _ = try cid.client.sync.push(arena, io, &ws, cache.dir, &remote);
+    _ = try remote.tag(arena, "v2");
+    var v2: [placed.len][2][]const u8 = v1;
+    v2[3][1] = notes2;
+    v2[7] = .{ "media/copy.png", v1[0][1] };
+
+    // Clone (the newest release) into an empty folder and cache.
+    var reader = std.testing.tmpDir(.{ .iterate = true });
+    defer reader.cleanup();
+    var rcache = std.testing.tmpDir(.{});
+    defer rcache.cleanup();
+    const cloned = try cid.client.sync.clone(arena, io, reader.dir, rcache.dir, &remote, "cid@test:test/datasets/fixtures", null, null, .{});
+    try std.testing.expectEqual(@as(u32, placed.len), cloned.files);
+    try expectTree(arena, io, reader.dir, &v2);
+
+    // Checkout the older release, then pull back to the newest.
+    var rws = try cid.client.workspace.open(arena, io, reader.dir);
+    _ = try cid.client.sync.checkout(arena, io, &rws, rcache.dir, &remote, "main", r1.commit, false);
+    try expectTree(arena, io, reader.dir, &v1);
+    _ = try cid.client.sync.pull(arena, io, &rws, rcache.dir, &remote);
+    try expectTree(arena, io, reader.dir, &v2);
+    const st = try cid.client.workspace.status(arena, io, &rws);
+    try std.testing.expectEqual(@as(usize, 0), st.unstaged_modified.len + st.unstaged_new.len + st.unstaged_deleted.len);
+}
+
 test "releases: tag, immutability, verify green, verify catches corruption" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

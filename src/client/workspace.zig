@@ -187,6 +187,23 @@ pub fn add(
     cache_dir: std.Io.Dir,
     raw_paths: []const []const u8,
 ) AddError!AddSummary {
+    return stage(arena, io, ws, cache_dir, raw_paths, false);
+}
+
+/// What `cid commit -a` stages first, exactly as `git commit -a`: every
+/// change and deletion of a tracked file; new files stay untracked.
+pub fn addTracked(arena: std.mem.Allocator, io: std.Io, ws: *Workspace, cache_dir: std.Io.Dir) AddError!AddSummary {
+    return stage(arena, io, ws, cache_dir, &.{"."}, true);
+}
+
+fn stage(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    ws: *Workspace,
+    cache_dir: std.Io.Dir,
+    raw_paths: []const []const u8,
+    tracked_only: bool,
+) AddError!AddSummary {
     var idx = loadIndex(arena, io, ws) catch return error.CorruptLocalState;
     var tracked = loadTracked(arena, io, ws) catch return error.CorruptLocalState;
     const files = scan.scanWorkdir(arena, io, ws.work_dir) catch return error.CorruptLocalState;
@@ -202,6 +219,7 @@ pub fn add(
     for (files) |f| {
         const spec_i = matchSpec(specs, f.path) orelse continue;
         matched[spec_i] = true;
+        if (tracked_only and tracked.get(f.path) == null) continue;
 
         if (tracked.get(f.path)) |t| {
             if (t.size == f.size and t.mtime_ns == f.mtime_ns) {
@@ -684,6 +702,53 @@ test "init, add, commit, status: the offline loop" {
     try std.testing.expectEqual(@as(usize, 0), st.unstaged_modified.len);
     try std.testing.expectEqual(@as(usize, 0), st.unstaged_deleted.len);
     try std.testing.expectEqual(@as(u32, 2), st.local_commits);
+}
+
+test "staging like git: only staged changes are committed; commit -a takes tracked changes only" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var cache_tmp = std.testing.tmpDir(.{});
+    defer cache_tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "a1" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.txt", .data = "b1" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "c.txt", .data = "c1" });
+    try init(arena, io, tmp.dir, "cid@h:org/datasets/stage", "g@h:stage.git");
+    var ws = try open(arena, io, tmp.dir);
+    _ = try add(arena, io, &ws, cache_tmp.dir, &.{"."});
+    _ = try commit(arena, io, &ws, "base", "user:test");
+
+    // Edit a and b, stage only a: the commit holds a alone, b stays edited.
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "a2" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.txt", .data = "b2" });
+    _ = try add(arena, io, &ws, cache_tmp.dir, &.{"a.txt"});
+    const only_a = try commit(arena, io, &ws, "only a", "user:test");
+    try std.testing.expectEqual(@as(u32, 1), only_a.changes);
+    var commits = try local.listUnpushed(arena, io, ws.cid_dir, null);
+    try std.testing.expectEqualStrings("a.txt", commits[0].changes[0].path);
+    var st = try status(arena, io, &ws);
+    try std.testing.expectEqual(@as(usize, 1), st.unstaged_modified.len);
+    try std.testing.expectEqualStrings("b.txt", st.unstaged_modified[0]);
+
+    // commit -a: b's edit and c's deletion go in; the new file does not.
+    try tmp.dir.deleteFile(io, "c.txt");
+    try tmp.dir.writeFile(io, .{ .sub_path = "new.txt", .data = "untracked" });
+    const staged = try addTracked(arena, io, &ws, cache_tmp.dir);
+    try std.testing.expectEqual(@as(u32, 1), staged.staged_adds);
+    try std.testing.expectEqual(@as(u32, 1), staged.staged_deletes);
+    const all = try commit(arena, io, &ws, "all tracked", "user:test");
+    try std.testing.expectEqual(@as(u32, 2), all.changes);
+    commits = try local.listUnpushed(arena, io, ws.cid_dir, null);
+    for (commits[0].changes) |ch| try std.testing.expect(!std.mem.eql(u8, ch.path, "new.txt"));
+    st = try status(arena, io, &ws);
+    try std.testing.expectEqual(@as(usize, 0), st.unstaged_modified.len);
+    try std.testing.expectEqual(@as(usize, 0), st.unstaged_deleted.len);
+    try std.testing.expectEqual(@as(usize, 1), st.unstaged_new.len);
+    try std.testing.expectEqualStrings("new.txt", st.unstaged_new[0]);
 }
 
 test "a subset describes itself, and makes its folder read-only" {

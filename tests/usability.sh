@@ -93,6 +93,9 @@ expect_ok   "status clean"                    "$CID" status
 expect_ok   "log"     "$CID" log
 
 echo "two" > b.txt
+expect_hint "commit -a leaves new files alone, like git" "$CID" commit -am "second"
+expect_ok   "stage the new file" "$CID" add b.txt
+echo "hello again" > a.txt
 expect_ok   "commit -a" "$CID" commit -am "second"
 expect_hint "tag with unpushed commits"       "$CID" tag v1.1.0
 expect_ok   "push again" "$CID" push
@@ -116,12 +119,13 @@ expect_hint "restore with nothing matching"   "$CID" restore nothing.txt
 # A pull that would actually move refuses to run over staged changes.
 cd "$WORK/producer"
 echo "third" > c.txt
-expect_ok   "third commit" "$CID" commit -am "third"
+expect_ok   "stage c.txt"  "$CID" add c.txt
+expect_ok   "third commit" "$CID" commit -m "third"
 expect_ok   "third push"   "$CID" push
 cd "$WORK/reader"
 echo "local edit" >> a.txt
 # Editing a checked-out file in place never reaches the shared cache.
-h=$(printf 'hello\n' | sha256sum | cut -d' ' -f1)
+h=$(printf 'hello again\n' | sha256sum | cut -d' ' -f1)
 c="${XDG_CACHE_HOME:-$HOME/.cache}/cid/items/$(printf %.2s "$h")/$h"
 if [ "$(sha256sum < "$c" | cut -d' ' -f1)" = "$h" ]; then say "ok: in-place edit leaves the cache intact"
 else say "FAIL: in-place edit changed the cached copy"; fails=$((fails+1)); fi
