@@ -421,12 +421,19 @@ test('browse pages through a version: one page, then more on scroll, and links p
   await signIn(page);
   await page.goto('/d/e2e/datasets/many?view=browse&mode=table');
   await expect(page.getByText('130 items')).toBeVisible();
-  const rows = page.locator('.browse-table tbody tr');
-  await expect(rows).toHaveCount(120);
+  // The table is virtual: it declares every loaded row (and the header)
+  // but holds only those near the screen.
+  const table = page.locator('.browse-table');
+  await expect(table).toHaveAttribute('aria-rowcount', '121');
+  const held = await page.locator('.browse-table tbody tr:not(.spacer)').count();
+  expect(held).toBeLessThan(120);
   const more = page.getByRole('button', { name: /Show more \(120 of 130 shown\)/ });
   await more.scrollIntoViewIfNeeded();
-  await expect(rows).toHaveCount(130);
+  await expect(table).toHaveAttribute('aria-rowcount', '131');
   await expect(page.getByRole('button', { name: /Show more/ })).toHaveCount(0);
+  // The end is reachable: scrolled down, the last row is on screen.
+  await page.mouse.wheel(0, 100_000);
+  await expect(page.getByRole('cell', { name: 'rows/0130.txt' })).toBeVisible();
   // Filters run on the server and page the same way.
   await page.goto('/d/e2e/datasets/many?view=browse&mode=table&q=012');
   await expect(page.getByText('11 of 130 items')).toBeVisible();

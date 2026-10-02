@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import {
   ApiError,
@@ -7,6 +8,7 @@ import {
   getHistory,
   getThumbs,
   reveal,
+  type BrowseItem,
   type Revealed,
   type Overview,
   type StateAnnotation,
@@ -268,72 +270,43 @@ export function BrowseTab({
           </p>
         </div>
       ) : mode === 'gallery' ? (
-        <ul className="gallery">
-          {items.map((item) => (
-            <li key={item.path}>
-              <button
-                className={openItem === item.path ? 'tile tile--open' : 'tile'}
-                onClick={() => onOpenItem(item.path)}
-                aria-pressed={openItem === item.path}
-              >
-                {thumbByHash.has(item.hash) ? (
-                  item.item_id && item.width && item.height ? (
-                    // The fit box pins the image's own aspect, so shapes in
-                    // pixel space land where the pixels are: overlays never
-                    // ride a cover-crop.
-                    <span className="tile-media">
-                      <span
-                        className="overlay-fit"
-                        style={{ aspectRatio: `${item.width} / ${item.height}` }}
-                      >
-                        <img src={thumbByHash.get(item.hash)} alt={item.path} loading="lazy" />
-                        <AnnotationOverlay
-                          width={item.width}
-                          height={item.height}
-                          annotations={item.annotations}
-                          hidden={hidden}
-                          opacity={opacity}
-                        />
-                      </span>
+        <VirtualGallery
+          items={items}
+          renderTile={(item) => (
+            <button
+              className={openItem === item.path ? 'tile tile--open' : 'tile'}
+              onClick={() => onOpenItem(item.path)}
+              aria-pressed={openItem === item.path}
+            >
+              {thumbByHash.has(item.hash) ? (
+                item.item_id && item.width && item.height ? (
+                  // The fit box pins the image's own aspect, so shapes in
+                  // pixel space land where the pixels are: overlays never
+                  // ride a cover-crop.
+                  <span className="tile-media">
+                    <span className="overlay-fit" style={{ aspectRatio: `${item.width} / ${item.height}` }}>
+                      <img src={thumbByHash.get(item.hash)} alt={item.path} loading="lazy" />
+                      <AnnotationOverlay
+                        width={item.width}
+                        height={item.height}
+                        annotations={item.annotations}
+                        hidden={hidden}
+                        opacity={opacity}
+                      />
                     </span>
-                  ) : (
-                    <img src={thumbByHash.get(item.hash)} alt={item.path} loading="lazy" />
-                  )
+                  </span>
                 ) : (
-                  <span className="tile-type data">{extOf(item.path)}</span>
-                )}
-                <span className="tile-path data">{item.path}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+                  <img src={thumbByHash.get(item.hash)} alt={item.path} loading="lazy" />
+                )
+              ) : (
+                <span className="tile-type data">{extOf(item.path)}</span>
+              )}
+              <span className="tile-path data">{item.path}</span>
+            </button>
+          )}
+        />
       ) : (
-        <table className="browse-table">
-          <thead>
-            <tr>
-              <th>path</th>
-              <th>size</th>
-              <th>split</th>
-              <th>hash</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item) => (
-              <tr
-                key={item.path}
-                className={openItem === item.path ? 'row--open' : undefined}
-                onClick={() => onOpenItem(item.path)}
-              >
-                <td className="data">{item.path}</td>
-                <td className="data">{humanBytes(item.size)}</td>
-                <td>{item.split ?? '—'}</td>
-                <td>
-                  <HashChip hash={item.hash} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <VirtualTable items={items} openItem={openItem} onOpenItem={onOpenItem} />
       )}
 
       {pages.hasNextPage && (
@@ -580,6 +553,129 @@ function HashChip({ hash }: { hash: string }) {
     >
       {copied ? 'copied' : hash.slice(0, 6)}
     </button>
+  );
+}
+
+// The gallery and the table render only what is on screen (and a little
+// either side): scrolled to the millionth item, the page holds the same
+// few dozen tiles it held at the first (docs/dashboard.md: virtualised
+// infinite scroll). Rows of tiles, as many columns as the CSS grid would
+// fit; each row measured as it renders.
+const tileMin = 140;
+
+function VirtualGallery({ items, renderTile }: { items: BrowseItem[]; renderTile: (item: BrowseItem) => ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  const [gap, setGap] = useState(12);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setGap(parseFloat(getComputedStyle(el).rowGap) || 12);
+    const watch = new ResizeObserver(() => setWidth(el.clientWidth));
+    watch.observe(el);
+    setWidth(el.clientWidth);
+    return () => watch.disconnect();
+  }, []);
+  const cols = Math.max(1, Math.floor((width + gap) / (tileMin + gap)));
+  const rows = Math.ceil(items.length / cols);
+  const tile = width > 0 ? (width - gap * (cols - 1)) / cols : tileMin;
+  // The virtualizer's functions change every render on purpose; the
+  // compiler is told so rather than memoizing them stale.
+  // oxlint-disable-next-line react/incompatible-library
+  const virtual = useWindowVirtualizer({
+    count: rows,
+    estimateSize: () => tile * 0.75 + 28 + gap,
+    overscan: 3,
+    scrollMargin: ref.current?.offsetTop ?? 0,
+  });
+  return (
+    <div ref={ref} className="gallery-virtual" style={{ height: virtual.getTotalSize() }}>
+      {virtual.getVirtualItems().map((row) => (
+        <ul
+          key={row.key}
+          data-index={row.index}
+          ref={virtual.measureElement}
+          className="gallery"
+          style={{
+            gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+            transform: `translateY(${row.start - virtual.options.scrollMargin}px)`,
+            paddingBottom: gap,
+          }}
+        >
+          {items.slice(row.index * cols, row.index * cols + cols).map((item) => (
+            <li key={item.path}>{renderTile(item)}</li>
+          ))}
+        </ul>
+      ))}
+    </div>
+  );
+}
+
+// The table the same way: rows on screen, spacers for the rest, and the
+// full count told to assistive technology.
+function VirtualTable({
+  items,
+  openItem,
+  onOpenItem,
+}: {
+  items: BrowseItem[];
+  openItem: string | undefined;
+  onOpenItem: (path: string | undefined) => void;
+}) {
+  const ref = useRef<HTMLTableSectionElement>(null);
+  // oxlint-disable-next-line react/incompatible-library
+  const virtual = useWindowVirtualizer({
+    count: items.length,
+    estimateSize: () => 37,
+    overscan: 12,
+    scrollMargin: ref.current?.offsetTop ?? 0,
+  });
+  const rows = virtual.getVirtualItems();
+  const top = rows.length > 0 ? rows[0].start - virtual.options.scrollMargin : 0;
+  const bottom = rows.length > 0 ? virtual.getTotalSize() - (rows[rows.length - 1].end - virtual.options.scrollMargin) : 0;
+  return (
+    <table className="browse-table" aria-rowcount={items.length + 1}>
+      <thead>
+        <tr aria-rowindex={1}>
+          <th>path</th>
+          <th>size</th>
+          <th>split</th>
+          <th>hash</th>
+        </tr>
+      </thead>
+      <tbody ref={ref}>
+        {top > 0 && (
+          <tr aria-hidden="true" className="spacer" style={{ height: top }}>
+            <td colSpan={4} />
+          </tr>
+        )}
+        {rows.map((row) => {
+          const item = items[row.index];
+          return (
+            <tr
+              key={item.path}
+              data-index={row.index}
+              ref={virtual.measureElement}
+              aria-rowindex={row.index + 2}
+              className={openItem === item.path ? 'row--open' : undefined}
+              onClick={() => onOpenItem(item.path)}
+            >
+              <td className="data">{item.path}</td>
+              <td className="data">{humanBytes(item.size)}</td>
+              <td>{item.split ?? '—'}</td>
+              <td>
+                <HashChip hash={item.hash} />
+              </td>
+            </tr>
+          );
+        })}
+        {bottom > 0 && (
+          <tr aria-hidden="true" className="spacer" style={{ height: bottom }}>
+            <td colSpan={4} />
+          </tr>
+        )}
+      </tbody>
+    </table>
   );
 }
 

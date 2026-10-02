@@ -556,6 +556,24 @@
   gap: var(--space-3);
 }
 
+/* The virtual gallery: rows of tiles placed where they would be. */
+.gallery-virtual {
+  position: relative;
+  row-gap: var(--space-3);
+}
+
+.gallery-virtual > .gallery {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+
+.browse-table tr.spacer td {
+  padding: 0;
+  border: 0;
+}
+
 .tile {
   display: flex;
   flex-direction: column;
