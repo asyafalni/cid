@@ -23,7 +23,8 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
         error.MissingContent => return common.fail(ctx, .network, "the server lost track of an upload. Run 'cid push' again; it resumes.", .{}),
         error.CacheDamaged => return common.fail(ctx, .integrity, "a committed file changed after 'cid add', in the cache and in the folder. Put it back as committed, then run 'cid push' again.", .{}),
         error.TransferFailed => return common.fail(ctx, .network, "an upload failed. Check the connection, then run 'cid push' again; nothing is lost.", .{}),
-        else => return common.fail(ctx, .integrity, ".cid/ state is unreadable. Run 'cid status' for details.", .{}),
+        error.ServerRefused => return common.fail(ctx, .network, "the server refused the push (see its log). Run 'cid push' again; if it persists, tell the administrator.", .{}),
+        else => return common.fail(ctx, .integrity, ".cid/ state is unreadable ({t}). Run 'cid status' for details.", .{err}),
     };
 
     if (outcome.pushed_commits == 0) {
