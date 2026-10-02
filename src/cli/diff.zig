@@ -1,16 +1,16 @@
 //! `cid diff [<a>] [<b>]`: what changed. No arguments = unstaged edits,
 //! --staged = staged changes, one or two versions = compare them (a
 //! release name or commit id; one argument compares against the folder's
-//! current commit). Files compare by hash here; a modified CSV, Parquet
-//! or JSONL file also shows its rows added and removed, which the server
-//! computes (CLAUDE.md, Formats) — the CLI never reads a table.
+//! current commit). Two versions are compared on the server and the
+//! changes stream in, printed as they arrive; a modified CSV, Parquet or
+//! JSONL file also shows its rows added and removed, which the server
+//! computes too (CLAUDE.md, Formats) — the CLI never reads a table.
 
 const std = @import("std");
 const common = @import("common.zig");
 const workspace = @import("../client/workspace.zig");
 const local = @import("../client/local.zig");
 const remote_mod = @import("../client/remote.zig");
-const jcs = @import("../manifest/jcs.zig");
 
 pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCode {
     var staged = false;
@@ -80,115 +80,6 @@ fn sizeOf(ctx: *const common.Context, ws: *workspace.Workspace, path: []const u8
 
 // --- versions: resolve names, fetch both states, compare
 
-pub const Change = struct {
-    kind: enum { added, modified, deleted },
-    path: []const u8,
-    size_a: ?u64,
-    size_b: ?u64,
-    hash_a: ?[]const u8 = null,
-    hash_b: ?[]const u8 = null,
-};
-
-/// Pure two-state comparison; both inputs sorted by path (as the server
-/// returns them).
-pub fn diffStates(
-    arena: std.mem.Allocator,
-    a: []const remote_mod.Remote.StateItem,
-    b: []const remote_mod.Remote.StateItem,
-) ![]const Change {
-    var out: std.ArrayList(Change) = .empty;
-    var i: usize = 0;
-    var j: usize = 0;
-    while (i < a.len or j < b.len) {
-        const order: std.math.Order = if (i >= a.len)
-            .gt
-        else if (j >= b.len)
-            .lt
-        else
-            std.mem.order(u8, a[i].path, b[j].path);
-        switch (order) {
-            .lt => {
-                try out.append(arena, .{ .kind = .deleted, .path = a[i].path, .size_a = a[i].size, .size_b = null });
-                i += 1;
-            },
-            .gt => {
-                try out.append(arena, .{ .kind = .added, .path = b[j].path, .size_a = null, .size_b = b[j].size });
-                j += 1;
-            },
-            .eq => {
-                if (!std.mem.eql(u8, a[i].hash, b[j].hash))
-                    try out.append(arena, .{ .kind = .modified, .path = a[i].path, .size_a = a[i].size, .size_b = b[j].size, .hash_a = a[i].hash, .hash_b = b[j].hash });
-                i += 1;
-                j += 1;
-            },
-        }
-    }
-    return out.items;
-}
-
-pub const AnnChange = struct {
-    kind: enum { added, removed, changed },
-    ann_kind: ?[]const u8,
-    class: ?[]const u8,
-    item_path: []const u8,
-};
-
-/// Annotations by id across two states: present only in b → added, only
-/// in a → removed, in both with different class/kind/geometry/attrs →
-/// changed (JSON compared in canonical form, so formatting never lies).
-pub fn diffAnnotations(
-    arena: std.mem.Allocator,
-    a: remote_mod.Remote.AnnotatedState,
-    b: remote_mod.Remote.AnnotatedState,
-) ![]const AnnChange {
-    var paths: std.StringArrayHashMapUnmanaged([]const u8) = .empty; // item_id → path
-    for (a.items) |item| {
-        if (item.item_id) |id| try paths.put(arena, id, item.path);
-    }
-    for (b.items) |item| {
-        if (item.item_id) |id| try paths.put(arena, id, item.path);
-    }
-    var a_by_id: std.StringArrayHashMapUnmanaged(remote_mod.Remote.Annotation) = .empty;
-    for (a.annotations) |ann| try a_by_id.put(arena, ann.id, ann);
-
-    var out: std.ArrayList(AnnChange) = .empty;
-    for (b.annotations) |ann| {
-        const path = paths.get(ann.item_id) orelse "?";
-        if (a_by_id.get(ann.id)) |old| {
-            _ = a_by_id.swapRemove(ann.id);
-            if (!annEqual(arena, old, ann))
-                try out.append(arena, .{ .kind = .changed, .ann_kind = ann.kind, .class = ann.class, .item_path = path });
-        } else {
-            try out.append(arena, .{ .kind = .added, .ann_kind = ann.kind, .class = ann.class, .item_path = path });
-        }
-    }
-    for (a_by_id.values()) |old| {
-        try out.append(arena, .{ .kind = .removed, .ann_kind = old.kind, .class = old.class, .item_path = paths.get(old.item_id) orelse "?" });
-    }
-    return out.items;
-}
-
-fn annEqual(arena: std.mem.Allocator, a: remote_mod.Remote.Annotation, b: remote_mod.Remote.Annotation) bool {
-    if (!optEql(a.kind, b.kind) or !optEql(a.class, b.class)) return false;
-    return valueEql(arena, a.geometry, b.geometry) and valueEql(arena, a.attrs, b.attrs);
-}
-
-fn optEql(a: ?[]const u8, b: ?[]const u8) bool {
-    if (a == null and b == null) return true;
-    if (a == null or b == null) return false;
-    return std.mem.eql(u8, a.?, b.?);
-}
-
-fn valueEql(arena: std.mem.Allocator, a: ?std.json.Value, b: ?std.json.Value) bool {
-    if (a == null and b == null) return true;
-    if (a == null or b == null) return false;
-    var ca: std.ArrayList(u8) = .empty;
-    var cb: std.ArrayList(u8) = .empty;
-    jcs.serialize(arena, a.?, &ca) catch return false;
-    jcs.serialize(arena, b.?, &cb) catch return false;
-    return std.mem.eql(u8, ca.items, cb.items);
-}
-
 fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: []const []const u8) common.ExitCode {
     const name = workspace.datasetPathOf(ws.config.address) orelse
         return common.fail(ctx, .integrity, ".cid/config.zon holds a broken address. Clone again, or fix it to cid@host:org/path.", .{});
@@ -209,78 +100,65 @@ fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: [
     const b_commit = resolve(ctx, remote, b_label) orelse
         return common.fail(ctx, .usage, "'{s}' is neither a release nor a commit here. Run 'cid log'.", .{b_label});
 
-    const state_a = remote.state(ctx.arena, a_commit) catch
-        return common.fail(ctx, .network, "cannot fetch '{s}' from the server. Check CID_SERVER, then run 'cid diff' again.", .{a_label});
-    const state_b = remote.state(ctx.arena, b_commit) catch
-        return common.fail(ctx, .network, "cannot fetch '{s}' from the server. Check CID_SERVER, then run 'cid diff' again.", .{b_label});
-
-    const changes = diffStates(ctx.arena, state_a, state_b) catch return .network;
+    // The server compares (core/version.zig) and the changes stream in,
+    // printed as they arrive: a million-item diff holds one line at a time.
     ctx.out.print("Comparing {s} → {s}\n", .{ a_label, b_label }) catch return .network;
+    var printer: Printer = .{ .ctx = ctx, .remote = remote };
+    const sum = remote.compare(ctx.arena, a_commit, b_commit, .{ .ctx = &printer, .visit = Printer.visit }) catch |err| switch (err) {
+        error.ServerRefused => return common.fail(ctx, .integrity, "the diff from the server failed its check; the lines above are void. Run 'cid diff' again.", .{}),
+        else => return common.fail(ctx, .network, "cannot compare '{s}' and '{s}' on the server. Check CID_SERVER, then run 'cid diff' again.", .{ a_label, b_label }),
+    };
+    if (printer.failed) return .network;
 
-    var ann_changes: []const AnnChange = &.{};
-    if (std.mem.eql(u8, ws.config.kind, "annotated")) {
-        const full_a = remote.stateAnnotated(ctx.arena, a_commit) catch
-            return common.fail(ctx, .network, "cannot fetch annotations for '{s}'. Check the connection, then run 'cid diff' again.", .{a_label});
-        const full_b = remote.stateAnnotated(ctx.arena, b_commit) catch
-            return common.fail(ctx, .network, "cannot fetch annotations for '{s}'. Check the connection, then run 'cid diff' again.", .{b_label});
-        ann_changes = diffAnnotations(ctx.arena, full_a, full_b) catch return .network;
-    }
-    var added: u32 = 0;
-    var modified: u32 = 0;
-    var deleted: u32 = 0;
-    for (changes) |ch| {
-        switch (ch.kind) {
-            .added => {
-                printLine(ctx, "added", ch.path, ch.size_b) catch return .network;
-                added += 1;
-            },
-            .modified => {
-                printLine(ctx, "modified", ch.path, ch.size_b) catch return .network;
-                if (isTable(ch.path)) printRows(ctx, remote, ch) catch return .network;
-                modified += 1;
-            },
-            .deleted => {
-                printLine(ctx, "deleted", ch.path, null) catch return .network;
-                deleted += 1;
-            },
-        }
-    }
-    var ann_added: u32 = 0;
-    var ann_changed: u32 = 0;
-    var ann_removed: u32 = 0;
-    for (ann_changes) |ch| {
-        const verb = switch (ch.kind) {
-            .added => blk: {
-                ann_added += 1;
-                break :blk "added";
-            },
-            .changed => blk: {
-                ann_changed += 1;
-                break :blk "changed";
-            },
-            .removed => blk: {
-                ann_removed += 1;
-                break :blk "removed";
-            },
-        };
-        ctx.out.print("  ann {s: <8} {s} {s} on {s}\n", .{
-            verb, ch.ann_kind orelse "?", ch.class orelse "?", ch.item_path,
-        }) catch return .network;
-    }
-
-    if (changes.len == 0 and ann_changes.len == 0) {
+    const items = sum.added + sum.modified + sum.deleted;
+    const anns = sum.ann_added + sum.ann_changed + sum.ann_removed;
+    if (items == 0 and anns == 0) {
         ctx.out.writeAll("No differences.\n") catch return .network;
-    } else if (ann_changes.len == 0) {
+    } else if (anns == 0) {
         ctx.out.print("{d} change{s}: {d} added, {d} modified, {d} deleted\n", .{
-            changes.len, plural(changes.len), added, modified, deleted,
+            items, plural(items), sum.added, sum.modified, sum.deleted,
         }) catch return .network;
     } else {
         ctx.out.print("items: {d} added, {d} modified, {d} deleted · annotations: {d} added, {d} changed, {d} removed\n", .{
-            added, modified, deleted, ann_added, ann_changed, ann_removed,
+            sum.added, sum.modified, sum.deleted, sum.ann_added, sum.ann_changed, sum.ann_removed,
         }) catch return .network;
     }
     return .ok;
 }
+
+/// Prints each change as it streams in; a modified table also gets its
+/// row line, asked of the server right then.
+const Printer = struct {
+    ctx: *const common.Context,
+    remote: *const remote_mod.Remote,
+    failed: bool = false,
+
+    fn visit(raw: *anyopaque, line: remote_mod.Remote.DiffLine) anyerror!void {
+        const self: *Printer = @ptrCast(@alignCast(raw));
+        self.print(line) catch {
+            self.failed = true;
+            return error.WriteFailed;
+        };
+    }
+
+    fn print(self: *Printer, line: remote_mod.Remote.DiffLine) !void {
+        const ctx = self.ctx;
+        if (line.change) |change| {
+            const path = line.path orelse return;
+            if (std.mem.eql(u8, change, "deleted")) {
+                try printLine(ctx, "deleted", path, null);
+            } else {
+                try printLine(ctx, change, path, line.size_b);
+                if (std.mem.eql(u8, change, "modified") and isTable(path))
+                    try printRows(ctx, self.remote, path, line.hash_a.?, line.hash_b.?);
+            }
+        } else if (line.ann) |change| {
+            try ctx.out.print("  ann {s: <8} {s} {s} on {s}\n", .{
+                change, line.kind orelse "?", line.class orelse "?", line.item_path orelse "?",
+            });
+        }
+    }
+};
 
 fn isTable(path: []const u8) bool {
     const dot = std.mem.lastIndexOfScalar(u8, path, '.') orelse return false;
@@ -294,11 +172,11 @@ fn isTable(path: []const u8) bool {
 /// The row-level line under a modified table file. Whatever the server
 /// cannot say about rows, the file line above already said the file
 /// changed, so this line explains and never fails the command.
-fn printRows(ctx: *const common.Context, remote: *const remote_mod.Remote, ch: Change) !void {
+fn printRows(ctx: *const common.Context, remote: *const remote_mod.Remote, path: []const u8, hash_a: []const u8, hash_b: []const u8) !void {
     const indent = "              ";
     var tries: u32 = 0;
     const rd = while (true) : (tries += 1) {
-        const got = remote.rowDiff(ctx.arena, ch.hash_a.?, ch.path, ch.hash_b.?, ch.path) catch {
+        const got = remote.rowDiff(ctx.arena, hash_a, path, hash_b, path) catch {
             try ctx.out.print("{s}rows: the server could not compare them; run 'cid diff' again\n", .{indent});
             return;
         };
@@ -370,32 +248,6 @@ fn plural(n: anytype) []const u8 {
     return if (n == 1) "" else "s";
 }
 
-test "diffStates walks both sorted lists" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const Item = remote_mod.Remote.StateItem;
-
-    const a = [_]Item{
-        .{ .path = "a.txt", .hash = "h1", .size = 1 },
-        .{ .path = "b.txt", .hash = "h2", .size = 2 },
-        .{ .path = "c.txt", .hash = "h3", .size = 3 },
-    };
-    const b = [_]Item{
-        .{ .path = "b.txt", .hash = "h2x", .size = 20 },
-        .{ .path = "c.txt", .hash = "h3", .size = 3 },
-        .{ .path = "d.txt", .hash = "h4", .size = 4 },
-    };
-    const changes = try diffStates(arena, &a, &b);
-    try std.testing.expectEqual(@as(usize, 3), changes.len);
-    try std.testing.expectEqualStrings("a.txt", changes[0].path); // deleted
-    try std.testing.expectEqualStrings("b.txt", changes[1].path); // modified
-    try std.testing.expectEqualStrings("d.txt", changes[2].path); // added
-    try std.testing.expect(changes[0].kind == .deleted);
-    try std.testing.expect(changes[1].kind == .modified);
-    try std.testing.expect(changes[2].kind == .added);
-}
-
 test "row lines: counts, a column change, the same rows, and words when not compared" {
     var buf: [256]u8 = undefined;
     const Rd = remote_mod.Remote.RowDiff;
@@ -416,56 +268,4 @@ test "human sizes" {
     var buf: [32]u8 = undefined;
     try std.testing.expectEqualStrings("512 B", humanSize(&buf, 512));
     try std.testing.expectEqualStrings("1.5 KB", humanSize(&buf, 1536));
-}
-
-test "annotation diff: added, changed (canonically compared), removed" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const Item = remote_mod.Remote.StateItem;
-
-    const g1a = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"x\":1.0,\"y\":2}", .{});
-    const g1b = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"y\":2,\"x\":1}", .{}); // same value
-    const g2 = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"x\":9}", .{});
-
-    const items = [_]Item{.{ .path = "a.jpg", .hash = "ab" ** 32, .size = 1, .item_id = "i1" }};
-    const a: remote_mod.Remote.AnnotatedState = .{
-        .items = &items,
-        .annotations = &.{
-            .{ .id = "keep", .item_id = "i1", .kind = "box", .class = "person", .geometry = g1a, .author = "x", .policy_ver = "p" },
-            .{ .id = "move", .item_id = "i1", .kind = "box", .class = "person", .geometry = g1a, .author = "x", .policy_ver = "p" },
-            .{ .id = "gone", .item_id = "i1", .kind = "box", .class = "vehicle", .geometry = g2, .author = "x", .policy_ver = "p" },
-        },
-    };
-    const b: remote_mod.Remote.AnnotatedState = .{
-        .items = &items,
-        .annotations = &.{
-            // Same geometry written differently: NOT a change.
-            .{ .id = "keep", .item_id = "i1", .kind = "box", .class = "person", .geometry = g1b, .author = "y", .policy_ver = "p2" },
-            .{ .id = "move", .item_id = "i1", .kind = "box", .class = "person", .geometry = g2, .author = "x", .policy_ver = "p" },
-            .{ .id = "new", .item_id = "i1", .kind = "box", .class = "bike", .geometry = g2, .author = "x", .policy_ver = "p" },
-        },
-    };
-    const changes = try diffAnnotations(arena, a, b);
-    try std.testing.expectEqual(@as(usize, 3), changes.len);
-    var added: u32 = 0;
-    var changed: u32 = 0;
-    var removed: u32 = 0;
-    for (changes) |ch| {
-        switch (ch.kind) {
-            .added => {
-                added += 1;
-                try std.testing.expectEqualStrings("bike", ch.class.?);
-            },
-            .changed => changed += 1,
-            .removed => {
-                removed += 1;
-                try std.testing.expectEqualStrings("vehicle", ch.class.?);
-            },
-        }
-        try std.testing.expectEqualStrings("a.jpg", ch.item_path);
-    }
-    try std.testing.expectEqual(@as(u32, 1), added);
-    try std.testing.expectEqual(@as(u32, 1), changed);
-    try std.testing.expectEqual(@as(u32, 1), removed);
 }

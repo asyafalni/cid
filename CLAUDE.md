@@ -380,7 +380,11 @@ Deep dives: `docs/data-model.md` · `docs/access.md` · `docs/git-repository.md`
     server that means `src/core/version.zig`: a version is read through cursors,
     5,000 rows a batch, each batch freed before the next; manifests are hashed as
     they are written and uploaded from a file; statistics are one SQL aggregate,
-    kept on the commit. `tests/bench/browse_1m.sh` measures it at 1M items.
+    kept on the commit. The CLI reads a version (clone, pull, checkout, diff) as
+    a gzip file of JSON lines the same pass writes once into storage, through a
+    presigned URL, SHA-256 checked as it streams; it is provisional, and written
+    again after ten minutes, while any item still waits for its media metadata.
+    `tests/bench/browse_1m.sh` measures all of it at 1M items.
 14. **Downloads verify everything.** Every file is hash-checked before it appears in
     the folder; a mismatch fails the command.
 15. **cid never interprets file contents except** to read media metadata on upload and
@@ -416,6 +420,8 @@ If a change would weaken any of these, stop and ask.
   manifests/<dataset_id>/<commit_id>.items.parquet, .anns.parquet
                                               one pair per release: its browse index
   exports/<dataset_id>/<release>/<format>/…   annotated datasets, rebuildable
+  states/<dataset_id>/<commit_id>-<sha>.jsonl.gz  a version as the CLI downloads it
+  diffs/<dataset_id>/<a>-<b>-<sha>.jsonl.gz        what changed between two versions
 ```
 
 S3 client rules for SeaweedFS: path-style addressing, SigV4, real payload hash,
@@ -454,7 +460,11 @@ records the commits.
 **Row-level diff** (`cid diff`) for `.csv`, `.parquet` and `.jsonl`: rows added, removed
 and changed, using a key column when the dataset declares one, otherwise whole-row
 comparison. Row-level diffs are computed **on the server** (where DuckDB lives); the
-CLI itself compares by hash only, which keeps it a small static binary. Other files are
+CLI itself compares by hash only, which keeps it a small static binary. Comparing two
+versions is the server's job too: one pass joins both in Postgres (annotations compared
+as jsonb values, so formatting never counts) and writes the changes once to storage as
+gzip JSON lines, which `cid diff` prints as they stream in. A merge reads only the paths
+the branch touched; every other path is the base's by construction. Other files are
 compared by hash only everywhere. Until a dataset can declare a key column, an edited
 row shows as one removed plus one added; when the columns changed, the column change
 is the answer and rows are not compared. Each pair of contents is diffed once, ever

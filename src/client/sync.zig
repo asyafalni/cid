@@ -688,17 +688,11 @@ fn sizeOf(commits: []const local.Commit, hash: []const u8) ?u64 {
 }
 
 fn findFile(files: []const scan.FileInfo, path: []const u8) ?scan.FileInfo {
-    for (files) |f| {
-        if (std.mem.eql(u8, f.path, path)) return f;
-    }
-    return null;
+    return scan.findByPath(scan.FileInfo, files, path);
 }
 
 fn findState(items: []const remote_mod.Remote.StateItem, path: []const u8) ?remote_mod.Remote.StateItem {
-    for (items) |item| {
-        if (std.mem.eql(u8, item.path, path)) return item;
-    }
-    return null;
+    return scan.findByPath(remote_mod.Remote.StateItem, items, path);
 }
 
 fn loadTracked(arena: std.mem.Allocator, io: std.Io, ws: *workspace.Workspace) !index_mod.Tracked {

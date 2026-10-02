@@ -83,6 +83,10 @@ pub const Outputs = struct {
     items: ?*std.Io.Writer = null,
     /// …and one per annotation, by (item_id, annotation_id).
     annotations: ?*std.Io.Writer = null,
+    /// The version as the CLI downloads it (`cid-state 1`, see stateHeader):
+    /// item lines in path order with their dimensions, then annotation
+    /// lines by (item_id, annotation_id).
+    state: ?*std.Io.Writer = null,
     /// Keep the version's statistics on the commit, from the same snapshot.
     stats: bool = false,
     /// Each batch's item hashes, in path order; answering false stops the
@@ -95,7 +99,19 @@ pub const Visitor = struct {
     visit: *const fn (ctx: *anyopaque, hashes: []const []const u8) bool,
 };
 
-pub const Written = struct { sha256_hex: ?[64]u8 = null, items: u64 = 0, annotations: u64 = 0 };
+pub const Written = struct {
+    sha256_hex: ?[64]u8 = null,
+    items: u64 = 0,
+    annotations: u64 = 0,
+    /// Some item still waits for the preview worker, which may yet add its
+    /// media metadata (dimensions): a state file written now is provisional.
+    media_pending: bool = false,
+};
+
+/// The first line of a state file.
+pub fn stateHeader(w: *std.Io.Writer, commit_id: []const u8, annotated: bool) !void {
+    try w.print("{{\"cid\":\"state\",\"v\":1,\"commit\":\"{s}\",\"annotated\":{}}}\n", .{ commit_id, annotated });
+}
 
 const PassItem = struct {
     pub const nilo_table = .projection;
@@ -106,6 +122,8 @@ const PassItem = struct {
     item_id: ?[]const u8,
     ext: []const u8,
     classes: []const u8,
+    width: ?i32,
+    height: ?i32,
 };
 
 const PassAnn = struct {
@@ -119,6 +137,28 @@ const PassAnn = struct {
     author: []const u8,
     policy_ver: []const u8,
 };
+
+/// The version at `where`, materialized once into `<name>_live` (items,
+/// indexed by path, bytewise) and `<name>_alive` (annotations, indexed by
+/// item and id): temporary tables that go when the transaction ends.
+fn materialize(tx: anytype, scope: anytype, dataset_id: []const u8, where: At, comptime name: []const u8) Error!void {
+    const args = .{ dataset_id, where.branch, where.cutoff, where.main_cutoff };
+    inline for (.{
+        "CREATE TEMP TABLE " ++ name ++ "_live (path text, item_hash bytea, split text, item_id uuid, size_bytes bigint, width int, height int) ON COMMIT DROP",
+        "CREATE TEMP TABLE " ++ name ++ "_alive (annotation_id uuid, item_id uuid, kind text, class text, geometry jsonb, attrs jsonb, author text, policy_ver text) ON COMMIT DROP",
+    }) |ddl| _ = tx.exec(scope, ddl, .{}) catch return error.Db;
+    _ = tx.exec(scope, "INSERT INTO " ++ name ++ "_live WITH " ++ live_cte ++
+        " SELECT live.path, live.item_hash, live.split, live.item_id, i.size_bytes, " ++
+        "(i.meta->>'width')::int, (i.meta->>'height')::int FROM live JOIN items i USING (item_hash)", args) catch return error.Db;
+    _ = tx.exec(scope, "INSERT INTO " ++ name ++ "_alive WITH " ++ alive_cte ++
+        " SELECT annotation_id, item_id, kind, class, geometry, attrs, author, policy_ver FROM alive", args) catch return error.Db;
+    inline for (.{
+        "CREATE INDEX ON " ++ name ++ "_live (path COLLATE \"C\")",
+        "CREATE INDEX ON " ++ name ++ "_alive (item_id, annotation_id)",
+        "ANALYZE " ++ name ++ "_live",
+        "ANALYZE " ++ name ++ "_alive",
+    }) |sql| _ = tx.exec(scope, sql, .{}) catch return error.Db;
+}
 
 /// Reads the version once and writes whatever `outputs` asks for. The
 /// state is computed a single time, into indexed temporary tables inside
@@ -136,24 +176,10 @@ pub fn pass(
     const where = try at(db, scope, dataset_id, commit_id);
     var tx = db.begin(scope, .{}) catch return error.Db;
     defer tx.deinit(); // rolled back: the temporary tables go with it
-    const args = .{ dataset_id, where.branch, where.cutoff, where.main_cutoff };
-    inline for (.{
-        "CREATE TEMP TABLE v_live (path text, item_hash bytea, split text, item_id uuid, size_bytes bigint) ON COMMIT DROP",
-        "CREATE TEMP TABLE v_alive (annotation_id uuid, item_id uuid, kind text, class text, geometry jsonb, attrs jsonb, author text, policy_ver text) ON COMMIT DROP",
-    }) |ddl| _ = tx.exec(scope, ddl, .{}) catch return error.Db;
-    _ = tx.exec(scope, "INSERT INTO v_live WITH " ++ live_cte ++
-        " SELECT live.path, live.item_hash, live.split, live.item_id, i.size_bytes FROM live JOIN items i USING (item_hash)", args) catch return error.Db;
-    _ = tx.exec(scope, "INSERT INTO v_alive WITH " ++ alive_cte ++
-        " SELECT annotation_id, item_id, kind, class, geometry, attrs, author, policy_ver FROM alive", args) catch return error.Db;
-    inline for (.{
-        "CREATE INDEX ON v_live (path COLLATE \"C\")",
-        "CREATE INDEX ON v_alive (item_id, annotation_id)",
-        "CREATE TEMP TABLE v_classes ON COMMIT DROP AS SELECT item_id, " ++
-            "array_to_json(array_agg(coalesce(class, '') ORDER BY annotation_id))::text AS classes FROM v_alive GROUP BY item_id",
-        "ANALYZE v_live",
-        "ANALYZE v_alive",
-        "ANALYZE v_classes",
-    }) |sql| _ = tx.exec(scope, sql, .{}) catch return error.Db;
+    try materialize(&tx, scope, dataset_id, where, "v");
+    _ = tx.exec(scope, "CREATE TEMP TABLE v_classes ON COMMIT DROP AS SELECT item_id, " ++
+        "array_to_json(array_agg(coalesce(class, '') ORDER BY annotation_id))::text AS classes FROM v_alive GROUP BY item_id", .{}) catch return error.Db;
+    _ = tx.exec(scope, "ANALYZE v_classes", .{}) catch return error.Db;
 
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     var written: Written = .{};
@@ -164,7 +190,8 @@ pub fn pass(
     }
 
     _ = tx.exec(scope, "DECLARE pass_items NO SCROLL CURSOR FOR SELECT l.path, encode(l.item_hash, 'hex') AS hash_hex, " ++
-        "l.size_bytes, l.split, l.item_id::text AS item_id, " ++ comptime extOf("l.path") ++ " AS ext, coalesce(c.classes, '[]') AS classes " ++
+        "l.size_bytes, l.split, l.item_id::text AS item_id, " ++ comptime extOf("l.path") ++ " AS ext, coalesce(c.classes, '[]') AS classes, " ++
+        "l.width, l.height " ++
         "FROM v_live l LEFT JOIN v_classes c USING (item_id) ORDER BY l.path COLLATE \"C\"", .{}) catch return error.Db;
     while (true) {
         var batch = dbx.Run.init(gpa);
@@ -184,6 +211,13 @@ pub fn pass(
                 r.classes,
             }) catch return error.WriteFailed;
         };
+        if (outputs.state) |w| for (rows) |r| {
+            w.print("{{\"path\":{f},\"hash\":\"{s}\",\"size\":{d},\"split\":{f},\"item_id\":{f},\"width\":{f},\"height\":{f}}}\n", .{
+                std.json.fmt(r.path, .{}),   r.hash_hex,                   r.size_bytes,
+                std.json.fmt(r.split, .{}),  std.json.fmt(r.item_id, .{}), std.json.fmt(r.width, .{}),
+                std.json.fmt(r.height, .{}),
+            }) catch return error.WriteFailed;
+        };
         written.items += rows.len;
         if (outputs.hashes) |v| {
             const hashes = try arena.alloc([]const u8, rows.len);
@@ -193,7 +227,7 @@ pub fn pass(
         if (rows.len < batch_rows) break;
     }
 
-    if (outputs.annotations != null or (outputs.manifest != null and outputs.annotated)) {
+    if (outputs.annotations != null or outputs.state != null or (outputs.manifest != null and outputs.annotated)) {
         _ = tx.exec(scope, "DECLARE pass_anns NO SCROLL CURSOR FOR SELECT annotation_id::text AS annotation_id, item_id::text AS item_id, " ++
             "kind, class, geometry::text AS geometry, attrs::text AS attrs, author, policy_ver FROM v_alive ORDER BY item_id, annotation_id", .{}) catch return error.Db;
         while (true) {
@@ -219,7 +253,7 @@ pub fn pass(
                 hasher.update(text.items);
                 m.writeAll(text.items) catch return error.WriteFailed;
             };
-            if (outputs.annotations) |w| for (rows) |r| {
+            inline for (.{ outputs.annotations, outputs.state }) |maybe| if (maybe) |w| for (rows) |r| {
                 w.print("{{\"id\":\"{s}\",\"item_id\":\"{s}\",\"kind\":{f},\"class\":{f},\"geometry\":{s},\"attrs\":{s},\"author\":{f},\"policy_ver\":{f}}}\n", .{
                     r.annotation_id,             r.item_id,
                     std.json.fmt(r.kind, .{}),   std.json.fmt(r.class, .{}),
@@ -232,6 +266,11 @@ pub fn pass(
         }
     }
 
+    if (outputs.state != null) {
+        written.media_pending = (tx.rawOne(i64, scope, "SELECT 1::bigint FROM v_live l JOIN previews p USING (item_hash) " ++
+            "WHERE p.status IN ('pending', 'building') LIMIT 1", .{}) catch return error.Db) != null;
+    }
+
     if (outputs.stats) {
         if (tx.rawOne([]const u8, scope, "WITH " ++ comptime statsOver("v_live", "v_alive"), .{}) catch null) |text| {
             _ = tx.exec(scope, "UPDATE commits SET stats = $2::jsonb WHERE commit_id = $1::uuid", .{ commit_id, text }) catch {};
@@ -241,7 +280,7 @@ pub fn pass(
         }
     }
 
-    inline for (.{ outputs.manifest, outputs.items, outputs.annotations }) |maybe| if (maybe) |w| w.flush() catch return error.WriteFailed;
+    inline for (.{ outputs.manifest, outputs.items, outputs.annotations, outputs.state }) |maybe| if (maybe) |w| w.flush() catch return error.WriteFailed;
     if (outputs.manifest != null) {
         var digest: [32]u8 = undefined;
         hasher.final(&digest);
@@ -335,6 +374,158 @@ pub fn firstItems(arena: std.mem.Allocator, db: *dbx.sql.Db, scope: anytype, dat
     const where = try at(db, scope, dataset_id, commit_id);
     return db.raw(Listed, scope, "WITH " ++ live_cte ++ " SELECT live.path, encode(live.item_hash, 'hex') AS hash_hex, i.size_bytes " ++
         "FROM live JOIN items i USING (item_hash) ORDER BY live.path COLLATE \"C\" LIMIT $5", .{ dataset_id, where.branch, where.cutoff, where.main_cutoff, @as(i64, limit) }) catch error.Db;
+}
+
+// ---------------------------------------------------------------------------
+// Comparing two versions, on the server, streamed.
+// ---------------------------------------------------------------------------
+
+pub const DiffSummary = struct {
+    added: u64 = 0,
+    modified: u64 = 0,
+    deleted: u64 = 0,
+    ann_added: u64 = 0,
+    ann_changed: u64 = 0,
+    ann_removed: u64 = 0,
+};
+
+const ItemChange = struct {
+    pub const nilo_table = .projection;
+    path: []const u8,
+    hash_a: ?[]const u8,
+    hash_b: ?[]const u8,
+    size_a: ?i64,
+    size_b: ?i64,
+};
+
+const AnnChange = struct {
+    pub const nilo_table = .projection;
+    id: []const u8,
+    change: []const u8,
+    kind: ?[]const u8,
+    class: ?[]const u8,
+    item_path: ?[]const u8,
+};
+
+/// The first line of a diff file.
+pub fn diffHeader(w: *std.Io.Writer, a: []const u8, b: []const u8) !void {
+    try w.print("{{\"cid\":\"diff\",\"v\":1,\"a\":\"{s}\",\"b\":\"{s}\"}}\n", .{ a, b });
+}
+
+/// What changed from version `a` to version `b`: one line per item that
+/// was added, modified (other bytes) or deleted, by path; then, in
+/// annotated datasets, one per annotation added, changed (kind, class,
+/// geometry or attributes — compared as values, so formatting never
+/// counts) or removed, with its item's path. Both versions are
+/// materialized once in one transaction and joined there; nothing of
+/// either is held here beyond one batch.
+pub fn diffPass(
+    gpa: std.mem.Allocator,
+    db: *dbx.sql.Db,
+    scope: anytype,
+    dataset_id: []const u8,
+    commit_a: []const u8,
+    commit_b: []const u8,
+    annotated: bool,
+    out: *std.Io.Writer,
+) Error!DiffSummary {
+    const where_a = try at(db, scope, dataset_id, commit_a);
+    const where_b = try at(db, scope, dataset_id, commit_b);
+    var tx = db.begin(scope, .{}) catch return error.Db;
+    defer tx.deinit();
+    try materialize(&tx, scope, dataset_id, where_a, "da");
+    try materialize(&tx, scope, dataset_id, where_b, "db");
+
+    var sum: DiffSummary = .{};
+    _ = tx.exec(scope, "DECLARE diff_items NO SCROLL CURSOR FOR SELECT coalesce(a.path, b.path) AS path, " ++
+        "encode(a.item_hash, 'hex') AS hash_a, encode(b.item_hash, 'hex') AS hash_b, a.size_bytes AS size_a, b.size_bytes AS size_b " ++
+        "FROM da_live a FULL JOIN db_live b USING (path) WHERE a.item_hash IS DISTINCT FROM b.item_hash " ++
+        "ORDER BY coalesce(a.path, b.path) COLLATE \"C\"", .{}) catch return error.Db;
+    while (true) {
+        var batch = dbx.Run.init(gpa);
+        defer batch.deinit();
+        const rows = tx.raw(ItemChange, &batch, "FETCH 5000 FROM diff_items", .{}) catch return error.Db;
+        for (rows) |r| {
+            const change = if (r.hash_a == null) "added" else if (r.hash_b == null) "deleted" else "modified";
+            if (r.hash_a == null) sum.added += 1 else if (r.hash_b == null) sum.deleted += 1 else sum.modified += 1;
+            out.print("{{\"change\":\"{s}\",\"path\":{f},\"hash_a\":{f},\"hash_b\":{f},\"size_a\":{f},\"size_b\":{f}}}\n", .{
+                change,                      std.json.fmt(r.path, .{}),
+                std.json.fmt(r.hash_a, .{}), std.json.fmt(r.hash_b, .{}),
+                std.json.fmt(r.size_a, .{}), std.json.fmt(r.size_b, .{}),
+            }) catch return error.WriteFailed;
+        }
+        if (rows.len < batch_rows) break;
+    }
+
+    if (annotated) {
+        _ = tx.exec(scope, "DECLARE diff_anns NO SCROLL CURSOR FOR SELECT d.id::text AS id, d.change, d.kind, d.class, " ++
+            "coalesce(lb.path, la.path) AS item_path FROM (" ++
+            "  SELECT coalesce(a.annotation_id, b.annotation_id) AS id, " ++
+            "    CASE WHEN a.annotation_id IS NULL THEN 'added' WHEN b.annotation_id IS NULL THEN 'removed' ELSE 'changed' END AS change, " ++
+            "    coalesce(b.kind, a.kind) AS kind, coalesce(b.class, a.class) AS class, a.item_id AS item_a, b.item_id AS item_b " ++
+            "  FROM da_alive a FULL JOIN db_alive b USING (annotation_id) " ++
+            "  WHERE a.annotation_id IS NULL OR b.annotation_id IS NULL OR a.kind IS DISTINCT FROM b.kind " ++
+            "    OR a.class IS DISTINCT FROM b.class OR a.geometry IS DISTINCT FROM b.geometry OR a.attrs IS DISTINCT FROM b.attrs) d " ++
+            "LEFT JOIN db_live lb ON lb.item_id = d.item_b LEFT JOIN da_live la ON la.item_id = d.item_a " ++
+            "ORDER BY coalesce(lb.path, la.path) COLLATE \"C\", d.id", .{}) catch return error.Db;
+        while (true) {
+            var batch = dbx.Run.init(gpa);
+            defer batch.deinit();
+            const rows = tx.raw(AnnChange, &batch, "FETCH 5000 FROM diff_anns", .{}) catch return error.Db;
+            for (rows) |r| {
+                if (std.mem.eql(u8, r.change, "added")) sum.ann_added += 1 else if (std.mem.eql(u8, r.change, "removed")) sum.ann_removed += 1 else sum.ann_changed += 1;
+                out.print("{{\"ann\":\"{s}\",\"id\":\"{s}\",\"kind\":{f},\"class\":{f},\"item_path\":{f}}}\n", .{
+                    r.change,                       r.id,
+                    std.json.fmt(r.kind, .{}),      std.json.fmt(r.class, .{}),
+                    std.json.fmt(r.item_path, .{}),
+                }) catch return error.WriteFailed;
+            }
+            if (rows.len < batch_rows) break;
+        }
+    }
+    out.flush() catch return error.WriteFailed;
+    return sum;
+}
+
+// ---------------------------------------------------------------------------
+// Merging: only the paths a branch touched.
+// ---------------------------------------------------------------------------
+
+/// One path a branch touched: what the branch, the base (main at the
+/// branch's start) and main now hold there — a hash, or null for absent.
+pub const BranchPath = struct {
+    pub const nilo_table = .projection;
+    path: []const u8,
+    theirs: ?[]const u8,
+    theirs_size: ?i64,
+    base: ?[]const u8,
+    ours: ?[]const u8,
+};
+
+/// A branch is main up to its start plus its own revisions, so every path
+/// it never touched is the base's by construction: a merge needs these
+/// paths and no others. Bytewise by path.
+pub fn branchPaths(
+    db: *dbx.sql.Db,
+    scope: anytype,
+    dataset_id: []const u8,
+    branch: []const u8,
+    branch_cutoff: []const u8,
+    start_cutoff: []const u8,
+    main_cutoff: []const u8,
+) Error![]BranchPath {
+    return db.raw(BranchPath, scope, "WITH t AS (SELECT DISTINCT ON (path) path, op, item_hash FROM item_revisions " ++
+        "  WHERE dataset_id = $1::uuid AND branch = $2 AND rev_id <= $3::uuid ORDER BY path, rev_id DESC), " ++
+        "b AS (SELECT DISTINCT ON (r.path) r.path, r.op, r.item_hash FROM item_revisions r JOIN t USING (path) " ++
+        "  WHERE r.dataset_id = $1::uuid AND r.branch = 'main' AND r.rev_id <= $4::uuid ORDER BY r.path, r.rev_id DESC), " ++
+        "m AS (SELECT DISTINCT ON (r.path) r.path, r.op, r.item_hash FROM item_revisions r JOIN t USING (path) " ++
+        "  WHERE r.dataset_id = $1::uuid AND r.branch = 'main' AND r.rev_id <= $5::uuid ORDER BY r.path, r.rev_id DESC) " ++
+        "SELECT t.path, CASE WHEN t.op = 'delete' THEN NULL ELSE encode(t.item_hash, 'hex') END AS theirs, " ++
+        "  i.size_bytes AS theirs_size, " ++
+        "  CASE WHEN b.op IS NULL OR b.op = 'delete' THEN NULL ELSE encode(b.item_hash, 'hex') END AS base, " ++
+        "  CASE WHEN m.op IS NULL OR m.op = 'delete' THEN NULL ELSE encode(m.item_hash, 'hex') END AS ours " ++
+        "FROM t LEFT JOIN b USING (path) LEFT JOIN m USING (path) LEFT JOIN items i ON i.item_hash = t.item_hash " ++
+        "ORDER BY t.path COLLATE \"C\"", .{ dataset_id, branch, branch_cutoff, start_cutoff, main_cutoff }) catch error.Db;
 }
 
 test "file types: one rule" {

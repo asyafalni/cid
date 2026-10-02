@@ -52,6 +52,32 @@ fn lessThan(_: void, a: FileInfo, b: FileInfo) bool {
     return std.mem.lessThan(u8, a.path, b.path);
 }
 
+/// The element of `items` (sorted bytewise by `.path`, as scans, states
+/// and the index all are) at `path`, by binary search: lookups inside a
+/// loop over every file stay O(n log n), never O(n²).
+pub fn findByPath(comptime T: type, items: []const T, path: []const u8) ?T {
+    var lo: usize = 0;
+    var hi: usize = items.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        switch (std.mem.order(u8, items[mid].path, path)) {
+            .lt => lo = mid + 1,
+            .gt => hi = mid,
+            .eq => return items[mid],
+        }
+    }
+    return null;
+}
+
+test "findByPath: bytewise order, hits and misses" {
+    const Item = struct { path: []const u8 };
+    const items = [_]Item{ .{ .path = "B" }, .{ .path = "a" }, .{ .path = "a/b" }, .{ .path = "c" } };
+    try std.testing.expectEqualStrings("a/b", findByPath(Item, &items, "a/b").?.path);
+    try std.testing.expectEqualStrings("B", findByPath(Item, &items, "B").?.path);
+    try std.testing.expect(findByPath(Item, &items, "b") == null);
+    try std.testing.expect(findByPath(Item, items[0..0], "a") == null);
+}
+
 fn loadIgnore(arena: std.mem.Allocator, io: std.Io, work_dir: std.Io.Dir) []const []const u8 {
     const text = work_dir.readFileAlloc(io, ".cidignore", arena, .limited(1024 * 1024)) catch
         return &.{};

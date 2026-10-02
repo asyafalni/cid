@@ -24,6 +24,13 @@ pub const Transport = struct {
         target: []const u8,
         body: []const u8,
     ) anyerror!Response,
+    /// GETs a presigned storage URL and hands its body, as a stream, to
+    /// `reader`: what large answers (a version's state) ride on.
+    get_url_fn: *const fn (ctx: *anyopaque, url: []const u8, reader: BodyReader) anyerror!void,
+
+    pub fn getUrl(self: Transport, url: []const u8, reader: BodyReader) anyerror!void {
+        return self.get_url_fn(self.ctx, url, reader);
+    }
 
     pub fn call(
         self: Transport,
@@ -35,6 +42,24 @@ pub const Transport = struct {
         return self.call_fn(self.ctx, arena, method, target, body);
     }
 };
+
+/// Something that reads a response body as it arrives.
+pub const BodyReader = struct {
+    ctx: *anyopaque,
+    read: *const fn (ctx: *anyopaque, body: *std.Io.Reader) anyerror!void,
+};
+
+/// A plain GET of `url` (a presigned storage URL: no token), the body
+/// handed to `reader` as a stream. Any client that can reach storage.
+pub fn readUrl(client: *std.http.Client, url: []const u8, reader: BodyReader) anyerror!void {
+    var req = try client.request(.GET, try std.Uri.parse(url), .{ .keep_alive = false, .redirect_behavior = .unhandled });
+    defer req.deinit();
+    try req.sendBodiless();
+    var response = try req.receiveHead(&.{});
+    if (response.head.status != .ok) return error.StorageRefused;
+    var transfer: [64 * 1024]u8 = undefined;
+    try reader.read(reader.ctx, response.reader(&transfer));
+}
 
 /// HTTP transport: bearer token, one connection per request.
 pub const HttpTransport = struct {
@@ -53,7 +78,12 @@ pub const HttpTransport = struct {
     }
 
     pub fn transport(self: *HttpTransport) Transport {
-        return .{ .ctx = self, .call_fn = call };
+        return .{ .ctx = self, .call_fn = call, .get_url_fn = getUrl };
+    }
+
+    fn getUrl(ctx: *anyopaque, url: []const u8, reader: BodyReader) anyerror!void {
+        const self: *HttpTransport = @ptrCast(@alignCast(ctx));
+        return readUrl(&self.http, url, reader);
     }
 
     fn call(
@@ -203,13 +233,7 @@ pub const Remote = struct {
     pub const StateItem = struct { path: []const u8, hash: []const u8, size: u64, split: ?[]const u8 = null, item_id: ?[]const u8 = null, width: ?u32 = null, height: ?u32 = null };
 
     pub fn state(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8) Error![]const StateItem {
-        const res = self.t.call(arena, "GET", try self.target(arena, "state/{s}", .{commit_id}), "") catch
-            return error.ServerUnreachable;
-        if (res.status == .not_found) return error.NoSuchDataset;
-        if (res.status != .ok) return error.ServerRefused;
-        const State = struct { commit: []const u8, items: []const StateItem };
-        const parsed = parse(State, arena, res.body) orelse return error.ServerRefused;
-        return parsed.items;
+        return (try self.version(arena, commit_id, false)).items;
     }
 
     pub const TagResult = struct { release: []const u8, commit: []const u8, manifest_sha256: []const u8, items: u64 };
@@ -326,18 +350,76 @@ pub const Remote = struct {
         annotations: []const Annotation,
     };
 
-    pub fn stateAnnotated(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8) Error!AnnotatedState {
-        const res = self.t.call(arena, "GET", try self.target(arena, "state/{s}", .{commit_id}), "") catch
+    pub const DiffSummary = struct { added: u64 = 0, modified: u64 = 0, deleted: u64 = 0, ann_added: u64 = 0, ann_changed: u64 = 0, ann_removed: u64 = 0 };
+
+    /// One change in a diff: an item (`change` set) or an annotation
+    /// (`ann` set). Strings are valid only during the visit.
+    pub const DiffLine = struct {
+        change: ?[]const u8 = null,
+        path: ?[]const u8 = null,
+        hash_a: ?[]const u8 = null,
+        hash_b: ?[]const u8 = null,
+        size_a: ?u64 = null,
+        size_b: ?u64 = null,
+        ann: ?[]const u8 = null,
+        kind: ?[]const u8 = null,
+        class: ?[]const u8 = null,
+        item_path: ?[]const u8 = null,
+    };
+
+    pub const DiffVisitor = struct {
+        ctx: *anyopaque,
+        visit: *const fn (ctx: *anyopaque, line: DiffLine) anyerror!void,
+    };
+
+    /// What changed from `a` to `b`, computed by the server and read as it
+    /// streams: each change goes to `visitor` and is gone, so a diff of two
+    /// million-item versions holds one line at a time. The SHA-256 is
+    /// checked over every byte; on a mismatch the error comes after the
+    /// visits, so a caller that printed them must say the output is void.
+    pub fn compare(self: *const Remote, arena: std.mem.Allocator, a: []const u8, b: []const u8, visitor: DiffVisitor) Error!DiffSummary {
+        const res = self.t.call(arena, "GET", try self.target(arena, "compare/{s}/{s}", .{ a, b }), "") catch
             return error.ServerUnreachable;
         if (res.status == .not_found) return error.NoSuchDataset;
         if (res.status != .ok) return error.ServerRefused;
-        const State = struct {
-            commit: []const u8,
-            items: []const StateItem,
-            annotations: []const Annotation = &.{},
+        const Where = struct { url: []const u8, sha256: []const u8, summary: DiffSummary };
+        const where = parse(Where, arena, res.body) orelse return error.ServerRefused;
+        var reading: DiffReading = .{ .visitor = visitor, .scratch = .init(std.heap.page_allocator) };
+        defer reading.scratch.deinit();
+        self.t.getUrl(where.url, .{ .ctx = &reading, .read = DiffReading.read }) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.BadState => error.ServerRefused,
+            else => error.ServerUnreachable,
         };
-        const parsed = parse(State, arena, res.body) orelse return error.ServerRefused;
-        return .{ .items = parsed.items, .annotations = parsed.annotations };
+        if (!std.mem.eql(u8, &reading.sha256_hex, where.sha256)) return error.ServerRefused;
+        return where.summary;
+    }
+
+    pub fn stateAnnotated(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8) Error!AnnotatedState {
+        return self.version(arena, commit_id, true);
+    }
+
+    /// A version's state, downloaded from storage as the server wrote it
+    /// (`cid-state 1`: gzip JSON lines, items by path then annotations) and
+    /// read as it arrives — never a whole response held twice. Its SHA-256
+    /// is checked over every byte (invariant 14); a mismatch is an error,
+    /// not a partial state.
+    pub fn version(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8, with_annotations: bool) Error!AnnotatedState {
+        const res = self.t.call(arena, "GET", try self.target(arena, "version/{s}", .{commit_id}), "") catch
+            return error.ServerUnreachable;
+        if (res.status == .not_found) return error.NoSuchDataset;
+        if (res.status != .ok) return error.ServerRefused;
+        const Where = struct { url: []const u8, sha256: []const u8 };
+        const where = parse(Where, arena, res.body) orelse return error.ServerRefused;
+
+        var reading: StateReading = .{ .arena = arena, .with_annotations = with_annotations };
+        self.t.getUrl(where.url, .{ .ctx = &reading, .read = StateReading.read }) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.BadState => error.ServerRefused,
+            else => error.ServerUnreachable,
+        };
+        if (!std.mem.eql(u8, &reading.sha256_hex, where.sha256)) return error.ServerRefused;
+        return .{ .items = reading.items.items, .annotations = reading.annotations.items };
     }
 
     pub const Download = struct { hash: []const u8, url: []const u8 };
@@ -377,6 +459,82 @@ pub const Remote = struct {
         if (res.status == .not_found) return error.NoSuchDataset;
         if (res.status != .ok) return error.ServerRefused;
         return parse(RowDiff, arena, res.body) orelse error.ServerRefused;
+    }
+};
+
+/// Reads a gzip stream of JSON lines as it arrives: every compressed byte
+/// hashed, the first line checked against `header`, each further line
+/// handed to `line` (valid only for that call). Answers the SHA-256.
+fn readGzLines(body: *std.Io.Reader, header: []const u8, ctx: anytype, comptime line: fn (@TypeOf(ctx), []const u8) anyerror!void) anyerror![64]u8 {
+    var hash_buf: [64 * 1024]u8 = undefined;
+    var hashed = body.hashed(std.crypto.hash.sha2.Sha256.init(.{}), &hash_buf);
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var gz: std.compress.flate.Decompress = .init(&hashed.reader, .gzip, &window);
+    var text: std.Io.Writer.Allocating = .init(std.heap.page_allocator);
+    defer text.deinit();
+    var first = true;
+    while (true) {
+        text.clearRetainingCapacity();
+        _ = gz.reader.streamDelimiter(&text.writer, '\n') catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return error.BadState,
+        };
+        gz.reader.toss(1);
+        if (first) {
+            first = false;
+            if (!std.mem.startsWith(u8, text.written(), header)) return error.BadState;
+            continue;
+        }
+        try line(ctx, text.written());
+    }
+    // Whatever follows the compressed stream is hashed too.
+    _ = hashed.reader.discardRemaining() catch return error.BadState;
+    var digest: [32]u8 = undefined;
+    hashed.hasher.final(&digest);
+    return std.fmt.bytesToHex(digest, .lower);
+}
+
+/// A `cid-state 1` stream, into the arena: items, then (when asked)
+/// annotations.
+const StateReading = struct {
+    arena: std.mem.Allocator,
+    with_annotations: bool,
+    items: std.ArrayList(Remote.StateItem) = .empty,
+    annotations: std.ArrayList(Remote.Annotation) = .empty,
+    sha256_hex: [64]u8 = @splat('0'),
+
+    fn read(ctx: *anyopaque, body: *std.Io.Reader) anyerror!void {
+        const self: *StateReading = @ptrCast(@alignCast(ctx));
+        self.sha256_hex = try readGzLines(body, "{\"cid\":\"state\",\"v\":1,", self, line);
+    }
+
+    fn line(self: *StateReading, text: []const u8) anyerror!void {
+        const opts: std.json.ParseOptions = .{ .allocate = .alloc_always, .ignore_unknown_fields = true };
+        if (std.mem.startsWith(u8, text, "{\"path\":")) {
+            try self.items.append(self.arena, std.json.parseFromSliceLeaky(Remote.StateItem, self.arena, text, opts) catch return error.BadState);
+        } else if (self.with_annotations) {
+            try self.annotations.append(self.arena, std.json.parseFromSliceLeaky(Remote.Annotation, self.arena, text, opts) catch return error.BadState);
+        }
+    }
+};
+
+/// A `cid-diff 1` stream, a line at a time to a visitor; each line's
+/// strings live in a scratch arena reset for the next.
+const DiffReading = struct {
+    visitor: Remote.DiffVisitor,
+    scratch: std.heap.ArenaAllocator,
+    sha256_hex: [64]u8 = @splat('0'),
+
+    fn read(ctx: *anyopaque, body: *std.Io.Reader) anyerror!void {
+        const self: *DiffReading = @ptrCast(@alignCast(ctx));
+        self.sha256_hex = try readGzLines(body, "{\"cid\":\"diff\",\"v\":1,", self, line);
+    }
+
+    fn line(self: *DiffReading, text: []const u8) anyerror!void {
+        _ = self.scratch.reset(.retain_capacity);
+        const parsed = std.json.parseFromSliceLeaky(Remote.DiffLine, self.scratch.allocator(), text, .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch
+            return error.BadState;
+        try self.visitor.visit(self.visitor.ctx, parsed);
     }
 };
 

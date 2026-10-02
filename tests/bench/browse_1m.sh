@@ -122,6 +122,22 @@ C=$(add_file "browse-$RUN")
 timed "first view: index built from history" "$API/browse?commit=$C&limit=120"
 echo "  server peak memory: $(peak)"
 
+echo "cid diff between two 1M-item versions (compared on the server), fresh server"
+stop; start
+C=$(add_file "diff-$RUN")
+timed "version file, first time (written)" "$API/version/$C"
+timed "version file again (kept)" "$API/version/$C"
+echo "  server peak memory: $(peak)"
+WS=$(mktemp -d)
+mkdir "$WS/.cid"
+printf '.{ .address = "cid@127.0.0.1:%s", .git_url = "g@h:bench.git", .kind = "annotated" }\n' "$NAME" >"$WS/.cid/config.zon"
+for pass in first second; do
+  (cd "$WS" && CID_SERVER="http://127.0.0.1:$PORT" /usr/bin/time -f "  cid diff v1 $pass time: %e s, client peak %M KB" \
+    "$(realpath "$OLDPWD/$CID" 2>/dev/null || echo "$CID")" diff v1 "$C" 2>&1 >/dev/null | tail -1)
+done
+echo "  server peak memory: $(peak)"
+rm -rf "$WS"
+
 stop; start
 COMMIT=$(curl -sf -H "$AUTH" "$API/releases" | sed -n 's/.*"name":"v1","commit":"\([^"]*\)".*/\1/p')
 echo "Browse release v1 ($COMMIT), fresh server"

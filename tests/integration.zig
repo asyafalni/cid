@@ -361,7 +361,14 @@ const DirectTransport = struct {
     auth: []const u8,
 
     fn transport(self: *DirectTransport) cid.client.remote.Transport {
-        return .{ .ctx = self, .call_fn = call };
+        return .{ .ctx = self, .call_fn = call, .get_url_fn = getUrl };
+    }
+
+    fn getUrl(ctx: *anyopaque, url: []const u8, reader: cid.client.remote.BodyReader) anyerror!void {
+        const self: *DirectTransport = @ptrCast(@alignCast(ctx));
+        var http: std.http.Client = .{ .allocator = std.testing.allocator, .io = self.deps.io };
+        defer http.deinit();
+        return cid.client.remote.readUrl(&http, url, reader);
     }
 
     fn call(
@@ -1431,6 +1438,44 @@ test "annotated: the platform writes revisions, the server commits, state compos
     try std.testing.expectEqual(@as(i64, 10), original.geometry.?.object.get("x").?.integer);
     try std.testing.expectEqualStrings(c1, original.commit.?);
 
+    // cid diff: the server compares, the changes stream in. One box moved,
+    // one removed; no item changed.
+    const Collected = struct {
+        arena: std.mem.Allocator,
+        lines: std.ArrayList([]const u8) = .empty,
+        fn visit(ctx: *anyopaque, line: cid.client.remote.Remote.DiffLine) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            const text = if (line.ann) |change|
+                try std.fmt.allocPrint(self.arena, "ann {s} {s} {s} on {s}", .{ change, line.kind.?, line.class.?, line.item_path.? })
+            else
+                try std.fmt.allocPrint(self.arena, "{s} {s}", .{ line.change.?, line.path.? });
+            try self.lines.append(self.arena, text);
+        }
+    };
+    var seen: Collected = .{ .arena = arena };
+    const sum = try remote.compare(arena, c1, c2, .{ .ctx = &seen, .visit = Collected.visit });
+    try std.testing.expectEqual(@as(u64, 0), sum.added + sum.modified + sum.deleted);
+    try std.testing.expectEqual(@as(u64, 1), sum.ann_changed);
+    try std.testing.expectEqual(@as(u64, 1), sum.ann_removed);
+    try std.testing.expectEqual(@as(usize, 2), seen.lines.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, seen.lines.items[0], "frames/0001.jpg") != null);
+    var changed_seen = false;
+    for (seen.lines.items) |l| {
+        if (std.mem.eql(u8, l, "ann changed box person on frames/0001.jpg")) changed_seen = true;
+    }
+    try std.testing.expect(changed_seen);
+    // Kept: asked again, served from version_diffs, the same.
+    const kept_diffs = (try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM version_diffs WHERE commit_a = $1::uuid AND commit_b = $2::uuid", .{ @as([]const u8, c1), @as([]const u8, c2) })).?;
+    try std.testing.expectEqual(@as(i64, 1), kept_diffs);
+    var again: Collected = .{ .arena = arena };
+    const sum2 = try remote.compare(arena, c1, c2, .{ .ctx = &again, .visit = Collected.visit });
+    try std.testing.expectEqual(sum.ann_changed, sum2.ann_changed);
+    try std.testing.expectEqual(seen.lines.items.len, again.lines.items.len);
+    // And the other way round: the box comes back.
+    var back: Collected = .{ .arena = arena };
+    const sum3 = try remote.compare(arena, c2, c1, .{ .ctx = &back, .visit = Collected.visit });
+    try std.testing.expectEqual(@as(u64, 1), sum3.ann_added);
+
     // Browse: each version as it was, a page at a time, the same contract
     // in both builds (DuckDB over a Parquet index; state rows without).
     var browse_tmp = std.testing.tmpDir(.{ .iterate = true });
@@ -2060,6 +2105,13 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     defer browse_tmp.cleanup();
     deps.browse_dir = try browse_tmp.dir.realPathFileAlloc(io, ".", arena);
     const released = try remote.tag(arena, "v1.0.0");
+    // The version as the CLI downloads it: provisional while the worker
+    // has yet to look (no dimensions, so none are frozen blank).
+    const VersionWhere = struct { url: []const u8, sha256: []const u8, final: bool };
+    const early_res = cid.api.handle(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/sniff/-/version/{s}", .{released.commit}), "Bearer test-token", "");
+    const early = try std.json.parseFromSliceLeaky(VersionWhere, arena, early_res.body, .{ .ignore_unknown_fields = true });
+    try std.testing.expect(!early.final);
+    try std.testing.expect((try remote.state(arena, released.commit))[0].width == null);
 
     // Before the worker: an honest octet-stream.
     {
@@ -2087,6 +2139,26 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     }
     const thumb = try s3c.getObjectAlloc(&scope, try cid.preview.thumbKey(arena, &hh));
     try std.testing.expect(thumb.len > 100);
+    {
+        // Once the provisional file has had its time, the next is written
+        // with the dimensions, and is final: kept, never written again.
+        _ = try db.exec(&fscope, "UPDATE commits SET state_built_at = now() - interval '1 day' WHERE commit_id = $1::uuid", .{@as([]const u8, released.commit)});
+        const items = try remote.state(arena, released.commit);
+        try std.testing.expectEqual(@as(?u32, 96), items[0].width);
+        try std.testing.expectEqual(@as(?u32, 64), items[0].height);
+        const where_res = cid.api.handle(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/sniff/-/version/{s}", .{released.commit}), "Bearer test-token", "");
+        const where = try std.json.parseFromSliceLeaky(VersionWhere, arena, where_res.body, .{ .ignore_unknown_fields = true });
+        try std.testing.expect(where.final);
+        try std.testing.expect(!std.mem.eql(u8, where.sha256, early.sha256));
+        // A state file changed in storage is refused, never half-trusted.
+        const ds_id = (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/sniff'", .{})).?;
+        const key = try std.fmt.allocPrint(arena, "states/{s}/{s}-{s}.jsonl.gz", .{ ds_id, released.commit, where.sha256[0..16] });
+        const genuine = try s3c.getObjectAlloc(&scope, key);
+        try s3c.putObject(&scope, key, "not the state you are looking for");
+        try std.testing.expectError(error.ServerRefused, remote.state(arena, released.commit));
+        try s3c.putObject(&scope, key, genuine);
+        try std.testing.expectEqual(@as(usize, 1), (try remote.state(arena, released.commit)).len);
+    }
     {
         const target = try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/sniff/-/browse?commit={s}&item=cli.png", .{released.commit});
         const res = cid.api.handle(arena, &deps, &scope, "GET", target, "Bearer test-token", "");
@@ -2345,6 +2417,30 @@ test "row diffs: rows added and removed between versions, cached, withheld when 
         _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
         _ = try cid.client.workspace.commit(arena, io, &pws, "people", "user:test");
         _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    }
+
+    // The two versions, compared on the server: both files modified, the
+    // hashes on each line so a client can ask for the table's rows.
+    {
+        const commits = try db.raw([]const u8, &fscope, "SELECT c.commit_id::text FROM commits c JOIN datasets d USING (dataset_id) " ++
+            "WHERE d.name = 'test/datasets/rowdiff' ORDER BY c.commit_id", .{});
+        try std.testing.expectEqual(@as(usize, 2), commits.len);
+        const Seen = struct {
+            arena: std.mem.Allocator,
+            paths: std.ArrayList([]const u8) = .empty,
+            table_hash_b: ?[]const u8 = null,
+            fn visit(ctx: *anyopaque, line: cid.client.remote.Remote.DiffLine) anyerror!void {
+                const self: *@This() = @ptrCast(@alignCast(ctx));
+                try std.testing.expectEqualStrings("modified", line.change.?);
+                try self.paths.append(self.arena, try self.arena.dupe(u8, line.path.?));
+                if (std.mem.eql(u8, line.path.?, "people.csv")) self.table_hash_b = try self.arena.dupe(u8, line.hash_b.?);
+            }
+        };
+        var seen: Seen = .{ .arena = arena };
+        const sum = try remote.compare(arena, commits[0], commits[1], .{ .ctx = &seen, .visit = Seen.visit });
+        try std.testing.expectEqual(@as(u64, 2), sum.modified);
+        try std.testing.expectEqualStrings("notes.txt", seen.paths.items[0]); // bytewise: 'n' < 'p'
+        try std.testing.expectEqualStrings(&hashes[1], seen.table_hash_b.?);
     }
 
     const rd = try remote.rowDiff(arena, &hashes[0], "people.csv", &hashes[1], "people.csv");

@@ -211,6 +211,10 @@ fn handleInner(
         return checkHashes(arena, deps, scope, ds, body);
     if (eql(method, "POST") and eql(route.action, "push"))
         return push(arena, deps, scope, caller, ds, body);
+    if (eql(method, "GET") and std.mem.startsWith(u8, route.action, "compare/"))
+        return compare(arena, deps, scope, ds, route.action["compare/".len..]);
+    if (eql(method, "GET") and std.mem.startsWith(u8, route.action, "version/"))
+        return versionFile(arena, deps, scope, ds, route.action["version/".len..]);
     if (eql(method, "GET") and std.mem.startsWith(u8, route.action, "state/"))
         return state(arena, deps, scope, ds, route.action["state/".len..]);
     if (eql(method, "POST") and eql(route.action, "downloads"))
@@ -1306,9 +1310,169 @@ fn push(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, d
     return json(arena, .ok, .{ .head = last_commit_id, .commits_recorded = req.commits.len });
 }
 
+/// How long a provisional state file (some item still waiting for its
+/// media metadata) is handed out before it is written again.
+const state_provisional_secs = 10 * 60;
+
+/// A version as the CLI downloads it: a gzip file of JSON lines in
+/// storage, written by one streamed pass (core/version.zig) and handed
+/// out as a presigned URL with its SHA-256, which the client checks as it
+/// reads (invariant 14). Written once per version and kept; a version
+/// whose media metadata is still arriving gets a provisional file,
+/// written again after a while, so dimensions are never frozen blank.
+/// The server's memory stays one batch deep at any size.
+fn versionFile(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit_id: []const u8) HandleError!Response {
+    if (Uuid.parse(commit_id) == error.InvalidUuid)
+        return errorResponse(arena, .bad_request, "that is not a commit id", "Run 'cid log' to list commits.");
+    const Kept = struct {
+        pub const nilo_table = .projection;
+        sha: ?[]const u8,
+        final: bool,
+        fresh: bool,
+    };
+    const kept = (deps.db.rawOne(Kept, scope, "SELECT state_sha256 AS sha, state_final AS final, " ++
+        "coalesce(state_built_at > now() - interval '" ++ std.fmt.comptimePrint("{d}", .{state_provisional_secs}) ++ " seconds', false) AS fresh " ++
+        "FROM commits WHERE commit_id = $1::uuid AND dataset_id = $2::uuid", .{ commit_id, ds.id }) catch return error.Db) orelse
+        return errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits.");
+    if (kept.sha) |sha| if (kept.final or kept.fresh) {
+        const url = deps.s3.presignGet(scope, try stateKey(arena, ds.id, commit_id, sha), presign_secs) catch return error.Storage;
+        return json(arena, .ok, .{ .commit = commit_id, .url = url, .sha256 = sha, .final = kept.final });
+    };
+
+    // Write it: the pass → gzip → hashed → a file in the work folder.
+    const path = try std.fmt.allocPrint(arena, "{s}/{s}.state.gz", .{ deps.work_dir, commit_id });
+    const gz = try GzFile.open(deps, path);
+    defer gz.close(deps);
+    const annotated = eql(ds.kind, "annotated");
+    versions.stateHeader(gz.writer(), commit_id, annotated) catch return error.Storage;
+    const written = versions.pass(deps.gpa, deps.db, scope, ds.id, commit_id, .{ .state = gz.writer(), .annotated = annotated }) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.WriteFailed => error.Storage,
+        else => error.Db,
+    };
+    const sha = try gz.finish();
+    const final = !written.media_pending;
+    // Named by its own hash: the same content is the same object.
+    if (!(kept.sha != null and eql(kept.sha.?, &sha)))
+        deps.s3.putFile(scope, deps.io, try stateKey(arena, ds.id, commit_id, &sha), path) catch return error.Storage;
+    _ = deps.db.exec(scope, "UPDATE commits SET state_sha256 = $2, state_final = $3, state_built_at = now() WHERE commit_id = $1::uuid", .{ commit_id, @as([]const u8, &sha), final }) catch return error.Db;
+    const url = deps.s3.presignGet(scope, try stateKey(arena, ds.id, commit_id, &sha), presign_secs) catch return error.Storage;
+    return json(arena, .ok, .{ .commit = commit_id, .url = url, .sha256 = @as([]const u8, &sha), .final = final });
+}
+
+/// A gzip file of JSON lines being written in the work folder, its SHA-256
+/// taken over the compressed bytes as they go out: the shape of every
+/// large answer the CLI downloads (a version, a diff).
+const GzFile = struct {
+    path: []const u8,
+    file: std.Io.File,
+    fw: std.Io.File.Writer,
+    hashed: std.Io.Writer.Hashed(std.crypto.hash.sha2.Sha256),
+    gz: std.compress.flate.Compress,
+    file_buf: [64 * 1024]u8,
+    hash_buf: [64 * 1024]u8,
+    window: [std.compress.flate.max_window_len]u8,
+
+    fn open(deps: *Deps, path: []const u8) HandleError!*GzFile {
+        const cwd = std.Io.Dir.cwd();
+        cwd.createDirPath(deps.io, deps.work_dir) catch return error.Storage;
+        const self = deps.gpa.create(GzFile) catch return error.OutOfMemory;
+        errdefer deps.gpa.destroy(self);
+        self.path = path;
+        self.file = cwd.createFile(deps.io, path, .{ .truncate = true }) catch return error.Storage;
+        self.fw = self.file.writer(deps.io, &self.file_buf);
+        self.hashed = self.fw.interface.hashed(std.crypto.hash.sha2.Sha256.init(.{}), &self.hash_buf);
+        self.gz = std.compress.flate.Compress.init(&self.hashed.writer, &self.window, .gzip, .level_1) catch {
+            self.file.close(deps.io);
+            return error.Storage;
+        };
+        return self;
+    }
+
+    fn writer(self: *GzFile) *std.Io.Writer {
+        return &self.gz.writer;
+    }
+
+    fn finish(self: *GzFile) HandleError![64]u8 {
+        self.gz.finish() catch return error.Storage;
+        self.hashed.writer.flush() catch return error.Storage;
+        self.fw.interface.flush() catch return error.Storage;
+        var digest: [32]u8 = undefined;
+        self.hashed.hasher.final(&digest);
+        return std.fmt.bytesToHex(digest, .lower);
+    }
+
+    /// Closes and removes the file (it has gone to storage, or failed).
+    fn close(self: *GzFile, deps: *Deps) void {
+        self.file.close(deps.io);
+        std.Io.Dir.cwd().deleteFile(deps.io, self.path) catch {};
+        deps.gpa.destroy(self);
+    }
+};
+
+/// What changed from one version to another, as the CLI reads it (`cid
+/// diff`): computed on the server in one streamed pass over both
+/// (core/version.zig), kept in storage as a gzip file of JSON lines with
+/// its SHA-256, and handed out presigned with the summary counts. Both
+/// versions are sealed, so a diff is written once and kept.
+fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, pair: []const u8) HandleError!Response {
+    const slash = std.mem.indexOfScalar(u8, pair, '/') orelse return error.BadRequest;
+    const a = pair[0..slash];
+    const b = pair[slash + 1 ..];
+    if (Uuid.parse(a) == error.InvalidUuid or Uuid.parse(b) == error.InvalidUuid)
+        return errorResponse(arena, .bad_request, "those are not commit ids", "Run 'cid log' to list commits.");
+    const Kept = struct {
+        pub const nilo_table = .projection;
+        sha256: []const u8,
+        summary: []const u8,
+    };
+    if (deps.db.rawOne(Kept, scope, "SELECT sha256, summary::text AS summary FROM version_diffs WHERE commit_a = $1::uuid AND commit_b = $2::uuid AND dataset_id = $3::uuid", .{ a, b, ds.id }) catch return error.Db) |kept| {
+        const url = deps.s3.presignGet(scope, try diffKey(arena, ds.id, a, b, kept.sha256), presign_secs) catch return error.Storage;
+        return json(arena, .ok, .{ .url = url, .sha256 = kept.sha256, .summary = jsonValue(arena, kept.summary) });
+    }
+
+    const path = try std.fmt.allocPrint(arena, "{s}/{s}-{s}.diff.gz", .{ deps.work_dir, a, b });
+    const gz = try GzFile.open(deps, path);
+    defer gz.close(deps);
+    versions.diffHeader(gz.writer(), a, b) catch return error.Storage;
+    const summary = versions.diffPass(deps.gpa, deps.db, scope, ds.id, a, b, eql(ds.kind, "annotated"), gz.writer()) catch |err| return switch (err) {
+        error.NoSuchCommit => errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits."),
+        error.OutOfMemory => error.OutOfMemory,
+        error.WriteFailed => error.Storage,
+        else => error.Db,
+    };
+    const sha = try gz.finish();
+    deps.s3.putFile(scope, deps.io, try diffKey(arena, ds.id, a, b, &sha), path) catch return error.Storage;
+    const summary_text = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(summary, .{})});
+    _ = deps.db.exec(scope, "INSERT INTO version_diffs (dataset_id, commit_a, commit_b, sha256, summary) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::jsonb) " ++
+        "ON CONFLICT DO NOTHING", .{ ds.id, a, b, @as([]const u8, &sha), summary_text }) catch return error.Db;
+    const url = deps.s3.presignGet(scope, try diffKey(arena, ds.id, a, b, &sha), presign_secs) catch return error.Storage;
+    return json(arena, .ok, .{ .url = url, .sha256 = @as([]const u8, &sha), .summary = summary });
+}
+
+fn diffKey(arena: std.mem.Allocator, dataset_id: []const u8, a: []const u8, b: []const u8, sha: []const u8) HandleError![]const u8 {
+    return std.fmt.allocPrint(arena, "diffs/{s}/{s}-{s}-{s}.jsonl.gz", .{ dataset_id, a, b, sha[0..16] });
+}
+
+fn stateKey(arena: std.mem.Allocator, dataset_id: []const u8, commit_id: []const u8, sha: []const u8) HandleError![]const u8 {
+    return std.fmt.allocPrint(arena, "states/{s}/{s}-{s}.jsonl.gz", .{ dataset_id, commit_id, sha[0..16] });
+}
+
+/// The largest version the dashboard's JSON state answers in one reply;
+/// beyond it the server would hold the whole version, so it says so
+/// instead. (The CLI reads version/<commit>, which has no ceiling.)
+const json_state_max_items = 200_000;
+
 fn state(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit_id: []const u8) HandleError!Response {
     if (Uuid.parse(commit_id) == error.InvalidUuid)
         return errorResponse(arena, .bad_request, "that is not a commit id", "Run 'cid log' to list commits.");
+    const size = versions.stats(arena, deps.db, scope, ds.id, commit_id) catch |err| switch (err) {
+        error.NoSuchCommit => return errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits."),
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.Db,
+    };
+    if (size.items > json_state_max_items)
+        return errorResponse(arena, .payload_too_large, "this version is too large to send in one reply", "Use the CLI: cid clone, cid diff.");
 
     const rows = release_mod.stateRows(arena, deps.db, scope, ds.id, commit_id) catch |err| switch (err) {
         error.NoSuchCommit => return errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits."),
@@ -1643,42 +1807,34 @@ fn merge(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, 
 
     const main_head = (deps.db.rawOne([]const u8, scope, "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = 'main' AND kind = 'branch'", .{ds.id}) catch return error.Db) orelse return error.Db;
 
-    const base = release_mod.stateRows(arena, deps.db, scope, ds.id, branch_start) catch return error.Db;
-    const ours = release_mod.stateRows(arena, deps.db, scope, ds.id, main_head) catch return error.Db;
-    const theirs = release_mod.stateRows(arena, deps.db, scope, ds.id, branch_head) catch return error.Db;
+    // Only the paths the branch touched can differ from the base; the
+    // three sides of each come from one query (core/version.zig).
+    const Cutoff = struct {
+        pub const nilo_table = .projection;
+        branch: []const u8,
+        start: []const u8,
+        main: []const u8,
+    };
+    const cut = (deps.db.rawOne(Cutoff, scope, "SELECT (SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid) AS branch, " ++
+        "(SELECT cutoff_rev::text FROM commits WHERE commit_id = $2::uuid) AS start, " ++
+        "(SELECT cutoff_rev::text FROM commits WHERE commit_id = $3::uuid) AS main", .{ branch_head, branch_start, main_head }) catch return error.Db) orelse return error.Db;
+    const touched = versions.branchPaths(deps.db, scope, ds.id, req.name, cut.branch, cut.start, cut.main) catch return error.Db;
 
-    // The branch's net changes, and main's changed paths, both vs the base.
     const BranchChange = union(enum) { add: struct { hash: []const u8, size: u64 }, delete };
     var branch_changes: std.StringArrayHashMapUnmanaged(BranchChange) = .empty;
-    for (theirs) |item| {
-        const in_base = findRow(base, item.path);
-        if (in_base == null or !std.mem.eql(u8, in_base.?.hash_hex, item.hash_hex))
-            try branch_changes.put(arena, item.path, .{ .add = .{ .hash = item.hash_hex, .size = item.size } });
-    }
-    for (base) |item| {
-        if (findRow(theirs, item.path) == null)
-            try branch_changes.put(arena, item.path, .delete);
-    }
-
     var conflicts: std.ArrayList([]const u8) = .empty;
-    for (branch_changes.keys(), branch_changes.values()) |path, change| {
-        const in_base = findRow(base, path);
-        const in_main = findRow(ours, path);
-        const main_changed = blk: {
-            if (in_base == null) break :blk in_main != null;
-            if (in_main == null) break :blk true;
-            break :blk !std.mem.eql(u8, in_base.?.hash_hex, in_main.?.hash_hex);
-        };
-        if (!main_changed) continue;
-        const same = switch (change) {
-            .add => |a| in_main != null and std.mem.eql(u8, in_main.?.hash_hex, a.hash),
-            .delete => in_main == null,
-        };
-        if (same) {
-            _ = branch_changes.swapRemove(path);
-        } else {
-            try conflicts.append(arena, path);
+    for (touched) |p| {
+        if (optEql(p.theirs, p.base)) continue; // touched, but back where it started
+        const main_changed = !optEql(p.ours, p.base);
+        if (main_changed) {
+            if (optEql(p.theirs, p.ours)) continue; // both sides made the same change
+            try conflicts.append(arena, p.path);
+            continue;
         }
+        try branch_changes.put(arena, p.path, if (p.theirs) |h|
+            .{ .add = .{ .hash = h, .size = @intCast(p.theirs_size orelse 0) } }
+        else
+            .delete);
     }
     if (conflicts.items.len > 0)
         return json(arena, .conflict, .{ .conflicts = conflicts.items });
@@ -1895,11 +2051,9 @@ fn isPurged(db: *dbx.sql.Db, scope: anytype, hash: []const u8) HandleError!bool 
     return row != null;
 }
 
-fn findRow(rows: []const release_mod.StateRow, path: []const u8) ?release_mod.StateRow {
-    for (rows) |row| {
-        if (std.mem.eql(u8, row.path, path)) return row;
-    }
-    return null;
+fn optEql(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a == null or b == null) return a == null and b == null;
+    return std.mem.eql(u8, a.?, b.?);
 }
 
 // ---------------------------------------------------------------------------

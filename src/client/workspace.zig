@@ -528,10 +528,7 @@ fn matchSpec(specs: []const []const u8, path: []const u8) ?usize {
 }
 
 fn findFile(files: []const scan.FileInfo, path: []const u8) ?scan.FileInfo {
-    for (files) |f| {
-        if (std.mem.eql(u8, f.path, path)) return f;
-    }
-    return null;
+    return scan.findByPath(scan.FileInfo, files, path);
 }
 
 test "address parsing" {
