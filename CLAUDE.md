@@ -295,6 +295,12 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   reverse proxy (`deploy/`).
 - **DuckDB** (C API, in-process on the server) writes and reads Parquet manifests,
   computes large diffs, and gives row-level diffs of CSV, Parquet and JSONL files.
+  It is in the **server build** only (`zig build -Dduckdb`, `src/store/duck.zig`):
+  libduckdb is a lazy dependency, linked dynamically and installed beside the binary,
+  each database confined to one directory with one thread and a memory ceiling. The
+  plain build is the CLI download and never fetches it; there every DuckDB call
+  answers `error.Unavailable` and the feature says, in words, that it needs the
+  server build. Table statistics (preview worker) are the first user.
 - **The dashboard** is served by the cid server. Its browse API queries release
   manifests with DuckDB (filters, facets, cursors) and returns presigned preview URLs;
   it never scans raw files on page load.
@@ -523,7 +529,8 @@ docker-compose.test.yml      timescaledb + seaweedfs, pinned versions
 ## Build and test
 
 ```bash
-zig build                          # debug
+zig build                          # debug (the CLI build: no DuckDB)
+zig build -Dduckdb                 # the server build: links DuckDB (Linux x86-64)
 zig build -Doptimize=ReleaseFast   # release
 zig build test                     # unit tests, no services
 docker compose -f docker-compose.test.yml up -d
@@ -532,7 +539,7 @@ zig build integration              # needs the services
 pnpm --dir web install
 pnpm --dir web dev                 # dashboard dev server, proxies the API to cid serve
 pnpm --dir web build               # builds web/dist, embedded by `zig build`
-pnpm --dir web test:e2e            # Playwright: UX budgets, axe, keyboard
+pnpm --dir web test:e2e            # Playwright, against the server build (zig build -Dduckdb)
 ```
 
 Dashboard changes must pass `pnpm --dir web lint`, `pnpm --dir web typecheck` and the
@@ -545,7 +552,8 @@ test binary directly to see the truth; re-check when a 0.16.x patch lands.
 Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
 `zig-pkg/` holds unpacked dependencies), `zig build test`, and
 `zig build integration` when touching `store/`, `core/`, `client/`, `server/`,
-`manifest/`, `tabular/` or SQL.
+`manifest/`, `tabular/` or SQL. Run the tests in **both builds** (`-Dduckdb` too)
+when touching anything that calls DuckDB: each build has its own branch to keep true.
 
 **Tests that must always exist and pass**
 - Release round trip, for both dataset kinds: changes → commit → release →

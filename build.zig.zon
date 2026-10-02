@@ -8,6 +8,12 @@
             .url = "git+https://github.com/nevindra/nilo#401cc94ad82babd005cdfa61dbfab3fe05b3d2e8",
             .hash = "nilo-0.6.0-5HEqwsP0gAA8isiTXsktcjrFPkk7uKlveM-kMbRg1Gfc",
         },
+        .duckdb = .{
+            .url = "https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-linux-amd64.zip",
+            .hash = "N-V-__8AACFXKwnX1RoveZhztd4utbUmLx0lfZgDmWQjZaED",
+            // Server builds only (-Dduckdb); a CLI build never fetches it.
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

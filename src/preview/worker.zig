@@ -12,6 +12,8 @@ const std = @import("std");
 const dbx = @import("../store/db.zig");
 const blob = @import("../store/blob.zig");
 const sniff_mod = @import("../media/sniff.zig");
+const duck = @import("../store/duck.zig");
+const table_stats = @import("../tabular/stats.zig");
 
 pub const Config = struct {
     /// Scratch space for input/output files; created if missing.
@@ -64,6 +66,15 @@ pub fn processPending(
 ) Error!Outcome {
     std.Io.Dir.cwd().createDirPath(io, config.tmpdir) catch return error.Storage;
 
+    // A server-build worker picks up the tables a CLI-build worker had to
+    // leave, once: their reason says exactly why they were left.
+    if (comptime duck.enabled) {
+        _ = db.exec(scope, "UPDATE previews SET status = 'pending', attempts = 0, reason = NULL, updated_at = now() WHERE status = 'skipped' AND reason = $1", .{needs_server_build}) catch return error.Db;
+    }
+    // Opened on the first table of the pass, confined to the scratch folder.
+    var tables: ?duck.Db = null;
+    defer if (tables) |*t| t.close();
+
     const rows = db.raw(QueueRow, scope, "SELECT encode(p.item_hash, 'hex') AS hash, i.media_type, i.size_bytes, p.attempts " ++
         "FROM previews p JOIN items i USING (item_hash) " ++
         "WHERE p.status = 'pending' ORDER BY p.updated_at LIMIT $1", .{@as(i64, config.batch)}) catch return error.Db;
@@ -73,7 +84,10 @@ pub fn processPending(
         const hash = row.hash;
         const size: u64 = @intCast(@max(0, row.size_bytes));
 
-        const result = buildOne(arena, io, db, scope, s3, config, hash, row.media_type, size);
+        const result = if (tableKindOf(db, scope, hash)) |kind|
+            buildTable(arena, io, db, scope, s3, config, &tables, hash, kind, size)
+        else
+            buildOne(arena, io, db, scope, s3, config, hash, row.media_type, size);
         switch (result) {
             .built => {
                 mark(db, scope, hash, "done", null);
@@ -96,6 +110,64 @@ pub fn processPending(
         }
     }
     return outcome;
+}
+
+/// The reason a CLI-build worker leaves a table, word for word: a
+/// server-build worker requeues exactly these.
+pub const needs_server_build = "table statistics need the server build (zig build -Dduckdb)";
+
+/// A table file is known by its path, and the queue is keyed by content:
+/// any path this content has held names its kind.
+fn tableKindOf(db: *dbx.sql.Db, scope: anytype, hash: []const u8) ?table_stats.Kind {
+    const paths = db.raw([]const u8, scope, "SELECT DISTINCT path FROM item_revisions WHERE item_hash = decode($1, 'hex') LIMIT 8", .{hash}) catch return null;
+    for (paths) |path| if (table_stats.kindOf(path)) |kind| return kind;
+    return null;
+}
+
+fn buildTable(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    db: *dbx.sql.Db,
+    scope: anytype,
+    s3: *blob.Client,
+    config: Config,
+    tables: *?duck.Db,
+    hash: []const u8,
+    kind: table_stats.Kind,
+    size: u64,
+) BuildResult {
+    if (comptime !duck.enabled) return .{ .skipped = needs_server_build };
+    if (size > config.max_input_bytes)
+        return .{ .skipped = "too large to preview; raise the worker's limit to include it" };
+
+    if (tables.* == null) {
+        const dir = std.Io.Dir.cwd().realPathFileAlloc(io, config.tmpdir, arena) catch
+            return .{ .failed = "could not resolve the scratch folder" };
+        tables.* = duck.Db.open(arena, .{ .allowed_dir = dir }) catch
+            return .{ .failed = "could not open DuckDB" };
+    }
+
+    const item_key = std.fmt.allocPrint(arena, "items/sha256/{s}/{s}/{s}", .{ hash[0..2], hash[2..4], hash }) catch
+        return .{ .failed = "out of memory" };
+    const bytes = s3.getObjectAlloc(scope, item_key) catch
+        return .{ .failed = "could not fetch the item from storage" };
+    const scratch = std.Io.Dir.cwd().realPathFileAlloc(io, config.tmpdir, arena) catch
+        return .{ .failed = "could not resolve the scratch folder" };
+    const in_path = std.fmt.allocPrint(arena, "{s}/{s}.{t}", .{ scratch, hash, kind }) catch
+        return .{ .failed = "out of memory" };
+    defer std.Io.Dir.cwd().deleteFile(io, in_path) catch {};
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = in_path, .data = bytes }) catch
+        return .{ .failed = "could not write scratch input" };
+
+    // A file that is not the table its name claims is skipped, in words,
+    // never retried: the content will not change (invariant 18).
+    const stats = table_stats.compute(arena, &tables.*.?, in_path, kind) catch |err| switch (err) {
+        error.QueryFailed => return .{ .skipped = "not a readable table: DuckDB could not read it as its file name says" },
+        else => return .{ .failed = "table statistics could not be computed" },
+    };
+    _ = db.exec(scope, "UPDATE previews SET table_stats = $2::jsonb WHERE item_hash = decode($1, 'hex')", .{ hash, stats }) catch
+        return .{ .failed = "could not record the table statistics" };
+    return .built;
 }
 
 const BuildResult = union(enum) {

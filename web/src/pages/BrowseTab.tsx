@@ -15,6 +15,7 @@ import { humanBytes } from '../format';
 import { AnnotationOverlay } from '../overlays';
 import { classColor } from '../shapes';
 import { timeline } from '../history';
+import { TableView } from '../TableView';
 import {
   anyFilter,
   applyFilters,
@@ -398,10 +399,14 @@ function ItemDrawer({
           <img className="drawer-media" src={shownThumb} alt={item.path} />
         )
       ) : (
-        <div className="drawer-media drawer-media--none blueprint">
-          <span className="data">{extOf(item.path)}</span>
-          <p className="quiet">No preview for this file type yet; the bytes are one click away.</p>
-        </div>
+        isTable(item.path) ? (
+          <TableView name={name} hash={item.hash} revealed={revealed?.table} />
+        ) : (
+          <div className="drawer-media drawer-media--none blueprint">
+            <span className="data">{extOf(item.path)}</span>
+            <p className="quiet">No preview for this file type yet; the bytes are one click away.</p>
+          </div>
+        )
       )}
       <dl className="drawer-facts">
         <dt>size</dt>
@@ -573,6 +578,10 @@ function classCounts(annotations: StateAnnotation[]): { name: string; count: num
   return [...counts.entries()]
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function isTable(path: string): boolean {
+  return /\.(csv|parquet|jsonl|ndjson)$/i.test(path);
 }
 
 function looksVisual(path: string): boolean {

@@ -166,7 +166,38 @@ export function getHistory(name: string, path: string): Promise<ItemHistory> {
   return request(`/v0/datasets/${name}/-/history?path=${encodeURIComponent(path)}`);
 }
 
-export type Revealed = { hash: string; thumb: string | null; download: string; logged: boolean };
+export type TableStats = {
+  rows: number;
+  columns: {
+    name: string;
+    type: string;
+    min?: string | null;
+    max?: string | null;
+    distinct?: number;
+    null_percent?: number;
+  }[];
+  sample: Record<string, unknown>[];
+};
+
+export type TableAnswer = {
+  status: 'done' | 'pending' | 'building' | 'skipped' | 'failed';
+  reason?: string | null;
+  stats?: TableStats;
+  /** Restricted: the shape only, until a logged reveal. */
+  withheld?: boolean;
+};
+
+export function getTable(name: string, hash: string): Promise<TableAnswer> {
+  return request(`/v0/datasets/${name}/-/table?hash=${hash}`);
+}
+
+export type Revealed = {
+  hash: string;
+  thumb: string | null;
+  download: string;
+  table: TableStats | null;
+  logged: boolean;
+};
 
 /** The one way to a clear restricted preview: logged on the server first. */
 export function reveal(name: string, hash: string): Promise<Revealed> {

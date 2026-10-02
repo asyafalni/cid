@@ -10,6 +10,12 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
 
+    // The server build (CLAUDE.md, DuckDB): table previews, row-level diffs
+    // and the browse engine. Off by default, so the CLI download stays a
+    // small static binary that never fetches or links DuckDB.
+    const with_duckdb = b.option(bool, "duckdb", "Link DuckDB: the server build (Linux x86-64)") orelse false;
+    options.addOption(bool, "duckdb", with_duckdb);
+
     // Nilo (pinned commit; CLAUDE.md, Zig conventions): the server's HTTP
     // framework, and its native Postgres driver (.sql fetches pg.zig),
     // which is replacing libpq module by module.
@@ -53,6 +59,29 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
     b.installArtifact(exe);
+
+    if (with_duckdb) {
+        if (b.lazyDependency("duckdb", .{})) |duck| {
+            // The C API only, translated once; nothing in cid sees C++.
+            const header = b.addTranslateC(.{
+                .root_source_file = duck.path("duckdb.h"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            });
+            lib_mod.addImport("duckdb_c", header.createModule());
+            // Linked dynamically: the release's static archive is built
+            // against libstdc++, which zig's libc++ cannot stand in for.
+            // The library ships beside the binary and is found there.
+            lib_mod.addLibraryPath(duck.path(""));
+            lib_mod.linkSystemLibrary("duckdb", .{});
+            lib_mod.link_libc = true;
+            exe_mod.addRPathSpecial("$ORIGIN");
+            // Test binaries run from the cache: find it where it was fetched.
+            lib_mod.addRPath(duck.path(""));
+            b.getInstallStep().dependOn(&b.addInstallBinFile(duck.path("libduckdb.so"), "libduckdb.so").step);
+        }
+    }
 
     const run_step = b.step("run", "Run cid");
     const run_cmd = b.addRunArtifact(exe);

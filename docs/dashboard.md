@@ -346,6 +346,12 @@ tables (gallery + table, overlays for box/polygon/points/mask, filters, item dra
 with history) · Releases timeline and compare (summary + visual diff) · Files tab ·
 shareable URLs · restricted blur and reveal log · preview worker for images and tables.
 
+*Delivered ahead of Phase 2:* table statistics. A CSV, Parquet or JSONL item opens as a
+table in the drawer: rows, per-column type, range, distinct count and nulls, and its
+first rows, built once per content hash by the preview worker in the server build.
+A restricted dataset shows the shape only (rows, names, types, nulls) until a logged
+reveal; a CLI-build server says the view needs the server build.
+
 **Phase 2 — every media type**
 Audio (waveform + transcript segments), video (player + segment/track timeline), text
 (span highlights), PDFs · Health tab · row-level table diff · SQL console · card

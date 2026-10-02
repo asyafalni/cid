@@ -1,0 +1,3 @@
+{"ts":"2026-03-01T08:00:00Z","kind":"enter","camera":"gate-1","count":3}
+{"ts":"2026-03-01T08:05:00Z","kind":"exit","camera":"gate-1","count":1}
+{"ts":"2026-03-01T08:07:30Z","kind":"enter","camera":"gate-2","count":null}

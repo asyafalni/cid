@@ -388,9 +388,26 @@ test('a COCO RLE mask is drawn exactly: 1,200 pixels where the mask says', async
   expect(probe).toEqual({ w: 200, h: 150, set: 1200, inside: 140, outside: 0 });
 });
 
+test('a table file is shown as a table: columns, ranges, nulls and its first rows', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/tables?view=browse&item=people.csv');
+  const table = page.getByRole('region', { name: 'Table' });
+  await expect(table.getByText('5 rows · 4 columns')).toBeVisible();
+  const score = table.locator('.table-columns tr', { hasText: 'score' });
+  await expect(score).toContainText('DOUBLE');
+  await expect(score).toContainText('64.0 … 91.5');
+  await expect(score).toContainText('20%');
+  await expect(table.locator('.table-sample')).toContainText('Ana Wijaya');
+  // Parquet and JSONL read the same way.
+  await page.goto('/d/e2e/datasets/tables?view=browse&item=people.parquet');
+  await expect(page.getByRole('region', { name: 'Table' }).getByText('5 rows · 4 columns')).toBeVisible();
+  await page.goto('/d/e2e/datasets/tables?view=browse&item=events.jsonl');
+  await expect(page.getByRole('region', { name: 'Table' }).getByText('3 rows · 4 columns')).toBeVisible();
+});
+
 test('accessibility: no serious or critical axe findings', async ({ page }) => {
   await signIn(page);
-  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png']) {
+  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&item=people.csv']) {
     await page.goto(path);
     await page.waitForLoadState('networkidle');
     const results = await new AxeBuilder({ page }).analyze();

@@ -139,6 +139,8 @@ fn handleInner(
     const ds = lookupDataset(arena, deps, scope, route.name) orelse
         return errorResponse(arena, .not_found, "no such dataset", "Run 'cid init' to create it, or check the address.");
 
+    if (eql(method, "GET") and eql(route.action, "table"))
+        return tableStats(arena, deps, scope, ds, route.queryParam("hash") orelse "");
     if (eql(method, "GET") and eql(route.action, "history"))
         return history(arena, deps, scope, ds, route.queryParam("path") orelse "");
     if (eql(method, "POST") and eql(route.action, "reveal"))
@@ -460,6 +462,50 @@ fn history(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, r
     return json(arena, .ok, .{ .path = path, .changes = changes, .annotations = wire });
 }
 
+/// A table item's statistics (docs/dashboard.md, Phase 2), built once by
+/// the preview worker; never computed here. When there are none, the
+/// answer says why in words, so the drawer never shows a blank.
+/// A restricted dataset is answered with its shape only — rows, column
+/// names, types and nulls — because ranges and sample rows are content;
+/// those come with a logged reveal (invariant 20).
+fn tableStats(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, hash: []const u8) HandleError!Response {
+    if (!validHashHex(hash)) return error.BadRequest;
+    const here = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM item_revisions WHERE dataset_id = $1::uuid AND item_hash = decode($2, 'hex') LIMIT 1", .{ ds.id, hash }) catch return error.Db;
+    if (here == null) return errorResponse(arena, .not_found, "no such item in this dataset", "Pick the item from this dataset's Browse view.");
+
+    const Row = struct {
+        pub const nilo_table = .projection;
+        status: []const u8,
+        reason: ?[]const u8,
+        stats: ?[]const u8,
+    };
+    const row = deps.db.rawOne(Row, scope, "SELECT status, reason, table_stats::text AS stats FROM previews WHERE item_hash = decode($1, 'hex')", .{hash}) catch return error.Db;
+    const r = row orelse return json(arena, .ok, .{ .status = "pending", .reason = @as(?[]const u8, null) });
+    const text = r.stats orelse return json(arena, .ok, .{ .status = r.status, .reason = r.reason });
+    const stats = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch
+        return json(arena, .ok, .{ .status = "skipped", .reason = @as(?[]const u8, "the stored statistics could not be read") });
+    if (!ds.restricted) return json(arena, .ok, .{ .status = "done", .stats = stats, .withheld = false });
+    return json(arena, .ok, .{ .status = "done", .stats = try shapeOnly(arena, stats), .withheld = true });
+}
+
+/// A table's statistics without its content: rows, and per column only
+/// name, type and the share of nulls.
+fn shapeOnly(arena: std.mem.Allocator, stats: std.json.Value) HandleError!std.json.Value {
+    if (stats != .object) return .null;
+    var out: std.json.ObjectMap = .empty;
+    if (stats.object.get("rows")) |rows| try out.put(arena, "rows", rows);
+    var cols = std.json.Array.init(arena);
+    if (stats.object.get("columns")) |columns| if (columns == .array) for (columns.array.items) |col| {
+        if (col != .object) continue;
+        var kept: std.json.ObjectMap = .empty;
+        inline for (.{ "name", "type", "null_percent" }) |k| if (col.object.get(k)) |v| try kept.put(arena, k, v);
+        try cols.append(.{ .object = kept });
+    };
+    try out.put(arena, "columns", .{ .array = cols });
+    try out.put(arena, "sample", .{ .array = std.json.Array.init(arena) });
+    return .{ .object = out };
+}
+
 const RevealBody = struct { hash: []const u8 };
 
 /// The one way to a clear preview of a restricted item (invariant 20):
@@ -481,7 +527,10 @@ fn reveal(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller,
     else
         null;
     const download = deps.s3.presignGet(scope, itemKey(arena, req.hash) catch return error.OutOfMemory, presign_secs) catch return error.Storage;
-    return json(arena, .ok, .{ .hash = req.hash, .thumb = thumb, .download = download, .logged = ds.restricted });
+    // A revealed table shows its rows: the same record covers them.
+    const table_text = deps.db.rawOne([]const u8, scope, "SELECT table_stats::text FROM previews WHERE item_hash = decode($1, 'hex') AND table_stats IS NOT NULL", .{req.hash}) catch return error.Db;
+    const table: ?std.json.Value = if (table_text) |t| jsonValue(arena, t) else null;
+    return json(arena, .ok, .{ .hash = req.hash, .thumb = thumb, .download = download, .table = table, .logged = ds.restricted });
 }
 
 /// The dataset's activity log (docs/dashboard.md §4.7). It names who

@@ -22,6 +22,8 @@ pub const cli_merge = @import("cli/merge.zig");
 pub const cli_login = @import("cli/login.zig");
 pub const db = @import("store/db.zig");
 pub const blob = @import("store/blob.zig");
+pub const duck = @import("store/duck.zig");
+pub const table_stats = @import("tabular/stats.zig");
 pub const api = @import("server/api.zig");
 pub const serve = @import("server/serve.zig");
 pub const signin = @import("server/signin.zig");
@@ -75,6 +77,8 @@ test {
     _ = admin;
     _ = db;
     _ = blob;
+    _ = duck;
+    _ = table_stats;
     _ = api;
     _ = serve;
     _ = signin;

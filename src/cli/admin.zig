@@ -15,6 +15,7 @@ const purge_mod = @import("../core/purge.zig");
 const preview_worker = @import("../preview/worker.zig");
 const serve_mod = @import("../server/serve.zig");
 const signin_mod = @import("../server/signin.zig");
+const duck_mod = @import("../store/duck.zig");
 
 const ExitCode = root.ExitCode;
 
@@ -251,6 +252,11 @@ fn runServe(
         io.random(&secret);
     }
 
+    if (!duck_mod.enabled) std.log.info(
+        "serving without DuckDB: table previews, row-level diffs and the 1M-item browse engine are off. " ++
+            "Use the server build (zig build -Dduckdb) to turn them on.",
+        .{},
+    );
     serve_mod.serve(arena, &deps, .{ .port = port, .session_secret = &secret, .signin = signin_cfg }) catch |err| {
         return fail(io, .network, "the server stopped: {t}. Fix the cause, then run 'cid admin serve' again.", .{err});
     };

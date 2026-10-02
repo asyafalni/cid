@@ -1258,3 +1258,36 @@
 .history-where {
   font-size: 0.8rem;
 }
+
+/* A table item, shown as a table: calm, scrollable, the data face. */
+.table-view {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.table-view table {
+  font-size: 0.8rem;
+}
+
+.table-view caption {
+  caption-side: top;
+  text-align: left;
+  padding-bottom: var(--space-1);
+  font-size: 0.8rem;
+}
+
+.table-sample td {
+  white-space: nowrap;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.table-pending {
+  font-size: 0.85rem;
+}

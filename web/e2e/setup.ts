@@ -258,6 +258,21 @@ function seedMasks(dir: string) {
   api('POST', `/v0/datasets/${name}/-/tag`, { name: 'v1.0.0' });
 }
 
+// A file dataset of tables, pushed the CLI way: CSV, Parquet and JSONL.
+function seedTables(dir: string) {
+  const tables = join(dir, 'tables');
+  execSync(`mkdir -p ${tables}`);
+  const fixtures = resolve(here, '../../tests/fixtures');
+  for (const f of ['people.csv', 'people.parquet', 'events.jsonl']) {
+    writeFileSync(join(tables, f), readFileSync(join(fixtures, f)));
+  }
+  run(`${cid} init cid@127.0.0.1:e2e/datasets/tables --git g@h:tables.git`, tables);
+  run(`${cid} add .`, tables);
+  run(`${cid} commit -m "three tables"`, tables);
+  run(`${cid} push`, tables);
+  run(`${cid} tag v1.0.0`, tables);
+}
+
 // A restricted dataset: previews blurred until a logged reveal.
 function seedFaces(dir: string) {
   const faces = join(dir, 'faces');
@@ -310,6 +325,7 @@ export default function setup() {
     `);
     if (!already.includes('e2e/datasets/faces')) seedFaces(dir);
     if (!already.includes('e2e/datasets/masks')) seedMasks(dir);
+    if (!already.includes('e2e/datasets/tables')) seedTables(dir);
     // Sniff, thumbnail and blur every new png. One pass takes a batch, and
     // a migration can requeue many, so drain the queue.
     for (let i = 0; i < 40; i++) {

@@ -2067,3 +2067,108 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     try std.testing.expect(std.mem.indexOf(u8, log.body, "\"action\":\"reveal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, log.body, "server-token") != null);
 }
+
+test "table statistics: CSV, Parquet and JSONL in the server build, said plainly in the CLI build" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+
+    const files = [_][]const u8{ "people.csv", "people.parquet", "events.jsonl" };
+    var hashes: [files.len][64]u8 = undefined;
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    const fixtures = try std.Io.Dir.cwd().openDir(io, "tests/fixtures", .{});
+    for (files, 0..) |name, i| {
+        const bytes = try fixtures.readFileAlloc(io, name, arena, .limited(1 << 20));
+        var dg: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(bytes, &dg, .{});
+        hashes[i] = std.fmt.bytesToHex(dg, .lower);
+        try producer.dir.writeFile(io, .{ .sub_path = name, .data = bytes });
+        // A fresh queue row each run, so the worker really builds it.
+        _ = db.exec(&fscope, "DELETE FROM previews WHERE item_hash = decode($1, 'hex')", .{@as([]const u8, &hashes[i])}) catch {};
+    }
+    _ = try db.exec(&fscope, "UPDATE previews SET status = 'skipped', reason = 'test reset' WHERE status = 'pending'", .{});
+
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/tables" };
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
+    inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/tables')", .{});
+    }
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/tables'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
+    try cid.client.workspace.init(arena, io, producer.dir, "cid@test:test/datasets/tables", "g@h:tb.git");
+    var pws = try cid.client.workspace.open(arena, io, producer.dir);
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "three tables", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+
+    _ = try cid.preview.processPending(arena, io, &standalone.db, &scope, &s3c, .{});
+
+    const Answer = struct {
+        status: []const u8,
+        reason: ?[]const u8 = null,
+        withheld: bool = false,
+        stats: ?struct {
+            rows: u64,
+            columns: []const struct { name: []const u8, min: ?[]const u8 = null },
+            sample: []const std.json.Value,
+        } = null,
+    };
+    const expected_rows = [_]u64{ 5, 5, 3 };
+    for (hashes, 0..) |h, i| {
+        const target = try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/tables/-/table?hash={s}", .{&h});
+        const res = cid.api.handle(arena, &deps, &scope, "GET", target, "Bearer test-token", "");
+        try std.testing.expectEqual(std.http.Status.ok, res.status);
+        const a = try std.json.parseFromSliceLeaky(Answer, arena, res.body, .{ .ignore_unknown_fields = true });
+        if (comptime cid.duck.enabled) {
+            try std.testing.expectEqualStrings("done", a.status);
+            try std.testing.expectEqual(expected_rows[i], a.stats.?.rows);
+            try std.testing.expectEqual(expected_rows[i], a.stats.?.sample.len);
+        } else {
+            // The CLI build says exactly why, and a server build picks it up.
+            try std.testing.expectEqualStrings("skipped", a.status);
+            try std.testing.expectEqualStrings(cid.preview.needs_server_build, a.reason.?);
+        }
+    }
+
+    if (comptime cid.duck.enabled) {
+        // Restricted: the shape, never the values, until a logged reveal.
+        _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = 'test/datasets/tables'", .{});
+        defer _ = db.exec(&fscope, "UPDATE datasets SET restricted = false WHERE name = 'test/datasets/tables'", .{}) catch {};
+        const target = try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/tables/-/table?hash={s}", .{&hashes[0]});
+        const res = cid.api.handle(arena, &deps, &scope, "GET", target, "Bearer test-token", "");
+        const a = try std.json.parseFromSliceLeaky(Answer, arena, res.body, .{ .ignore_unknown_fields = true });
+        try std.testing.expect(a.withheld);
+        try std.testing.expectEqual(@as(u64, 5), a.stats.?.rows);
+        try std.testing.expectEqualStrings("name", a.stats.?.columns[1].name);
+        try std.testing.expect(a.stats.?.columns[1].min == null);
+        try std.testing.expectEqual(@as(usize, 0), a.stats.?.sample.len);
+        try std.testing.expect(std.mem.indexOf(u8, res.body, "Ana Wijaya") == null);
+        // The reveal brings the rows, on the record.
+        const body = try std.fmt.allocPrint(arena, "{{\"hash\":\"{s}\"}}", .{&hashes[0]});
+        const revealed = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/tables/-/reveal", "Bearer test-token", body);
+        try std.testing.expect(std.mem.indexOf(u8, revealed.body, "Ana Wijaya") != null);
+        try std.testing.expect(std.mem.indexOf(u8, revealed.body, "\"logged\":true") != null);
+    }
+}
