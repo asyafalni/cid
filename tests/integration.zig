@@ -666,6 +666,12 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     const v4 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(!v4.ok);
     try std.testing.expectEqual(cid.release.VerifyProblem.stored_manifest_differs, v4.problems[0]);
+
+    // The activity log has the push and the release, by who did them.
+    const pushes = (try db.rawOne(i64, &fscope, "SELECT count(*) FROM activity_events e JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/rel' AND e.action = 'push' AND e.account_id = 'server-token'", .{})).?;
+    try std.testing.expect(pushes >= 1);
+    const tags = (try db.rawOne(i64, &fscope, "SELECT count(*) FROM activity_events e JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/rel' AND e.action = 'tag' AND e.ref = 'v1.0.0'", .{})).?;
+    try std.testing.expect(tags >= 1);
 }
 
 test "git writer: one commit and tag per release, idempotent, resumable" {

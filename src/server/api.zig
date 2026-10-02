@@ -156,7 +156,7 @@ fn handleInner(
     if (eql(method, "POST") and eql(route.action, "check-hashes"))
         return checkHashes(arena, deps, scope, ds, body);
     if (eql(method, "POST") and eql(route.action, "push"))
-        return push(arena, deps, scope, ds, body);
+        return push(arena, deps, scope, caller, ds, body);
     if (eql(method, "GET") and std.mem.startsWith(u8, route.action, "state/"))
         return state(arena, deps, scope, ds, route.action["state/".len..]);
     if (eql(method, "POST") and eql(route.action, "downloads"))
@@ -164,17 +164,17 @@ fn handleInner(
     if (eql(method, "POST") and eql(route.action, "thumbs"))
         return thumbs(arena, deps, scope, ds, body);
     if (eql(method, "POST") and eql(route.action, "tag"))
-        return tag(arena, deps, scope, ds, body);
+        return tag(arena, deps, scope, caller, ds, body);
     if (eql(method, "GET") and eql(route.action, "releases"))
         return releases(arena, deps, scope, ds);
     if (eql(method, "POST") and eql(route.action, "branch"))
-        return branchCreate(arena, deps, scope, ds, body);
+        return branchCreate(arena, deps, scope, caller, ds, body);
     if (eql(method, "GET") and eql(route.action, "branches"))
         return branches(arena, deps, scope, ds);
     if (eql(method, "POST") and eql(route.action, "merge"))
-        return merge(arena, deps, scope, ds, body);
+        return merge(arena, deps, scope, caller, ds, body);
     if (eql(method, "POST") and eql(route.action, "commit"))
-        return serverCommit(arena, deps, scope, ds, body);
+        return serverCommit(arena, deps, scope, caller, ds, body);
     if (eql(method, "POST") and eql(route.action, "register-items"))
         return registerItems(arena, deps, scope, ds, body);
     if (eql(method, "POST") and eql(route.action, "policy"))
@@ -432,6 +432,16 @@ fn actorOf(arena: std.mem.Allocator, deps: *Deps, caller: Caller) HandleError![]
         if (token_mod.verify(arena, secret, h["Bearer ".len..], now)) |claims| return claims.account else |_| {}
     };
     return "server-token";
+}
+
+/// The record of something that already happened (a push, a release):
+/// best effort, after the fact. Failing to note a push must not turn a
+/// recorded push into a 500 — the client would retry into "someone pushed
+/// since you pulled". A reveal is the opposite case; it uses logActivity.
+fn noteActivity(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, action: []const u8, ref: ?[]const u8, detail: anytype) void {
+    const actor = actorOf(arena, deps, caller) catch "server-token";
+    logActivity(arena, deps, scope, ds, actor, action, ref, detail) catch
+        std.log.warn("could not note a {s} in the activity log; the {s} itself stands", .{ action, action });
 }
 
 /// An audit record, written before the thing it records happens: if it
@@ -778,7 +788,7 @@ const PushBody = struct {
 /// All-or-nothing (invariant 7 of the push rules): verify every file first,
 /// then record revisions, commits and the branch head in one transaction,
 /// under the per-(dataset, branch) advisory lock (invariant 3).
-fn push(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
+fn push(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(PushBody, arena, body) orelse return error.BadRequest;
     if (req.commits.len == 0) return error.BadRequest;
 
@@ -870,6 +880,7 @@ fn push(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body
     ) catch return error.Db;
     tx.commit() catch return error.Db;
 
+    noteActivity(arena, deps, scope, caller, ds, "push", last_commit_id, .{ .branch = req.branch, .commits = req.commits.len });
     return json(arena, .ok, .{ .head = last_commit_id, .commits_recorded = req.commits.len });
 }
 
@@ -938,7 +949,7 @@ const TagBody = struct {
 };
 
 /// `cid tag`: a release never moves once this returns (invariant 5).
-fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
+fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(TagBody, arena, body) orelse return error.BadRequest;
 
     const commit_id: []const u8 = blk: {
@@ -975,6 +986,7 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body:
         git_status = if (outcome.failed == 0) "done" else "failed";
     }
 
+    noteActivity(arena, deps, scope, caller, ds, "tag", created.name, .{ .items = created.items });
     return json(arena, .created, .{
         .release = created.name,
         .commit = @as([]const u8, created.commit_id),
@@ -1116,7 +1128,7 @@ const BranchBody = struct { name: []const u8 };
 
 /// `cid branch <name>`: a draft line of work, always starting from main
 /// (invariant 8), recording where it started.
-fn branchCreate(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
+fn branchCreate(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(BranchBody, arena, body) orelse return error.BadRequest;
     if (!release_mod.validName(req.name) or eql(req.name, "main"))
         return errorResponse(arena, .bad_request, "that is not a branch name (letters, digits, dot, dash, underscore; not 'main')", "Pick a name like cleanup and run 'cid branch' again.");
@@ -1134,6 +1146,7 @@ fn branchCreate(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datas
             "VALUES ($1::uuid, $2, 'branch', $3::uuid, $3::uuid)",
         .{ ds.id, req.name, main_head },
     ) catch return error.Db;
+    noteActivity(arena, deps, scope, caller, ds, "branch", req.name, null);
     return json(arena, .created, .{ .branch = req.name, .start = main_head });
 }
 
@@ -1151,7 +1164,7 @@ const MergeBody = struct { name: []const u8, author: []const u8 = "user:unknown"
 
 /// `cid merge <name>` into main. Overlapping changes stop the merge and
 /// are listed; nothing is resolved silently (invariant 9).
-fn merge(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
+fn merge(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(MergeBody, arena, body) orelse return error.BadRequest;
 
     const BranchRef = struct {
@@ -1260,6 +1273,7 @@ fn merge(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, bod
     ) catch return error.Db;
     tx.commit() catch return error.Db;
 
+    noteActivity(arena, deps, scope, caller, ds, "merge", req.name, .{ .changes = branch_changes.count() });
     return json(arena, .ok, .{ .merge_commit = &merge_id.toString(), .changes = branch_changes.count() });
 }
 
@@ -1356,7 +1370,7 @@ const ServerCommitBody = struct {
 /// write lock; this seals them — "all changes up to here" — under the
 /// exclusive lock, so no in-flight write can land beneath the cutoff
 /// (invariant 3).
-fn serverCommit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
+fn serverCommit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(ServerCommitBody, arena, body) orelse return error.BadRequest;
     if (req.message.len == 0 or req.author.len == 0) return error.BadRequest;
 
@@ -1400,6 +1414,7 @@ fn serverCommit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datas
     ) catch return error.Db;
     tx.commit() catch return error.Db;
 
+    noteActivity(arena, deps, scope, caller, ds, "commit", req.message, null);
     return json(arena, .created, .{ .commit = &commit_id.toString() });
 }
 
