@@ -135,6 +135,19 @@ pub const Files = struct {
             .anns = try std.fmt.allocPrint(arena, "{s}/{s}.anns.parquet", .{ dir, name }),
         };
     }
+
+    /// The same index, with working files of this build's own: servers
+    /// sharing a browse folder may build the same version at once, and
+    /// only the final rename into place may be shared, never a file one is
+    /// still writing (one truncating the other's lines left an empty index).
+    pub fn forBuild(self: Files, arena: std.mem.Allocator, io: std.Io) error{OutOfMemory}!Files {
+        var token: [8]u8 = undefined;
+        io.random(&token);
+        var copy = self;
+        copy.items_lines = try std.fmt.allocPrint(arena, "{s}.{x}", .{ self.items_lines, &token });
+        copy.ann_lines = try std.fmt.allocPrint(arena, "{s}.{x}", .{ self.ann_lines, &token });
+        return copy;
+    }
 };
 
 /// The lines → the two Parquet files, each renamed into place when
@@ -152,7 +165,8 @@ pub fn convertIndex(arena: std.mem.Allocator, io: std.Io, db: *duck.Db, files: F
             "item_id: 'VARCHAR', ext: 'VARCHAR', classes: 'VARCHAR[]'" },
     };
     for (steps) |step| {
-        const tmp = try std.fmt.allocPrint(arena, "{s}.tmp", .{step.out});
+        // Named after this build's lines, so no other build writes it.
+        const tmp = try std.fmt.allocPrint(arena, "{s}.parquet.tmp", .{step.lines});
         defer cwd.deleteFile(io, tmp) catch {};
         _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT * FROM read_json('{s}', format = 'newline_delimited', columns = {{{s}}})) TO '{s}' (FORMAT parquet)", .{ step.lines, step.columns, tmp }));
         std.Io.Dir.rename(cwd, tmp, cwd, step.out, io) catch return error.WriteFailed;
@@ -395,8 +409,12 @@ pub fn buildDiff(arena: std.mem.Allocator, io: std.Io, db: *duck.Db, a: Files, b
         .{ .out = out.anns, .select = "SELECT change, id, kind, class, item, item_path, before, after FROM acp ORDER BY item_path, id" },
         .{ .out = out.items, .select = "SELECT change, path, hash_a, hash_b, size_a, size_b FROM ch ORDER BY path" },
     };
+    var token: [8]u8 = undefined;
+    io.random(&token);
     for (steps) |step| {
-        const tmp = try std.fmt.allocPrint(arena, "{s}.tmp", .{step.out});
+        // This build's own temp name: another server may diff the same
+        // pair at once, and only the rename into place is shared.
+        const tmp = try std.fmt.allocPrint(arena, "{s}.{x}.tmp", .{ step.out, &token });
         defer cwd.deleteFile(io, tmp) catch {};
         _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (WITH {s} {s}) TO '{s}' (FORMAT parquet)", .{ ctes, step.select, try quote(arena, tmp) }));
         std.Io.Dir.rename(cwd, tmp, cwd, step.out, io) catch return error.WriteFailed;

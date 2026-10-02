@@ -889,7 +889,7 @@ fn browseIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
         const keys = try browseKeys(arena, ds.id, commit);
         // Annotations first: an index exists once its items file does.
         for ([_][2][]const u8{ .{ keys.anns, index.files.anns }, .{ keys.items, index.files.items } }) |pair| {
-            const tmp = try std.fmt.allocPrint(arena, "{s}.tmp", .{pair[1]});
+            const tmp = try uniqueTmp(arena, deps, pair[1]);
             if (!(try downloadTo(deps, scope, pair[0], tmp))) break :fetched;
             std.Io.Dir.rename(cwd, tmp, cwd, pair[1], deps.io) catch return error.Storage;
         }
@@ -897,11 +897,13 @@ fn browseIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
         return index;
     }
 
-    // One pass over history (core/version.zig), then DuckDB's conversion.
-    const lines = try openLines(deps, index.files);
+    // One pass over history (core/version.zig), then DuckDB's conversion,
+    // in working files of this build's own.
+    const build = index.files.forBuild(arena, deps.io) catch return error.OutOfMemory;
+    const lines = try openLines(deps, build);
     defer deps.gpa.destroy(lines);
     _ = versions.pass(deps.gpa, deps.db, scope, ds.id, commit, .{ .items = lines.items(), .annotations = lines.anns() }) catch |err| {
-        lines.discard(deps, index.files);
+        lines.discard(deps, build);
         return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             error.WriteFailed => error.Storage,
@@ -909,10 +911,18 @@ fn browseIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
         };
     };
     lines.close(deps);
-    try convertLines(arena, deps, index.files);
+    try convertLines(arena, deps, build);
     storeBrowseIndex(arena, deps, scope, ds, commit, index.files);
     pruneBrowse(arena, deps, dir);
     return index;
+}
+
+/// A temp name beside `path` that no other server sharing the folder will
+/// write: downloads land there, then rename into place.
+fn uniqueTmp(arena: std.mem.Allocator, deps: *Deps, path: []const u8) error{OutOfMemory}![]const u8 {
+    var token: [8]u8 = undefined;
+    deps.io.random(&token);
+    return std.fmt.allocPrint(arena, "{s}.{x}.tmp", .{ path, &token });
 }
 
 /// The two line files a pass writes, open, with their writers.
@@ -1024,7 +1034,7 @@ fn diffIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset,
     const local = [_][]const u8{ d.anns, d.items };
     fetched: {
         for (keys, local) |key, path| {
-            const tmp = try std.fmt.allocPrint(arena, "{s}.tmp", .{path});
+            const tmp = try uniqueTmp(arena, deps, path);
             if (!(try downloadTo(deps, scope, key, tmp))) break :fetched;
             std.Io.Dir.rename(cwd, tmp, cwd, path, deps.io) catch return error.Storage;
         }
@@ -1946,11 +1956,12 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
         // after the push), and then it finishes the index instead.
         if (deps.browse_building.swap(true, .acquire)) break :prepared;
         deps.browse_building_commit.store(std.mem.readInt(u64, (Uuid.parse(commit_id) catch return error.BadRequest).bytes[8..16], .big), .release);
-        lines = openLines(deps, files) catch {
+        const build = files.forBuild(arena, deps.io) catch return error.OutOfMemory;
+        lines = openLines(deps, build) catch {
             releaseSlot(deps);
             break :prepared;
         };
-        index_files = files;
+        index_files = build;
         work.items = lines.?.items();
         work.annotations = lines.?.anns();
     }
