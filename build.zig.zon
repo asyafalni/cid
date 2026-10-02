@@ -5,7 +5,7 @@
     .fingerprint = 0x4b30d9c479f4d7dc,
     .dependencies = .{
         .nilo = .{
-            .url = "git+https://github.com/asyafalni/nilo#110cee1b797e2e87c391a3ec50009d6c4cf11563",
+            .url = "git+https://github.com/nevindra/nilo#401cc94ad82babd005cdfa61dbfab3fe05b3d2e8",
             .hash = "nilo-0.6.0-5HEqwsP0gAA8isiTXsktcjrFPkk7uKlveM-kMbRg1Gfc",
         },
     },
