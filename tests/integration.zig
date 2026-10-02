@@ -1382,7 +1382,7 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
     _ = try cid.client.workspace.commit(arena, io, &pws, "main work", "user:test");
     _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
 
-    const merged = try remote.merge(arena, "cleanup", "user:test");
+    const merged = try remote.merge(arena, "cleanup", "user:test", &.{});
     try std.testing.expect(merged == .merged);
     try std.testing.expectEqual(@as(u64, 2), merged.merged.changes); // tweak + branch-only
 
@@ -1410,7 +1410,7 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
     _ = try cid.client.workspace.commit(arena, io, &pws, "main shared", "user:test");
     _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
 
-    const conflicted = try remote.merge(arena, "risky", "user:test");
+    const conflicted = try remote.merge(arena, "risky", "user:test", &.{});
     try std.testing.expect(conflicted == .conflicts);
     try std.testing.expectEqual(@as(usize, 1), conflicted.conflicts.len);
     try std.testing.expectEqualStrings("shared.txt", conflicted.conflicts[0]);
@@ -1424,7 +1424,22 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
         }
     }
 
-    try std.testing.expectError(error.NoSuchBranch, remote.merge(arena, "ghost", "user:test"));
+    try std.testing.expectError(error.NoSuchBranch, remote.merge(arena, "ghost", "user:test", &.{}));
+
+    // A person decides: take the branch's shared.txt. The merge lands, and
+    // main now holds the branch's version.
+    const shaOf = struct {
+        fn hex(bytes: []const u8) [64]u8 {
+            var d: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(bytes, &d, .{});
+            return std.fmt.bytesToHex(d, .lower);
+        }
+    }.hex;
+    const decided = try remote.merge(arena, "risky", "user:test", &.{.{ .path = "shared.txt", .take = "branch" }});
+    try std.testing.expect(decided == .merged);
+    for (try remote.state(arena, (try remote.head(arena, "main")).?)) |item| {
+        if (std.mem.eql(u8, item.path, "shared.txt")) try std.testing.expectEqualStrings(&shaOf("risky version"), item.hash);
+    }
 }
 
 test "s3 multipart: a large object goes up in parts and comes back identical" {

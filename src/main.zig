@@ -50,7 +50,7 @@ fn run(
         .commit => |cmd_args| cid.cli_commit.run(&ctx, cmd_args),
         .status => cid.cli_status.run(&ctx),
         .push => cid.cli_push.run(&ctx),
-        .pull => cid.cli_pull.run(&ctx),
+        .pull => |cmd_args| cid.cli_pull.run(&ctx, cmd_args),
         .log => cid.cli_log.run(&ctx),
         .clone => |cmd_args| cid.cli_clone.run(&ctx, cmd_args),
         .checkout => |cmd_args| cid.cli_checkout.run(&ctx, cmd_args),

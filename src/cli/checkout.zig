@@ -82,20 +82,25 @@ fn decide(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCod
     var ws = common.openWorkspace(ctx) catch
         return common.fail(ctx, .usage, common.not_a_dataset_msg, .{});
 
+    // Which operation the decisions finish: a merge, or a pull.
+    const next: []const u8 = if (sync.pendingConflicts(ctx.arena, ctx.io, &ws) == null and sync.loadMerge(ctx.arena, ctx.io, &ws) != null)
+        "cid merge --continue"
+    else
+        "cid pull --continue";
     var remaining: usize = 0;
     for (args[1..]) |path| {
         const result = sync.decide(ctx.arena, ctx.io, &ws, path, choice) catch
             return common.fail(ctx, .integrity, ".cid/ state is unreadable. Run 'cid status' for details.", .{});
         switch (result) {
-            .no_conflicts => return common.fail(ctx, .usage, "no conflicted pull is in progress. Run 'cid pull'.", .{}),
-            .unknown_path => return common.fail(ctx, .usage, "'{s}' is not one of the conflicted files. Run 'cid pull' to list them.", .{path}),
+            .no_conflicts => return common.fail(ctx, .usage, "no conflicted pull or merge is in progress. Run 'cid pull' or 'cid merge <branch>'.", .{}),
+            .unknown_path => return common.fail(ctx, .usage, "'{s}' is not one of the conflicted files. Run '{s}' to list them.", .{ path, next }),
             .remaining => |n| remaining = n,
         }
     }
     if (remaining == 0) {
-        ctx.out.writeAll("Every conflict is decided. Run 'cid pull' to finish.\n") catch return .network;
+        ctx.out.print("Every conflict is decided. Run '{s}' to finish.\n", .{next}) catch return .network;
     } else {
-        ctx.out.print("{d} file{s} still undecided. Run 'cid pull' to list them.\n", .{ remaining, plural(@intCast(remaining)) }) catch return .network;
+        ctx.out.print("{d} file{s} still undecided. Decide them with 'cid checkout --mine|--theirs <path>', then run '{s}'.\n", .{ remaining, plural(@intCast(remaining)), next }) catch return .network;
     }
     return .ok;
 }

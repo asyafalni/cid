@@ -413,8 +413,12 @@ pub const Remote = struct {
         nothing_to_merge,
     };
 
-    pub fn merge(self: *const Remote, arena: std.mem.Allocator, name: []const u8, author: []const u8) Error!MergeResult {
-        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .name = name, .author = author }, .{})});
+    /// A person's decision on one conflicted path: keep main's version, or
+    /// take the branch's.
+    pub const Resolution = struct { path: []const u8, take: []const u8 };
+
+    pub fn merge(self: *const Remote, arena: std.mem.Allocator, name: []const u8, author: []const u8, resolve: []const Resolution) Error!MergeResult {
+        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .name = name, .author = author, .resolve = resolve }, .{})});
         const res = try self.send(arena, "POST", try self.target(arena, "merge", .{}), body);
         if (res.status == .conflict) {
             const C = struct { conflicts: []const []const u8 };

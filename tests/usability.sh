@@ -251,6 +251,54 @@ if [ -e damaged-manifest ]; then say "FAIL: a damaged clone left its folder"; fa
 s3put "manifests/$DSID/$V1.manifest" 'not the manifest'
 expect_code 3 "verify a release whose manifest is damaged" "$CID" admin verify "$DS" v1.0.0
 
+# --- two people, one dataset: replays, conflicts, decisions -----------------
+# Everything through the commands a person types: a stale push, a pull that
+# replays, a same-file conflict decided file by file, a branch merge whose
+# conflict is decided the same way. Exit 2 for every conflict, with the
+# next command named.
+cd "$WORK"
+expect_ok   "Alice clones"                       "$CID" clone "cid@127.0.0.1:$DS" alice
+expect_ok   "Bob clones"                         "$CID" clone "cid@127.0.0.1:$DS" bob
+(cd alice && "$CID" pull >/dev/null) ; (cd bob && "$CID" pull >/dev/null)
+cd "$WORK/alice"; echo "alice one" > shared.txt
+expect_ok   "Alice adds shared.txt"              "$CID" add shared.txt
+expect_ok   "Alice commits"                      "$CID" commit -m "shared, by Alice"
+expect_ok   "Alice pushes"                       "$CID" push
+cd "$WORK/bob"; echo "only Bob's" > bob.txt
+expect_ok   "Bob adds his own file"              "$CID" add bob.txt
+expect_ok   "Bob commits"                        "$CID" commit -m "Bob's file"
+expect_code 2 "Bob's push is behind Alice's"     "$CID" push
+expect_ok   "Bob pulls: his commit replays on top" "$CID" pull
+expect_ok   "Bob pushes after the replay"        "$CID" push
+# The same file, changed by both.
+cd "$WORK/alice"; "$CID" pull >/dev/null; echo "alice two" > shared.txt
+expect_ok   "Alice changes shared.txt and pushes" sh -c "'$CID' commit -am 'Alice again' >/dev/null && '$CID' push"
+cd "$WORK/bob"; echo "bob two" > shared.txt
+expect_ok   "Bob changes shared.txt too"         "$CID" commit -am "Bob's take"
+expect_code 2 "Bob's pull lists the conflict"    "$CID" pull
+expect_code 1 "the conflict is not merged silently" "$CID" pull --keep-mine
+expect_ok   "Bob takes Alice's version"          "$CID" checkout --theirs shared.txt
+expect_ok   "the pull finishes"                  "$CID" pull --continue
+if [ "$(cat shared.txt)" = "alice two" ]; then say "ok: shared.txt holds the version Bob chose"
+else say "FAIL: shared.txt holds '$(cat shared.txt)' after taking theirs"; fails=$((fails+1)); fi
+# A branch, and a merge that conflicts with main.
+cd "$WORK/alice"; "$CID" pull >/dev/null
+expect_ok   "Alice opens a branch"               "$CID" branch rework
+expect_ok   "Alice switches to it"               "$CID" checkout rework
+echo "from the branch" > shared.txt
+expect_ok   "Alice commits and pushes on it"     sh -c "'$CID' commit -am 'rework shared' >/dev/null && '$CID' push"
+cd "$WORK/bob"; "$CID" pull >/dev/null; echo "main moved" > shared.txt
+expect_ok   "main moves meanwhile"               sh -c "'$CID' commit -am 'main shared' >/dev/null && '$CID' push"
+cd "$WORK/alice"
+expect_code 2 "the merge lists the conflict"     "$CID" merge rework
+expect_code 2 "--continue refuses while undecided" "$CID" merge --continue
+expect_ok   "Alice takes the branch's version"   "$CID" checkout --theirs shared.txt
+expect_ok   "the merge finishes"                 "$CID" merge --continue
+cd "$WORK/bob"
+expect_ok   "Bob pulls the merge"                "$CID" pull
+if [ "$(cat shared.txt)" = "from the branch" ]; then say "ok: main holds the branch's shared.txt"
+else say "FAIL: main holds '$(cat shared.txt)' after the merge"; fails=$((fails+1)); fi
+
 # --- piped --version is one parseable line ----------------------------------
 lines=$("$CID" --version | wc -l)
 if [ "$lines" -eq 1 ]; then say "ok: piped --version is one line"; else say "FAIL: piped --version"; fails=$((fails+1)); fi

@@ -317,6 +317,16 @@ pub fn pull(
             .delete => _ = target.swapRemove(path),
         }
     }
+    // In path order, as every state is: materialize finds paths by binary
+    // search, and a local file appended out of order was missed, then
+    // deleted from the folder as if it had left the version.
+    const SortCtx = struct {
+        keys: [][]const u8,
+        pub fn lessThan(c: @This(), a: usize, b: usize) bool {
+            return std.mem.order(u8, c.keys[a], c.keys[b]) == .lt;
+        }
+    };
+    target.sort(SortCtx{ .keys = target.keys() });
     const changed = try materialize(arena, io, ws, cache_dir, remote, target.values());
 
     // Rewrite the unpushed commits onto the new base: strip dropped paths,
@@ -365,6 +375,8 @@ pub fn pull(
 
 /// 'cid checkout --mine|--theirs <path>': records one decision for a
 /// conflicted pull. Returns how many paths are still undecided.
+/// Records a person's decision on one listed conflict, of the pull or
+/// the merge in progress (`cid checkout --mine|--theirs <path>`).
 pub fn decide(
     arena: std.mem.Allocator,
     io: std.Io,
@@ -372,17 +384,69 @@ pub fn decide(
     path: []const u8,
     choice: Choice,
 ) Error!union(enum) { remaining: usize, no_conflicts, unknown_path } {
-    const prior = loadPullState(arena, io, ws) orelse return .no_conflicts;
+    const kind: StateKind, const prior = if (loadPullState(arena, io, ws)) |p|
+        .{ .pull, p }
+    else if (loadMerge(arena, io, ws)) |m|
+        .{ .merge, m.conflicts }
+    else
+        return .no_conflicts;
     var map: std.StringArrayHashMapUnmanaged(Choice) = .empty;
     for (prior) |c| try map.put(arena, c.path, c.choice);
     const slot = map.getPtr(path) orelse return .unknown_path;
     slot.* = choice;
-    try savePullState(arena, io, ws, map);
+    switch (kind) {
+        .pull => try savePullState(arena, io, ws, map),
+        .merge => try saveMerge(arena, io, ws, loadMerge(arena, io, ws).?.branch, map),
+    }
     var remaining: usize = 0;
     for (map.values()) |c| {
         if (c == .undecided) remaining += 1;
     }
     return .{ .remaining = remaining };
+}
+
+const StateKind = enum { pull, merge };
+
+/// A merge into main that stopped on conflicts, waiting for decisions:
+/// mine keeps main's version, theirs takes the branch's (as in git when
+/// merging into main).
+pub const MergeState = struct { branch: []const u8, conflicts: []const Conflict };
+
+/// Records the conflicts a merge stopped on; decisions already taken for
+/// the same branch are kept.
+pub fn startMerge(arena: std.mem.Allocator, io: std.Io, ws: *workspace.Workspace, branch: []const u8, paths: []const []const u8) Error!void {
+    var map: std.StringArrayHashMapUnmanaged(Choice) = .empty;
+    if (loadMerge(arena, io, ws)) |prior| if (std.mem.eql(u8, prior.branch, branch)) {
+        for (prior.conflicts) |c| if (c.choice != .undecided) try map.put(arena, c.path, c.choice);
+    };
+    for (paths) |p| if (!map.contains(p)) try map.put(arena, p, .undecided);
+    try saveMerge(arena, io, ws, branch, map);
+}
+
+pub fn loadMerge(arena: std.mem.Allocator, io: std.Io, ws: *workspace.Workspace) ?MergeState {
+    const text = ws.cid_dir.readFileAlloc(io, "merge-state", arena, .limited(16 * 1024 * 1024)) catch return null;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    const header = lines.next() orelse return null;
+    if (!std.mem.startsWith(u8, header, "cid-merge 1 ")) return null;
+    var out: std.ArrayList(Conflict) = .empty;
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const tab = std.mem.indexOfScalar(u8, line, '\t') orelse return null;
+        const choice = std.meta.stringToEnum(Choice, line[0..tab]) orelse return null;
+        out.append(arena, .{ .path = line[tab + 1 ..], .choice = choice }) catch return null;
+    }
+    return .{ .branch = header["cid-merge 1 ".len..], .conflicts = out.items };
+}
+
+fn saveMerge(arena: std.mem.Allocator, io: std.Io, ws: *workspace.Workspace, branch: []const u8, map: std.StringArrayHashMapUnmanaged(Choice)) Error!void {
+    var out: std.ArrayList(u8) = .empty;
+    try out.print(arena, "cid-merge 1 {s}\n", .{branch});
+    for (map.keys(), map.values()) |path, choice| try out.print(arena, "{t}\t{s}\n", .{ choice, path });
+    local.writeFileAtomic(io, ws.cid_dir, "merge-state", out.items) catch return error.CorruptLocalState;
+}
+
+pub fn finishMerge(io: std.Io, ws: *workspace.Workspace) void {
+    ws.cid_dir.deleteFile(io, "merge-state") catch {};
 }
 
 pub fn pendingConflicts(arena: std.mem.Allocator, io: std.Io, ws: *workspace.Workspace) ?[]const Conflict {
@@ -477,10 +541,11 @@ fn subsetItems(
     return .{ .items = v.items, .total = @intCast(v.total) };
 }
 
-/// Brings the working folder and tracked tree to exactly `items`:
-/// downloads what the cache lacks, places changed files, removes tracked
-/// files that no longer exist. Only touched files transfer. Refuses when
-/// an affected path carries local unstaged edits.
+/// Brings the working folder and tracked tree to exactly `items` (in path
+/// order, bytewise, as states are): downloads what the cache lacks, places
+/// changed files, removes tracked files that no longer exist. Only touched
+/// files transfer. Refuses when an affected path carries local unstaged
+/// edits.
 fn materialize(
     arena: std.mem.Allocator,
     io: std.Io,
@@ -489,6 +554,9 @@ fn materialize(
     remote: *const Remote,
     items: []const remote_mod.Remote.StateItem,
 ) Error!u32 {
+    if (std.debug.runtime_safety and items.len > 1) for (items[1..], items[0 .. items.len - 1]) |b, a| {
+        std.debug.assert(std.mem.order(u8, a.path, b.path) == .lt);
+    };
     var tracked = loadTracked(arena, io, ws) catch return error.CorruptLocalState;
     const files = scan.scanWorkdir(arena, io, ws.work_dir) catch return error.CorruptLocalState;
 

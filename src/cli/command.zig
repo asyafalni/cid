@@ -12,7 +12,7 @@ pub const Parsed = union(enum) {
     commit: []const [:0]const u8,
     status,
     push,
-    pull,
+    pull: []const [:0]const u8,
     log,
     clone: []const [:0]const u8,
     checkout: []const [:0]const u8,
@@ -51,7 +51,7 @@ pub fn parse(args: []const [:0]const u8) Parsed {
     if (eql(first, "commit")) return .{ .commit = args[1..] };
     if (eql(first, "status")) return .status;
     if (eql(first, "push")) return .push;
-    if (eql(first, "pull")) return .pull;
+    if (eql(first, "pull")) return .{ .pull = args[1..] };
     if (eql(first, "log")) return .log;
     if (eql(first, "clone")) return .{ .clone = args[1..] };
     if (eql(first, "checkout")) return .{ .checkout = args[1..] };

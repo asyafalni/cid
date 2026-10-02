@@ -2206,7 +2206,14 @@ fn branches(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) 
     return json(arena, .ok, .{ .branches = list });
 }
 
-const MergeBody = struct { name: []const u8, author: []const u8 = "user:unknown" };
+/// `resolve`: a person's decision for paths the merge listed as conflicts
+/// — "main" keeps main's version, "branch" takes the branch's. A conflict
+/// without one is still listed (invariant 9: nothing is decided silently).
+const MergeBody = struct {
+    name: []const u8,
+    author: []const u8 = "user:unknown",
+    resolve: []const struct { path: []const u8, take: []const u8 } = &.{},
+};
 
 /// `cid merge <name>` into main. Overlapping changes stop the merge and
 /// are listed; nothing is resolved silently (invariant 9).
@@ -2250,8 +2257,15 @@ fn merge(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, 
         const main_changed = !optEql(p.ours, p.base);
         if (main_changed) {
             if (optEql(p.theirs, p.ours)) continue; // both sides made the same change
-            try conflicts.append(arena, p.path);
-            continue;
+            const decided = for (req.resolve) |r| {
+                if (eql(r.path, p.path)) break r.take;
+            } else null;
+            const take = decided orelse {
+                try conflicts.append(arena, p.path);
+                continue;
+            };
+            if (eql(take, "main")) continue; // main's version stays
+            if (!eql(take, "branch")) return error.BadRequest;
         }
         try branch_changes.put(arena, p.path, if (p.theirs) |h|
             .{ .add = .{ .hash = h, .size = @intCast(p.theirs_size orelse 0) } }

@@ -7,7 +7,11 @@ const common = @import("common.zig");
 const workspace = @import("../client/workspace.zig");
 const sync = @import("../client/sync.zig");
 
-pub fn run(ctx: *const common.Context) common.ExitCode {
+/// `cid pull --continue` finishes a pull whose conflicts are decided, as in
+/// git; plain `cid pull` does the same, so either works.
+pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCode {
+    for (args) |a| if (!std.mem.eql(u8, a, "--continue"))
+        return common.fail(ctx, .usage, "'cid pull' takes no '{s}'. Run 'cid pull', or 'cid pull --continue' once conflicts are decided.", .{a});
     var ws = common.openWorkspace(ctx) catch
         return common.fail(ctx, .usage, common.not_a_dataset_msg, .{});
     const cache_dir = common.openCacheDir(ctx) catch
@@ -53,7 +57,7 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
             }
             err_w.writeAll(
                 "Decide each file with 'cid checkout --mine <path>' (keep yours) or\n" ++
-                    "'cid checkout --theirs <path>' (take the server's), then run 'cid pull' again.\n",
+                    "'cid checkout --theirs <path>' (take the server's), then run 'cid pull --continue'.\n",
             ) catch {};
             err_w.flush() catch {};
             return .conflict;
