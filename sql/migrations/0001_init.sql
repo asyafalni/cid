@@ -87,6 +87,12 @@ CREATE TABLE collected_items (
   collected_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- One cleanup run's candidates, refilled by each `cid admin gc` (the
+-- TRUNCATE also keeps two runs from interleaving). Scratch: unlogged.
+CREATE UNLOGGED TABLE gc_candidates (
+  item_hash  bytea PRIMARY KEY
+);
+
 ---------------------------------------------------------------------------
 -- Revisions: append-only history (hypertables)
 ---------------------------------------------------------------------------

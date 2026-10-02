@@ -119,6 +119,7 @@ pub const Error = error{
     MissingContent, // a file was not in storage; re-run push
     ExportImpossible, // the server says why in the log (an item it cannot export)
     Corrupt, // a downloaded file failed its SHA-256 check (invariant 14)
+    Collected, // cleanup took bytes this version needs (in no release or branch head)
     ReleaseExists,
     BranchExists,
     NoSuchBranch,
@@ -469,6 +470,7 @@ pub const Remote = struct {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .hashes = hashes }, .{})});
         const res = self.t.call(arena, "POST", try self.target(arena, "downloads", .{}), body) catch
             return error.ServerUnreachable;
+        if (res.status == .gone) return error.Collected;
         if (res.status != .ok) return error.ServerRefused;
         const Dl = struct { downloads: []const Download };
         const parsed = parse(Dl, arena, res.body) orelse return error.ServerRefused;

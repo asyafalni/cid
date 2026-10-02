@@ -139,10 +139,13 @@ pub fn handleAs(
         error.Db => errorResponse(arena, .internal_server_error, "database error", "Check the server logs, then try again."),
         error.Storage => errorResponse(arena, .internal_server_error, "storage error", "Check the server logs, then try again."),
         error.BadRequest => errorResponse(arena, .bad_request, "the request body is not what this route expects", "Update cid and try again."),
+        error.Collected => errorResponse(arena, .unprocessable_entity, "a file was cleaned up from storage while this ran", "Run the same command again; it uploads the file again."),
     };
 }
 
-const HandleError = error{ OutOfMemory, Db, Storage, BadRequest };
+/// `Collected`: cleanup (`cid admin gc`) took a file this request was
+/// recording; nothing was recorded, and a retry uploads it again.
+const HandleError = error{ OutOfMemory, Db, Storage, BadRequest, Collected };
 
 fn handleInner(
     arena: std.mem.Allocator,
@@ -1998,10 +2001,24 @@ fn downloads(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Call
     // handed out — a CLI clone, a reveal's download — is on the record
     // before the URLs exist (invariant 20).
     if (ds.restricted) try logActivity(arena, deps, scope, ds, try actorOf(arena, deps, caller), "download", null, .{ .items = req.hashes.len });
+    var set: std.ArrayList(u8) = .empty;
+    try set.append(arena, '{');
+    for (req.hashes, 0..) |hash, i| {
+        if (!validHashHex(hash)) return error.BadRequest;
+        if (i > 0) try set.append(arena, ',');
+        try set.appendSlice(arena, hash);
+    }
+    try set.append(arena, '}');
+    // Bytes cleanup took (not in any release or branch head) are said so,
+    // not handed out as links that answer 404.
+    const collected = deps.db.rawOne(i64, scope, "SELECT count(*)::bigint FROM collected_items " ++
+        "WHERE item_hash IN (SELECT decode(h, 'hex') FROM unnest($1::text[]) h)", .{set.items}) catch return error.Db;
+    if (collected.? > 0) return errorResponse(arena, .gone, try std.fmt.allocPrint(arena, "{d} file{s} of this version {s} cleaned up from storage: it is in no release and no branch head", .{
+        collected.?, if (collected.? == 1) "" else "s", if (collected.? == 1) "was" else "were",
+    }), "Run 'cid log' and check out a release or a branch instead.");
     const Download = struct { hash: []const u8, url: []const u8 };
     const list = try arena.alloc(Download, req.hashes.len);
     for (req.hashes, 0..) |hash, i| {
-        if (!validHashHex(hash)) return error.BadRequest;
         const key = itemKey(arena, hash) catch return error.OutOfMemory;
         const url = deps.s3.presignGet(scope, key, presign_secs) catch return error.Storage;
         list[i] = .{ .hash = hash, .url = url };
@@ -2028,8 +2045,9 @@ fn insertAddRevision(
             "ON CONFLICT (item_hash) DO UPDATE SET touched_at = now()",
         .{ hash, @as(i64, @intCast(size)) },
     ) catch return error.Db;
-    // Verified in storage by this push: if cleanup had taken it, it is back.
-    _ = tx.exec(scope, "DELETE FROM collected_items WHERE item_hash = decode($1, 'hex')", .{hash}) catch return error.Db;
+    // The upsert holds the row cleanup locks (core/gc.zig): collected now
+    // means the bytes went after this push admitted them.
+    if ((tx.rawOne(i64, scope, collected_sql, .{hash}) catch return error.Db) != null) return error.Collected;
     _ = tx.exec(scope, held_sql, .{ ds.id, hash }) catch return error.Db;
     try enqueuePreview(tx, scope, hash);
     // Item identity: new path → new item_id; existing path keeps its id.
@@ -2272,7 +2290,7 @@ fn registerItems(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Data
                 "ON CONFLICT (item_hash) DO UPDATE SET meta = items.meta || excluded.meta, touched_at = now()",
             .{ item.hash, @as(i64, @intCast(item.size)), item.media_type, meta },
         ) catch return error.Db;
-        _ = deps.db.exec(scope, "DELETE FROM collected_items WHERE item_hash = decode($1, 'hex')", .{item.hash}) catch return error.Db;
+        if ((deps.db.rawOne(i64, scope, collected_sql, .{item.hash}) catch return error.Db) != null) return error.Collected;
         _ = deps.db.exec(scope, held_sql, .{ ds.id, item.hash }) catch return error.Db;
         try enqueuePreview(deps.db, scope, item.hash);
     }
@@ -2404,7 +2422,7 @@ const held_sql = "INSERT INTO dataset_hashes (dataset_id, item_hash) VALUES ($1:
 fn heldHere(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, hash: []const u8) HandleError!bool {
     const here = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM dataset_hashes WHERE dataset_id = $1::uuid AND item_hash = decode($2, 'hex')", .{ ds.id, hash }) catch return error.Db;
     if (here == null) return false;
-    const collected = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM collected_items WHERE item_hash = decode($1, 'hex')", .{hash}) catch return error.Db;
+    const collected = deps.db.rawOne(i64, scope, collected_sql, .{hash}) catch return error.Db;
     if (collected != null) return false;
     return (deps.s3.headObject(scope, itemKey(arena, hash) catch return error.OutOfMemory) catch return error.Storage) != null;
 }
@@ -2441,8 +2459,12 @@ fn admit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, has
     const key = itemKey(arena, hash) catch return error.OutOfMemory;
     if ((deps.s3.headObject(scope, key) catch return error.Storage) == null)
         deps.s3.putFile(scope, deps.io, key, path) catch return error.Storage;
+    // Verified bytes are back in storage: whatever cleanup took returns.
+    _ = deps.db.exec(scope, "DELETE FROM collected_items WHERE item_hash = decode($1, 'hex')", .{hash}) catch return error.Db;
     return .admitted;
 }
+
+const collected_sql = "SELECT 1::bigint FROM collected_items WHERE item_hash = decode($1, 'hex')";
 
 fn isPurged(db: *dbx.sql.Db, scope: anytype, hash: []const u8) HandleError!bool {
     const row = db.rawOne(i64, scope, "SELECT 1::bigint FROM purged_items WHERE item_hash = decode($1, 'hex')", .{hash}) catch return error.Db;

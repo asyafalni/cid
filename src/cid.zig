@@ -33,6 +33,7 @@ pub const migrate = @import("core/migrate.zig");
 pub const release = @import("core/release.zig");
 pub const state = @import("core/version.zig");
 pub const purge = @import("core/purge.zig");
+pub const gc = @import("core/gc.zig");
 pub const preview = @import("preview/worker.zig");
 pub const media = @import("media/sniff.zig");
 pub const canonical = @import("manifest/canonical.zig");

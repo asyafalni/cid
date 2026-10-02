@@ -114,6 +114,7 @@ fn cloneFailed(
         error.EmptyDataset => return common.fail(ctx, .usage, "'{s}' has nothing pushed yet. Push from the producing folder first.", .{name}),
         error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server. Check CID_SERVER, then run 'cid clone' again.", .{}),
         error.TransferFailed => return common.fail(ctx, .integrity, "a download failed its hash check or the connection broke. Run 'cid clone' again.", .{}),
+        error.Collected => return common.fail(ctx, .integrity, "this version needs files cleanup removed from the server: it is in no release and no branch head. Run 'cid log' and clone a release or a branch instead (--release).", .{}),
         error.Corrupt => return common.fail(ctx, .integrity, "what the server sent failed its hash check. Run 'cid clone' again.", .{}),
         else => return common.fail(ctx, .network, "clone failed. Fix the cause above, then run 'cid clone' again.", .{}),
     }

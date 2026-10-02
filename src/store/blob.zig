@@ -147,6 +147,12 @@ pub const Client = struct {
         return meta.len;
     }
 
+    /// One page (up to 1,000 keys) under `prefix`; `cursor` is the
+    /// previous page's `next`. The loop over pages is the caller's.
+    pub fn list(self: *Client, scope: anytype, prefix: []const u8, cursor: ?[]const u8) Error!s3.Page {
+        return self.items.list(scope, .{ .prefix = prefix, .cursor = cursor });
+    }
+
     pub fn deleteObject(self: *Client, scope: anytype, key: []const u8) Error!void {
         return self.items.delete(scope, key);
     }

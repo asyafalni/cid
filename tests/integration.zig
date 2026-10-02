@@ -2687,3 +2687,113 @@ test "media: audio gets its waveform, text reads as text, restricted text withhe
     try std.testing.expect(std.mem.indexOf(u8, revealed.body, "UTF-8 is fine") != null);
     try std.testing.expect(std.mem.indexOf(u8, revealed.body, "\"logged\":true") != null);
 }
+
+test "gc: never deletes what a release or branch head holds; collected bytes can come back" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/gc" };
+
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
+    inline for (.{ "refs", "commits", "item_revisions", "dataset_items" }) |table| {
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/gc')", .{});
+    }
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/gc'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
+
+    const contents = [_][]const u8{ "gc: in the release and the head", "gc: in the release only", "gc: in a middle commit only", "gc: in the head only" };
+    var hashes: [contents.len][64]u8 = undefined;
+    for (contents, &hashes) |c, *h| {
+        var dg: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(c, &dg, .{});
+        h.* = std.fmt.bytesToHex(dg, .lower);
+    }
+
+    // a + b, released; then b goes and c comes; then c goes and d comes.
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    try cid.client.workspace.init(arena, io, producer.dir, "cid@test:test/datasets/gc", "git@example.invalid:gc.git");
+    var ws = try cid.client.workspace.open(arena, io, producer.dir);
+    const steps = [_]struct { write: []const usize, remove: []const []const u8 }{
+        .{ .write = &.{ 0, 1 }, .remove = &.{} },
+        .{ .write = &.{2}, .remove = &.{"b.txt"} },
+        .{ .write = &.{3}, .remove = &.{"c.txt"} },
+    };
+    const names = [_][]const u8{ "a.txt", "b.txt", "c.txt", "d.txt" };
+    for (steps, 0..) |step, n| {
+        for (step.write) |w| try producer.dir.writeFile(io, .{ .sub_path = names[w], .data = contents[w] });
+        for (step.remove) |r| try producer.dir.deleteFile(io, r);
+        _ = try cid.client.workspace.add(arena, io, &ws, cache.dir, &.{"."});
+        _ = try cid.client.workspace.commit(arena, io, &ws, "step", "user:test");
+        _ = try cid.client.sync.push(arena, io, &ws, cache.dir, &remote);
+        if (n == 0) _ = try remote.tag(arena, "v1");
+    }
+    const ds_id = (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/gc'", .{})).?;
+
+    // An upload staged and never pushed.
+    const junk_key = try cid.api.stagedKey(arena, ds_id, "00" ** 32);
+    try s3c.putObject(&scope, junk_key, "abandoned");
+    try std.Io.sleep(io, .fromSeconds(1), .awake); // storage stamps whole seconds
+
+    // Showing deletes nothing, and only the middle commit's file is a
+    // candidate (retention 0 days: every byte is old enough).
+    const shown = try cid.gc.run(std.testing.allocator, &standalone.db, &scope, &s3c, .{ .days = 0 });
+    try std.testing.expect(shown.items >= 1);
+    try std.testing.expect(shown.staged >= 1);
+    for (hashes, 0..) |h, i| {
+        const listed = try db.rawOne(i64, &fscope, "SELECT 1::bigint FROM gc_candidates WHERE item_hash = decode($1, 'hex')", .{&h});
+        try std.testing.expectEqual(i == 2, listed != null);
+        try std.testing.expect((try s3c.headObject(&scope, try cid.api.itemKey(arena, &h))) != null);
+    }
+    try std.testing.expect((try s3c.headObject(&scope, junk_key)) != null);
+
+    // --apply: c's bytes go, recorded; the release's and the head's stay.
+    const applied = try cid.gc.run(std.testing.allocator, &standalone.db, &scope, &s3c, .{ .days = 0, .apply = true });
+    try std.testing.expect(applied.items >= 1);
+    for (hashes, 0..) |h, i| {
+        const there = (try s3c.headObject(&scope, try cid.api.itemKey(arena, &h))) != null;
+        try std.testing.expectEqual(i != 2, there);
+    }
+    try std.testing.expect((try db.rawOne(i64, &fscope, "SELECT 1::bigint FROM collected_items WHERE item_hash = decode($1, 'hex')", .{&hashes[2]})) != null);
+    try std.testing.expect((try s3c.headObject(&scope, junk_key)) == null);
+    // Asking for collected bytes is answered in words, not with dead links.
+    try std.testing.expectError(error.Collected, remote.downloads(arena, &.{&hashes[2]}));
+    _ = try remote.downloads(arena, &.{&hashes[0]});
+
+    // A push of the same content uploads it again (the server never
+    // claims to hold collected bytes) and the collection is undone.
+    try producer.dir.writeFile(io, .{ .sub_path = "c-again.txt", .data = contents[2] });
+    _ = try cid.client.workspace.add(arena, io, &ws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &ws, "c is back", "user:test");
+    const back = try cid.client.sync.push(arena, io, &ws, cache.dir, &remote);
+    try std.testing.expectEqual(@as(u32, 1), back.uploaded_files);
+    try std.testing.expect((try s3c.headObject(&scope, try cid.api.itemKey(arena, &hashes[2]))) != null);
+    try std.testing.expect((try db.rawOne(i64, &fscope, "SELECT 1::bigint FROM collected_items WHERE item_hash = decode($1, 'hex')", .{&hashes[2]})) == null);
+
+    // A second run finds nothing more of this dataset's to take.
+    _ = try cid.gc.run(std.testing.allocator, &standalone.db, &scope, &s3c, .{ .days = 0, .apply = true });
+    for (hashes) |h| try std.testing.expect((try s3c.headObject(&scope, try cid.api.itemKey(arena, &h))) != null);
+}

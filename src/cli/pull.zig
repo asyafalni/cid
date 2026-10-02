@@ -23,6 +23,7 @@ pub fn run(ctx: *const common.Context) common.ExitCode {
         error.EmptyDataset => return common.fail(ctx, .usage, "the server has nothing for this dataset yet. Run 'cid push' first.", .{}),
         error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server. Check CID_SERVER, then run 'cid pull' again.", .{}),
         error.ExportFailed => return common.fail(ctx, .integrity, "the export sidecars could not be rebuilt (see the warning above). Fix the data in the platform, then run the command again.", .{}),
+        error.Collected => return common.fail(ctx, .integrity, "this version needs files cleanup removed from the server: it is in no release and no branch head; the folder was not changed. Run 'cid log' and check out a release or a branch instead.", .{}),
         error.Corrupt => return common.fail(ctx, .integrity, "what the server sent failed its hash check; the folder was not changed. Run 'cid pull' again.", .{}),
         error.ServerRefused => return common.fail(ctx, .network, "the server could not answer (see its message above, if any). Run 'cid pull' again; if it persists, tell the dataset's owner.", .{}),
         error.TransferFailed => return common.fail(ctx, .integrity, "a download failed its hash check or the connection broke. Run 'cid pull' again.", .{}),

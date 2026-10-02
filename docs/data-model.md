@@ -338,10 +338,28 @@ content). A purged hash can never be re-uploaded without a new purge decision.
 ## Cleanup (gc) and what is rebuildable
 
 Only **releases and branch heads** are guaranteed rebuildable forever. `cid admin gc`
-deletes items that are referenced by neither, and are older than the retention period;
-showing is the default, deleting needs `--apply`. An old commit that was never
-released may therefore lose files after retention — `cid checkout <that commit>` then
-fails with a clear message saying so and listing what is gone.
+shows by default; deleting needs `--apply`. The retention period is 30 days by
+default (`--days <n>`).
+
+- **Kept, always:** every item in the state of any release or branch head of any
+  dataset, and every item a revision named within the retention period (work in
+  flight, the platform's newest writes).
+- **Taken:** other items that no push or registration has touched
+  (`items.touched_at`) for the whole period, and are not purged or already collected.
+  Their bytes and previews go, and `collected_items` records the hash. History
+  keeps every row.
+- **Also taken:** staged uploads (`uploads/<dataset_id>/…`) never recorded within
+  the period, i.e. abandoned pushes.
+
+An old commit that was never released may therefore lose files after retention.
+Checking it out then fails with exit code 3, saying how many of its files were
+cleaned up and to check out a release or a branch instead. A verified upload of the
+same content brings it back, and the push dedup check never claims a collected hash.
+
+Racing a push is safe by lock order. Each gc batch locks its `items` rows, re-checks
+`touched_at` under the lock, records the collection and deletes the bytes before
+committing. A push or registration upserts the same row (so it waits), then refuses
+a hash collected meanwhile. The client's retry uploads it again.
 
 ---
 

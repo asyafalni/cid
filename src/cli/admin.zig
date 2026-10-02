@@ -12,6 +12,7 @@ const git_writer = @import("../gitrepo/writer.zig");
 const keys_mod = @import("../access/keys.zig");
 const gitlab_sync = @import("../access/gitlab_sync.zig");
 const purge_mod = @import("../core/purge.zig");
+const gc_mod = @import("../core/gc.zig");
 const preview_worker = @import("../preview/worker.zig");
 const serve_mod = @import("../server/serve.zig");
 const signin_mod = @import("../server/signin.zig");
@@ -28,6 +29,11 @@ const admin_help =
     \\  serve      run the cid server (--port <n>, default 7070)
     \\  verify <dataset> <release>   rebuild a release and check its hash
     \\  git <dataset> [--resync]     dataset repository status; --resync retries
+    \\  gc [--days <n>] [--apply]    show unreferenced files (untouched for n days,
+    \\             default 30); --apply deletes them
+    \\  purge <dataset> <path|hash> --reason "why"   audited erasure of one item
+    \\  previews   run the preview worker
+    \\  sync-gitlab  sync members and SSH keys now
     \\
     \\All of them read configuration from the environment:
     \\  CID_DB     the TimescaleDB connection (setup, migrate, serve)
@@ -85,6 +91,9 @@ pub fn run(
     }
     if (eql(sub, "purge")) {
         return runPurge(arena, io, out, env, args[1..]);
+    }
+    if (eql(sub, "gc")) {
+        return runGc(arena, io, out, env, args[1..]);
     }
     return fail(io, .usage, "'cid admin {s}' is not an admin command. Run 'cid admin'.", .{sub});
 }
@@ -545,25 +554,14 @@ fn runPurge(
     if (positional.items.len != 2 or reason == null)
         return fail(io, .usage, "run 'cid admin purge <dataset> <path|hash> --reason \"why\"'. The reason is recorded forever.", .{});
 
-    const s3_endpoint = env.get("CID_S3_ENDPOINT") orelse return missingEnv(io, "CID_S3_ENDPOINT", "http://127.0.0.1:8333");
-    const s3_access = env.get("CID_S3_ACCESS_KEY") orelse return missingEnv(io, "CID_S3_ACCESS_KEY", "cid");
-    const s3_secret = env.get("CID_S3_SECRET_KEY") orelse return missingEnv(io, "CID_S3_SECRET_KEY", "…");
-    const s3_region = env.get("CID_S3_REGION") orelse "us-east-1";
+    var s3_client: blob.Client = undefined;
+    if (adminStorage(&s3_client, arena, io, env)) |code| return code;
+    defer s3_client.deinit();
     var standalone: dbx.Standalone = undefined;
     adminPool(&standalone, arena, io, env, "cid admin purge") orelse return .network;
     defer standalone.close();
     var scope = dbx.Run.init(arena);
     defer scope.deinit();
-    var s3_client: blob.Client = undefined;
-    s3_client.open(arena, .{
-        .endpoint = s3_endpoint,
-        .access_key = s3_access,
-        .secret_key = s3_secret,
-        .region = s3_region,
-    }) catch return fail(io, .usage, "CID_S3_ENDPOINT must look like http://host:port.", .{});
-    defer s3_client.deinit();
-    s3_client.start(io) catch
-        return fail(io, .network, "cannot reach storage at {s}. Check SeaweedFS, then run the command again.", .{s3_endpoint});
 
     const by = env.get("USER") orelse "admin";
     const by_tag = std.fmt.allocPrint(arena, "user:{s}", .{by}) catch return .network;
@@ -577,6 +575,70 @@ fn runPurge(
         positional.items[1],              result.hash_hex[0..12],                         result.releases_affected,
         plural(result.releases_affected), if (result.releases_affected == 1) "s" else "",
     }) catch return .network;
+    out.flush() catch return .network;
+    return .ok;
+}
+
+/// Opens storage from the environment for an admin command; an exit code
+/// (with the message already written) when it cannot.
+fn adminStorage(client: *blob.Client, arena: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map) ?ExitCode {
+    const s3_endpoint = env.get("CID_S3_ENDPOINT") orelse return missingEnv(io, "CID_S3_ENDPOINT", "http://127.0.0.1:8333");
+    const s3_access = env.get("CID_S3_ACCESS_KEY") orelse return missingEnv(io, "CID_S3_ACCESS_KEY", "cid");
+    const s3_secret = env.get("CID_S3_SECRET_KEY") orelse return missingEnv(io, "CID_S3_SECRET_KEY", "…");
+    client.open(arena, .{
+        .endpoint = s3_endpoint,
+        .access_key = s3_access,
+        .secret_key = s3_secret,
+        .region = env.get("CID_S3_REGION") orelse "us-east-1",
+    }) catch return fail(io, .usage, "CID_S3_ENDPOINT must look like http://host:port.", .{});
+    client.start(io) catch {
+        client.deinit();
+        return fail(io, .network, "cannot reach storage at {s}. Check SeaweedFS, then run the command again.", .{s3_endpoint});
+    };
+    return null;
+}
+
+fn runGc(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+    env: *const std.process.Environ.Map,
+    args: []const [:0]const u8,
+) ExitCode {
+    var options: gc_mod.Options = .{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--apply")) {
+            options.apply = true;
+        } else if (eql(args[i], "--days")) {
+            i += 1;
+            const text = if (i < args.len) args[i] else "";
+            options.days = std.fmt.parseInt(u32, text, 10) catch
+                return fail(io, .usage, "--days needs a whole number of days. Run 'cid admin gc --days 30'.", .{});
+        } else {
+            return fail(io, .usage, "'{s}' is not an option of gc. Run 'cid admin gc' to see what would go, then 'cid admin gc --apply'.", .{args[i]});
+        }
+    }
+
+    var s3_client: blob.Client = undefined;
+    if (adminStorage(&s3_client, arena, io, env)) |code| return code;
+    defer s3_client.deinit();
+    var standalone: dbx.Standalone = undefined;
+    adminPool(&standalone, arena, io, env, "cid admin gc") orelse return .network;
+    defer standalone.close();
+    var scope = dbx.Run.init(arena);
+    defer scope.deinit();
+
+    const report = gc_mod.run(std.heap.smp_allocator, &standalone.db, &scope, &s3_client, options) catch |err|
+        return fail(io, .network, "cleanup could not finish: {t}. Run the same command again; it picks up where it stopped.", .{err});
+    const verb = if (options.apply) "Deleted" else "Would delete";
+    out.print("{s} {d} unreferenced file{s} ({Bi:.1}) untouched for {d} day{s}, and {d} abandoned upload{s}.\n", .{
+        verb,          report.items,          plural(report.items), report.bytes, options.days, plural(options.days),
+        report.staged, plural(report.staged),
+    }) catch return .network;
+    out.writeAll("Kept: everything in a release or a branch head, and anything used within that period.\n") catch return .network;
+    if (!options.apply and (report.items > 0 or report.staged > 0))
+        out.writeAll("Run 'cid admin gc --apply' to delete them.\n") catch return .network;
     out.flush() catch return .network;
     return .ok;
 }
@@ -681,7 +743,7 @@ fn runPreviews(
 }
 
 fn missingEnv(io: std.Io, name: []const u8, example: []const u8) ExitCode {
-    return fail(io, .usage, "{s} is not set. Export it (e.g. {s}={s}), then run 'cid admin serve' again.", .{ name, name, example });
+    return fail(io, .usage, "{s} is not set. Export it (e.g. {s}={s}), then run the command again.", .{ name, name, example });
 }
 
 /// Every error ends with the command to run next (already in the formats above).
