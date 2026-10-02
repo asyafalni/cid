@@ -1358,7 +1358,26 @@ test "annotated: the platform writes revisions, the server commits, state compos
 
     // The server seals the batch.
     const c1 = try remote.commitServer(arena, "main", "batch one annotated", "agent:annotator");
-    const s1 = try remote.stateAnnotated(arena, c1);
+    // A version's items and annotations, as the browse API answers them.
+    const At = struct {
+        items: []const struct { path: []const u8 },
+        annotations: []const struct { kind: ?[]const u8, class: ?[]const u8, geometry: ?std.json.Value, author: []const u8, policy_ver: []const u8 },
+    };
+    const stateAt = struct {
+        fn get(al: std.mem.Allocator, d: *cid.api.Deps, sc: anytype, commit: []const u8) !At {
+            const res = cid.api.handle(al, d, sc, "GET", try std.fmt.allocPrint(al, "/v0/datasets/test/datasets/ann/-/browse?commit={s}&limit=200", .{commit}), "Bearer test-token", "");
+            const Page = struct { items: []const struct { path: []const u8, annotations: []const @typeInfo(@FieldType(At, "annotations")).pointer.child } };
+            const page = try std.json.parseFromSliceLeaky(Page, al, res.body, .{ .ignore_unknown_fields = true });
+            var items: std.ArrayList(@typeInfo(@FieldType(At, "items")).pointer.child) = .empty;
+            var anns: std.ArrayList(@typeInfo(@FieldType(At, "annotations")).pointer.child) = .empty;
+            for (page.items) |i| {
+                try items.append(al, .{ .path = i.path });
+                try anns.appendSlice(al, i.annotations);
+            }
+            return .{ .items = items.items, .annotations = anns.items };
+        }
+    }.get;
+    const s1 = try stateAt(arena, &deps, &scope, c1);
     try std.testing.expectEqual(@as(usize, 2), s1.items.len);
     try std.testing.expectEqual(@as(usize, 2), s1.annotations.len);
     try std.testing.expectEqualStrings("box", s1.annotations[0].kind.?);
@@ -1391,14 +1410,14 @@ test "annotated: the platform writes revisions, the server commits, state compos
     _ = try db.exec(&fscope, "COMMIT", .{});
 
     const c2 = try remote.commitServer(arena, "main", "review pass", "user:reviewer");
-    const s2 = try remote.stateAnnotated(arena, c2);
+    const s2 = try stateAt(arena, &deps, &scope, c2);
     try std.testing.expectEqual(@as(usize, 2), s2.items.len);
     try std.testing.expectEqual(@as(usize, 1), s2.annotations.len);
     try std.testing.expectEqual(@as(i64, 11), s2.annotations[0].geometry.?.object.get("x").?.integer);
     try std.testing.expectEqualStrings("user:reviewer", s2.annotations[0].author);
 
     // History is history: the first commit still answers with both boxes.
-    const s1_again = try remote.stateAnnotated(arena, c1);
+    const s1_again = try stateAt(arena, &deps, &scope, c1);
     try std.testing.expectEqual(@as(usize, 2), s1_again.annotations.len);
     try std.testing.expectEqual(@as(i64, 10), s1_again.annotations[0].geometry.?.object.get("x").?.integer);
 
@@ -2169,7 +2188,7 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     {
         // Once the provisional file has had its time, the next is written
         // with the dimensions, and is final: kept, never written again.
-        _ = try db.exec(&fscope, "UPDATE commits SET state_built_at = now() - interval '1 day' WHERE commit_id = $1::uuid", .{@as([]const u8, released.commit)});
+        _ = try db.exec(&fscope, "UPDATE version_files SET built_at = now() - interval '1 day' WHERE commit_id = $1::uuid", .{@as([]const u8, released.commit)});
         const items = try remote.state(arena, released.commit);
         try std.testing.expectEqual(@as(?u32, 96), items[0].width);
         try std.testing.expectEqual(@as(?u32, 64), items[0].height);
@@ -2179,7 +2198,9 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
         try std.testing.expect(!std.mem.eql(u8, where.sha256, early.sha256));
         // A state file changed in storage is refused, never half-trusted.
         const ds_id = (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/sniff'", .{})).?;
-        const key = try std.fmt.allocPrint(arena, "states/{s}/{s}-{s}.jsonl.gz", .{ ds_id, released.commit, where.sha256[0..16] });
+        var whole: [32]u8 = undefined; // the subset key of "no subset"
+        std.crypto.hash.sha2.Sha256.hash("{\"splits\":[],\"classes\":[]}", &whole, .{});
+        const key = try std.fmt.allocPrint(arena, "states/{s}/{s}-{s}-{s}.jsonl.gz", .{ ds_id, released.commit, (&std.fmt.bytesToHex(whole, .lower))[0..16], where.sha256[0..16] });
         const genuine = try s3c.getObjectAlloc(&scope, key);
         try s3c.putObject(&scope, key, "not the state you are looking for");
         try std.testing.expectError(error.ServerRefused, remote.state(arena, released.commit));

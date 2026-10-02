@@ -31,6 +31,7 @@ const duck = @import("../store/duck.zig");
 const table_stats = @import("../tabular/stats.zig");
 const rowdiff_mod = @import("../tabular/rowdiff.zig");
 const browse_mod = @import("browse/browse.zig");
+const bundle_mod = @import("../export/bundle.zig");
 const versions = @import("../core/version.zig");
 const nilo = @import("nilo_http");
 const token_mod = @import("../access/token.zig");
@@ -222,7 +223,7 @@ fn handleInner(
     if (eql(method, "GET") and std.mem.startsWith(u8, route.action, "compare/"))
         return compare(arena, deps, scope, ds, route.action["compare/".len..]);
     if (eql(method, "GET") and std.mem.startsWith(u8, route.action, "version/"))
-        return versionFile(arena, deps, scope, ds, route.action["version/".len..]);
+        return versionFile(arena, deps, scope, ds, route.action["version/".len..], route);
     if (eql(method, "POST") and eql(route.action, "downloads"))
         return downloads(arena, deps, scope, caller, ds, body);
     if (eql(method, "POST") and eql(route.action, "thumbs"))
@@ -1399,43 +1400,94 @@ const state_provisional_secs = 10 * 60;
 /// whose media metadata is still arriving gets a provisional file,
 /// written again after a while, so dimensions are never frozen blank.
 /// The server's memory stays one batch deep at any size.
-fn versionFile(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit_id: []const u8) HandleError!Response {
+fn versionFile(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit_id: []const u8, route: DatasetRoute) HandleError!Response {
     if (Uuid.parse(commit_id) == error.InvalidUuid)
         return errorResponse(arena, .bad_request, "that is not a commit id", "Run 'cid log' to list commits.");
+    const kind = std.meta.stringToEnum(bundle_mod.Kind, (try param(arena, route, "kind")) orelse "state") orelse
+        return errorResponse(arena, .bad_request, "no such export format", "Use one of: files, jsonl, yolo.");
+    if (kind != .state and !eql(ds.kind, "annotated"))
+        return errorResponse(arena, .bad_request, "only annotated datasets have exports", "Clone it as files.");
+    // The subset, canonical: sorted lists, so the same subset is one file.
+    const splits = try sortedCopy(arena, try paramAll(arena, route, "split"));
+    const classes = try sortedCopy(arena, try paramAll(arena, route, "class"));
+    const subset_key = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .splits = splits, .classes = classes }, .{})});
+    const mine = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM commits WHERE commit_id = $1::uuid AND dataset_id = $2::uuid", .{ commit_id, ds.id }) catch return error.Db;
+    if (mine == null) return errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits.");
+
     const Kept = struct {
         pub const nilo_table = .projection;
-        sha: ?[]const u8,
+        sha: []const u8,
         final: bool,
         fresh: bool,
     };
-    const kept = (deps.db.rawOne(Kept, scope, "SELECT state_sha256 AS sha, state_final AS final, " ++
-        "coalesce(state_built_at > now() - interval '" ++ std.fmt.comptimePrint("{d}", .{state_provisional_secs}) ++ " seconds', false) AS fresh " ++
-        "FROM commits WHERE commit_id = $1::uuid AND dataset_id = $2::uuid", .{ commit_id, ds.id }) catch return error.Db) orelse
-        return errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits.");
-    if (kept.sha) |sha| if (kept.final or kept.fresh) {
-        const url = deps.s3.presignGet(scope, try stateKey(arena, ds.id, commit_id, sha), presign_secs) catch return error.Storage;
-        return json(arena, .ok, .{ .commit = commit_id, .url = url, .sha256 = sha, .final = kept.final });
+    const kept = deps.db.rawOne(Kept, scope, "SELECT sha256 AS sha, final, " ++
+        "built_at > now() - interval '" ++ std.fmt.comptimePrint("{d}", .{state_provisional_secs}) ++ " seconds' AS fresh " ++
+        "FROM version_files WHERE commit_id = $1::uuid AND kind = $2 AND subset = $3", .{ commit_id, @tagName(kind), subset_key }) catch return error.Db;
+    // How many items the version holds before any subset (clone says "N of M").
+    const total = (versions.stats(arena, deps.db, scope, ds.id, commit_id) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.Db,
+    }).items;
+    if (kept) |k| if (k.final or k.fresh) {
+        const url = deps.s3.presignGet(scope, try fileKey(arena, ds.id, commit_id, kind, subset_key, k.sha), presign_secs) catch return error.Storage;
+        return json(arena, .ok, .{ .commit = commit_id, .url = url, .sha256 = k.sha, .final = k.final, .total = total });
     };
 
-    // Write it: the pass → gzip → hashed → a file in the work folder.
-    const path = try std.fmt.allocPrint(arena, "{s}/{s}.state.gz", .{ deps.work_dir, commit_id });
+    // Write it: one streamed pass → gzip → hashed → a file in the work folder.
+    const path = try std.fmt.allocPrint(arena, "{s}/{s}-{t}-{s}.gz", .{ deps.work_dir, commit_id, kind, (try subsetHash(arena, subset_key))[0..16] });
     const gz = try GzFile.open(deps, path);
     defer gz.close(deps);
-    const annotated = eql(ds.kind, "annotated");
-    versions.stateHeader(gz.writer(), commit_id, annotated) catch return error.Storage;
-    const written = versions.pass(deps.gpa, deps.db, scope, ds.id, commit_id, .{ .state = gz.writer(), .annotated = annotated }) catch |err| return switch (err) {
+    const outcome = bundle_mod.build(deps.gpa, deps.db, scope, ds.id, commit_id, kind, .{ .splits = splits, .classes = classes }, gz.writer()) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.WriteFailed => error.Storage,
         else => error.Db,
     };
+    const written = switch (outcome) {
+        .written => |w| w,
+        .failed => |f| {
+            defer deps.gpa.free(f.path);
+            return json(arena, .unprocessable_entity, .{
+                .@"error" = try std.fmt.allocPrint(arena, "the {t} export is impossible: {s}: {s}", .{ kind, f.path, f.why }),
+                .next = "Fix that item in the annotation platform, commit, then run the command again; or clone with --format jsonl.",
+                .path = try arena.dupe(u8, f.path),
+            });
+        },
+    };
     const sha = try gz.finish();
     const final = !written.media_pending;
     // Named by its own hash: the same content is the same object.
-    if (!(kept.sha != null and eql(kept.sha.?, &sha)))
-        deps.s3.putFile(scope, deps.io, try stateKey(arena, ds.id, commit_id, &sha), path) catch return error.Storage;
-    _ = deps.db.exec(scope, "UPDATE commits SET state_sha256 = $2, state_final = $3, state_built_at = now() WHERE commit_id = $1::uuid", .{ commit_id, @as([]const u8, &sha), final }) catch return error.Db;
-    const url = deps.s3.presignGet(scope, try stateKey(arena, ds.id, commit_id, &sha), presign_secs) catch return error.Storage;
-    return json(arena, .ok, .{ .commit = commit_id, .url = url, .sha256 = @as([]const u8, &sha), .final = final });
+    if (!(kept != null and eql(kept.?.sha, &sha)))
+        deps.s3.putFile(scope, deps.io, try fileKey(arena, ds.id, commit_id, kind, subset_key, &sha), path) catch return error.Storage;
+    _ = deps.db.exec(scope, "INSERT INTO version_files (commit_id, kind, subset, sha256, final) VALUES ($1::uuid, $2, $3, $4, $5) " ++
+        "ON CONFLICT (commit_id, kind, subset) DO UPDATE SET sha256 = excluded.sha256, final = excluded.final, built_at = now()", .{ commit_id, @tagName(kind), subset_key, @as([]const u8, &sha), final }) catch return error.Db;
+    const url = deps.s3.presignGet(scope, try fileKey(arena, ds.id, commit_id, kind, subset_key, &sha), presign_secs) catch return error.Storage;
+    return json(arena, .ok, .{ .commit = commit_id, .url = url, .sha256 = @as([]const u8, &sha), .final = final, .total = total });
+}
+
+fn sortedCopy(arena: std.mem.Allocator, list: []const []const u8) HandleError![]const []const u8 {
+    const out = try arena.dupe([]const u8, list);
+    std.mem.sort([]const u8, out, {}, struct {
+        fn less(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.lessThan(u8, x, y);
+        }
+    }.less);
+    return out;
+}
+
+fn subsetHash(arena: std.mem.Allocator, subset_key: []const u8) HandleError![]const u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(subset_key, &digest, .{});
+    return arena.dupe(u8, &std.fmt.bytesToHex(digest, .lower));
+}
+
+/// states/… for a version's items, exports/… for an export
+/// (CLAUDE.md, storage layout); subset and content named by hash.
+fn fileKey(arena: std.mem.Allocator, dataset_id: []const u8, commit_id: []const u8, kind: bundle_mod.Kind, subset_key: []const u8, sha: []const u8) HandleError![]const u8 {
+    const sub = (try subsetHash(arena, subset_key))[0..16];
+    return switch (kind) {
+        .state => std.fmt.allocPrint(arena, "states/{s}/{s}-{s}-{s}.jsonl.gz", .{ dataset_id, commit_id, sub, sha[0..16] }),
+        .jsonl, .yolo => std.fmt.allocPrint(arena, "exports/{s}/{s}/{t}-{s}-{s}.jsonl.gz", .{ dataset_id, commit_id, kind, sub, sha[0..16] }),
+    };
 }
 
 /// A gzip file of JSON lines being written in the work folder, its SHA-256
@@ -1553,10 +1605,6 @@ fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, p
 
 fn diffKey(arena: std.mem.Allocator, dataset_id: []const u8, a: []const u8, b: []const u8, sha: []const u8) HandleError![]const u8 {
     return std.fmt.allocPrint(arena, "diffs/{s}/{s}-{s}-{s}.jsonl.gz", .{ dataset_id, a, b, sha[0..16] });
-}
-
-fn stateKey(arena: std.mem.Allocator, dataset_id: []const u8, commit_id: []const u8, sha: []const u8) HandleError![]const u8 {
-    return std.fmt.allocPrint(arena, "states/{s}/{s}-{s}.jsonl.gz", .{ dataset_id, commit_id, sha[0..16] });
 }
 
 /// Stored jsonb text → a JSON value for the response (never re-encoded as

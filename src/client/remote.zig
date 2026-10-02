@@ -116,6 +116,7 @@ pub const Error = error{
     NoSuchDataset,
     Stale, // someone pushed since you pulled
     MissingContent, // a file was not in storage; re-run push
+    ExportImpossible, // the server says why in the log (an item it cannot export)
     ReleaseExists,
     BranchExists,
     NoSuchBranch,
@@ -233,7 +234,88 @@ pub const Remote = struct {
     pub const StateItem = struct { path: []const u8, hash: []const u8, size: u64, split: ?[]const u8 = null, item_id: ?[]const u8 = null, width: ?u32 = null, height: ?u32 = null };
 
     pub fn state(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8) Error![]const StateItem {
-        return (try self.version(arena, commit_id, false)).items;
+        return (try self.versionOf(arena, commit_id, .{})).items;
+    }
+
+    /// `--split` and `--class`, as the server narrows a version or export.
+    pub const Subset = struct { split: []const []const u8 = &.{}, class: []const []const u8 = &.{} };
+
+    fn fileTarget(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8, kind: []const u8, subset: Subset) ![]u8 {
+        var q: std.ArrayList(u8) = .empty;
+        try q.print(arena, "version/{s}?kind={s}", .{ commit_id, kind });
+        inline for (.{ .{ "split", subset.split }, .{ "class", subset.class } }) |pair| {
+            for (pair[1]) |v| {
+                try q.print(arena, "&{s}=", .{pair[0]});
+                for (v) |ch| {
+                    if (std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_' or ch == '.' or ch == '~')
+                        try q.append(arena, ch)
+                    else
+                        try q.print(arena, "%{X:0>2}", .{ch});
+                }
+            }
+        }
+        return self.target(arena, "{s}", .{q.items});
+    }
+
+    /// Asks for a version file (items, or an export) and where to get it.
+    fn whereIs(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8, kind: []const u8, subset: Subset) Error!struct { url: []const u8, sha256: []const u8, total: u64 } {
+        const res = self.t.call(arena, "GET", try self.fileTarget(arena, commit_id, kind, subset), "") catch
+            return error.ServerUnreachable;
+        if (res.status == .not_found) return error.NoSuchDataset;
+        if (res.status == .unprocessable_entity) {
+            const Why = struct { @"error": []const u8 = "the export is impossible" };
+            const why = parse(Why, arena, res.body) orelse Why{};
+            std.log.warn("{s}", .{why.@"error"});
+            return error.ExportImpossible;
+        }
+        if (res.status != .ok) return error.ServerRefused;
+        const Where = struct { url: []const u8, sha256: []const u8, total: u64 = 0 };
+        const where = parse(Where, arena, res.body) orelse return error.ServerRefused;
+        return .{ .url = where.url, .sha256 = where.sha256, .total = where.total };
+    }
+
+    pub const Version = struct {
+        items: []const StateItem,
+        /// Items in the version before the subset was taken.
+        total: u64,
+    };
+
+    /// A version's items (or a subset of them, chosen on the server),
+    /// downloaded as the file the server wrote and read as it arrives,
+    /// SHA-256 checked over every byte (invariant 14).
+    pub fn versionOf(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8, subset: Subset) Error!Version {
+        const where = try self.whereIs(arena, commit_id, "state", subset);
+        var reading: StateReading = .{ .arena = arena };
+        self.t.getUrl(where.url, .{ .ctx = &reading, .read = StateReading.read }) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.BadState => error.ServerRefused,
+            else => error.ServerUnreachable,
+        };
+        if (!std.mem.eql(u8, &reading.sha256_hex, where.sha256)) return error.ServerRefused;
+        return .{ .items = reading.items.items, .total = where.total };
+    }
+
+    /// Where an export's files go: `write` is called with each chunk; a
+    /// file's chunks arrive together and in order.
+    pub const FileSink = struct {
+        ctx: *anyopaque,
+        write: *const fn (ctx: *anyopaque, path: []const u8, text: []const u8) anyerror!void,
+    };
+
+    /// An export (`jsonl`, `yolo`) of a version, built on the server and
+    /// streamed into `sink` a chunk at a time, SHA-256 checked; on a
+    /// mismatch the error comes after the writes, so the caller must treat
+    /// what was written as void.
+    pub fn exportTo(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8, format: []const u8, subset: Subset, sink: FileSink) Error!void {
+        const where = try self.whereIs(arena, commit_id, format, subset);
+        var reading: BundleReading = .{ .sink = sink, .scratch = .init(std.heap.page_allocator) };
+        defer reading.scratch.deinit();
+        self.t.getUrl(where.url, .{ .ctx = &reading, .read = BundleReading.read }) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.BadState => error.ServerRefused,
+            else => error.ServerUnreachable,
+        };
+        if (!std.mem.eql(u8, &reading.sha256_hex, where.sha256)) return error.ServerRefused;
     }
 
     pub const TagResult = struct { release: []const u8, commit: []const u8, manifest_sha256: []const u8, items: u64 };
@@ -334,22 +416,6 @@ pub const Remote = struct {
         if (res.status != .ok) return error.ServerRefused;
     }
 
-    pub const Annotation = struct {
-        id: []const u8,
-        item_id: []const u8,
-        kind: ?[]const u8 = null,
-        class: ?[]const u8 = null,
-        geometry: ?std.json.Value = null,
-        attrs: ?std.json.Value = null,
-        author: []const u8,
-        policy_ver: []const u8,
-    };
-
-    pub const AnnotatedState = struct {
-        items: []const StateItem,
-        annotations: []const Annotation,
-    };
-
     pub const DiffSummary = struct { added: u64 = 0, modified: u64 = 0, deleted: u64 = 0, ann_added: u64 = 0, ann_changed: u64 = 0, ann_removed: u64 = 0 };
 
     /// One change in a diff: an item (`change` set) or an annotation
@@ -393,33 +459,6 @@ pub const Remote = struct {
         };
         if (!std.mem.eql(u8, &reading.sha256_hex, where.sha256)) return error.ServerRefused;
         return where.summary;
-    }
-
-    pub fn stateAnnotated(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8) Error!AnnotatedState {
-        return self.version(arena, commit_id, true);
-    }
-
-    /// A version's state, downloaded from storage as the server wrote it
-    /// (`cid-state 1`: gzip JSON lines, items by path then annotations) and
-    /// read as it arrives — never a whole response held twice. Its SHA-256
-    /// is checked over every byte (invariant 14); a mismatch is an error,
-    /// not a partial state.
-    pub fn version(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8, with_annotations: bool) Error!AnnotatedState {
-        const res = self.t.call(arena, "GET", try self.target(arena, "version/{s}", .{commit_id}), "") catch
-            return error.ServerUnreachable;
-        if (res.status == .not_found) return error.NoSuchDataset;
-        if (res.status != .ok) return error.ServerRefused;
-        const Where = struct { url: []const u8, sha256: []const u8 };
-        const where = parse(Where, arena, res.body) orelse return error.ServerRefused;
-
-        var reading: StateReading = .{ .arena = arena, .with_annotations = with_annotations };
-        self.t.getUrl(where.url, .{ .ctx = &reading, .read = StateReading.read }) catch |err| return switch (err) {
-            error.OutOfMemory => error.OutOfMemory,
-            error.BadState => error.ServerRefused,
-            else => error.ServerUnreachable,
-        };
-        if (!std.mem.eql(u8, &reading.sha256_hex, where.sha256)) return error.ServerRefused;
-        return .{ .items = reading.items.items, .annotations = reading.annotations.items };
     }
 
     pub const Download = struct { hash: []const u8, url: []const u8 };
@@ -498,9 +537,7 @@ fn readGzLines(body: *std.Io.Reader, header: []const u8, ctx: anytype, comptime 
 /// annotations.
 const StateReading = struct {
     arena: std.mem.Allocator,
-    with_annotations: bool,
     items: std.ArrayList(Remote.StateItem) = .empty,
-    annotations: std.ArrayList(Remote.Annotation) = .empty,
     sha256_hex: [64]u8 = @splat('0'),
 
     fn read(ctx: *anyopaque, body: *std.Io.Reader) anyerror!void {
@@ -510,11 +547,27 @@ const StateReading = struct {
 
     fn line(self: *StateReading, text: []const u8) anyerror!void {
         const opts: std.json.ParseOptions = .{ .allocate = .alloc_always, .ignore_unknown_fields = true };
-        if (std.mem.startsWith(u8, text, "{\"path\":")) {
-            try self.items.append(self.arena, std.json.parseFromSliceLeaky(Remote.StateItem, self.arena, text, opts) catch return error.BadState);
-        } else if (self.with_annotations) {
-            try self.annotations.append(self.arena, std.json.parseFromSliceLeaky(Remote.Annotation, self.arena, text, opts) catch return error.BadState);
-        }
+        try self.items.append(self.arena, std.json.parseFromSliceLeaky(Remote.StateItem, self.arena, text, opts) catch return error.BadState);
+    }
+};
+
+/// An export bundle: `{"path":…,"text":…}` lines into a FileSink; each
+/// line's strings live in a scratch arena reset for the next.
+const BundleReading = struct {
+    sink: Remote.FileSink,
+    scratch: std.heap.ArenaAllocator,
+    sha256_hex: [64]u8 = @splat('0'),
+
+    fn read(ctx: *anyopaque, body: *std.Io.Reader) anyerror!void {
+        const self: *BundleReading = @ptrCast(@alignCast(ctx));
+        self.sha256_hex = try readGzLines(body, "{\"cid\":\"bundle\",\"v\":1,", self, line);
+    }
+
+    fn line(self: *BundleReading, text: []const u8) anyerror!void {
+        _ = self.scratch.reset(.retain_capacity);
+        const Chunk = struct { path: []const u8, text: []const u8 };
+        const chunk = std.json.parseFromSliceLeaky(Chunk, self.scratch.allocator(), text, .{ .allocate = .alloc_always }) catch return error.BadState;
+        try self.sink.write(self.sink.ctx, chunk.path, chunk.text);
     }
 };
 

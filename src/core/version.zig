@@ -75,10 +75,6 @@ pub const Outputs = struct {
     items: ?*std.Io.Writer = null,
     /// …and one per annotation, by (item_id, annotation_id).
     annotations: ?*std.Io.Writer = null,
-    /// The version as the CLI downloads it (`cid-state 1`, see stateHeader):
-    /// item lines in path order with their dimensions, then annotation
-    /// lines by (item_id, annotation_id).
-    state: ?*std.Io.Writer = null,
     /// Keep the version's statistics on the commit, from the same snapshot.
     stats: bool = false,
     /// Each batch's item hashes, in path order; answering false stops the
@@ -95,14 +91,11 @@ pub const Written = struct {
     sha256_hex: ?[64]u8 = null,
     items: u64 = 0,
     annotations: u64 = 0,
-    /// Some item still waits for the preview worker, which may yet add its
-    /// media metadata (dimensions): a state file written now is provisional.
-    media_pending: bool = false,
 };
 
 /// The first line of a state file.
-pub fn stateHeader(w: *std.Io.Writer, commit_id: []const u8, annotated: bool) !void {
-    try w.print("{{\"cid\":\"state\",\"v\":1,\"commit\":\"{s}\",\"annotated\":{}}}\n", .{ commit_id, annotated });
+pub fn stateHeader(w: *std.Io.Writer, commit_id: []const u8) !void {
+    try w.print("{{\"cid\":\"state\",\"v\":1,\"commit\":\"{s}\"}}\n", .{commit_id});
 }
 
 const PassItem = struct {
@@ -114,8 +107,6 @@ const PassItem = struct {
     item_id: ?[]const u8,
     ext: []const u8,
     classes: []const u8,
-    width: ?i32,
-    height: ?i32,
 };
 
 const PassAnn = struct {
@@ -133,7 +124,7 @@ const PassAnn = struct {
 /// The version at `where`, materialized once into `<name>_live` (items,
 /// indexed by path, bytewise) and `<name>_alive` (annotations, indexed by
 /// item and id): temporary tables that go when the transaction ends.
-fn materialize(tx: anytype, scope: anytype, dataset_id: []const u8, where: At, comptime name: []const u8) Error!void {
+pub fn materialize(tx: anytype, scope: anytype, dataset_id: []const u8, where: At, comptime name: []const u8) Error!void {
     const args = .{ dataset_id, where.branch, where.cutoff, where.main_cutoff };
     inline for (.{
         "CREATE TEMP TABLE " ++ name ++ "_live (path text, item_hash bytea, split text, item_id uuid, size_bytes bigint, width int, height int) ON COMMIT DROP",
@@ -182,8 +173,7 @@ pub fn pass(
     }
 
     _ = tx.exec(scope, "DECLARE pass_items NO SCROLL CURSOR FOR SELECT l.path, encode(l.item_hash, 'hex') AS hash_hex, " ++
-        "l.size_bytes, l.split, l.item_id::text AS item_id, " ++ comptime extOf("l.path") ++ " AS ext, coalesce(c.classes, '[]') AS classes, " ++
-        "l.width, l.height " ++
+        "l.size_bytes, l.split, l.item_id::text AS item_id, " ++ comptime extOf("l.path") ++ " AS ext, coalesce(c.classes, '[]') AS classes " ++
         "FROM v_live l LEFT JOIN v_classes c USING (item_id) ORDER BY l.path COLLATE \"C\"", .{}) catch return error.Db;
     while (true) {
         var batch = dbx.Run.init(gpa);
@@ -203,13 +193,6 @@ pub fn pass(
                 r.classes,
             }) catch return error.WriteFailed;
         };
-        if (outputs.state) |w| for (rows) |r| {
-            w.print("{{\"path\":{f},\"hash\":\"{s}\",\"size\":{d},\"split\":{f},\"item_id\":{f},\"width\":{f},\"height\":{f}}}\n", .{
-                std.json.fmt(r.path, .{}),   r.hash_hex,                   r.size_bytes,
-                std.json.fmt(r.split, .{}),  std.json.fmt(r.item_id, .{}), std.json.fmt(r.width, .{}),
-                std.json.fmt(r.height, .{}),
-            }) catch return error.WriteFailed;
-        };
         written.items += rows.len;
         if (outputs.hashes) |v| {
             const hashes = try arena.alloc([]const u8, rows.len);
@@ -219,7 +202,7 @@ pub fn pass(
         if (rows.len < batch_rows) break;
     }
 
-    if (outputs.annotations != null or outputs.state != null or (outputs.manifest != null and outputs.annotated)) {
+    if (outputs.annotations != null or (outputs.manifest != null and outputs.annotated)) {
         _ = tx.exec(scope, "DECLARE pass_anns NO SCROLL CURSOR FOR SELECT annotation_id::text AS annotation_id, item_id::text AS item_id, " ++
             "kind, class, geometry::text AS geometry, attrs::text AS attrs, author, policy_ver FROM v_alive ORDER BY item_id, annotation_id", .{}) catch return error.Db;
         while (true) {
@@ -245,7 +228,7 @@ pub fn pass(
                 hasher.update(text.items);
                 m.writeAll(text.items) catch return error.WriteFailed;
             };
-            inline for (.{ outputs.annotations, outputs.state }) |maybe| if (maybe) |w| for (rows) |r| {
+            if (outputs.annotations) |w| for (rows) |r| {
                 w.print("{{\"id\":\"{s}\",\"item_id\":\"{s}\",\"kind\":{f},\"class\":{f},\"geometry\":{s},\"attrs\":{s},\"author\":{f},\"policy_ver\":{f}}}\n", .{
                     r.annotation_id,             r.item_id,
                     std.json.fmt(r.kind, .{}),   std.json.fmt(r.class, .{}),
@@ -258,11 +241,6 @@ pub fn pass(
         }
     }
 
-    if (outputs.state != null) {
-        written.media_pending = (tx.rawOne(i64, scope, "SELECT 1::bigint FROM v_live l JOIN previews p USING (item_hash) " ++
-            "WHERE p.status IN ('pending', 'building') LIMIT 1", .{}) catch return error.Db) != null;
-    }
-
     if (outputs.stats) {
         if (tx.rawOne([]const u8, scope, "WITH " ++ comptime statsOver("v_live", "v_alive"), .{}) catch null) |text| {
             _ = tx.exec(scope, "UPDATE commits SET stats = $2::jsonb WHERE commit_id = $1::uuid", .{ commit_id, text }) catch {};
@@ -272,7 +250,7 @@ pub fn pass(
         }
     }
 
-    inline for (.{ outputs.manifest, outputs.items, outputs.annotations, outputs.state }) |maybe| if (maybe) |w| w.flush() catch return error.WriteFailed;
+    inline for (.{ outputs.manifest, outputs.items, outputs.annotations }) |maybe| if (maybe) |w| w.flush() catch return error.WriteFailed;
     if (outputs.manifest != null) {
         var digest: [32]u8 = undefined;
         hasher.final(&digest);

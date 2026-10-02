@@ -446,67 +446,16 @@ const Position = struct {
 };
 
 /// The items a folder holds at `commit_id`: all of them, or the subset
-/// its config names. Filtering happens here, before any download, so a
-/// subset clone fetches only what it keeps.
+/// its config names, chosen by the server so a subset clone fetches only
+/// what it keeps.
 fn subsetItems(
     arena: std.mem.Allocator,
     remote: *const Remote,
     subset: workspace.Subset,
     commit_id: []const u8,
 ) Error!Position {
-    if (subset.class.len == 0) {
-        const all = try remote.state(arena, commit_id);
-        if (subset.split.len == 0) return .{ .items = all, .total = all.len };
-        var kept: std.ArrayList(remote_mod.Remote.StateItem) = .empty;
-        for (all) |item| if (inSplit(subset, item)) try kept.append(arena, item);
-        return .{ .items = kept.items, .total = all.len };
-    }
-    const state = try remote.stateAnnotated(arena, commit_id);
-    const narrowed = narrow(arena, subset, state) catch return error.OutOfMemory;
-    return .{ .items = narrowed.items, .total = state.items.len };
-}
-
-/// A subset applied to an annotated state: items in the split that carry
-/// at least one of the classes, and only those classes' annotations.
-fn narrow(
-    arena: std.mem.Allocator,
-    subset: workspace.Subset,
-    state: remote_mod.Remote.AnnotatedState,
-) !remote_mod.Remote.AnnotatedState {
-    if (!subset.active()) return state;
-
-    var anns: std.ArrayList(remote_mod.Remote.Annotation) = .empty;
-    var carrying: std.StringHashMapUnmanaged(void) = .empty;
-    for (state.annotations) |ann| {
-        if (subset.class.len > 0 and !inList(subset.class, ann.class orelse "")) continue;
-        try anns.append(arena, ann);
-        try carrying.put(arena, ann.item_id, {});
-    }
-    var items: std.ArrayList(remote_mod.Remote.StateItem) = .empty;
-    for (state.items) |item| {
-        if (!inSplit(subset, item)) continue;
-        if (subset.class.len > 0) {
-            const id = item.item_id orelse continue;
-            if (!carrying.contains(id)) continue;
-        }
-        try items.append(arena, item);
-    }
-    // Annotations of items the split removed go too.
-    var kept_ids: std.StringHashMapUnmanaged(void) = .empty;
-    for (items.items) |item| if (item.item_id) |id| try kept_ids.put(arena, id, {});
-    var final: std.ArrayList(remote_mod.Remote.Annotation) = .empty;
-    for (anns.items) |ann| if (kept_ids.contains(ann.item_id)) try final.append(arena, ann);
-    return .{ .items = items.items, .annotations = final.items };
-}
-
-fn inSplit(subset: workspace.Subset, item: remote_mod.Remote.StateItem) bool {
-    if (subset.split.len == 0) return true;
-    return inList(subset.split, item.split orelse return false);
-}
-
-fn inList(list: []const []const u8, value: []const u8) bool {
-    for (list) |v| if (std.mem.eql(u8, v, value)) return true;
-    return false;
+    const v = try remote.versionOf(arena, commit_id, .{ .split = subset.split, .class = subset.class });
+    return .{ .items = v.items, .total = @intCast(v.total) };
 }
 
 /// Brings the working folder and tracked tree to exactly `items`:
@@ -601,68 +550,74 @@ fn generateExport(
     remote: *const Remote,
     commit_id: []const u8,
 ) Error!void {
-    const jsonl = @import("../export/jsonl.zig");
-    const yolo = @import("../export/yolo.zig");
     if (!std.mem.eql(u8, ws.config.kind, "annotated")) return;
     if (std.mem.eql(u8, ws.config.format, "files")) return;
 
-    const state = narrow(arena, workspace.Subset.of(ws.config), try remote.stateAnnotated(arena, commit_id)) catch
-        return error.OutOfMemory;
-
-    // Link annotations to their items by item_id.
-    var by_item: std.StringArrayHashMapUnmanaged(std.ArrayList(remote_mod.Remote.Annotation)) = .empty;
-    for (state.annotations) |ann| {
-        const gop = try by_item.getOrPut(arena, ann.item_id);
-        if (!gop.found_existing) gop.value_ptr.* = .empty;
-        try gop.value_ptr.append(arena, ann);
-    }
-    const linked = try arena.alloc(jsonl.LinkedItem, state.items.len);
-    for (linked, 0..) |*entry, i| {
-        const anns: []const remote_mod.Remote.Annotation = blk: {
-            const id = state.items[i].item_id orelse break :blk &.{};
-            const list = by_item.get(id) orelse break :blk &.{};
-            break :blk list.items;
-        };
-        entry.* = .{ .item = state.items[i], .annotations = anns };
-    }
-
-    const files: []const jsonl.File = blk: {
-        if (std.mem.eql(u8, ws.config.format, "jsonl")) {
-            break :blk jsonl.renderLinked(arena, linked) catch return error.ExportFailed;
-        }
-        if (std.mem.eql(u8, ws.config.format, "yolo")) {
-            const result = yolo.renderLinked(arena, linked) catch return error.ExportFailed;
-            switch (result) {
-                .files => |f| break :blk f,
-                .failed => |why| {
-                    std.log.warn("yolo export impossible: {s}: {s}", .{ why.path, why.why });
-                    return error.ExportFailed;
-                },
-            }
-        }
-        return error.ExportFailed; // unknown format never gets this far
+    // Built on the server and streamed in, a file at a time: the folder
+    // never holds the version's annotations in memory.
+    var folder: ExportFolder = .{ .arena = arena, .io = io, .dir = ws.work_dir };
+    defer folder.close();
+    const subset = workspace.Subset.of(ws.config);
+    remote.exportTo(arena, commit_id, ws.config.format, .{ .split = subset.split, .class = subset.class }, .{ .ctx = &folder, .write = ExportFolder.write }) catch |err| return switch (err) {
+        error.ExportImpossible => error.ExportFailed,
+        else => |e| e,
     };
+    folder.close();
+    if (folder.failed) return error.ExportFailed;
 
     var ignore: std.ArrayList(u8) = .empty;
     try ignore.appendSlice(arena, "# generated by cid; edits here are overwritten\n.cidignore\n");
-    for (files) |f| {
-        if (std.mem.lastIndexOfScalar(u8, f.path, '/')) |_| {
-            // Whole generated trees are ignored at their top folder.
-            const top = f.path[0 .. std.mem.indexOfScalar(u8, f.path, '/').? + 1];
-            if (std.mem.indexOf(u8, ignore.items, top) == null)
-                try ignore.print(arena, "{s}\n", .{top});
-        } else if (std.mem.indexOf(u8, ignore.items, f.path) == null) {
-            try ignore.print(arena, "{s}\n", .{f.path});
-        }
-        if (std.mem.lastIndexOfScalar(u8, f.path, '/')) |sep| {
-            ws.work_dir.createDirPath(io, f.path[0..sep]) catch return error.ExportFailed;
-        }
-        ws.work_dir.writeFile(io, .{ .sub_path = f.path, .data = f.contents }) catch
-            return error.ExportFailed;
-    }
+    for (folder.tops.keys()) |top| try ignore.print(arena, "{s}\n", .{top});
     ws.work_dir.writeFile(io, .{ .sub_path = ".cidignore", .data = ignore.items }) catch
         return error.ExportFailed;
 }
+
+/// Writes an export's chunks into the folder: one file open at a time
+/// (a file's chunks arrive together), each generated top-level name
+/// noted for the .cidignore.
+const ExportFolder = struct {
+    arena: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    current: std.ArrayList(u8) = .empty,
+    file: ?std.Io.File = null,
+    fw: std.Io.File.Writer = undefined,
+    buf: [64 * 1024]u8 = undefined,
+    tops: std.StringArrayHashMapUnmanaged(void) = .empty,
+    failed: bool = false,
+
+    fn write(ctx: *anyopaque, path: []const u8, text: []const u8) anyerror!void {
+        const self: *ExportFolder = @ptrCast(@alignCast(ctx));
+        if (self.file == null or !std.mem.eql(u8, self.current.items, path)) {
+            self.close();
+            // Never outside the folder, whatever a path says.
+            if (path.len == 0 or path[0] == '/' or std.mem.indexOf(u8, path, "..") != null) return self.fail();
+            if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| self.dir.createDirPath(self.io, path[0..sep]) catch return self.fail();
+            self.file = self.dir.createFile(self.io, path, .{ .truncate = true }) catch return self.fail();
+            self.fw = self.file.?.writer(self.io, &self.buf);
+            self.current.clearRetainingCapacity();
+            try self.current.appendSlice(self.arena, path);
+            const top = if (std.mem.indexOfScalar(u8, path, '/')) |i| path[0 .. i + 1] else path;
+            if (!self.tops.contains(top)) try self.tops.put(self.arena, try self.arena.dupe(u8, top), {});
+        }
+        self.fw.interface.writeAll(text) catch return self.fail();
+    }
+
+    fn fail(self: *ExportFolder) anyerror {
+        self.failed = true;
+        return error.ExportFailed;
+    }
+
+    fn close(self: *ExportFolder) void {
+        if (self.file) |f| {
+            self.fw.interface.flush() catch {
+                self.failed = true;
+            };
+            f.close(self.io);
+            self.file = null;
+        }
+    }
+};
 
 // --------------------------------------------------------------------------
 // Position bookkeeping: `.cid/HEAD` holds the commit this folder sits on —
@@ -704,48 +659,4 @@ fn saveTracked(arena: std.mem.Allocator, io: std.Io, ws: *workspace.Workspace, t
     var aw: std.Io.Writer.Allocating = .init(arena);
     try tracked.serialize(&aw.writer);
     try local.writeFileAtomic(io, ws.cid_dir, "tracked", aw.writer.buffered());
-}
-
-test "a subset keeps items in its split carrying its classes, and only those annotations" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const Item = remote_mod.Remote.StateItem;
-    const Ann = remote_mod.Remote.Annotation;
-
-    const items = [_]Item{
-        .{ .path = "a.png", .hash = "h1", .size = 1, .split = "train", .item_id = "i1" },
-        .{ .path = "b.png", .hash = "h2", .size = 1, .split = "val", .item_id = "i2" },
-        .{ .path = "c.png", .hash = "h3", .size = 1, .split = "train", .item_id = "i3" },
-        .{ .path = "d.png", .hash = "h4", .size = 1, .split = null, .item_id = "i4" },
-    };
-    const anns = [_]Ann{
-        .{ .id = "a1", .item_id = "i1", .class = "person", .author = "x", .policy_ver = "p" },
-        .{ .id = "a2", .item_id = "i1", .class = "vehicle", .author = "x", .policy_ver = "p" },
-        .{ .id = "a3", .item_id = "i2", .class = "person", .author = "x", .policy_ver = "p" },
-        .{ .id = "a4", .item_id = "i3", .class = "vehicle", .author = "x", .policy_ver = "p" },
-    };
-    const state: remote_mod.Remote.AnnotatedState = .{ .items = &items, .annotations = &anns };
-
-    // split train + class person: only a.png, with only its person box.
-    const both = try narrow(arena, .{ .split = &.{"train"}, .class = &.{"person"} }, state);
-    try std.testing.expectEqual(@as(usize, 1), both.items.len);
-    try std.testing.expectEqualStrings("a.png", both.items[0].path);
-    try std.testing.expectEqual(@as(usize, 1), both.annotations.len);
-    try std.testing.expectEqualStrings("a1", both.annotations[0].id);
-
-    // split only: train items, all their annotations; an item with no
-    // split is outside every named split.
-    const split = try narrow(arena, .{ .split = &.{"train"} }, state);
-    try std.testing.expectEqual(@as(usize, 2), split.items.len);
-    try std.testing.expectEqual(@as(usize, 3), split.annotations.len);
-
-    // class only: items carrying it, in any split; unlabelled d.png gone.
-    const cls = try narrow(arena, .{ .class = &.{"vehicle"} }, state);
-    try std.testing.expectEqual(@as(usize, 2), cls.items.len);
-    try std.testing.expectEqual(@as(usize, 2), cls.annotations.len);
-
-    // No subset: the state, untouched.
-    const none = try narrow(arena, .{}, state);
-    try std.testing.expectEqual(@as(usize, 4), none.items.len);
 }

@@ -1,86 +1,70 @@
 //! The `jsonl` export: universal, one line per item with its annotations
-//! (CLAUDE.md, formats). Works for any media. Deterministic: items in
-//! path order, annotations in (item_id, annotation_id) order, geometry
-//! and attrs embedded as their canonical JCS form.
+//! (CLAUDE.md, formats), in one file, `annotations.jsonl`. Works for any
+//! media. Written an item at a time as the version streams by
+//! (bundle.zig): items in path order, annotations in id order.
 
 const std = @import("std");
-const remote_mod = @import("../client/remote.zig");
-const jcs = @import("../manifest/jcs.zig");
+const bundle = @import("bundle.zig");
 
-pub const File = struct {
-    path: []const u8,
-    contents: []const u8,
-};
+pub const file = "annotations.jsonl";
 
-pub const Error = error{ OutOfMemory, BadAnnotation };
+pub fn writeItem(out: bundle.Bundle, arena: std.mem.Allocator, item: bundle.Item, anns: []const bundle.Ann) !void {
+    const Ann = struct {
+        id: []const u8,
+        kind: ?[]const u8,
+        class: ?[]const u8,
+        geometry: ?std.json.Value,
+        attrs: ?std.json.Value,
+    };
+    const list = try arena.alloc(Ann, anns.len);
+    for (list, anns) |*a, src| a.* = .{
+        .id = src.id,
+        .kind = src.kind,
+        .class = src.class,
+        .geometry = try valueOf(arena, src.geometry),
+        .attrs = try valueOf(arena, src.attrs),
+    };
+    const line = try std.fmt.allocPrint(arena, "{f}\n", .{std.json.fmt(.{
+        .path = item.path,
+        .hash = item.hash,
+        .size = item.size,
+        .split = item.split,
+        .width = item.width,
+        .height = item.height,
+        .annotations = list,
+    }, .{ .emit_null_optional_fields = false })});
+    try out.put(file, line);
+}
 
-/// items and their annotations, already linked by the caller.
-pub const LinkedItem = struct {
-    item: remote_mod.Remote.StateItem,
-    annotations: []const remote_mod.Remote.Annotation,
-};
-
-pub fn renderLinked(arena: std.mem.Allocator, linked: []const LinkedItem) Error![]const File {
-    var out: std.ArrayList(u8) = .empty;
-    for (linked) |entry| {
-        const Ann = struct {
-            id: []const u8,
-            kind: ?[]const u8,
-            class: ?[]const u8,
-            geometry: ?std.json.Value,
-            attrs: ?std.json.Value,
-        };
-        const anns = try arena.alloc(Ann, entry.annotations.len);
-        for (anns, 0..) |*a, i| {
-            a.* = .{
-                .id = entry.annotations[i].id,
-                .kind = entry.annotations[i].kind,
-                .class = entry.annotations[i].class,
-                .geometry = entry.annotations[i].geometry,
-                .attrs = entry.annotations[i].attrs,
-            };
-        }
-        const line = .{
-            .path = entry.item.path,
-            .hash = entry.item.hash,
-            .size = entry.item.size,
-            .split = entry.item.split,
-            .width = entry.item.width,
-            .height = entry.item.height,
-            .annotations = anns,
-        };
-        try out.print(arena, "{f}\n", .{std.json.fmt(line, .{ .emit_null_optional_fields = false })});
-    }
-    const files = try arena.alloc(File, 1);
-    files[0] = .{ .path = "annotations.jsonl", .contents = out.items };
-    return files;
+fn valueOf(arena: std.mem.Allocator, text: ?[]const u8) !?std.json.Value {
+    const t = text orelse return null;
+    return std.json.parseFromSliceLeaky(std.json.Value, arena, t, .{}) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => null,
+    };
 }
 
 test "one line per item, annotations inline, empties included" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+    var buf: std.Io.Writer.Allocating = .init(arena);
+    const out: bundle.Bundle = .{ .w = &buf.writer };
 
-    const geo = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"x\":1,\"y\":2}", .{});
-    const linked = [_]LinkedItem{
-        .{
-            .item = .{ .path = "a.jpg", .hash = "ab" ** 32, .size = 10, .split = "train", .width = 640, .height = 480 },
-            .annotations = &.{.{ .id = "ann-1", .item_id = "i1", .kind = "box", .class = "person", .geometry = geo, .author = "x", .policy_ver = "p1" }},
-        },
-        .{
-            .item = .{ .path = "b.jpg", .hash = "cd" ** 32, .size = 5 },
-            .annotations = &.{},
-        },
-    };
-    const files = try renderLinked(arena, &linked);
-    try std.testing.expectEqual(@as(usize, 1), files.len);
-    try std.testing.expectEqualStrings("annotations.jsonl", files[0].path);
-    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, files[0].contents, "\n"), '\n');
-    const l1 = lines.next().?;
-    const l2 = lines.next().?;
+    try writeItem(out, arena, .{ .path = "a.jpg", .hash = "ab" ** 32, .size = 10, .split = "train", .item_id = "i1", .width = 640, .height = 480 }, &.{
+        .{ .id = "ann-1", .kind = "box", .class = "person", .geometry = "{\"x\": 1, \"y\": 2}", .attrs = null },
+    });
+    try writeItem(out, arena, .{ .path = "b.jpg", .hash = "cd" ** 32, .size = 5, .split = null, .item_id = null, .width = null, .height = null }, &.{});
+
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, buf.written(), "\n"), '\n');
+    const Line = struct { path: []const u8, text: []const u8 };
+    const l1 = try std.json.parseFromSliceLeaky(Line, arena, lines.next().?, .{});
+    const l2 = try std.json.parseFromSliceLeaky(Line, arena, lines.next().?, .{});
     try std.testing.expect(lines.next() == null);
-    try std.testing.expect(std.mem.indexOf(u8, l1, "\"path\":\"a.jpg\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, l1, "\"class\":\"person\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, l1, "\"x\":1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, l2, "\"annotations\":[]") != null);
+    try std.testing.expectEqualStrings(file, l1.path);
+    try std.testing.expect(std.mem.indexOf(u8, l1.text, "\"path\":\"a.jpg\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, l1.text, "\"class\":\"person\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, l1.text, "\"x\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, l2.text, "\"annotations\":[]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, l2.text, "\"split\"") == null); // nulls left out
 }

@@ -158,12 +158,7 @@ CREATE TABLE commits (
   authored_at      timestamptz NOT NULL,           -- when `cid commit` ran
   recorded_at      timestamptz NOT NULL DEFAULT now(),
   -- the version's statistics, one aggregate, computed once (core/version.zig)
-  stats            jsonb,
-  -- the version as the CLI downloads it: a gzip file in storage, named by
-  -- its own SHA-256; final once no item waits for media metadata
-  state_sha256     text,
-  state_final      boolean NOT NULL DEFAULT false,
-  state_built_at   timestamptz
+  stats            jsonb
 );
 CREATE INDEX commits_by_branch ON commits (dataset_id, branch, commit_id DESC);
 
@@ -311,6 +306,20 @@ CREATE TABLE row_diffs (
   reason     text,
   created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (hash_a, hash_b, kind_a, kind_b)
+);
+
+-- A version as the CLI downloads it (export/bundle.zig): its items, or an
+-- export of it, whole or narrowed to a subset — a gzip file in storage,
+-- named by its own SHA-256. Final once no item waits for media metadata;
+-- until then provisional, and written again after a while.
+CREATE TABLE version_files (
+  commit_id  uuid NOT NULL REFERENCES commits(commit_id),
+  kind       text NOT NULL CHECK (kind IN ('state','jsonl','yolo')),
+  subset     text NOT NULL,             -- canonical JSON: sorted splits, sorted classes
+  sha256     text NOT NULL,
+  final      boolean NOT NULL,
+  built_at   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (commit_id, kind, subset)
 );
 
 -- What changed between two versions, as the CLI reads it: a gzip file of

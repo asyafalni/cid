@@ -40,6 +40,7 @@ pub const jcs = @import("manifest/jcs.zig");
 pub const exports = struct {
     pub const jsonl = @import("export/jsonl.zig");
     pub const yolo = @import("export/yolo.zig");
+    pub const bundle = @import("export/bundle.zig");
 };
 pub const gitrepo = struct {
     pub const render = @import("gitrepo/render.zig");
@@ -94,6 +95,7 @@ test {
     _ = jcs;
     _ = exports.jsonl;
     _ = exports.yolo;
+    _ = exports.bundle;
     _ = media;
     _ = gitrepo.render;
     _ = access.token;

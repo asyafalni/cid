@@ -418,8 +418,8 @@ If a change would weaken any of these, stop and ask.
   previews/<aa>/<hex>/…                       thumbnails, waveforms, blurred renditions
   manifests/<dataset_id>/<commit_id>.items.parquet, .anns.parquet
                                               one pair per release: its browse index
-  exports/<dataset_id>/<release>/<format>/…   annotated datasets, rebuildable
-  states/<dataset_id>/<commit_id>-<sha>.jsonl.gz  a version as the CLI downloads it
+  states/<dataset_id>/<commit>-<subset>-<sha>.jsonl.gz        a version's items, as the CLI downloads them
+  exports/<dataset_id>/<commit>/<format>-<subset>-<sha>.jsonl.gz  an export, as a bundle of files
   diffs/<dataset_id>/<a>-<b>-<sha>.jsonl.gz        what changed between two versions
 ```
 
@@ -453,8 +453,12 @@ records the commits.
 - **`files`** (default for file datasets): the folder tree exactly as committed.
 - **Annotated datasets:** `yolo`, `coco`, `voc` (images), `jsonl` (universal: one line per
   item with its annotations; works for audio, text and anything else), more as needed.
-- Each format is one file in `src/export/`, reading the manifest as a stream. Adding a
-  format never touches `core/`.
+- Each format is one file in `src/export/`, a streaming writer fed an item at a time
+  (with its annotations) by `src/export/bundle.zig`, which reads the version once on
+  the server, narrowed in SQL to any `--split`/`--class` subset. An export reaches the
+  CLI as a bundle of files (gzip JSON lines, a file's chunks together) that it writes
+  into the folder as it streams, SHA-256 checked; the CLI never holds a version's
+  annotations. Adding a format never touches `core/`.
 
 **Row-level diff** (`cid diff`) for `.csv`, `.parquet` and `.jsonl`: rows added, removed
 and changed, using a key column when the dataset declares one, otherwise whole-row
