@@ -177,8 +177,10 @@ accent colours.
 - Cards: thumbnail mosaic (or a type icon for non-visual data), name, kind (file or
   annotated), media types, latest release, size, health badge, last activity.
   Built as rows rather than a grid (a manifest reads downward), each row the card.
-  The counts come from the head commit's `stats`, computed once per commit and cached
-  on it, so the page costs one query however many people open it. A restricted
+  The counts come from the head commit's `stats`: one SQL aggregate (items, bytes,
+  types, splits, classes, newest policy), computed once per commit and kept on it, so
+  the page costs one query however many people open it, at any dataset size. The
+  overview and the dataset repository read the same statistics. A restricted
   dataset shows type tiles, never a clear thumbnail.
 - Search by name, description, class, media type, owner. Filters: media type, kind,
   restricted, has releases. All in the URL.
@@ -288,10 +290,11 @@ accent colours.
 - **Browse API** (in `cid serve`, `GET …/-/browse?commit=…`): one page of a version —
   items with their annotations, total and matched counts, the split/class/type facets
   (each counted against the other filters), the class counts, a cursor, and the open
-  item. The server build answers from the version's Parquet browse index with DuckDB:
-  built at tag time for a release and kept in storage beside its manifest, built from
-  TimescaleDB state-at-commit on first view for any other commit, cached on the
-  server's disk by commit id (commits are sealed, so an index never goes stale). Media
+  item. The server build answers with DuckDB from the version's browse index, two
+  Parquet files (items in path order; annotations by item, never nested into item
+  rows): written in the same pass as a release's manifest and kept in storage beside
+  it, built from TimescaleDB state-at-commit on first view for any other commit, cached
+  on the server's disk by commit id (commits are sealed, so an index never goes stale). Media
   metadata is joined per page, because the worker fills it in after ingest. The CLI
   build answers the same contract from state rows. Thumbnails come per page, as
   presigned URLs; the gallery loads the next page as the end scrolls into view.

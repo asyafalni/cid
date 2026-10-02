@@ -10,10 +10,10 @@ pub const ReleaseInfo = struct {
     name: []const u8,
     message: []const u8,
     created_at_ms: u64,
-    items: usize,
+    items: u64,
 };
 
-pub const ClassCount = struct { name: []const u8, count: usize };
+pub const ClassCount = struct { name: []const u8, count: u64 };
 pub const Policy = struct { version: []const u8, body_json: []const u8 };
 
 pub const Input = struct {
@@ -30,8 +30,13 @@ pub const Input = struct {
     commit_id: []const u8,
     manifest_sha256_hex: []const u8,
     created_at_ms: u64,
-    /// Sorted by path, as state-at-commit returns them.
-    items: []const Item,
+    items: u64,
+    bytes: u64,
+    /// Files per type, as every other view spells types (".jpg", "file").
+    types: []const ClassCount = &.{},
+    /// The release's items by path, when there are fewer than
+    /// files_txt_limit of them; files.txt is written from these.
+    files: []const Item = &.{},
     /// Every release, newest first (this one included).
     releases: []const ReleaseInfo,
 };
@@ -57,7 +62,7 @@ pub fn renderAll(arena: std.mem.Allocator, input: Input) ![]const File {
     try out.append(arena, .{ .path = "release.json", .contents = try releaseJson(arena, input) });
     try out.append(arena, .{ .path = "stats.yaml", .contents = try statsYaml(arena, input) });
     try out.append(arena, .{ .path = ".cid", .contents = try marker(arena, input) });
-    if (input.items.len < files_txt_limit) {
+    if (input.items < files_txt_limit) {
         try out.append(arena, .{ .path = "files.txt", .contents = try filesTxt(arena, input) });
     }
     if (std.mem.eql(u8, input.kind, "annotated")) {
@@ -80,8 +85,6 @@ fn classesYaml(arena: std.mem.Allocator, input: Input) ![]const u8 {
 }
 
 fn readme(arena: std.mem.Allocator, input: Input) ![]const u8 {
-    var total: u64 = 0;
-    for (input.items) |item| total += item.size;
     var size_buf: [32]u8 = undefined;
     return std.fmt.allocPrint(arena,
         \\# {s}
@@ -103,8 +106,8 @@ fn readme(arena: std.mem.Allocator, input: Input) ![]const u8 {
     , .{
         input.dataset_name,
         input.release,
-        input.items.len,
-        humanSize(&size_buf, total),
+        input.items,
+        humanSize(&size_buf, input.bytes),
         &fmtDate(input.created_at_ms),
         input.git_url,
         input.server_url,
@@ -131,37 +134,28 @@ fn releaseJson(arena: std.mem.Allocator, input: Input) ![]const u8 {
         .commit = input.commit_id,
         .manifest_sha256 = input.manifest_sha256_hex,
         .created_at = &fmtDate(input.created_at_ms),
-        .items = input.items.len,
+        .items = input.items,
         .clone = input.git_url,
         .dashboard = input.server_url,
     }, .{ .whitespace = .indent_2 })});
 }
 
 fn statsYaml(arena: std.mem.Allocator, input: Input) ![]const u8 {
-    var total: u64 = 0;
-    for (input.items) |item| total += item.size;
-
-    // Counts per file extension, sorted by extension (one value per line so
-    // git diffs between releases read clearly).
-    var exts: std.StringArrayHashMapUnmanaged(u64) = .empty;
-    for (input.items) |item| {
-        const gop = try exts.getOrPut(arena, extensionOf(item.path));
-        if (!gop.found_existing) gop.value_ptr.* = 0;
-        gop.value_ptr.* += 1;
-    }
-    exts.sortUnstable(struct {
-        keys: []const []const u8,
-        pub fn lessThan(self: @This(), a: usize, b: usize) bool {
-            return std.mem.lessThan(u8, self.keys[a], self.keys[b]);
+    // Counts per file type, sorted by type (one value per line so git
+    // diffs between releases read clearly).
+    const types = try arena.dupe(ClassCount, input.types);
+    std.mem.sort(ClassCount, types, {}, struct {
+        fn lessThan(_: void, x: ClassCount, y: ClassCount) bool {
+            return std.mem.lessThan(u8, x.name, y.name);
         }
-    }{ .keys = exts.keys() });
+    }.lessThan);
 
     var out: std.ArrayList(u8) = .empty;
     try out.print(arena, "release: {s}\nitems: {d}\nbytes: {d}\nfiles_by_extension:\n", .{
-        input.release, input.items.len, total,
+        input.release, input.items, input.bytes,
     });
-    for (exts.keys(), exts.values()) |ext, count| {
-        try out.print(arena, "  \"{s}\": {d}\n", .{ ext, count });
+    for (types) |t| {
+        try out.print(arena, "  \"{s}\": {d}\n", .{ t.name, t.count });
     }
     if (input.classes.len > 0) {
         var ann_total: usize = 0;
@@ -178,7 +172,7 @@ fn statsYaml(arena: std.mem.Allocator, input: Input) ![]const u8 {
 
 fn filesTxt(arena: std.mem.Allocator, input: Input) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
-    for (input.items) |item| {
+    for (input.files) |item| {
         try out.print(arena, "{s}\t{d}\t{s}\n", .{ item.path, item.size, item.hash_hex[0..12] });
     }
     return out.items;
@@ -188,14 +182,6 @@ fn marker(arena: std.mem.Allocator, input: Input) ![]const u8 {
     return std.fmt.allocPrint(arena, "cid-marker 1\nserver {s}\ndataset {s}\n", .{
         input.server_url, input.dataset_name,
     });
-}
-
-fn extensionOf(path: []const u8) []const u8 {
-    const base_start = if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| i + 1 else 0;
-    const base = path[base_start..];
-    const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse return "(none)";
-    if (dot == 0) return "(none)"; // dotfiles
-    return base[dot..];
 }
 
 /// "2026-10-01" from Unix milliseconds: the release's own date, nothing
@@ -233,7 +219,10 @@ test "rendering is deterministic and complete" {
         .commit_id = "01a00000-0000-7000-8000-000000000001",
         .manifest_sha256_hex = "ab" ** 32,
         .created_at_ms = 1769904000000, // 2026-02-01
-        .items = &.{
+        .items = 2,
+        .bytes = 2058,
+        .types = &.{ .{ .name = ".wav", .count = 1 }, .{ .name = ".txt", .count = 1 } },
+        .files = &.{
             .{ .path = "audio/a.wav", .hash_hex = "cd" ** 32, .size = 2048 },
             .{ .path = "notes.txt", .hash_hex = "ef" ** 32, .size = 10 },
         },

@@ -93,6 +93,35 @@ pub const Client = struct {
         });
     }
 
+    /// A file on disk to `key`, read as it goes up: in parts over the
+    /// multipart threshold, whole below it. Nothing large is ever held.
+    pub fn putFile(self: *Client, scope: anytype, io: std.Io, key: []const u8, path: []const u8) (Error || error{FileUnreadable})!void {
+        var file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return error.FileUnreadable;
+        defer file.close(io);
+        const size = (file.stat(io) catch return error.FileUnreadable).size;
+        var buf: [64 * 1024]u8 = undefined;
+        var fr = file.reader(io, &buf);
+        if (size > self.multipart_threshold) {
+            return self.items.putMultipart(scope, key, .{
+                .reader = &fr.interface,
+                .content_type = "application/octet-stream",
+            });
+        }
+        const bytes = std.heap.page_allocator.alloc(u8, @intCast(size)) catch return error.FileUnreadable;
+        defer std.heap.page_allocator.free(bytes);
+        fr.interface.readSliceAll(bytes) catch return error.FileUnreadable;
+        return self.items.put(scope, key, .{ .bytes = bytes, .content_type = "application/octet-stream" });
+    }
+
+    /// The object at `key`, streamed into `w`; how many bytes. Nothing of
+    /// it is held: it goes from the connection's buffer to the writer.
+    pub fn streamTo(self: *Client, scope: anytype, key: []const u8, w: *std.Io.Writer) Error!u64 {
+        var reading: Items.Reading = .idle;
+        try self.items.stream(scope, key, &reading);
+        defer reading.close();
+        return reading.pipe(w);
+    }
+
     /// The whole object in the Scope. `error.NotFound` when it is not
     /// there; the comptime 1 GiB ceiling refuses anything larger before
     /// a byte of it is read.

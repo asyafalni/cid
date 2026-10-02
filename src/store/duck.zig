@@ -17,15 +17,20 @@ const c = if (enabled) @import("duckdb_c") else struct {};
 pub const Error = error{ Unavailable, OpenFailed, QueryFailed, OutOfMemory };
 
 pub const Limits = struct {
-    /// The one directory queries may read files from.
+    /// The one directory queries may read and write files in.
     allowed_dir: []const u8,
     memory_limit: []const u8 = "256MB",
     threads: u8 = 1,
 };
 
+/// A database and one connection to it. A server opens one and hands each
+/// request a connection of its own (`connect`): one memory ceiling and one
+/// thread count then cover every query at once, however many run.
 pub const Db = struct {
     db: if (enabled) c.duckdb_database else void,
     conn: if (enabled) c.duckdb_connection else void,
+    /// Whether closing this also closes the database (false for `connect`'s).
+    owns_db: bool = true,
 
     pub fn open(arena: std.mem.Allocator, limits: Limits) Error!Db {
         if (comptime !enabled) return error.Unavailable;
@@ -78,10 +83,19 @@ pub const Db = struct {
         return self;
     }
 
+    /// Another connection to this database, under its confinement and
+    /// limits; closing it leaves the database open.
+    pub fn connect(self: *Db) Error!Db {
+        if (comptime !enabled) return error.Unavailable;
+        var other: Db = .{ .db = self.db, .conn = undefined, .owns_db = false };
+        if (c.duckdb_connect(self.db, &other.conn) != c.DuckDBSuccess) return error.OpenFailed;
+        return other;
+    }
+
     pub fn close(self: *Db) void {
         if (comptime !enabled) return;
         c.duckdb_disconnect(&self.conn);
-        c.duckdb_close(&self.db);
+        if (self.owns_db) c.duckdb_close(&self.db);
     }
 
     /// The first column of the first row, as text in `arena`; null when the
@@ -161,6 +175,11 @@ test "the CLI build answers Unavailable; the server build runs a query under its
     try std.testing.expectError(error.QueryFailed, db.scalarText(arena, "SET enable_external_access = true"));
     // And outside the allowed directory, nothing is readable.
     try std.testing.expectError(error.QueryFailed, db.scalarText(arena, "SELECT count(*) FROM read_csv('/etc/passwd')"));
+    // A second connection shares the database and its locked confinement.
+    var other = try db.connect();
+    defer other.close();
+    try std.testing.expectEqualStrings("42", (try other.scalarText(arena, "SELECT 40 + 2")).?);
+    try std.testing.expectError(error.QueryFailed, other.scalarText(arena, "SELECT count(*) FROM read_csv('/etc/passwd')"));
     // Bound values stay values: a quote is just a character.
     const echoed = try db.scalarTextArgs(arena, "SELECT $1::VARCHAR || '/' || ($2 + 1)::VARCHAR || '/' || coalesce($3::VARCHAR, 'null')", &.{ .{ .text = "it's'; DROP" }, .{ .int = 41 }, .{ .text = null } });
     try std.testing.expectEqualStrings("it's'; DROP/42/null", echoed.?);

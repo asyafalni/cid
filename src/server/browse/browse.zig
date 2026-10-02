@@ -22,6 +22,7 @@
 const std = @import("std");
 const duck = @import("../../store/duck.zig");
 const release = @import("../../core/release.zig");
+const version = @import("../../core/version.zig");
 
 pub const default_limit = 60;
 pub const max_limit = 200;
@@ -95,14 +96,12 @@ pub const Answer = struct {
 
 pub const Error = error{ OutOfMemory, QueryFailed, Unavailable, OpenFailed, WriteFailed };
 
-/// The file type the type filter speaks: ".jpg", ".csv"…, or "file".
-/// Mirrors the dashboard's extOf.
-pub fn extOf(arena: std.mem.Allocator, path: []const u8) ![]const u8 {
-    const base = if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| path[i + 1 ..] else path;
-    const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse return "file";
-    if (dot == 0) return "file";
-    return std.ascii.allocLowerString(arena, base[dot..]);
-}
+/// DuckDB threads for one browse query: two halve an unfiltered page at
+/// 1M items (0.48 s to 0.27 s); index builds keep to one.
+pub const query_threads = 2;
+
+/// The file type the type filter speaks: the one rule (version.zig).
+pub const extOf = version.extOfPath;
 
 fn classOf(a: release.AnnotationRow) []const u8 {
     return a.class orelse "";
@@ -293,101 +292,133 @@ fn byValue(_: void, a: Facet, b: Facet) bool {
 // The DuckDB engine: a Parquet index per version, one query per request.
 // ---------------------------------------------------------------------------
 
-/// Writes the browse index for `rows` as `<dir>/<name>.parquet`: the rows
-/// stream to a JSONL file beside it, DuckDB turns that into Parquet, and
-/// the finished file is renamed into place, so a reader never sees half
-/// an index. `db` must be confined to `dir`.
-pub fn writeIndex(
-    arena: std.mem.Allocator,
-    io: std.Io,
-    db: *duck.Db,
-    dir: []const u8,
-    name: []const u8,
-    rows: []const Row,
-) Error!void {
+/// A version's browse index: its items in path order, and its annotations
+/// by item, as two Parquet files — and the JSON lines they are made from.
+/// Annotations are never nested into item rows: building that nesting
+/// cost Postgres 15 s at 1M items, and a page needs at most 200 items'.
+pub const Files = struct {
+    items_lines: []const u8,
+    ann_lines: []const u8,
+    items: []const u8,
+    anns: []const u8,
+
+    pub fn of(arena: std.mem.Allocator, dir: []const u8, name: []const u8) Error!Files {
+        return .{
+            .items_lines = try std.fmt.allocPrint(arena, "{s}/{s}.items.jsonl", .{ dir, name }),
+            .ann_lines = try std.fmt.allocPrint(arena, "{s}/{s}.anns.jsonl", .{ dir, name }),
+            .items = try std.fmt.allocPrint(arena, "{s}/{s}.items.parquet", .{ dir, name }),
+            .anns = try std.fmt.allocPrint(arena, "{s}/{s}.anns.parquet", .{ dir, name }),
+        };
+    }
+};
+
+/// The index for `rows`, written the way the server's pass writes it:
+/// the lines, then convertIndex.
+pub fn writeIndex(arena: std.mem.Allocator, io: std.Io, db: *duck.Db, files: Files, rows: []const Row) Error!void {
+    try writeLines(io, files, rows);
+    try convertIndex(arena, io, db, files);
+}
+
+/// Item and annotation lines in the shapes core/version.zig's pass
+/// writes them (the server's path); here for rows already in memory.
+pub fn writeLines(io: std.Io, files: Files, rows: []const Row) Error!void {
     const cwd = std.Io.Dir.cwd();
-    const jsonl = try std.fmt.allocPrint(arena, "{s}/{s}.jsonl", .{ dir, name });
-    const tmp = try std.fmt.allocPrint(arena, "{s}/{s}.parquet.tmp", .{ dir, name });
-    const final = try std.fmt.allocPrint(arena, "{s}/{s}.parquet", .{ dir, name });
-    defer cwd.deleteFile(io, jsonl) catch {};
-    defer cwd.deleteFile(io, tmp) catch {};
-
-    {
-        var file = cwd.createFile(io, jsonl, .{ .truncate = true }) catch return error.WriteFailed;
-        defer file.close(io);
-        var buf: [64 * 1024]u8 = undefined;
-        var fw = file.writer(io, &buf);
-        for (rows) |row| writeLine(&fw.interface, row) catch return error.WriteFailed;
-        fw.interface.flush() catch return error.WriteFailed;
+    var items_file = cwd.createFile(io, files.items_lines, .{ .truncate = true }) catch return error.WriteFailed;
+    defer items_file.close(io);
+    var anns_file = cwd.createFile(io, files.ann_lines, .{ .truncate = true }) catch return error.WriteFailed;
+    defer anns_file.close(io);
+    var ibuf: [64 * 1024]u8 = undefined;
+    var abuf: [64 * 1024]u8 = undefined;
+    var iw = items_file.writer(io, &ibuf);
+    var aw = anns_file.writer(io, &abuf);
+    for (rows) |row| {
+        iw.interface.print("{{\"path\":{f},\"hash\":{f},\"size\":{d},\"split\":{f},\"item_id\":{f},\"ext\":{f},\"classes\":[", .{
+            std.json.fmt(row.path, .{}),  std.json.fmt(row.hash, .{}),    row.size,
+            std.json.fmt(row.split, .{}), std.json.fmt(row.item_id, .{}), std.json.fmt(row.ext, .{}),
+        }) catch return error.WriteFailed;
+        for (row.anns, 0..) |a, i| {
+            if (i > 0) iw.interface.writeByte(',') catch return error.WriteFailed;
+            iw.interface.print("{f}", .{std.json.fmt(classOf(a), .{})}) catch return error.WriteFailed;
+            aw.interface.print("{{\"id\":{f},\"item_id\":{f},\"kind\":{f},\"class\":{f},\"geometry\":{s},\"attrs\":{s},\"author\":{f},\"policy_ver\":{f}}}\n", .{
+                std.json.fmt(a.annotation_id, .{}), std.json.fmt(a.item_id, .{}),
+                std.json.fmt(a.kind, .{}),          std.json.fmt(a.class, .{}),
+                a.geometry orelse "null",           a.attrs orelse "null",
+                std.json.fmt(a.author, .{}),        std.json.fmt(a.policy_ver, .{}),
+            }) catch return error.WriteFailed;
+        }
+        iw.interface.writeAll("]}\n") catch return error.WriteFailed;
     }
-
-    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena,
-        \\COPY (SELECT * FROM read_json('{s}', format = 'newline_delimited', columns = {{
-        \\  path: 'VARCHAR', hash: 'VARCHAR', size: 'BIGINT', split: 'VARCHAR', item_id: 'VARCHAR',
-        \\  ext: 'VARCHAR', classes: 'VARCHAR[]', annotations: 'JSON'}}))
-        \\TO '{s}' (FORMAT parquet)
-    , .{ jsonl, tmp }));
-    std.Io.Dir.rename(cwd, tmp, cwd, final, io) catch return error.WriteFailed;
+    iw.interface.flush() catch return error.WriteFailed;
+    aw.interface.flush() catch return error.WriteFailed;
 }
 
-/// One index line. Geometry and attrs are JSON already (Postgres jsonb
-/// text) and go in as they are.
-fn writeLine(w: *std.Io.Writer, row: Row) !void {
-    try w.print("{{\"path\":{f},\"hash\":{f},\"size\":{d},\"split\":{f},\"item_id\":{f},\"ext\":{f},\"classes\":[", .{
-        std.json.fmt(row.path, .{}),  std.json.fmt(row.hash, .{}),    row.size,
-        std.json.fmt(row.split, .{}), std.json.fmt(row.item_id, .{}), std.json.fmt(row.ext, .{}),
-    });
-    for (row.anns, 0..) |a, i| {
-        if (i > 0) try w.writeByte(',');
-        try w.print("{f}", .{std.json.fmt(classOf(a), .{})});
+/// The lines → the two Parquet files, each renamed into place when
+/// complete, annotations first: an index exists once its items file does.
+/// The lines are removed either way. `db` must be confined to their
+/// folder; one thread keeps the conversion near 250 MB at 1M items.
+pub fn convertIndex(arena: std.mem.Allocator, io: std.Io, db: *duck.Db, files: Files) Error!void {
+    const cwd = std.Io.Dir.cwd();
+    defer cwd.deleteFile(io, files.items_lines) catch {};
+    defer cwd.deleteFile(io, files.ann_lines) catch {};
+    const steps = [_]struct { lines: []const u8, out: []const u8, columns: []const u8 }{
+        .{ .lines = files.ann_lines, .out = files.anns, .columns = "id: 'VARCHAR', item_id: 'VARCHAR', kind: 'VARCHAR', class: 'VARCHAR', " ++
+            "geometry: 'JSON', attrs: 'JSON', author: 'VARCHAR', policy_ver: 'VARCHAR'" },
+        .{ .lines = files.items_lines, .out = files.items, .columns = "path: 'VARCHAR', hash: 'VARCHAR', size: 'BIGINT', split: 'VARCHAR', " ++
+            "item_id: 'VARCHAR', ext: 'VARCHAR', classes: 'VARCHAR[]'" },
+    };
+    for (steps) |step| {
+        const tmp = try std.fmt.allocPrint(arena, "{s}.tmp", .{step.out});
+        defer cwd.deleteFile(io, tmp) catch {};
+        _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT * FROM read_json('{s}', format = 'newline_delimited', columns = {{{s}}})) TO '{s}' (FORMAT parquet)", .{ step.lines, step.columns, tmp }));
+        std.Io.Dir.rename(cwd, tmp, cwd, step.out, io) catch return error.WriteFailed;
     }
-    try w.writeAll("],\"annotations\":[");
-    for (row.anns, 0..) |a, i| {
-        if (i > 0) try w.writeByte(',');
-        try w.print("{{\"id\":{f},\"item_id\":{f},\"kind\":{f},\"class\":{f},\"geometry\":{s},\"attrs\":{s},\"author\":{f},\"policy_ver\":{f}}}", .{
-            std.json.fmt(a.annotation_id, .{}), std.json.fmt(a.item_id, .{}),
-            std.json.fmt(a.kind, .{}),          std.json.fmt(a.class, .{}),
-            a.geometry orelse "null",           a.attrs orelse "null",
-            std.json.fmt(a.author, .{}),        std.json.fmt(a.policy_ver, .{}),
-        });
-    }
-    try w.writeAll("]}\n");
 }
 
-/// The contract, answered from the index at `path` (inside the directory
-/// `db` is confined to). Every request value is a bound parameter.
-pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, path: []const u8, q: Query) Error!Answer {
-    // The path is the server's own (a commit id under its cache folder),
-    // never the request's; quoted all the same.
-    var quoted: std.ArrayList(u8) = .empty;
+fn quote(arena: std.mem.Allocator, path: []const u8) Error![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
     for (path) |ch| {
-        if (ch == '\'') try quoted.append(arena, '\'');
-        try quoted.append(arena, ch);
+        if (ch == '\'') try out.append(arena, '\'');
+        try out.append(arena, ch);
     }
+    return out.items;
+}
+
+/// The contract, answered from the index (inside the folder `db` is
+/// confined to). Every request value is a bound parameter.
+pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query) Error!Answer {
+    // Paths are the server's own (a commit id under its cache folder),
+    // never the request's; quoted all the same.
+    const items = try quote(arena, files.items);
+    const anns = try quote(arena, files.anns);
     // Filters and facets read only the light columns of every row; the
-    // heavy ones (hash, annotations) are read for the page's rows alone.
-    // Shared CTEs are materialized, so carrying annotations through them
-    // costs seconds at 1M items instead of a fraction of one.
+    // page's rows alone (and the open item) are read whole, with their
+    // annotations. Shared CTEs are materialized, so carrying heavy
+    // columns through them would cost seconds at 1M items.
     const sql = try std.fmt.allocPrint(arena,
         \\WITH m AS (SELECT path, split, ext, classes,
         \\    ($1::VARCHAR IS NULL OR contains(lower(path), lower($1::VARCHAR))) AS fq,
         \\    ($2::VARCHAR IS NULL OR coalesce(split, '') = $2::VARCHAR) AS fs,
         \\    ($3::VARCHAR IS NULL OR list_contains(classes, $3::VARCHAR)) AS fc,
         \\    ($4::VARCHAR IS NULL OR ext = $4::VARCHAR) AS ft
-        \\  FROM read_parquet('{s}')),
+        \\  FROM read_parquet('{0s}')),
         \\sel AS (SELECT path FROM m WHERE fq AND fs AND fc AND ft),
         \\page AS (SELECT path FROM sel WHERE $5::VARCHAR IS NULL OR path > $5::VARCHAR ORDER BY path LIMIT $6),
         \\last AS (SELECT max(path) AS p, count(*) AS n FROM page),
-        \\wanted AS (SELECT path FROM page UNION SELECT $7::VARCHAR WHERE $7::VARCHAR IS NOT NULL),
-        \\whole AS (SELECT path, json_object('path', path, 'hash', hash, 'size', size, 'split', split,
-        \\      'item_id', item_id, 'annotations', annotations) AS j
-        \\  FROM read_parquet('{s}') WHERE path IN (SELECT path FROM wanted))
+        \\whole AS (SELECT path, hash, size, split, item_id FROM read_parquet('{0s}') WHERE path IN (SELECT path FROM page)),
+        \\opened AS (SELECT path, hash, size, split, item_id FROM read_parquet('{0s}') WHERE path = $7::VARCHAR LIMIT 1),
+        \\boxes AS (SELECT item_id, to_json(list(json_object('id', id, 'item_id', item_id, 'kind', kind, 'class', class,
+        \\      'geometry', geometry, 'attrs', attrs, 'author', author, 'policy_ver', policy_ver) ORDER BY id)) AS j
+        \\  FROM read_parquet('{1s}')
+        \\  WHERE item_id IN (SELECT item_id FROM whole UNION ALL SELECT item_id FROM opened) GROUP BY item_id)
         \\SELECT json_object(
         \\  'total', (SELECT count(*) FROM m),
         \\  'matched', (SELECT count(*) FROM sel),
-        \\  'items', (SELECT coalesce(to_json(list(j ORDER BY path)), '[]'::JSON) FROM whole WHERE path IN (SELECT path FROM page)),
+        \\  'items', (SELECT coalesce(to_json(list(json_object('path', w.path, 'hash', w.hash, 'size', w.size, 'split', w.split,
+        \\      'item_id', w.item_id, 'annotations', coalesce(b.j, '[]'::JSON)) ORDER BY w.path)), '[]'::JSON)
+        \\      FROM whole w LEFT JOIN boxes b USING (item_id)),
         \\  'next', (SELECT CASE WHEN n = $6 AND EXISTS (SELECT 1 FROM sel WHERE sel.path > last.p) THEN p END FROM last),
-        \\  'open', (SELECT j FROM whole WHERE path = $7::VARCHAR LIMIT 1),
+        \\  'open', (SELECT json_object('path', o.path, 'hash', o.hash, 'size', o.size, 'split', o.split,
+        \\      'item_id', o.item_id, 'annotations', coalesce(b.j, '[]'::JSON)) FROM opened o LEFT JOIN boxes b USING (item_id)),
         \\  'split', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
         \\      FROM (SELECT coalesce(split, '') AS v, count(*) AS n FROM m WHERE fq AND fc AND ft GROUP BY 1)),
         \\  'class', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
@@ -397,7 +428,7 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, path: []const u8, q: Q
         \\  'classes', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
         \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(classes) AS v FROM m) GROUP BY 1))
         \\)::VARCHAR
-    , .{ quoted.items, quoted.items });
+    , .{ items, anns });
 
     const text = (try db.scalarTextArgs(arena, sql, &.{
         .{ .text = q.q },
@@ -553,21 +584,23 @@ test "the DuckDB engine keeps the same contract, from a Parquet index" {
     var db = try duck.Db.open(arena, .{ .allowed_dir = dir });
     defer db.close();
 
-    try writeIndex(arena, io, &db, dir, "v1", try fixtureRows(arena));
-    const Ctx = struct { db: *duck.Db, path: []const u8 };
-    try expectContract(arena, Ctx{ .db = &db, .path = try std.fmt.allocPrint(arena, "{s}/v1.parquet", .{dir}) }, struct {
+    const v1 = try Files.of(arena, dir, "v1");
+    try writeIndex(arena, io, &db, v1, try fixtureRows(arena));
+    const Ctx = struct { db: *duck.Db, files: Files };
+    try expectContract(arena, Ctx{ .db = &db, .files = v1 }, struct {
         fn run(c: Ctx, al: std.mem.Allocator, q: Query) anyerror!Answer {
-            return queryIndex(al, c.db, c.path, q);
+            return queryIndex(al, c.db, c.files, q);
         }
     }.run);
 
     // An empty version is an index too.
-    try writeIndex(arena, io, &db, dir, "empty", &.{});
-    const empty = try queryIndex(arena, &db, try std.fmt.allocPrint(arena, "{s}/empty.parquet", .{dir}), .{});
+    const none = try Files.of(arena, dir, "empty");
+    try writeIndex(arena, io, &db, none, &.{});
+    const empty = try queryIndex(arena, &db, none, .{});
     try std.testing.expectEqual(@as(u64, 0), empty.total);
     try std.testing.expectEqual(@as(usize, 0), empty.facets.split.len);
 
     // A hostile filter is a value, not SQL.
-    const odd = try queryIndex(arena, &db, try std.fmt.allocPrint(arena, "{s}/v1.parquet", .{dir}), .{ .q = "'); DROP TABLE x; --" });
+    const odd = try queryIndex(arena, &db, v1, .{ .q = "'); DROP TABLE x; --" });
     try std.testing.expectEqual(@as(u64, 0), odd.matched);
 }

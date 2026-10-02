@@ -7,6 +7,7 @@
 const std = @import("std");
 const nilo = @import("nilo_http");
 const api = @import("api.zig");
+const duck = @import("../store/duck.zig");
 const fetch = @import("nilo_fetch");
 const signin = @import("signin.zig");
 const blob = @import("../store/blob.zig");
@@ -26,6 +27,30 @@ const max_body = 64 * 1024 * 1024;
 pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
     var app = nilo.App.init(gpa);
     defer app.deinit();
+    // Served by nilo now: long DuckDB calls go to its blocking pool.
+    deps.offload = true;
+    deps.gpa = gpa;
+
+    // The server build's one DuckDB database for browse queries: each takes
+    // a connection, under one memory ceiling and two threads.
+    var duck_arena = std.heap.ArenaAllocator.init(gpa);
+    defer duck_arena.deinit();
+    var shared: duck.Db = undefined;
+    if (comptime duck.enabled) {
+        const io = deps.io;
+        const cwd = std.Io.Dir.cwd();
+        const da = duck_arena.allocator();
+        cwd.createDirPath(io, deps.browse_dir) catch return error.BrowseDirUnusable;
+        cwd.createDirPath(io, deps.work_dir) catch return error.WorkDirUnusable;
+        deps.browse_dir = cwd.realPathFileAlloc(io, deps.browse_dir, da) catch return error.BrowseDirUnusable;
+        deps.work_dir = cwd.realPathFileAlloc(io, deps.work_dir, da) catch return error.WorkDirUnusable;
+        shared = try duck.Db.open(da, .{ .allowed_dir = deps.browse_dir, .threads = 2 });
+        deps.duck = &shared;
+    }
+    defer if (comptime duck.enabled) {
+        deps.duck = null;
+        shared.close();
+    };
 
     // The Db, the S3 Store and its Bucket are nilo Services: provided
     // here, started by listen() on the server's own loop, shared by

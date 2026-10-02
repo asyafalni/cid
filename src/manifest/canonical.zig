@@ -87,23 +87,29 @@ pub fn renderAnnotated(
                 (item_order == .eq and std.mem.order(u8, p.annotation_id, ann.annotation_id) == .lt));
         }
         prev = ann;
-        inline for (.{ ann.kind, ann.class, @as(?[]const u8, ann.author), @as(?[]const u8, ann.policy_ver) }) |field| {
-            if (field) |text| {
-                if (std.mem.indexOfAny(u8, text, "\t\n") != null) return error.BadAnnotationText;
-            }
-        }
-        try out.print(arena, "ann\t{s}\t{s}\t{s}\t{s}\t{s}\t{s}\t{s}\t{s}\n", .{
-            ann.item_id,
-            ann.annotation_id,
-            ann.kind orelse "-",
-            ann.class orelse "-",
-            ann.geometry_jcs orelse "-",
-            ann.attrs_jcs orelse "-",
-            ann.author,
-            ann.policy_ver,
-        });
+        try appendAnnRow(arena, &out, ann);
     }
     return out.items;
+}
+
+/// One `ann` row. A tab or newline in a text column is an error, never a
+/// silent mangling (JCS already escapes them inside JSON strings).
+pub fn appendAnnRow(arena: std.mem.Allocator, out: *std.ArrayList(u8), ann: AnnRow) RenderError!void {
+    inline for (.{ ann.kind, ann.class, @as(?[]const u8, ann.author), @as(?[]const u8, ann.policy_ver) }) |field| {
+        if (field) |text| {
+            if (std.mem.indexOfAny(u8, text, "\t\n") != null) return error.BadAnnotationText;
+        }
+    }
+    try out.print(arena, "ann\t{s}\t{s}\t{s}\t{s}\t{s}\t{s}\t{s}\t{s}\n", .{
+        ann.item_id,
+        ann.annotation_id,
+        ann.kind orelse "-",
+        ann.class orelse "-",
+        ann.geometry_jcs orelse "-",
+        ann.attrs_jcs orelse "-",
+        ann.author,
+        ann.policy_ver,
+    });
 }
 
 pub fn hashOf(bytes: []const u8) [64]u8 {

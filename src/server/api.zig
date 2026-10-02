@@ -29,6 +29,8 @@ const duck = @import("../store/duck.zig");
 const table_stats = @import("../tabular/stats.zig");
 const rowdiff_mod = @import("../tabular/rowdiff.zig");
 const browse_mod = @import("browse/browse.zig");
+const versions = @import("../core/version.zig");
+const nilo = @import("nilo_http");
 const token_mod = @import("../access/token.zig");
 const Uuid = @import("../util/uuid7.zig").Uuid;
 
@@ -46,9 +48,15 @@ pub const Deps = struct {
     git: ?git_writer.Config = null,
     /// Whether "Sign in with GitLab" is configured (the sign-in page asks).
     gitlab_signin: bool = false,
-    /// Where row diffs put the two table files while DuckDB reads them;
-    /// DuckDB is confined to it.
-    scratch_dir: []const u8 = "/tmp/cid-rowdiff",
+    /// The server's one DuckDB database for browse queries (server build),
+    /// confined to browse_dir, opened by `cid admin serve`: every query
+    /// takes a connection, so one memory ceiling covers them all at once.
+    /// Index builds and row diffs, one at a time each, use a one-thread
+    /// database of their own. Null in tests and admin commands.
+    duck: ?*duck.Db = null,
+    /// Files in flight: a release's manifest on its way to storage, the two
+    /// tables a row diff compares (DuckDB is confined to it then).
+    work_dir: []const u8 = "/tmp/cid-work",
     /// One row diff at a time, server-wide: DuckDB work never scales with
     /// requests (each answer is cached, so this is rarely contended).
     rowdiff_busy: std.atomic.Value(bool) = .init(false),
@@ -59,7 +67,28 @@ pub const Deps = struct {
     browse_cache_max: u32 = 32,
     /// One index build at a time, server-wide.
     browse_building: std.atomic.Value(bool) = .init(false),
+    /// For memory that outlives no single step but must not grow with a
+    /// dataset: each batch of a streamed index build.
+    gpa: std.mem.Allocator = std.heap.page_allocator,
+    /// Set by `cid admin serve`: DuckDB work goes to nilo's thread pool
+    /// (nilo ADR 013) so the fiber's thread keeps serving meanwhile. Tests
+    /// and admin commands, which have no engine, run it in place.
+    offload: bool = false,
 };
+
+/// A DuckDB connection for one browse query: to the server's shared
+/// database when there is one, else to a database of its own.
+fn duckFor(arena: std.mem.Allocator, deps: *Deps, dir: []const u8) HandleError!duck.Db {
+    if (deps.duck) |shared| return shared.connect() catch error.Storage;
+    return duck.Db.open(arena, .{ .allowed_dir = dir, .threads = browse_mod.query_threads }) catch error.Storage;
+}
+
+/// Runs `func` on the server's blocking pool when serving, in place
+/// otherwise.
+fn offload(deps: *const Deps, comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) @typeInfo(@TypeOf(func)).@"fn".return_type.? {
+    if (deps.offload) return nilo.blocking(func, args);
+    return @call(.auto, func, args);
+}
 
 pub const Response = struct {
     status: std.http.Status,
@@ -341,6 +370,7 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
         "ORDER BY d.name", .{account}) catch return error.Db;
 
     const Thumb = struct { hash: []const u8, url: []const u8 };
+    const Type = struct { ext: []const u8, count: u64 };
     const Entry = struct {
         name: []const u8,
         kind: []const u8,
@@ -350,7 +380,7 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
         last_push: ?[]const u8,
         items: u64,
         bytes: u64,
-        types: []const CommitStats.Type,
+        types: []const Type,
         classes: []const []const u8,
         mosaic: []const Thumb,
         starred: bool,
@@ -358,10 +388,19 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
     };
     const list = try arena.alloc(Entry, rows.len);
     for (list, rows) |*e, row| {
-        const st: CommitStats = if (row.head) |head_commit|
-            try commitStats(arena, deps, scope, row.dataset_id, row.kind, head_commit, row.stats)
+        // The head's statistics, as the listing query already read them;
+        // aggregated (and kept) only the first time anyone asks.
+        const st: versions.Stats = if (row.head) |head_commit|
+            versions.kept(arena, row.stats) orelse versions.stats(arena, deps.db, scope, row.dataset_id, head_commit) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.Db,
+            }
         else
             .{};
+        const types = try arena.alloc(Type, @min(st.types.len, 8));
+        for (types, st.types[0..types.len]) |*t, c| t.* = .{ .ext = c.name, .count = c.count };
+        const class_names = try arena.alloc([]const u8, @min(st.classes.len, 50));
+        for (class_names, st.classes[0..class_names.len]) |*n, c| n.* = c.name;
         // Only previews that already exist are handed out (the structural
         // ffmpeg guarantee); a restricted dataset's card shows the blurred
         // renditions, and none where a blur does not exist yet — never a
@@ -385,8 +424,8 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
             .last_push = row.last_push,
             .items = st.items,
             .bytes = st.bytes,
-            .types = st.types,
-            .classes = if (row.restricted) &.{} else st.classes,
+            .types = types,
+            .classes = if (row.restricted) &.{} else class_names,
             .mosaic = mosaic.items,
             .starred = row.starred,
             .owners = try splitLines(arena, row.owners orelse ""),
@@ -545,9 +584,9 @@ fn browse(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, ro
     }
     const index = (try browseIndex(arena, deps, scope, ds, commit)) orelse
         return errorResponse(arena, .service_unavailable, "the server is indexing another version", "Reload in a moment.");
-    var db = duck.Db.open(arena, .{ .allowed_dir = index.dir }) catch return error.Storage;
+    var db = try duckFor(arena, deps, index.dir);
     defer db.close();
-    const answer = browse_mod.queryIndex(arena, &db, index.path, q) catch |err| switch (err) {
+    const answer = offload(deps, browse_mod.queryIndex, .{ arena, &db, index.files, q }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.Storage,
     };
@@ -617,7 +656,7 @@ fn browseRows(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset
     return browse_mod.rowsOf(arena, state_rows, anns);
 }
 
-const BrowseIndex = struct { dir: []const u8, path: []const u8 };
+const BrowseIndex = struct { dir: []const u8, files: browse_mod.Files };
 
 /// The version's browse index on local disk, fetched from storage (a
 /// release's) or built from history the first time; null while another
@@ -627,51 +666,130 @@ fn browseIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
     const cwd = std.Io.Dir.cwd();
     cwd.createDirPath(deps.io, deps.browse_dir) catch return error.Storage;
     const dir = cwd.realPathFileAlloc(deps.io, deps.browse_dir, arena) catch return error.Storage;
-    const index: BrowseIndex = .{ .dir = dir, .path = try std.fmt.allocPrint(arena, "{s}/{s}.parquet", .{ dir, commit }) };
-    if (cwd.statFile(deps.io, index.path, .{})) |_| return index else |_| {}
+    const index: BrowseIndex = .{ .dir = dir, .files = browse_mod.Files.of(arena, dir, commit) catch return error.OutOfMemory };
+    if (cwd.statFile(deps.io, index.files.items, .{})) |_| return index else |_| {}
 
     if (deps.browse_building.swap(true, .acquire)) return null;
     defer deps.browse_building.store(false, .release);
-    if (cwd.statFile(deps.io, index.path, .{})) |_| return index else |_| {}
+    if (cwd.statFile(deps.io, index.files.items, .{})) |_| return index else |_| {}
 
     const released = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM refs WHERE dataset_id = $1::uuid AND commit_id = $2::uuid AND kind = 'release' LIMIT 1", .{ ds.id, commit }) catch return error.Db;
-    const key = try browseKey(arena, ds.id, commit);
     if (released != null) fetched: {
-        const bytes = deps.s3.getObjectAlloc(scope, key) catch break :fetched;
-        const tmp = try std.fmt.allocPrint(arena, "{s}.tmp", .{index.path});
-        cwd.writeFile(deps.io, .{ .sub_path = tmp, .data = bytes }) catch return error.Storage;
-        std.Io.Dir.rename(cwd, tmp, cwd, index.path, deps.io) catch return error.Storage;
+        const keys = try browseKeys(arena, ds.id, commit);
+        // Annotations first: an index exists once its items file does.
+        for ([_][2][]const u8{ .{ keys.anns, index.files.anns }, .{ keys.items, index.files.items } }) |pair| {
+            const tmp = try std.fmt.allocPrint(arena, "{s}.tmp", .{pair[1]});
+            if (!(try downloadTo(deps, scope, pair[0], tmp))) break :fetched;
+            std.Io.Dir.rename(cwd, tmp, cwd, pair[1], deps.io) catch return error.Storage;
+        }
         pruneBrowse(arena, deps, dir);
         return index;
     }
 
-    const rows = try browseRows(arena, deps, scope, ds, commit);
-    var db = duck.Db.open(arena, .{ .allowed_dir = dir }) catch return error.Storage;
-    defer db.close();
-    browse_mod.writeIndex(arena, deps.io, &db, dir, commit, rows) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.Storage,
+    // One pass over history (core/version.zig), then DuckDB's conversion.
+    const lines = try openLines(deps, index.files);
+    _ = versions.pass(deps.gpa, deps.db, scope, ds.id, commit, .{ .items = lines.items(), .annotations = lines.anns() }) catch |err| {
+        lines.discard(deps, index.files);
+        return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.WriteFailed => error.Storage,
+            else => error.Db,
+        };
     };
-    if (released != null) storeBrowseIndex(arena, deps, scope, ds, commit, index.path);
+    lines.close(deps);
+    try convertLines(arena, deps, index.files);
+    if (released != null) storeBrowseIndex(arena, deps, scope, ds, commit, index.files);
     pruneBrowse(arena, deps, dir);
     return index;
 }
 
-/// manifests/<dataset_id>/<commit_id>.parquet, beside the release's
-/// canonical manifest (CLAUDE.md, storage layout). Derived and
+/// The two line files a pass writes, open, with their writers.
+const Lines = struct {
+    items_file: std.Io.File,
+    anns_file: std.Io.File,
+    items_w: std.Io.File.Writer,
+    anns_w: std.Io.File.Writer,
+    items_buf: [64 * 1024]u8,
+    anns_buf: [64 * 1024]u8,
+
+    fn items(self: *Lines) *std.Io.Writer {
+        return &self.items_w.interface;
+    }
+    fn anns(self: *Lines) *std.Io.Writer {
+        return &self.anns_w.interface;
+    }
+    fn close(self: *Lines, deps: *Deps) void {
+        self.items_file.close(deps.io);
+        self.anns_file.close(deps.io);
+    }
+    fn discard(self: *Lines, deps: *Deps, files: browse_mod.Files) void {
+        self.close(deps);
+        std.Io.Dir.cwd().deleteFile(deps.io, files.items_lines) catch {};
+        std.Io.Dir.cwd().deleteFile(deps.io, files.ann_lines) catch {};
+    }
+};
+
+fn openLines(deps: *Deps, files: browse_mod.Files) HandleError!*Lines {
+    const lines = deps.gpa.create(Lines) catch return error.OutOfMemory;
+    errdefer deps.gpa.destroy(lines);
+    const cwd = std.Io.Dir.cwd();
+    lines.items_file = cwd.createFile(deps.io, files.items_lines, .{ .truncate = true }) catch return error.Storage;
+    lines.anns_file = cwd.createFile(deps.io, files.ann_lines, .{ .truncate = true }) catch {
+        lines.items_file.close(deps.io);
+        return error.Storage;
+    };
+    lines.items_w = lines.items_file.writer(deps.io, &lines.items_buf);
+    lines.anns_w = lines.anns_file.writer(deps.io, &lines.anns_buf);
+    return lines;
+}
+
+/// The lines → Parquet, in a database of its own with one thread: index
+/// builds run one at a time, and one thread keeps the conversion near
+/// 250 MB at 1M items where two take near 600 MB.
+fn convertLines(arena: std.mem.Allocator, deps: *Deps, files: browse_mod.Files) HandleError!void {
+    const dir = std.fs.path.dirname(files.items) orelse return error.Storage;
+    var db = duck.Db.open(arena, .{ .allowed_dir = dir, .threads = 1 }) catch return error.Storage;
+    defer db.close();
+    offload(deps, browse_mod.convertIndex, .{ arena, deps.io, &db, files }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.Storage,
+    };
+}
+
+/// Streams the object at `key` into the file at `path`, holding none of
+/// it; false when storage does not have it (the partial file is removed).
+fn downloadTo(deps: *Deps, scope: anytype, key: []const u8, path: []const u8) HandleError!bool {
+    const cwd = std.Io.Dir.cwd();
+    var file = cwd.createFile(deps.io, path, .{ .truncate = true }) catch return error.Storage;
+    var buf: [64 * 1024]u8 = undefined;
+    var fw = file.writer(deps.io, &buf);
+    const ok = if (deps.s3.streamTo(scope, key, &fw.interface)) |_| (if (fw.interface.flush()) |_| true else |_| false) else |_| false;
+    file.close(deps.io);
+    if (!ok) cwd.deleteFile(deps.io, path) catch {};
+    return ok;
+}
+
+/// manifests/<dataset_id>/<commit_id>.{items,anns}.parquet, beside the
+/// release's canonical manifest (CLAUDE.md, storage layout). Derived and
 /// rebuildable: the release's hash is over the canonical stream.
-fn browseKey(arena: std.mem.Allocator, dataset_id: []const u8, commit: []const u8) HandleError![]const u8 {
-    return std.fmt.allocPrint(arena, "manifests/{s}/{s}.parquet", .{ dataset_id, commit });
+fn browseKeys(arena: std.mem.Allocator, dataset_id: []const u8, commit: []const u8) HandleError!struct { items: []const u8, anns: []const u8 } {
+    return .{
+        .items = try std.fmt.allocPrint(arena, "manifests/{s}/{s}.items.parquet", .{ dataset_id, commit }),
+        .anns = try std.fmt.allocPrint(arena, "manifests/{s}/{s}.anns.parquet", .{ dataset_id, commit }),
+    };
 }
 
 /// Keeps a release's index in storage, so another server (or this one,
 /// after a restart) fetches it instead of rebuilding. Best-effort: the
 /// index can always be built again from history.
-fn storeBrowseIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit: []const u8, path: []const u8) void {
-    const key = browseKey(arena, ds.id, commit) catch return;
-    if (deps.s3.headObject(scope, key) catch null) |_| return;
-    const bytes = std.Io.Dir.cwd().readFileAlloc(deps.io, path, arena, .limited(1 << 30)) catch return;
-    deps.s3.putObject(scope, key, bytes) catch std.log.warn("browse: could not store the index of a release; it will be rebuilt when needed", .{});
+fn storeBrowseIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit: []const u8, files: browse_mod.Files) void {
+    const keys = browseKeys(arena, ds.id, commit) catch return;
+    for ([_][2][]const u8{ .{ keys.anns, files.anns }, .{ keys.items, files.items } }) |pair| {
+        deps.s3.putFile(scope, deps.io, pair[0], pair[1]) catch {
+            std.log.warn("browse: could not store the index of a release; it will be rebuilt when needed", .{});
+            return;
+        };
+    }
 }
 
 fn pruneBrowse(arena: std.mem.Allocator, deps: *Deps, dir_path: []const u8) void {
@@ -681,7 +799,7 @@ fn pruneBrowse(arena: std.mem.Allocator, deps: *Deps, dir_path: []const u8) void
     var entries: std.ArrayList(Entry) = .empty;
     var it = dir.iterate();
     while (it.next(deps.io) catch return) |entry| {
-        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".parquet")) continue;
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".items.parquet")) continue;
         const stat = dir.statFile(deps.io, entry.name, .{}) catch continue;
         entries.append(arena, .{ .name = arena.dupe(u8, entry.name) catch return, .mtime = stat.mtime.nanoseconds }) catch return;
     }
@@ -691,7 +809,12 @@ fn pruneBrowse(arena: std.mem.Allocator, deps: *Deps, dir_path: []const u8) void
             return a.mtime > b.mtime;
         }
     }.newer);
-    for (entries.items[deps.browse_cache_max..]) |old| dir.deleteFile(deps.io, old.name) catch {};
+    for (entries.items[deps.browse_cache_max..]) |old| {
+        dir.deleteFile(deps.io, old.name) catch {};
+        const stem = old.name[0 .. old.name.len - ".items.parquet".len];
+        const anns = std.fmt.allocPrint(arena, "{s}.anns.parquet", .{stem}) catch continue;
+        dir.deleteFile(deps.io, anns) catch {};
+    }
 }
 
 const RowDiffBody = struct { a: []const u8, b: []const u8, path_a: []const u8, path_b: []const u8 };
@@ -769,20 +892,19 @@ const RowDiffOutcome = struct { status: []const u8, result: ?[]const u8 = null, 
 /// a file DuckDB cannot read is an answer, kept like any other.
 fn computeRowDiff(arena: std.mem.Allocator, deps: *Deps, scope: anytype, req: RowDiffBody, kind_a: table_stats.Kind, kind_b: table_stats.Kind) HandleError!RowDiffOutcome {
     const cwd = std.Io.Dir.cwd();
-    cwd.createDirPath(deps.io, deps.scratch_dir) catch return error.Storage;
-    const dir = cwd.realPathFileAlloc(deps.io, deps.scratch_dir, arena) catch return error.Storage;
+    cwd.createDirPath(deps.io, deps.work_dir) catch return error.Storage;
+    const dir = cwd.realPathFileAlloc(deps.io, deps.work_dir, arena) catch return error.Storage;
     const path_a = try std.fmt.allocPrint(arena, "{s}/{s}.a.{t}", .{ dir, req.a, kind_a });
     const path_b = try std.fmt.allocPrint(arena, "{s}/{s}.b.{t}", .{ dir, req.b, kind_b });
     defer cwd.deleteFile(deps.io, path_a) catch {};
     defer cwd.deleteFile(deps.io, path_b) catch {};
     for ([_][2][]const u8{ .{ req.a, path_a }, .{ req.b, path_b } }) |pair| {
-        const bytes = deps.s3.getObjectAlloc(scope, itemKey(arena, pair[0]) catch return error.OutOfMemory) catch return error.Storage;
-        cwd.writeFile(deps.io, .{ .sub_path = pair[1], .data = bytes }) catch return error.Storage;
+        if (!(try downloadTo(deps, scope, itemKey(arena, pair[0]) catch return error.OutOfMemory, pair[1]))) return error.Storage;
     }
 
-    var db = duck.Db.open(arena, .{ .allowed_dir = dir }) catch return error.Storage;
+    var db = duck.Db.open(arena, .{ .allowed_dir = dir, .threads = 1 }) catch return error.Storage;
     defer db.close();
-    const text = rowdiff_mod.compute(arena, &db, path_a, kind_a, path_b, kind_b) catch |err| switch (err) {
+    const text = offload(deps, rowdiff_mod.compute, .{ arena, &db, path_a, kind_a, path_b, kind_b }) catch |err| switch (err) {
         error.QueryFailed => return .{ .status = "unreadable", .reason = "not a readable table: DuckDB could not read one of the two versions as its file name says" },
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.Storage,
@@ -932,103 +1054,6 @@ fn me(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller) Han
 /// with commits, never with visitors, the rule the preview queue follows.
 /// It is a derived cache of an immutable row, not history; a version it
 /// cannot read is recomputed and simply not stored.
-const CommitStats = struct {
-    v: u32 = stats_version,
-    items: u64 = 0,
-    bytes: u64 = 0,
-    /// File types by count, the eight most common; the extension with its
-    /// dot, or "file" for none — the same spelling Browse's type filter uses.
-    types: []const Type = &.{},
-    /// Up to four visual items, the first by path: a stable sample.
-    visual: []const []const u8 = &.{},
-    /// Every class name at the commit (annotated datasets), sorted, at
-    /// most fifty — what the home page searches.
-    classes: []const []const u8 = &.{},
-
-    const Type = struct { ext: []const u8, count: u64 };
-};
-
-const stats_version: u32 = 1;
-
-fn commitStats(
-    arena: std.mem.Allocator,
-    deps: *Deps,
-    scope: anytype,
-    dataset_id: []const u8,
-    kind: []const u8,
-    commit_id: []const u8,
-    stored: ?[]const u8,
-) HandleError!CommitStats {
-    if (stored) |text| {
-        if (std.json.parseFromSliceLeaky(CommitStats, arena, text, .{ .ignore_unknown_fields = true })) |cached| {
-            if (cached.v == stats_version) return cached;
-        } else |_| {}
-    }
-
-    const rows = release_mod.stateRows(arena, deps.db, scope, dataset_id, commit_id) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.Db,
-    };
-    var st: CommitStats = .{ .items = rows.len };
-    var by_type: std.StringArrayHashMapUnmanaged(u64) = .empty;
-    var visual: std.ArrayList([]const u8) = .empty;
-    for (rows) |row| {
-        st.bytes += row.size;
-        const ext = extOf(row.path);
-        const gop = try by_type.getOrPut(arena, ext);
-        if (!gop.found_existing) gop.value_ptr.* = 0;
-        gop.value_ptr.* += 1;
-        if (visual.items.len < 4 and looksVisual(ext)) try visual.append(arena, row.hash_hex);
-    }
-    const types = try arena.alloc(CommitStats.Type, by_type.count());
-    for (types, by_type.keys(), by_type.values()) |*t, ext, count| t.* = .{ .ext = ext, .count = count };
-    std.mem.sort(CommitStats.Type, types, {}, struct {
-        fn lessThan(_: void, a: CommitStats.Type, b: CommitStats.Type) bool {
-            if (a.count != b.count) return a.count > b.count;
-            return std.mem.lessThan(u8, a.ext, b.ext);
-        }
-    }.lessThan);
-    st.types = types[0..@min(types.len, 8)];
-    st.visual = visual.items;
-
-    if (eql(kind, "annotated")) {
-        const anns = release_mod.annotationRows(arena, deps.db, scope, dataset_id, commit_id) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return error.Db,
-        };
-        var names: std.StringArrayHashMapUnmanaged(void) = .empty;
-        for (anns) |ann| if (ann.class) |c| try names.put(arena, c, {});
-        const list = try arena.dupe([]const u8, names.keys());
-        std.mem.sort([]const u8, list, {}, struct {
-            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-                return std.mem.lessThan(u8, a, b);
-            }
-        }.lessThan);
-        st.classes = list[0..@min(list.len, 50)];
-    }
-
-    const text = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(st, .{})});
-    _ = deps.db.exec(
-        scope,
-        "UPDATE commits SET stats = $2::jsonb WHERE commit_id = $1::uuid AND stats IS NULL",
-        .{ commit_id, text },
-    ) catch {}; // a cache that failed to store is recomputed next time
-    return st;
-}
-
-fn extOf(path: []const u8) []const u8 {
-    const base = path[(if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| i + 1 else 0)..];
-    const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse return "file";
-    if (dot == 0) return "file";
-    return base[dot..];
-}
-
-fn looksVisual(ext: []const u8) bool {
-    const kinds = [_][]const u8{ ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".mp4", ".mov", ".webm", ".mkv" };
-    for (kinds) |k| if (std.ascii.eqlIgnoreCase(ext, k)) return true;
-    return false;
-}
-
 const CreateDatasetBody = struct {
     name: []const u8,
     kind: []const u8 = "files",
@@ -1093,58 +1118,14 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) 
         "WHERE c.dataset_id = $1::uuid AND c.branch = 'main' " ++
         "ORDER BY c.commit_id DESC LIMIT 100", .{ds.id}) catch return error.Db;
 
-    // Counts at head, when there is one.
-    var items_count: usize = 0;
-    var total_bytes: u64 = 0;
-    const Count = struct { name: []const u8, count: usize };
-    var classes: []const Count = &.{};
-    var splits: []const Count = &.{};
-    if (tape.len > 0) {
-        const rows = release_mod.stateRows(arena, deps.db, scope, ds.id, tape[0].id) catch |err| switch (err) {
+    // Counts at head, kept on the commit (versions.stats).
+    const head_stats: versions.Stats = if (tape.len > 0)
+        versions.stats(arena, deps.db, scope, ds.id, tape[0].id) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.Db,
-        };
-        items_count = rows.len;
-        var split_counts: std.StringArrayHashMapUnmanaged(usize) = .empty;
-        for (rows) |row| {
-            total_bytes += row.size;
-            if (row.split) |name| {
-                const gop = try split_counts.getOrPut(arena, name);
-                if (!gop.found_existing) gop.value_ptr.* = 0;
-                gop.value_ptr.* += 1;
-            }
         }
-        const split_list = try arena.alloc(Count, split_counts.count());
-        for (split_list, split_counts.keys(), split_counts.values()) |*slot, name, count| {
-            slot.* = .{ .name = name, .count = count };
-        }
-        splits = split_list;
-
-        if (eql(ds.kind, "annotated")) {
-            const anns = release_mod.annotationRows(arena, deps.db, scope, ds.id, tape[0].id) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => return error.Db,
-            };
-            var class_counts: std.StringArrayHashMapUnmanaged(usize) = .empty;
-            for (anns) |ann| {
-                const name = ann.class orelse continue;
-                const gop = try class_counts.getOrPut(arena, name);
-                if (!gop.found_existing) gop.value_ptr.* = 0;
-                gop.value_ptr.* += 1;
-            }
-            class_counts.sortUnstable(struct {
-                keys: []const []const u8,
-                pub fn lessThan(self: @This(), a: usize, b: usize) bool {
-                    return std.mem.lessThan(u8, self.keys[a], self.keys[b]);
-                }
-            }{ .keys = class_counts.keys() });
-            const class_list = try arena.alloc(Count, class_counts.count());
-            for (class_list, class_counts.keys(), class_counts.values()) |*slot, name, count| {
-                slot.* = .{ .name = name, .count = count };
-            }
-            classes = class_list;
-        }
-    }
+    else
+        .{};
 
     return json(arena, .ok, .{
         .name = ds.name,
@@ -1153,10 +1134,10 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) 
         .git_url = info.git_url,
         .default_format = info.default_format,
         .commits = tape,
-        .items = items_count,
-        .bytes = total_bytes,
-        .classes = classes,
-        .splits = splits,
+        .items = head_stats.items,
+        .bytes = head_stats.bytes,
+        .classes = head_stats.classes,
+        .splits = head_stats.splits,
     });
 }
 
@@ -1403,14 +1384,40 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
             return errorResponse(arena, .unprocessable_entity, "nothing to tag: the branch has no commits", "Run 'cid push' first, then 'cid tag' again.");
     };
 
-    const created = release_mod.create(arena, deps.db, scope, deps.s3, ds.id, req.name, commit_id) catch |err| switch (err) {
-        error.BadName => return errorResponse(arena, .bad_request, "that is not a release name (letters, digits, dot, dash, underscore)", "Pick a name like v1.0.0 and run 'cid tag' again."),
-        error.ReleaseExists => return errorResponse(arena, .conflict, "that release already exists and releases never move", "Pick a new name, e.g. the next version number."),
-        error.NoSuchCommit => return errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits."),
-        error.BadAnnotationText => return errorResponse(arena, .unprocessable_entity, "an annotation carries text or JSON the manifest cannot hold", "Fix the offending annotation in the platform, commit, then tag again."),
-        error.Storage => return error.Storage,
-        error.OutOfMemory => return error.OutOfMemory,
-        error.Db => return error.Db,
+    // The server build writes the release's browse index lines in the same
+    // pass as its manifest: the version is read from history once.
+    var work: release_mod.Work = .{ .gpa = deps.gpa, .io = deps.io, .dir = deps.work_dir };
+    var index_files: ?browse_mod.Files = null;
+    var lines: ?*Lines = null;
+    // Already built (someone browsed the commit before it was released):
+    // only its copy in storage is missing.
+    var cached: ?browse_mod.Files = null;
+    defer if (lines) |l| deps.gpa.destroy(l);
+    if (comptime duck.enabled) prepared: {
+        const cwd = std.Io.Dir.cwd();
+        cwd.createDirPath(deps.io, deps.browse_dir) catch break :prepared;
+        const dir = cwd.realPathFileAlloc(deps.io, deps.browse_dir, arena) catch break :prepared;
+        const files = browse_mod.Files.of(arena, dir, commit_id) catch return error.OutOfMemory;
+        if (cwd.statFile(deps.io, files.items, .{})) |_| {
+            cached = files;
+            break :prepared;
+        } else |_| {}
+        lines = openLines(deps, files) catch break :prepared;
+        index_files = files;
+        work.items = lines.?.items();
+        work.annotations = lines.?.anns();
+    }
+    const created = release_mod.create(arena, work, deps.db, scope, deps.s3, ds.id, req.name, commit_id) catch |err| {
+        if (lines) |l| l.discard(deps, index_files.?);
+        return switch (err) {
+            error.BadName => errorResponse(arena, .bad_request, "that is not a release name (letters, digits, dot, dash, underscore)", "Pick a name like v1.0.0 and run 'cid tag' again."),
+            error.ReleaseExists => errorResponse(arena, .conflict, "that release already exists and releases never move", "Pick a new name, e.g. the next version number."),
+            error.NoSuchCommit => errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits."),
+            error.BadAnnotationText => errorResponse(arena, .unprocessable_entity, "an annotation carries text or JSON the manifest cannot hold", "Fix the offending annotation in the platform, commit, then tag again."),
+            error.Storage => error.Storage,
+            error.OutOfMemory => error.OutOfMemory,
+            error.Db => error.Db,
+        };
     };
     // The release stands; its git copy is queued and attempted right away
     // when configured. A git failure never blocks the release (invariant 21).
@@ -1427,14 +1434,18 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
         git_status = if (outcome.failed == 0) "done" else "failed";
     }
 
-    // The release's browse index, built now so the first visitor does not
-    // wait for it, and kept in storage beside the manifest. Derived data:
-    // a failure here never fails the release, and browsing rebuilds it.
-    if (comptime duck.enabled) {
-        if (browseIndex(arena, deps, scope, ds, created.commit_id)) |index| {
-            if (index) |ix| storeBrowseIndex(arena, deps, scope, ds, created.commit_id, ix.path);
+    // The release's browse index: its lines came with the manifest's pass;
+    // converted now, so the first visitor does not wait, and kept in
+    // storage beside the manifest. Derived data: a failure here never
+    // fails the release, and browsing rebuilds it.
+    if (lines) |l| {
+        l.close(deps);
+        if (convertLines(arena, deps, index_files.?)) |_| {
+            storeBrowseIndex(arena, deps, scope, ds, created.commit_id, index_files.?);
+            pruneBrowse(arena, deps, std.fs.path.dirname(index_files.?.items) orelse deps.browse_dir);
         } else |_| std.log.warn("browse: the new release's index was not built; browsing will build it", .{});
     }
+    if (cached) |files| storeBrowseIndex(arena, deps, scope, ds, created.commit_id, files);
     noteActivity(arena, deps, scope, caller, ds, "tag", created.name, .{ .items = created.items });
     return json(arena, .created, .{
         .release = created.name,
@@ -1946,14 +1957,6 @@ test "token comparison is exact" {
     try std.testing.expect(!tokenOk("secret", "Bearer secre"));
     try std.testing.expect(!tokenOk("secret", "secret"));
     try std.testing.expect(!tokenOk("secret", null));
-}
-
-test "file types are spelled as Browse spells them" {
-    try std.testing.expectEqualStrings(".png", extOf("frames/a.png"));
-    try std.testing.expectEqualStrings("file", extOf("README"));
-    try std.testing.expectEqualStrings("file", extOf("dir.v2/.hidden"));
-    try std.testing.expect(looksVisual(".JPG"));
-    try std.testing.expect(!looksVisual(".csv"));
 }
 
 test "hash and key helpers" {

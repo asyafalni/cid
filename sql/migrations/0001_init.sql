@@ -268,6 +268,46 @@ SELECT create_hypertable('activity_events', 'ts', chunk_time_interval => INTERVA
 CREATE INDEX activity_by_dataset ON activity_events (dataset_id, ts DESC);
 
 ---------------------------------------------------------------------------
+-- Derived from content, once per content hash: previews and table diffs
+---------------------------------------------------------------------------
+
+-- The preview queue. One row per content hash, ever: ffmpeg work is a
+-- function of ingested content, never of dashboard traffic. Request paths
+-- only read; the background worker is the only thing that builds, with
+-- bounded attempts so a broken file can never burn CPU in a loop.
+CREATE TABLE previews (
+  item_hash   bytea PRIMARY KEY REFERENCES items(item_hash),
+  status      text NOT NULL DEFAULT 'pending'
+              CHECK (status IN ('pending','building','done','failed','skipped')),
+  attempts    int  NOT NULL DEFAULT 0,
+  -- why a failed or skipped item will not be retried, in plain words
+  reason      text,
+  -- the blurred rendition exists beside the thumbnail (invariant 20): a
+  -- restricted view presigns only this, never the clear one
+  blurred     boolean NOT NULL DEFAULT false,
+  -- CSV, Parquet and JSONL: rows, per-column type, range, distinct count
+  -- and nulls, the first rows (at most 64 KB; the server build's worker)
+  table_stats jsonb,
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX previews_pending ON previews (updated_at) WHERE status = 'pending';
+
+-- Row-level diffs of table files, computed the first time anyone asks and
+-- kept: a comparison of two contents costs DuckDB work once, ever. An
+-- unreadable table is an answer too ('unreadable'), never retried.
+CREATE TABLE row_diffs (
+  hash_a     bytea NOT NULL REFERENCES items(item_hash),
+  hash_b     bytea NOT NULL REFERENCES items(item_hash),
+  kind_a     text  NOT NULL CHECK (kind_a IN ('csv','parquet','jsonl')),
+  kind_b     text  NOT NULL CHECK (kind_b IN ('csv','parquet','jsonl')),
+  status     text  NOT NULL CHECK (status IN ('done','unreadable')),
+  result     jsonb,
+  reason     text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (hash_a, hash_b, kind_a, kind_b)
+);
+
+---------------------------------------------------------------------------
 -- Roles
 ---------------------------------------------------------------------------
 

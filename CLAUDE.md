@@ -296,19 +296,27 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
 - **DuckDB** (C API, in-process on the server) writes and reads Parquet manifests,
   computes large diffs, and gives row-level diffs of CSV, Parquet and JSONL files.
   It is in the **server build** only (`zig build -Dduckdb`, `src/store/duck.zig`):
-  libduckdb is a lazy dependency, linked dynamically and installed beside the binary,
-  each database confined to one directory with one thread and a memory ceiling. The
-  plain build is the CLI download and never fetches it; there every DuckDB call
-  answers `error.Unavailable` and the feature says, in words, that it needs the
-  server build. Table statistics (preview worker) are the first user.
+  libduckdb is a lazy dependency, linked dynamically and installed beside the binary.
+  `cid admin serve` opens **one** database for browse queries, confined to its browse
+  folder (`CID_BROWSE_DIR`) with a locked configuration, two threads and one memory
+  ceiling; every query takes a connection to it, so their memory is bounded however
+  many run at once. Index builds and row diffs run one at a time each, in a one-thread
+  database of their own (one thread keeps a 1M-item conversion near 250 MB, two near
+  600 MB), in `CID_WORK_DIR` / the browse folder. Long calls go to nilo's blocking
+  pool (`nilo.blocking`, its ADR 013) so no request thread waits on them. The preview
+  worker opens its own. The plain build is the CLI download and
+  never fetches DuckDB; there every DuckDB call answers `error.Unavailable` and the
+  feature says, in words, that it needs the server build.
 - **The dashboard** is served by the cid server. Its browse API (`src/server/browse/`)
   answers a page of a version at a time: items with their annotations, counts, facets
   counted against the other filters, and a cursor. In the server build each version
-  has a Parquet browse index queried by DuckDB (0.2–0.5 s per page at 1M items, one
-  thread, measured on a synthetic index; filters and facets read only the light
-  columns, the page's rows alone carry hashes and annotations); a release's index is built at tag time and kept in storage,
-  other commits' indexes are built from state-at-commit on first view into a bounded
-  local cache. An index holds only what the commit seals; media metadata (image
+  has a browse index — its items in path order and its annotations by item, two
+  Parquet files — queried by DuckDB: filters and facets read only the light columns,
+  and only the page's rows fetch hashes and annotations. A release's index is
+  written in the same pass as its manifest and kept in storage; other commits' are
+  built on first view into a bounded local cache. Measured at 1M items with
+  `tests/bench/browse_1m.sh` (ReleaseFast): release 35 s and 247 MB peak, pages
+  0.13–0.46 s, filter change to 60 thumbnails in the browser about 0.32 s. An index holds only what the commit seals; media metadata (image
   dimensions) is joined per page. The CLI build answers the same contract from state
   rows in memory. It never scans raw files on page load.
 - **The preview worker** (`cid admin previews`) builds thumbnails, waveforms, video
@@ -368,7 +376,11 @@ Deep dives: `docs/data-model.md` · `docs/access.md` · `docs/git-repository.md`
     never sends their items to any external service by default.
 12. **Hash existence is never an oracle.** The push dedup check confirms a hash only
     for datasets the caller can read; otherwise the upload is requested and discarded.
-13. **Stream, never load.** Whole-dataset work streams with bounded memory.
+13. **Stream, never load.** Whole-dataset work streams with bounded memory. On the
+    server that means `src/core/version.zig`: a version is read through cursors,
+    5,000 rows a batch, each batch freed before the next; manifests are hashed as
+    they are written and uploaded from a file; statistics are one SQL aggregate,
+    kept on the commit. `tests/bench/browse_1m.sh` measures it at 1M items.
 14. **Downloads verify everything.** Every file is hash-checked before it appears in
     the folder; a mismatch fails the command.
 15. **cid never interprets file contents except** to read media metadata on upload and
@@ -401,7 +413,8 @@ If a change would weaken any of these, stop and ask.
 <bucket>/
   items/sha256/<aa>/<bb>/<hex>                any file, stored once
   previews/<aa>/<hex>/…                       thumbnails, waveforms, blurred renditions
-  manifests/<dataset_id>/<commit_id>.parquet  one per release: its browse index
+  manifests/<dataset_id>/<commit_id>.items.parquet, .anns.parquet
+                                              one pair per release: its browse index
   exports/<dataset_id>/<release>/<format>/…   annotated datasets, rebuildable
 ```
 

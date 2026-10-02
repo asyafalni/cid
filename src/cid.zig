@@ -31,6 +31,7 @@ pub const browse = @import("server/browse/browse.zig");
 pub const signin = @import("server/signin.zig");
 pub const migrate = @import("core/migrate.zig");
 pub const release = @import("core/release.zig");
+pub const state = @import("core/version.zig");
 pub const purge = @import("core/purge.zig");
 pub const preview = @import("preview/worker.zig");
 pub const media = @import("media/sniff.zig");
@@ -88,6 +89,7 @@ test {
     _ = signin;
     _ = migrate;
     _ = release;
+    _ = state;
     _ = canonical;
     _ = jcs;
     _ = exports.jsonl;

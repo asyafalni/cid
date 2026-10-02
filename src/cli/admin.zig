@@ -36,6 +36,10 @@ const admin_help =
     \\  CID_S3_REGION (optional), CID_TOKEN    (serve)
     \\  CID_GITLAB_OAUTH_ID, CID_GITLAB_OAUTH_SECRET, CID_PUBLIC_URL,
     \\  CID_SESSION_SECRET  "Sign in with GitLab" on the dashboard (serve)
+    \\  CID_BROWSE_DIR  where the server build keeps browse indexes, one
+    \\             Parquet file per version (default /tmp/cid-browse) (serve)
+    \\  CID_WORK_DIR  files in flight: manifests going up, tables a row
+    \\             diff compares (default /tmp/cid-work) (serve)
     \\  The bucket is always named 'cid'; create it on the store first
     \\  (docker-compose.test.yml shows how).
     \\
@@ -211,6 +215,8 @@ fn runServe(
     }
 
     var deps: api.Deps = .{ .db = &db, .s3 = &s3_client, .io = io, .token = token, .token_secret = token_secret };
+    if (env.get("CID_BROWSE_DIR")) |dir| deps.browse_dir = dir;
+    if (env.get("CID_WORK_DIR")) |dir| deps.work_dir = dir;
     if (env.get("CID_GIT_WORKDIR")) |git_workdir| {
         deps.git = .{
             .workdir = git_workdir,
@@ -304,7 +310,7 @@ fn runVerify(
         return fail(io, .network, "database error: {s}", .{lastDbProblem()})) orelse
         return fail(io, .usage, "no dataset named '{s}'. Check the name.", .{dataset_name});
 
-    const result = release.verify(arena, &standalone.db, &scope, &s3_client, dataset_id, release_name) catch |err| switch (err) {
+    const result = release.verify(arena, std.heap.page_allocator, &standalone.db, &scope, &s3_client, dataset_id, release_name) catch |err| switch (err) {
         error.NoSuchCommit => return fail(io, .usage, "no release '{s}' in '{s}'.", .{ release_name, dataset_name }),
         else => return fail(io, .network, "verify could not run: {t}. Fix the cause, then run it again.", .{err}),
     };

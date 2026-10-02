@@ -9,7 +9,7 @@
 
 const std = @import("std");
 const dbx = @import("../store/db.zig");
-const release_core = @import("../core/release.zig");
+const versions = @import("../core/version.zig");
 const render = @import("render.zig");
 
 pub const Config = struct {
@@ -142,89 +142,56 @@ fn loadInput(
     const manifest_hex = ref.manifest_hex;
     const created_ms: u64 = @intCast(@max(0, ref.created_ms));
 
-    const rows = release_core.stateRows(arena, db, scope, dataset_id, commit_id) catch return error.Db;
-    const items = try arena.alloc(render.Item, rows.len);
-    for (items, 0..) |*item, i| {
-        item.* = .{ .path = rows[i].path, .hash_hex = rows[i].hash_hex, .size = rows[i].size };
-    }
+    // Counts, types, classes and splits: the commit's statistics, one
+    // aggregate kept on the commit (never the version held in memory).
+    const st = versions.stats(arena, db, scope, dataset_id, commit_id) catch return error.Db;
+    const files: []const render.Item = if (st.items < render.files_txt_limit) blk: {
+        const listed = versions.firstItems(arena, db, scope, dataset_id, commit_id, render.files_txt_limit) catch return error.Db;
+        const out = try arena.alloc(render.Item, listed.len);
+        for (out, listed) |*f, l| f.* = .{ .path = l.path, .hash_hex = l.hash_hex, .size = @intCast(l.size_bytes) };
+        break :blk out;
+    } else &.{};
 
-    // Every release, newest first, with item counts for the changelog.
+    // Every release, newest first, each counted from its own commit's
+    // statistics (kept, so a long history costs one row read per release).
     const All = struct {
         pub const nilo_table = .projection;
         name: []const u8,
         message: []const u8,
         created_ms: i64,
-        items: i64,
+        commit_id: []const u8,
     };
     const all = db.raw(All, scope, "SELECT r.name, c.message, (extract(epoch from c.recorded_at) * 1000)::bigint AS created_ms, " ++
-        "(SELECT count(*) FROM (SELECT DISTINCT ON (path) op FROM item_revisions ir " ++
-        "  WHERE ir.dataset_id = r.dataset_id AND ir.branch = c.branch AND ir.rev_id <= c.cutoff_rev " ++
-        "  ORDER BY path, rev_id DESC) s WHERE s.op <> 'delete') AS items " ++
-        "FROM refs r JOIN commits c ON c.commit_id = r.commit_id " ++
+        "c.commit_id::text AS commit_id FROM refs r JOIN commits c ON c.commit_id = r.commit_id " ++
         "WHERE r.dataset_id = $1::uuid AND r.kind = 'release' ORDER BY r.commit_id DESC, r.name DESC", .{dataset_id}) catch return error.Db;
     const releases = try arena.alloc(render.ReleaseInfo, all.len);
     for (releases, all) |*r, row| {
+        const their = versions.stats(arena, db, scope, dataset_id, row.commit_id) catch return error.Db;
         r.* = .{
             .name = row.name,
             .message = row.message,
             .created_at_ms = @intCast(@max(0, row.created_ms)),
-            .items = @intCast(@max(0, row.items)),
+            .items = their.items,
         };
     }
 
-    // Annotated extras: class and split counts, the newest policy used.
-    var classes: []const render.ClassCount = &.{};
-    var splits: []const render.ClassCount = &.{};
+    const classes = try arena.alloc(render.ClassCount, st.classes.len);
+    for (classes, st.classes) |*c, x| c.* = .{ .name = x.name, .count = x.count };
+    const splits = try arena.alloc(render.ClassCount, st.splits.len);
+    for (splits, st.splits) |*c, x| c.* = .{ .name = x.name, .count = x.count };
+    const types = try arena.alloc(render.ClassCount, st.types.len);
+    for (types, st.types) |*c, x| c.* = .{ .name = x.name, .count = x.count };
     var policy: ?render.Policy = null;
-    if (std.mem.eql(u8, kind, "annotated")) {
-        const anns = release_core.annotationRows(arena, db, scope, dataset_id, commit_id) catch return error.Db;
-        var class_counts: std.StringArrayHashMapUnmanaged(usize) = .empty;
-        var newest_policy: ?[]const u8 = null;
-        for (anns) |ann| {
-            if (ann.class) |c| {
-                const gop = try class_counts.getOrPut(arena, c);
-                if (!gop.found_existing) gop.value_ptr.* = 0;
-                gop.value_ptr.* += 1;
-            }
-            if (newest_policy == null or std.mem.order(u8, ann.policy_ver, newest_policy.?) == .gt)
-                newest_policy = ann.policy_ver;
-        }
-        class_counts.sortUnstable(struct {
-            keys: []const []const u8,
-            pub fn lessThan(self: @This(), a: usize, b: usize) bool {
-                return std.mem.lessThan(u8, self.keys[a], self.keys[b]);
-            }
-        }{ .keys = class_counts.keys() });
-        const class_list = try arena.alloc(render.ClassCount, class_counts.count());
-        for (class_list, class_counts.keys(), class_counts.values()) |*slot, name, count| {
-            slot.* = .{ .name = name, .count = count };
-        }
-        classes = class_list;
-
-        var split_counts: std.StringArrayHashMapUnmanaged(usize) = .empty;
-        for (rows) |row| {
-            const name = row.split orelse continue;
-            const gop = try split_counts.getOrPut(arena, name);
-            if (!gop.found_existing) gop.value_ptr.* = 0;
-            gop.value_ptr.* += 1;
-        }
-        const split_list = try arena.alloc(render.ClassCount, split_counts.count());
-        for (split_list, split_counts.keys(), split_counts.values()) |*slot, name, count| {
-            slot.* = .{ .name = name, .count = count };
-        }
-        splits = split_list;
-
-        if (newest_policy) |version| {
-            const body = db.rawOne([]const u8, scope, "SELECT body::text FROM policy_versions WHERE dataset_id = $1::uuid AND version = $2", .{ dataset_id, version }) catch return error.Db;
-            if (body) |b| policy = .{ .version = version, .body_json = b };
-        }
-    }
+    if (std.mem.eql(u8, kind, "annotated")) if (st.policy) |version| {
+        const body = db.rawOne([]const u8, scope, "SELECT body::text FROM policy_versions WHERE dataset_id = $1::uuid AND version = $2", .{ dataset_id, version }) catch return error.Db;
+        if (body) |b| policy = .{ .version = version, .body_json = b };
+    };
 
     return .{
         .dataset_name = dataset_name,
         .kind = kind,
-        .classes = classes,
-        .splits = splits,
+        .classes = if (std.mem.eql(u8, kind, "annotated")) classes else &.{},
+        .splits = if (std.mem.eql(u8, kind, "annotated")) splits else &.{},
         .policy = policy,
         .git_url = git_url,
         .server_url = config.server_url,
@@ -232,7 +199,10 @@ fn loadInput(
         .commit_id = commit_id,
         .manifest_sha256_hex = manifest_hex,
         .created_at_ms = created_ms,
-        .items = items,
+        .items = st.items,
+        .bytes = st.bytes,
+        .types = types,
+        .files = files,
         .releases = releases,
     };
 }

@@ -635,7 +635,7 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     const ds_id: [:0]const u8 = blk: {
         break :blk try arena.dupeZ(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/rel'", .{})).?);
     };
-    const v1 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
+    const v1 = try cid.release.verify(arena, std.testing.allocator, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(v1.ok);
     try std.testing.expectEqual(@as(usize, 2), v1.items);
 
@@ -648,7 +648,7 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
         "decode(repeat('ef', 32), 'hex'), 'user:evil')", .{ &old_uuid.toString(), (old_uuid.unixMs() / 1000), ds_id }, 0);
     _ = try db.exec(&fscope, "INSERT INTO items (item_hash, size_bytes, media_type) VALUES (decode(repeat('ef', 32), 'hex'), 1, 'application/octet-stream') ON CONFLICT DO NOTHING", .{});
     _ = try db.exec(&fscope, smuggle, .{});
-    const v2 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
+    const v2 = try cid.release.verify(arena, std.testing.allocator, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(!v2.ok);
     try std.testing.expectEqual(cid.release.VerifyProblem.recomputed_hash_differs, v2.problems[0]);
 
@@ -656,14 +656,14 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     _ = try db.exec(&fscope, "DELETE FROM item_revisions WHERE author = 'user:evil'", .{});
     _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
-    const v3 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
+    const v3 = try cid.release.verify(arena, std.testing.allocator, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(v3.ok);
 
     // Corruption B: tamper with the stored manifest object.
     const commit_for_release = try arena.dupe(u8, list[0].commit);
     const mkey = try cid.release.manifestKey(arena, ds_id, commit_for_release);
     try s3c.putObject(&scope, mkey, "tampered bytes");
-    const v4 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
+    const v4 = try cid.release.verify(arena, std.testing.allocator, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(!v4.ok);
     try std.testing.expectEqual(cid.release.VerifyProblem.stored_manifest_differs, v4.problems[0]);
 
@@ -1233,7 +1233,7 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     try std.testing.expectEqual(@as(i64, 1), audit);
 
     // History rows untouched; verify is green with the purged item named.
-    const v = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
+    const v = try cid.release.verify(arena, std.testing.allocator, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(v.ok);
     try std.testing.expectEqual(@as(usize, 1), v.purged);
     try std.testing.expectEqual(@as(usize, 2), v.items);
@@ -1481,29 +1481,44 @@ test "annotated: the platform writes revisions, the server commits, state compos
     try std.testing.expectEqualStrings("frames/0001.jpg", paged.next.?);
     const page2 = try browseAt(arena, &deps, &scope, c2, "&limit=1&after=frames%2F0001.jpg");
     try std.testing.expectEqualStrings("frames/0002.jpg", page2.items[0].path);
+    // The index computes file types in SQL; the state engine in Zig. One rule.
+    for ([_][]const u8{ "a/b/C.JPG", "README", ".cidignore", "x.tar.gz", ".hidden.txt", "dir.d/noext", "trailing." }) |p| {
+        const sql_ext = (try db.rawOne([]const u8, &fscope, "SELECT " ++ comptime cid.state.extOf("$1::text"), .{p})).?;
+        try std.testing.expectEqualStrings(try cid.browse.extOf(arena, p), sql_ext);
+    }
+
     // Another dataset's version, or none at all, is not browsable here.
     const stranger = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/ann/-/browse?commit=01890000-0000-7000-8000-000000000000", "Bearer test-token", "");
     try std.testing.expectEqual(std.http.Status.not_found, stranger.status);
 
     if (comptime cid.duck.enabled) {
-        // The cache kept one index (the limit), the most recent.
+        // The cache kept one index (the limit), the most recent: both of
+        // its files, and neither of the evicted one's.
         var kept: usize = 0;
+        var files: usize = 0;
         var it = browse_tmp.dir.iterate();
-        while (try it.next(io)) |entry| if (std.mem.endsWith(u8, entry.name, ".parquet")) {
-            kept += 1;
-        };
+        while (try it.next(io)) |entry| {
+            if (std.mem.endsWith(u8, entry.name, ".parquet")) files += 1;
+            if (std.mem.endsWith(u8, entry.name, ".items.parquet")) kept += 1;
+        }
         try std.testing.expectEqual(@as(usize, 1), kept);
-        // A release's index is built at tag time and kept in storage, so a
-        // server with an empty cache fetches it rather than rebuilding.
+        try std.testing.expectEqual(@as(usize, 2), files);
+        // A release's index is kept in storage beside its manifest, even
+        // when this server had built it already, so a server with an empty
+        // cache fetches it rather than rebuilding.
         const tagged = try remote.tag(arena, "v-browse");
-        const key = try std.fmt.allocPrint(arena, "manifests/{s}/{s}.parquet", .{ ds_id, tagged.commit });
-        try std.testing.expect((try s3c.headObject(&scope, key)) != null);
+        const keys = [_][]const u8{
+            try std.fmt.allocPrint(arena, "manifests/{s}/{s}.items.parquet", .{ ds_id, tagged.commit }),
+            try std.fmt.allocPrint(arena, "manifests/{s}/{s}.anns.parquet", .{ ds_id, tagged.commit }),
+        };
+        for (keys) |key| try std.testing.expect((try s3c.headObject(&scope, key)) != null);
         var empty_cache = std.testing.tmpDir(.{});
         defer empty_cache.cleanup();
         deps.browse_dir = try empty_cache.dir.realPathFileAlloc(io, ".", arena);
-        const fetched = try browseAt(arena, &deps, &scope, tagged.commit, "");
+        const fetched = try browseAt(arena, &deps, &scope, tagged.commit, "&q=0001");
         try std.testing.expectEqual(@as(u64, 2), fetched.total);
-        try s3c.deleteObject(&scope, key);
+        try std.testing.expectEqual(@as(usize, 1), fetched.items[0].annotations.len);
+        for (keys) |key| try s3c.deleteObject(&scope, key);
     }
 }
 
@@ -1589,7 +1604,7 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     try std.testing.expect(std.mem.indexOf(u8, stored, ann_line) != null);
 
     // Verify: green, repeatably.
-    const v1 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
+    const v1 = try cid.release.verify(arena, std.testing.allocator, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(v1.ok);
 
     // A box smuggled under the sealed cutoff turns verify red.
@@ -1599,13 +1614,13 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
             "VALUES ('{s}', to_timestamp({d}), '{s}', 'main', gen_random_uuid(), '{s}', 'create', 'box', 'smuggled', '{{\"x\":1}}'::jsonb, 'user:evil', 'policy-v1')", .{ &old_uuid.toString(), old_uuid.unixMs() / 1000, ds_id, &item_id }, 0);
         _ = try db.exec(&fscope, sql, .{});
     }
-    const v2 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
+    const v2 = try cid.release.verify(arena, std.testing.allocator, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(!v2.ok);
     try std.testing.expectEqual(cid.release.VerifyProblem.recomputed_hash_differs, v2.problems[0]);
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     _ = try db.exec(&fscope, "DELETE FROM annotation_revisions WHERE author = 'user:evil'", .{});
     _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
-    const v3 = try cid.release.verify(arena, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
+    const v3 = try cid.release.verify(arena, std.testing.allocator, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(v3.ok);
 }
 
@@ -2287,7 +2302,7 @@ test "row diffs: rows added and removed between versions, cached, withheld when 
     defer scope.deinit();
     var scratch = std.testing.tmpDir(.{});
     defer scratch.cleanup();
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token", .scratch_dir = try scratch.dir.realPathFileAlloc(io, ".", arena) };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token", .work_dir = try scratch.dir.realPathFileAlloc(io, ".", arena) };
     var cache = std.testing.tmpDir(.{});
     defer cache.cleanup();
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
