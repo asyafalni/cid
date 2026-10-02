@@ -442,9 +442,22 @@ test('browse pages through a version: one page, then more on scroll, and links p
   await expect(page.getByRole('complementary', { name: 'rows/0130.txt' })).toBeVisible();
 });
 
+test('media opens as media: a sound plays with its waveform, a note reads as text', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/media?view=browse&item=tone.wav');
+  const drawer = page.getByRole('complementary', { name: 'tone.wav' });
+  await expect(drawer.getByRole('img', { name: 'tone.wav waveform' })).toBeVisible();
+  await expect(drawer.locator('audio')).toHaveAttribute('src', /http/);
+  // The gallery tile shows the waveform too.
+  await expect(page.locator('.tile img[alt="tone.wav"]')).toBeVisible();
+  await page.goto('/d/e2e/datasets/media?view=browse&item=notes.txt');
+  const note = page.getByRole('complementary', { name: 'notes.txt' });
+  await expect(note.getByRole('region', { name: 'Text' })).toContainText('UTF-8 is fine');
+});
+
 test('accessibility: no serious or critical axe findings', async ({ page }) => {
   await signIn(page);
-  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0']) {
+  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt']) {
     await page.goto(path);
     await page.waitForLoadState('networkidle');
     const results = await new AxeBuilder({ page }).analyze();

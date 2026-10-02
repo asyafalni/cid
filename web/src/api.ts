@@ -329,11 +329,27 @@ export function getRowDiff(name: string, path: string, a: string, b: string): Pr
   return post(`/v0/datasets/${name}/-/rowdiff`, { a, b, path_a: path, path_b: path });
 }
 
+/** The opening of a text item (first 64 KB), for the drawer. */
+export type TextHead = {
+  text: string | null;
+  truncated: boolean;
+  /** Not text after all: a NUL or broken UTF-8 in what was read. */
+  binary: boolean;
+  size: number;
+  /** Restricted: shown only after a logged reveal. */
+  withheld?: boolean;
+};
+
+export function getText(name: string, hash: string): Promise<TextHead> {
+  return request(`/v0/datasets/${name}/-/text?hash=${hash}`);
+}
+
 export type Revealed = {
   hash: string;
   thumb: string | null;
   download: string;
   table: TableStats | null;
+  text: TextHead | null;
   logged: boolean;
 };
 

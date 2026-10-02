@@ -325,8 +325,10 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   release 38 s; a new head prepared in the background in about 70 s, after which its
   overview, items file and default export answer in 1–5 ms; browse pages 0.25–0.45 s;
   filter change to 60 thumbnails in the browser 0.30 s; subset size 64 ms; a folder
-  35–150 ms; compare 2.3 s; `cid diff` 2.6 s the first time and 0.01 s after, with a
-  19 MB client.
+  35–150 ms; compare 2.3 s the first time a pair is compared (the pair's diff is then
+  kept, beside the indexes, and a release's diff with the release before it is
+  prepared in the background); `cid diff` 2.6 s the first time and 0.01 s after, with
+  a 19 MB client.
 - **The preview worker** (`cid admin previews`) builds thumbnails, waveforms, video
   posters, PDF page images and table statistics, by calling `ffmpeg` (and `vips`
   where present) as external programs. **ffmpeg never scales with users**: the

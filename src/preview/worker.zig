@@ -35,6 +35,9 @@ pub const Outcome = struct {
     failed: u32 = 0,
 };
 
+/// Why an item has no thumbnail: in words, for the drawer.
+const no_thumbnail = "no thumbnail: images, video and audio get one; text and tables show in the drawer";
+
 pub fn thumbKey(arena: std.mem.Allocator, hash_hex: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "previews/{s}/{s}/thumb.webp", .{ hash_hex[0..2], hash_hex });
 }
@@ -179,9 +182,9 @@ fn buildOne(
 ) BuildResult {
     var is_image = std.mem.startsWith(u8, media_type, "image/");
     var is_video = std.mem.startsWith(u8, media_type, "video/");
+    var is_audio = std.mem.startsWith(u8, media_type, "audio/");
     const unknown = std.mem.eql(u8, media_type, "application/octet-stream");
-    if (!is_image and !is_video and !unknown)
-        return .{ .skipped = "not previewable: only images and video get thumbnails today" };
+    if (!is_image and !is_video and !is_audio and !unknown) return .{ .skipped = no_thumbnail };
     if (size > config.max_input_bytes)
         return .{ .skipped = "too large to preview; raise the worker's limit to include it" };
 
@@ -201,8 +204,8 @@ fn buildOne(
         recordSniff(arena, db, scope, hash, found);
         is_image = std.mem.startsWith(u8, found.media_type, "image/");
         is_video = std.mem.startsWith(u8, found.media_type, "video/");
-        if (!is_image and !is_video)
-            return .{ .skipped = "not previewable: only images and video get thumbnails today" };
+        is_audio = std.mem.startsWith(u8, found.media_type, "audio/");
+        if (!is_image and !is_video and !is_audio) return .{ .skipped = no_thumbnail };
     }
 
     const in_path = std.fmt.allocPrint(arena, "{s}/{s}.in", .{ config.tmpdir, hash }) catch
@@ -225,10 +228,15 @@ fn buildOne(
     if (is_video) argv.appendSlice(arena, &.{ "-ss", "1" }) catch return .{ .failed = "out of memory" };
     // One decode, two renditions: the thumbnail, and a blurred copy for
     // restricted datasets (invariant 20), split after scaling so the blur
-    // works on 320 pixels, not the original.
+    // works on 320 pixels, not the original. Audio's thumbnail is its
+    // waveform, drawn the same size, so it shows wherever a picture would.
     argv.appendSlice(arena, &.{
         "-i",              in_path,
-        "-filter_complex", "[0:v]scale='min(320,iw)':-2,split=2[thumb][src];[src]boxblur=12:4[blur]",
+        "-filter_complex",
+        if (is_audio)
+            "[0:a]aformat=channel_layouts=mono,showwavespic=s=320x96:colors=0x6f86a6,split=2[thumb][src];[src]boxblur=12:4[blur]"
+        else
+            "[0:v]scale='min(320,iw)':-2,split=2[thumb][src];[src]boxblur=12:4[blur]",
         "-map",            "[thumb]",
         "-frames:v",       "1",
         out_path,          "-map",
@@ -239,7 +247,7 @@ fn buildOne(
     const run = std.process.run(arena, io, .{
         .argv = argv.items,
         .timeout = .{ .duration = .{ .clock = .awake, .raw = .{
-            .nanoseconds = if (is_video) config.video_timeout_ns else config.timeout_ns,
+            .nanoseconds = if (is_video or is_audio) config.video_timeout_ns else config.timeout_ns,
         } } },
         .stdout_limit = .limited(64 * 1024),
         .stderr_limit = .limited(64 * 1024),

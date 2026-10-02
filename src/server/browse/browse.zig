@@ -346,15 +346,6 @@ fn compareCtes(arena: std.mem.Allocator, a: Files, b: Files) Error![]const u8 {
     , .{ try quote(arena, a.items), try quote(arena, b.items), try quote(arena, a.anns), try quote(arena, b.anns) });
 }
 
-const summary_sql =
-    \\json_object('added', (SELECT count(*) FROM ch WHERE change = 'added'),
-    \\  'modified', (SELECT count(*) FROM ch WHERE change = 'modified'),
-    \\  'deleted', (SELECT count(*) FROM ch WHERE change = 'deleted'),
-    \\  'ann_added', (SELECT count(*) FROM ac WHERE change = 'added'),
-    \\  'ann_changed', (SELECT count(*) FROM ac WHERE change = 'changed'),
-    \\  'ann_removed', (SELECT count(*) FROM ac WHERE change = 'removed'))
-;
-
 /// The dashboard's compare: the summary, a page of item changes by path,
 /// and — on the first page — the visual diff: the first `visual_items`
 /// items an annotation changed on, by path, each at both versions with
@@ -378,50 +369,89 @@ pub const ComparePage = struct {
     ann_changes: []const struct { change: []const u8, kind: ?[]const u8, class: ?[]const u8, item_path: ?[]const u8 },
 };
 
-pub fn comparePage(arena: std.mem.Allocator, db: *duck.Db, a: Files, b: Files, after: ?[]const u8, limit: u32) Error!ComparePage {
+/// A pair's diff, computed once and kept (both versions are sealed): the
+/// changed items by path, and the changed annotations by item path, each
+/// with its shape before and after. Every compare reads these — a page,
+/// or every line for `cid diff` — so the whole-version joins run once.
+pub const DiffFiles = struct {
+    items: []const u8,
+    anns: []const u8,
+
+    pub fn of(arena: std.mem.Allocator, dir: []const u8, a: []const u8, b: []const u8) Error!DiffFiles {
+        return .{
+            .items = try std.fmt.allocPrint(arena, "{s}/{s}-{s}.diff-items.parquet", .{ dir, a, b }),
+            .anns = try std.fmt.allocPrint(arena, "{s}/{s}-{s}.diff-anns.parquet", .{ dir, a, b }),
+        };
+    }
+};
+
+/// Joins the two versions' indexes into the pair's diff files, each
+/// renamed into place when complete, annotations first: a diff exists
+/// once its items file does. `db` must be confined to their folder.
+pub fn buildDiff(arena: std.mem.Allocator, io: std.Io, db: *duck.Db, a: Files, b: Files, out: DiffFiles) Error!void {
+    const cwd = std.Io.Dir.cwd();
+    const ctes = try compareCtes(arena, a, b);
+    const steps = [_]struct { out: []const u8, select: []const u8 }{
+        .{ .out = out.anns, .select = "SELECT change, id, kind, class, item, item_path, before, after FROM acp ORDER BY item_path, id" },
+        .{ .out = out.items, .select = "SELECT change, path, hash_a, hash_b, size_a, size_b FROM ch ORDER BY path" },
+    };
+    for (steps) |step| {
+        const tmp = try std.fmt.allocPrint(arena, "{s}.tmp", .{step.out});
+        defer cwd.deleteFile(io, tmp) catch {};
+        _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (WITH {s} {s}) TO '{s}' (FORMAT parquet)", .{ ctes, step.select, try quote(arena, tmp) }));
+        std.Io.Dir.rename(cwd, tmp, cwd, step.out, io) catch return error.WriteFailed;
+    }
+}
+
+fn summaryOf(arena: std.mem.Allocator, d: DiffFiles) Error![]const u8 {
+    return std.fmt.allocPrint(arena,
+        \\json_object('added', (SELECT count(*) FROM read_parquet('{0s}') WHERE change = 'added'),
+        \\  'modified', (SELECT count(*) FROM read_parquet('{0s}') WHERE change = 'modified'),
+        \\  'deleted', (SELECT count(*) FROM read_parquet('{0s}') WHERE change = 'deleted'),
+        \\  'ann_added', (SELECT count(*) FROM read_parquet('{1s}') WHERE change = 'added'),
+        \\  'ann_changed', (SELECT count(*) FROM read_parquet('{1s}') WHERE change = 'changed'),
+        \\  'ann_removed', (SELECT count(*) FROM read_parquet('{1s}') WHERE change = 'removed'))
+    , .{ try quote(arena, d.items), try quote(arena, d.anns) });
+}
+
+pub fn comparePage(arena: std.mem.Allocator, db: *duck.Db, a: Files, b: Files, d: DiffFiles, after: ?[]const u8, limit: u32) Error!ComparePage {
     const sql = try std.fmt.allocPrint(arena,
-        \\WITH {s},
+        \\WITH ch AS (SELECT * FROM read_parquet('{0s}')),
+        \\acp AS (SELECT * FROM read_parquet('{1s}')),
         \\page AS (SELECT * FROM ch WHERE $1::VARCHAR IS NULL OR path > $1::VARCHAR ORDER BY path LIMIT $2),
         \\last AS (SELECT max(path) AS p, count(*) AS n FROM page),
-        \\vis AS (SELECT item, min(item_path) AS item_path FROM acp WHERE $1::VARCHAR IS NULL GROUP BY item ORDER BY 2 LIMIT {d})
+        \\vis AS (SELECT item, min(item_path) AS item_path FROM acp WHERE $1::VARCHAR IS NULL GROUP BY item ORDER BY 2 LIMIT {4d}),
+        \\sa AS (SELECT path, hash, item_id FROM read_parquet('{2s}') WHERE item_id IN (SELECT item FROM vis)),
+        \\sb AS (SELECT path, hash, item_id FROM read_parquet('{3s}') WHERE item_id IN (SELECT item FROM vis))
         \\SELECT json_object(
-        \\  'summary', {s},
+        \\  'summary', {5s},
         \\  'changes', (SELECT coalesce(to_json(list(json_object('change', change, 'path', path, 'hash_a', hash_a, 'hash_b', hash_b, 'size_b', size_b) ORDER BY path)), '[]'::JSON) FROM page),
         \\  'next', (SELECT CASE WHEN n = $2 AND EXISTS (SELECT 1 FROM ch WHERE ch.path > last.p) THEN p END FROM last),
         \\  'visual', (SELECT coalesce(to_json(list(json_object('path', v.item_path,
-        \\      'before', (SELECT json_object('path', path, 'hash', hash, 'item_id', item_id) FROM ia WHERE ia.item_id = v.item LIMIT 1),
-        \\      'after', (SELECT json_object('path', path, 'hash', hash, 'item_id', item_id) FROM ib WHERE ib.item_id = v.item LIMIT 1),
+        \\      'before', (SELECT json_object('path', path, 'hash', hash, 'item_id', item_id) FROM sa WHERE sa.item_id = v.item LIMIT 1),
+        \\      'after', (SELECT json_object('path', path, 'hash', hash, 'item_id', item_id) FROM sb WHERE sb.item_id = v.item LIMIT 1),
         \\      'shapes_before', (SELECT coalesce(to_json(list(before ORDER BY id) FILTER (WHERE before IS NOT NULL)), '[]'::JSON) FROM acp WHERE acp.item = v.item),
         \\      'shapes_after', (SELECT coalesce(to_json(list(after ORDER BY id) FILTER (WHERE after IS NOT NULL)), '[]'::JSON) FROM acp WHERE acp.item = v.item))
         \\    ORDER BY v.item_path)), '[]'::JSON) FROM vis v),
         \\  'ann_changes', (SELECT coalesce(to_json(list(json_object('change', change, 'kind', kind, 'class', class, 'item_path', item_path)
         \\      ORDER BY item_path, id)), '[]'::JSON)
-        \\    FROM (SELECT * FROM acp WHERE $1::VARCHAR IS NULL ORDER BY item_path, id LIMIT {d}))
+        \\    FROM (SELECT * FROM acp WHERE $1::VARCHAR IS NULL ORDER BY item_path, id LIMIT {6d}))
         \\)::VARCHAR
-    , .{ try compareCtes(arena, a, b), visual_items, summary_sql, max_limit });
+    , .{ try quote(arena, d.items), try quote(arena, d.anns), try quote(arena, a.items), try quote(arena, b.items), visual_items, try summaryOf(arena, d), max_limit });
     const text = (try db.scalarTextArgs(arena, sql, &.{ .{ .text = after }, .{ .int = limit } })) orelse return error.QueryFailed;
     return std.json.parseFromSliceLeaky(ComparePage, arena, text, .{ .ignore_unknown_fields = true }) catch error.QueryFailed;
 }
 
 /// The CLI's compare: every change, as two JSON-lines files DuckDB writes
-/// in its folder (items by path; annotations by item path and id), and
-/// the summary. The caller turns the files into the diff `cid diff` reads.
+/// in its folder (items by path; annotations by item path and id) from
+/// the pair's diff, and the summary. The caller turns the files into the
+/// diff `cid diff` reads.
 pub const CompareFiles = struct { items: []const u8, anns: []const u8 };
 
-pub fn compareLines(arena: std.mem.Allocator, db: *duck.Db, a: Files, b: Files, out: CompareFiles) Error!DiffSummary {
-    // The joins once, into temporary tables DuckDB can spill to disk, then
-    // each file and the summary read from them.
-    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "CREATE OR REPLACE TEMP TABLE diff_items AS WITH {s} SELECT change, path, hash_a, hash_b, size_a, size_b FROM ch", .{try compareCtes(arena, a, b)}));
-    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "CREATE OR REPLACE TEMP TABLE diff_anns AS WITH {s} SELECT change AS ann, id, kind, class, item_path FROM acp", .{try compareCtes(arena, a, b)}));
-    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT * FROM diff_items ORDER BY path) TO '{s}' (FORMAT json)", .{try quote(arena, out.items)}));
-    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT * FROM diff_anns ORDER BY item_path, id) TO '{s}' (FORMAT json)", .{try quote(arena, out.anns)}));
-    const text = (try db.scalarText(arena,
-        \\SELECT json_object('added', count(*) FILTER (WHERE change = 'added'),
-        \\  'modified', count(*) FILTER (WHERE change = 'modified'), 'deleted', count(*) FILTER (WHERE change = 'deleted'),
-        \\  'ann_added', (SELECT count(*) FROM diff_anns WHERE ann = 'added'),
-        \\  'ann_changed', (SELECT count(*) FROM diff_anns WHERE ann = 'changed'),
-        \\  'ann_removed', (SELECT count(*) FROM diff_anns WHERE ann = 'removed'))::VARCHAR FROM diff_items
-    )) orelse return error.QueryFailed;
+pub fn compareLines(arena: std.mem.Allocator, db: *duck.Db, d: DiffFiles, out: CompareFiles) Error!DiffSummary {
+    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT change, path, hash_a, hash_b, size_a, size_b FROM read_parquet('{s}') ORDER BY path) TO '{s}' (FORMAT json)", .{ try quote(arena, d.items), try quote(arena, out.items) }));
+    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT change AS ann, id, kind, class, item_path FROM read_parquet('{s}') ORDER BY item_path, id) TO '{s}' (FORMAT json)", .{ try quote(arena, d.anns), try quote(arena, out.anns) }));
+    const text = (try db.scalarText(arena, try std.fmt.allocPrint(arena, "SELECT {s}::VARCHAR", .{try summaryOf(arena, d)}))) orelse return error.QueryFailed;
     return std.json.parseFromSliceLeaky(DiffSummary, arena, text, .{}) catch error.QueryFailed;
 }
 
@@ -545,7 +575,9 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
         \\{"id":"x5","item_id":"i2","kind":"box","class":"car","geometry":{"x":5,"y":5,"w":5,"h":5},"attrs":null,"author":"user:r","policy_ver":"p1"}
         \\
     );
-    const cmp = try comparePage(arena, &db, v1, v2, null, 2);
+    const d12 = try DiffFiles.of(arena, dir, "v1", "v2");
+    try buildDiff(arena, io, &db, v1, v2, d12);
+    const cmp = try comparePage(arena, &db, v1, v2, d12, null, 2);
     try std.testing.expectEqual(DiffSummary{ .added = 1, .modified = 1, .deleted = 1, .ann_added = 1, .ann_changed = 1, .ann_removed = 1 }, cmp.summary);
     try std.testing.expectEqualStrings("README", cmp.changes[0].path);
     try std.testing.expectEqualStrings("deleted", cmp.changes[0].change);
@@ -557,7 +589,7 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
     try std.testing.expectEqual(@as(i64, 9), cmp.visual[0].shapes_after[0].geometry.?.object.get("x").?.integer);
     try std.testing.expectEqualStrings("aa", cmp.visual[0].before.?.hash);
     try std.testing.expectEqualStrings("a2", cmp.visual[0].after.?.hash);
-    const page2 = try comparePage(arena, &db, v1, v2, cmp.next, 2);
+    const page2 = try comparePage(arena, &db, v1, v2, d12, cmp.next, 2);
     try std.testing.expectEqualStrings("img/a.jpg", page2.changes[0].path);
     try std.testing.expectEqual(@as(usize, 0), page2.visual.len);
     try std.testing.expectEqual(@as(usize, 3), cmp.ann_changes.len);
@@ -569,7 +601,7 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
         .items = try std.fmt.allocPrint(arena, "{s}/c.items.jsonl", .{dir}),
         .anns = try std.fmt.allocPrint(arena, "{s}/c.anns.jsonl", .{dir}),
     };
-    const sum = try compareLines(arena, &db, v1, v2, out);
+    const sum = try compareLines(arena, &db, d12, out);
     try std.testing.expectEqual(cmp.summary, sum);
     const lines = try std.Io.Dir.cwd().readFileAlloc(io, out.items, arena, .limited(1 << 20));
     try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, lines, "\n"));

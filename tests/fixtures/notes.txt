@@ -1,0 +1,3 @@
+A note on this dataset.
+Items are frames from five cameras; splits are by camera.
+Café, naïve: UTF-8 is fine.

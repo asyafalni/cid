@@ -77,8 +77,16 @@ pub fn sniff(bytes: []const u8) ?Sniffed {
         return .{ .media_type = "application/pdf" };
     }
 
-    // ISO base media (mp4/mov): 'ftyp' at offset 4.
+    // Audio: WAV (RIFF…WAVE), FLAC, Ogg, MP3 (an ID3 tag or a frame sync).
+    if (std.mem.startsWith(u8, bytes, "RIFF") and std.mem.eql(u8, bytes[8..12], "WAVE")) return .{ .media_type = "audio/wav" };
+    if (std.mem.startsWith(u8, bytes, "fLaC")) return .{ .media_type = "audio/flac" };
+    if (std.mem.startsWith(u8, bytes, "OggS")) return .{ .media_type = "audio/ogg" };
+    if (std.mem.startsWith(u8, bytes, "ID3") or (bytes[0] == 0xff and (bytes[1] & 0xe6) == 0xe2)) return .{ .media_type = "audio/mpeg" };
+
+    // ISO base media: 'ftyp' at offset 4; an M4A brand is audio, the rest
+    // (mp4, mov) video.
     if (std.mem.eql(u8, bytes[4..8], "ftyp")) {
+        if (std.mem.eql(u8, bytes[8..11], "M4A") or std.mem.eql(u8, bytes[8..11], "M4B")) return .{ .media_type = "audio/mp4" };
         return .{ .media_type = "video/mp4" };
     }
 
@@ -87,7 +95,21 @@ pub fn sniff(bytes: []const u8) ?Sniffed {
         return .{ .media_type = "video/webm" };
     }
 
+    // Text: valid UTF-8 with no NUL in what was read. Read as text, never
+    // interpreted (invariant 15): the dashboard shows it, nothing parses it.
+    const head = bytes[0..@min(bytes.len, 8192)];
+    if (std.mem.indexOfScalar(u8, head, 0) == null and validUtf8Prefix(head)) return .{ .media_type = "text/plain" };
+
     return null;
+}
+
+/// UTF-8, allowing the cut at the end to fall inside a character.
+fn validUtf8Prefix(bytes: []const u8) bool {
+    var end = bytes.len;
+    var back: usize = 0;
+    while (back < 3 and end > 0 and (bytes[end - 1] & 0xc0) == 0x80) : (back += 1) end -= 1;
+    if (end > 0 and bytes[end - 1] >= 0xc0) end -= 1;
+    return std.unicode.utf8ValidateSlice(bytes[0..end]);
 }
 
 test "sniffs the usual suspects, with dimensions where headers carry them" {
@@ -124,5 +146,12 @@ test "sniffs the usual suspects, with dimensions where headers carry them" {
 
     try std.testing.expectEqualStrings("application/pdf", sniff("%PDF-1.7 and so on").?.media_type);
     try std.testing.expectEqualStrings("video/mp4", sniff("\x00\x00\x00\x20ftypisom____").?.media_type);
-    try std.testing.expect(sniff("plain text, honestly nothing") == null);
+    try std.testing.expectEqualStrings("audio/mp4", sniff("\x00\x00\x00\x20ftypM4A ____").?.media_type);
+    try std.testing.expectEqualStrings("audio/wav", sniff("RIFF\x24\x08\x00\x00WAVEfmt ").?.media_type);
+    try std.testing.expectEqualStrings("audio/flac", sniff("fLaC\x00\x00\x00\x22________").?.media_type);
+    try std.testing.expectEqualStrings("audio/ogg", sniff("OggS\x00\x02____________").?.media_type);
+    try std.testing.expectEqualStrings("audio/mpeg", sniff("ID3\x04\x00\x00\x00\x00\x00\x00______").?.media_type);
+    try std.testing.expectEqualStrings("text/plain", sniff("Hello, dataset.\nSecond line, caf\xc3\xa9.\n").?.media_type);
+    try std.testing.expect(sniff("binary\x00\x01\x02\x03\x04\x05\x06") == null);
+    try std.testing.expectEqualStrings("text/plain", sniff("plain text, honestly nothing").?.media_type);
 }

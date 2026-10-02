@@ -369,6 +369,13 @@ Audio (waveform + transcript segments), video (player + segment/track timeline),
 (span highlights), PDFs · Health tab · row-level table diff · SQL console · card
 completeness checklist · keyboard shortcuts everywhere.
 
+*Built:* media-native items. Audio is sniffed (WAV, MP3, FLAC, Ogg, M4A) and its
+waveform, drawn by ffmpeg, is its thumbnail, so tiles, mosaics and the blur rules treat
+it like a picture; the drawer plays it beside the waveform, and plays video with its
+poster. Anything else that is text opens as text: its first 64 KB, read with a ranged
+GET (withheld in a restricted dataset until a logged reveal); a binary file says so in
+words. PDF page images wait for `vips` on the worker.
+
 *Built:* the row-level table diff. Compare shows, under each modified CSV, Parquet or
 JSONL file, its rows added and removed, with the rows themselves one click away (the
 first 20 each way); it is the same answer `cid diff` prints. Whole-row comparison

@@ -6,10 +6,12 @@ import {
   getBrowse,
   getDownloads,
   getHistory,
+  getText,
   getThumbs,
   reveal,
   type BrowseItem,
   type Revealed,
+  type TextHead,
   type Overview,
   type StateAnnotation,
   type StateItem,
@@ -377,7 +379,22 @@ function ItemDrawer({
           ✕
         </button>
       </div>
-      {shownThumb ? (
+      {isVideo(item.path) && url ? (
+        // Video plays where it is, its poster the thumbnail.
+        <video className="drawer-media" controls preload="metadata" poster={shownThumb} src={url}>
+          <track kind="captions" />
+        </video>
+      ) : isAudio(item.path) ? (
+        // Audio: its waveform, and the sound itself.
+        <div className="drawer-audio">
+          {shownThumb ? (
+            <img className="drawer-waveform" src={shownThumb} alt={`${item.path} waveform`} />
+          ) : (
+            <p className="quiet">The waveform appears when the preview worker reaches this file.</p>
+          )}
+          {url && <audio controls preload="none" src={url} aria-label={item.path} />}
+        </div>
+      ) : shownThumb ? (
         item.item_id && item.width && item.height ? (
           <span
             className="drawer-media overlay-fit"
@@ -395,15 +412,10 @@ function ItemDrawer({
         ) : (
           <img className="drawer-media" src={shownThumb} alt={item.path} />
         )
+      ) : isTable(item.path) ? (
+        <TableView name={name} hash={item.hash} revealed={revealed?.table} />
       ) : (
-        isTable(item.path) ? (
-          <TableView name={name} hash={item.hash} revealed={revealed?.table} />
-        ) : (
-          <div className="drawer-media drawer-media--none blueprint">
-            <span className="data">{extOf(item.path)}</span>
-            <p className="quiet">No preview for this file type yet; the bytes are one click away.</p>
-          </div>
-        )
+        <TextView name={name} path={item.path} hash={item.hash} revealed={revealed?.text} />
       )}
       <dl className="drawer-facts">
         <dt>size</dt>
@@ -727,6 +739,62 @@ function isTable(path: string): boolean {
   return /\.(csv|parquet|jsonl|ndjson)$/i.test(path);
 }
 
+// Items that get a thumbnail: pictures, video posters, audio waveforms.
 function looksVisual(path: string): boolean {
-  return /\.(png|jpe?g|gif|webp|bmp|mp4|mov|mkv|avi)$/i.test(path);
+  return /\.(png|jpe?g|gif|webp|bmp|mp4|mov|mkv|webm|avi|wav|mp3|flac|ogg|oga|m4a)$/i.test(path);
+}
+
+function isVideo(path: string): boolean {
+  return /\.(mp4|mov|mkv|webm|avi)$/i.test(path);
+}
+
+function isAudio(path: string): boolean {
+  return /\.(wav|mp3|flac|ogg|oga|m4a)$/i.test(path);
+}
+
+// Anything else opens as text when it is text: its first 64 KB, read on
+// the server; a binary file says so in words, the bytes one click away.
+function TextView({
+  name,
+  path,
+  hash,
+  revealed,
+}: {
+  name: string;
+  path: string;
+  hash: string;
+  revealed: TextHead | null | undefined;
+}) {
+  const answer = useQuery({ queryKey: ['text', name, hash], queryFn: () => getText(name, hash) });
+  const head = revealed ?? answer.data;
+  if (!head) {
+    return answer.isError ? (
+      <NoPreview path={path} why="The file could not be read just now; the bytes are one click away." />
+    ) : (
+      <p className="quiet">Reading the file…</p>
+    );
+  }
+  if (head.withheld)
+    return <NoPreview path={path} why="Restricted: the text is withheld until you reveal this item; the reveal is logged." />;
+  if (head.binary || head.text === null)
+    return <NoPreview path={path} why="A binary file: no preview for its type; the bytes are one click away." />;
+  return (
+    <section className="drawer-text" aria-label="Text">
+      <pre className="data">{head.text}</pre>
+      {head.truncated && (
+        <p className="quiet">
+          The first {humanBytes(head.text.length)} of {humanBytes(head.size)}; download the file for the rest.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function NoPreview({ path, why }: { path: string; why: string }) {
+  return (
+    <div className="drawer-media drawer-media--none blueprint">
+      <span className="data">{extOf(path)}</span>
+      <p className="quiet">{why}</p>
+    </div>
+  );
 }

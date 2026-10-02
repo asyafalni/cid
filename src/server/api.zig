@@ -191,6 +191,8 @@ fn handleInner(
     const ds = lookupDataset(arena, deps, scope, route.name) orelse
         return errorResponse(arena, .not_found, "no such dataset", "Run 'cid init' to create it, or check the address.");
 
+    if (eql(method, "GET") and eql(route.action, "text"))
+        return textHead(arena, deps, scope, ds, route.queryParam("hash") orelse "");
     if (eql(method, "GET") and eql(route.action, "table"))
         return tableStats(arena, deps, scope, ds, route.queryParam("hash") orelse "");
     if (eql(method, "GET") and eql(route.action, "browse"))
@@ -354,7 +356,8 @@ fn queueVersion(deps: *Deps, scope: anytype, ds: Dataset, commit_id: []const u8)
 }
 
 /// Prepares the next queued version: its statistics, its browse index,
-/// its items file and, for an annotated dataset, its default export —
+/// its items file, for a release its diff with the release before, and
+/// for an annotated dataset its default export —
 /// the work its first visit would otherwise wait for (8–30 s at 1M
 /// items). The same code paths a request takes, so a version is never
 /// prepared two ways. A commit that is no longer a branch head or a
@@ -401,6 +404,16 @@ fn prepare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, c
     // with some version's index, and this one is built by its first view.
     _ = try browseIndex(arena, deps, scope, ds, commit_id);
     _ = try ensureVersionFile(arena, deps, scope, ds, commit_id, .state, .{});
+    // A release: its diff with the release before it, which Compare opens
+    // on by default.
+    const previous = deps.db.rawOne([]const u8, scope, "SELECT p.commit_id::text FROM refs r JOIN refs p ON p.dataset_id = r.dataset_id " ++
+        "AND p.kind = 'release' AND p.commit_id < r.commit_id WHERE r.dataset_id = $1::uuid AND r.commit_id = $2::uuid AND r.kind = 'release' " ++
+        "ORDER BY p.commit_id DESC LIMIT 1", .{ ds.id, commit_id }) catch return error.Db;
+    if (previous) |prev| {
+        if (try browseIndex(arena, deps, scope, ds, prev)) |ia| if (try browseIndex(arena, deps, scope, ds, commit_id)) |ib| {
+            _ = try diffIndex(arena, deps, scope, ds, prev, commit_id, ia, ib);
+        };
+    }
     if (eql(ds.kind, "annotated")) {
         if (std.meta.stringToEnum(bundle_mod.Kind, default_format)) |kind| if (kind != .state) {
             // An impossible export is an answer too; the clone says why.
@@ -727,9 +740,11 @@ fn browseCompare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Data
         .ready => |ix| ix,
         .refused => |res| return res,
     };
+    const pair = (try diffIndex(arena, deps, scope, ds, route.queryParam("a").?, route.queryParam("b").?, a, b)) orelse
+        return errorResponse(arena, .service_unavailable, "the server is indexing another version", "Reload in a moment.");
     var db = try duckFor(arena, deps, a.dir);
     defer db.close();
-    var page = offload(deps, browse_mod.comparePage, .{ arena, &db, a.files, b.files, try param(arena, route, "after"), try limitOf(route, browse_mod.max_limit) }) catch |err| return duckErr(err);
+    var page = offload(deps, browse_mod.comparePage, .{ arena, &db, a.files, b.files, pair, try param(arena, route, "after"), try limitOf(route, browse_mod.max_limit) }) catch |err| return duckErr(err);
     // Dimensions, as everywhere: read now, never frozen into an index.
     var hashes: std.ArrayList([]const u8) = .empty;
     for (page.visual) |v| {
@@ -972,14 +987,61 @@ fn storeBrowseIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: D
     }
 }
 
+/// A pair's diff (browse.DiffFiles) on local disk: kept, fetched from
+/// storage, or built now under the one build slot, in a one-thread
+/// database of its own (the whole-version joins spill past its ceiling
+/// rather than fail); null while another build holds the slot. Both
+/// versions are sealed, so a diff never goes stale.
+fn diffIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, a: []const u8, b: []const u8, ia: BrowseIndex, ib: BrowseIndex) HandleError!?browse_mod.DiffFiles {
+    const cwd = std.Io.Dir.cwd();
+    const d = browse_mod.DiffFiles.of(arena, ia.dir, a, b) catch return error.OutOfMemory;
+    if (cwd.statFile(deps.io, d.items, .{})) |_| return d else |_| {}
+    if (deps.browse_building.swap(true, .acquire)) return null;
+    defer releaseSlot(deps);
+    if (cwd.statFile(deps.io, d.items, .{})) |_| return d else |_| {}
+
+    const keys = [_][]const u8{
+        try std.fmt.allocPrint(arena, "diffs/{s}/{s}-{s}.anns.parquet", .{ ds.id, a, b }),
+        try std.fmt.allocPrint(arena, "diffs/{s}/{s}-{s}.items.parquet", .{ ds.id, a, b }),
+    };
+    const local = [_][]const u8{ d.anns, d.items };
+    fetched: {
+        for (keys, local) |key, path| {
+            const tmp = try std.fmt.allocPrint(arena, "{s}.tmp", .{path});
+            if (!(try downloadTo(deps, scope, key, tmp))) break :fetched;
+            std.Io.Dir.rename(cwd, tmp, cwd, path, deps.io) catch return error.Storage;
+        }
+        return d;
+    }
+    {
+        var db = duck.Db.open(arena, .{ .allowed_dir = ia.dir }) catch return error.Storage;
+        defer db.close();
+        offload(deps, browse_mod.buildDiff, .{ arena, deps.io, &db, ia.files, ib.files, d }) catch |err| return duckErr(err);
+    }
+    for (keys, local) |key, path| deps.s3.putFile(scope, deps.io, key, path) catch {
+        std.log.warn("browse: could not store a diff; it will be rebuilt when needed", .{});
+        break;
+    };
+    pruneBrowse(arena, deps, ia.dir);
+    return d;
+}
+
 fn pruneBrowse(arena: std.mem.Allocator, deps: *Deps, dir_path: []const u8) void {
+    // Versions' indexes and pairs' diffs, each kept to the most recent few.
+    pruneKind(arena, deps, dir_path, ".diff-items.parquet", ".diff-anns.parquet");
+    pruneKind(arena, deps, dir_path, ".items.parquet", ".anns.parquet");
+}
+
+fn pruneKind(arena: std.mem.Allocator, deps: *Deps, dir_path: []const u8, comptime main: []const u8, comptime partner: []const u8) void {
     var dir = std.Io.Dir.cwd().openDir(deps.io, dir_path, .{ .iterate = true }) catch return;
     defer dir.close(deps.io);
     const Entry = struct { name: []const u8, mtime: i96 };
     var entries: std.ArrayList(Entry) = .empty;
     var it = dir.iterate();
     while (it.next(deps.io) catch return) |entry| {
-        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".items.parquet")) continue;
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, main)) continue;
+        // ".items.parquet" must not count a diff's ".diff-items.parquet".
+        if (comptime std.mem.eql(u8, main, ".items.parquet")) if (std.mem.endsWith(u8, entry.name, ".diff-items.parquet")) continue;
         const stat = dir.statFile(deps.io, entry.name, .{}) catch continue;
         entries.append(arena, .{ .name = arena.dupe(u8, entry.name) catch return, .mtime = stat.mtime.nanoseconds }) catch return;
     }
@@ -991,8 +1053,8 @@ fn pruneBrowse(arena: std.mem.Allocator, deps: *Deps, dir_path: []const u8) void
     }.newer);
     for (entries.items[deps.browse_cache_max..]) |old| {
         dir.deleteFile(deps.io, old.name) catch {};
-        const stem = old.name[0 .. old.name.len - ".items.parquet".len];
-        const anns = std.fmt.allocPrint(arena, "{s}.anns.parquet", .{stem}) catch continue;
+        const stem = old.name[0 .. old.name.len - main.len];
+        const anns = std.fmt.allocPrint(arena, "{s}" ++ partner, .{stem}) catch continue;
         dir.deleteFile(deps.io, anns) catch {};
     }
 }
@@ -1090,6 +1152,50 @@ fn computeRowDiff(arena: std.mem.Allocator, deps: *Deps, scope: anytype, req: Ro
     return .{ .status = "done", .result = text };
 }
 
+/// How much of a text item the drawer shows.
+const text_head_bytes = 64 * 1024;
+
+/// The opening of a text item, for the drawer (media-native: a text file
+/// reads as text, never "no preview"): its first 64 KB, cut back to a
+/// whole character, read with a ranged GET so a large file is never held.
+/// Shown, never interpreted (invariant 15). A restricted dataset's text is
+/// content: withheld, and handed out by a logged reveal (invariant 20).
+fn textHead(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, hash: []const u8) HandleError!Response {
+    if (!validHashHex(hash)) return error.BadRequest;
+    const Here = struct {
+        pub const nilo_table = .projection;
+        size_bytes: i64,
+    };
+    const here = (deps.db.rawOne(Here, scope, "SELECT i.size_bytes FROM items i WHERE i.item_hash = decode($1, 'hex') AND EXISTS " ++
+        "(SELECT 1 FROM item_revisions r WHERE r.dataset_id = $2::uuid AND r.item_hash = i.item_hash)", .{ hash, ds.id }) catch return error.Db) orelse
+        return errorResponse(arena, .not_found, "no such item in this dataset", "Pick the item from this dataset's Browse view.");
+    if (ds.restricted) return json(arena, .ok, .{ .withheld = true, .size = here.size_bytes });
+    return json(arena, .ok, try readTextHead(arena, deps, scope, hash, @intCast(here.size_bytes)));
+}
+
+fn isPictureOrSound(media_type: []const u8) bool {
+    inline for (.{ "image/", "video/", "audio/" }) |p| if (std.mem.startsWith(u8, media_type, p)) return true;
+    return false;
+}
+
+const TextHead = struct { text: ?[]const u8, truncated: bool, binary: bool, size: u64, withheld: bool = false };
+
+fn readTextHead(arena: std.mem.Allocator, deps: *Deps, scope: anytype, hash: []const u8, size: u64) HandleError!TextHead {
+    if (size == 0) return .{ .text = "", .truncated = false, .binary = false, .size = 0 };
+    const bytes = deps.s3.getHead(scope, itemKey(arena, hash) catch return error.OutOfMemory, @min(size, text_head_bytes)) catch return error.Storage;
+    // Cut back to a whole character; a NUL or broken UTF-8 is not text.
+    var end = bytes.len;
+    if (size > bytes.len) {
+        var back: usize = 0;
+        while (back < 3 and end > 0 and (bytes[end - 1] & 0xc0) == 0x80) : (back += 1) end -= 1;
+        if (end > 0 and bytes[end - 1] >= 0xc0) end -= 1;
+    }
+    const text = bytes[0..end];
+    if (std.mem.indexOfScalar(u8, text, 0) != null or !std.unicode.utf8ValidateSlice(text))
+        return .{ .text = null, .truncated = false, .binary = true, .size = size };
+    return .{ .text = text, .truncated = size > bytes.len, .binary = false, .size = size };
+}
+
 /// A table's statistics without its content: rows, and per column only
 /// name, type and the share of nulls.
 fn shapeOnly(arena: std.mem.Allocator, stats: std.json.Value) HandleError!std.json.Value {
@@ -1132,7 +1238,15 @@ fn reveal(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller,
     // A revealed table shows its rows: the same record covers them.
     const table_text = deps.db.rawOne([]const u8, scope, "SELECT table_stats::text FROM previews WHERE item_hash = decode($1, 'hex') AND table_stats IS NOT NULL", .{req.hash}) catch return error.Db;
     const table: ?std.json.Value = if (table_text) |t| jsonValue(arena, t) else null;
-    return json(arena, .ok, .{ .hash = req.hash, .thumb = thumb, .download = download, .table = table, .logged = ds.restricted });
+    // …and a text item its opening, on the same record.
+    const Media = struct {
+        pub const nilo_table = .projection;
+        size_bytes: i64,
+        media_type: []const u8,
+    };
+    const media = deps.db.rawOne(Media, scope, "SELECT size_bytes, media_type FROM items WHERE item_hash = decode($1, 'hex')", .{req.hash}) catch return error.Db;
+    const text: ?TextHead = if (media) |m| (if (isPictureOrSound(m.media_type)) null else readTextHead(arena, deps, scope, req.hash, @intCast(@max(m.size_bytes, 0))) catch null) else null;
+    return json(arena, .ok, .{ .hash = req.hash, .thumb = thumb, .download = download, .table = table, .text = text, .logged = ds.restricted });
 }
 
 /// The dataset's activity log (docs/dashboard.md §4.7). It names who
@@ -1688,12 +1802,12 @@ fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, p
     const cwd = std.Io.Dir.cwd();
     defer cwd.deleteFile(deps.io, lines.items) catch {};
     defer cwd.deleteFile(deps.io, lines.anns) catch {};
+    const d = (try diffIndex(arena, deps, scope, ds, a, b, ia, ib)) orelse
+        return errorResponse(arena, .service_unavailable, "the server is indexing another version", "Run 'cid diff' again in a moment.");
     const summary = blk: {
-        // A database of its own, one thread, like an index build: the
-        // whole-version joins stay near one memory ceiling, spilling past it.
-        var db = duck.Db.open(arena, .{ .allowed_dir = ia.dir }) catch return error.Storage;
+        var db = try duckFor(arena, deps, ia.dir);
         defer db.close();
-        break :blk offload(deps, browse_mod.compareLines, .{ arena, &db, ia.files, ib.files, lines }) catch |err| return duckErr(err);
+        break :blk offload(deps, browse_mod.compareLines, .{ arena, &db, d, lines }) catch |err| return duckErr(err);
     };
     const path = try std.fmt.allocPrint(arena, "{s}/{s}-{s}.diff.gz", .{ deps.work_dir, a, b });
     const gz = try GzFile.open(deps, path);

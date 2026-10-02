@@ -1339,3 +1339,35 @@
   display: block;
   margin: var(--space-3) auto;
 }
+
+/* The drawer's media: sound with its waveform, text as written. */
+.drawer-audio {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.drawer-waveform {
+  width: 100%;
+  height: auto;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+
+.drawer-audio audio {
+  width: 100%;
+}
+
+.drawer-text pre {
+  max-height: 24rem;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.8125rem;
+}

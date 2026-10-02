@@ -130,6 +130,13 @@ pub const Client = struct {
         return object.bytes.view();
     }
 
+    /// The first `max` bytes of an object (fewer if it is shorter), held:
+    /// a peek, never the whole of something large.
+    pub fn getHead(self: *Client, scope: anytype, key: []const u8, max: u64) Error![]const u8 {
+        const object = try self.items.getRange(scope, key, .{ .from = 0, .to = max - 1 });
+        return object.bytes.view();
+    }
+
     /// The object's size, or null when storage does not have it — the
     /// shape the dedup check and the upload verifier both want.
     pub fn headObject(self: *Client, scope: anytype, key: []const u8) Error!?u64 {

@@ -145,7 +145,8 @@ timed "thumbs for the page (120 presigns)" -X POST -H 'content-type: application
 timed "subset size: --split train --class car" "$API/browse/size?commit=$V1&split=train&class=car"
 timed "files: the top folder (50 folders)" "$API/browse/dir?commit=$V1&prefix="
 timed "files: cam7/ (20,000 files, first page)" "$API/browse/dir?commit=$V1&prefix=cam7%2F"
-timed "compare v1 → head (index of head prepared)" "$API/browse/compare?a=$V1&b=$HEAD"
+timed "compare v1 → head (first time: the pair's diff built)" "$API/browse/compare?a=$V1&b=$HEAD"
+timed "compare v1 → head again (diff kept)" "$API/browse/compare?a=$V1&b=$HEAD"
 timed "compare, next page of changes" "$API/browse/compare?a=$V1&b=$HEAD&after=zz"
 echo "  server peak memory: $(peak)"
 

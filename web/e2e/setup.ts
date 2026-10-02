@@ -301,6 +301,18 @@ function seedMany(dir: string) {
   run(`${cid} tag v1.0.0`, many);
 }
 
+// Sound and words: a tone (its waveform the thumbnail) and a note.
+function seedMedia(dir: string) {
+  const media = join(dir, 'media');
+  execSync(`mkdir -p ${media}`);
+  const fixtures = resolve(here, '../../tests/fixtures');
+  for (const f of ['tone.wav', 'notes.txt']) writeFileSync(join(media, f), readFileSync(join(fixtures, f)));
+  run(`${cid} init cid@127.0.0.1:e2e/datasets/media --git g@h:media.git`, media);
+  run(`${cid} add .`, media);
+  run(`${cid} commit -m "sound and words"`, media);
+  run(`${cid} push`, media);
+}
+
 // A restricted dataset: previews blurred until a logged reveal.
 function seedFaces(dir: string) {
   const faces = join(dir, 'faces');
@@ -355,6 +367,7 @@ export default function setup() {
     if (!already.includes('e2e/datasets/masks')) seedMasks(dir);
     if (!already.includes('e2e/datasets/tables')) seedTables(dir);
     if (!already.includes('e2e/datasets/many')) seedMany(dir);
+    if (!already.includes('e2e/datasets/media')) seedMedia(dir);
     const tableReleases = run(
       `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/tables/-/releases -H "Authorization: Bearer ${token}"`,
     );

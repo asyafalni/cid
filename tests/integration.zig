@@ -2090,7 +2090,7 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
         };
         const prev = try db.rawExactlyOne(Prev, &fscope, "SELECT status, reason FROM previews WHERE item_hash = decode($1, 'hex')", .{hz});
         try std.testing.expectEqualStrings("skipped", prev.status);
-        try std.testing.expect(std.mem.indexOf(u8, prev.reason orelse "", "not previewable") != null);
+        try std.testing.expect(std.mem.indexOf(u8, prev.reason orelse "", "no thumbnail") != null);
     }
 
     // A second pass does nothing: one build per content hash, ever.
@@ -2542,4 +2542,111 @@ test "row diffs: rows added and removed between versions, cached, withheld when 
     try std.testing.expectEqual(std.http.Status.not_found, refused.status);
     const text = try remote.rowDiff(arena, &hashes[0], "notes.txt", &hashes[1], "notes.txt");
     try std.testing.expectEqualStrings("not_a_table", text.status);
+}
+
+test "media: audio gets its waveform, text reads as text, restricted text withheld" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .token = "test-token" };
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/media" };
+
+    // The fixtures, pushed the CLI way (the server records octet-stream),
+    // plus a binary file and a long text that the drawer shows the start of.
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    const fixtures = try std.Io.Dir.cwd().openDir(io, "tests/fixtures", .{});
+    const wav = try fixtures.readFileAlloc(io, "tone.wav", arena, .limited(1 << 20));
+    const notes = try fixtures.readFileAlloc(io, "notes.txt", arena, .limited(1 << 20));
+    try producer.dir.createDirPath(io, "audio");
+    try producer.dir.writeFile(io, .{ .sub_path = "audio/tone.wav", .data = wav });
+    try producer.dir.writeFile(io, .{ .sub_path = "notes.txt", .data = notes });
+    try producer.dir.writeFile(io, .{ .sub_path = "blob.bin", .data = "\x00\x01\x02binary\x00" });
+    const long = try arena.alloc(u8, 70 * 1024);
+    for (long, 0..) |*ch, i| ch.* = if (i % 64 == 63) '\n' else 'a' + @as(u8, @intCast(i % 26));
+    try producer.dir.writeFile(io, .{ .sub_path = "long.txt", .data = long });
+    var hashes: [4][64]u8 = undefined;
+    for ([_][]const u8{ wav, notes, "\x00\x01\x02binary\x00", long }, 0..) |bytes, i| {
+        var dg: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(bytes, &dg, .{});
+        hashes[i] = std.fmt.bytesToHex(dg, .lower);
+        _ = db.exec(&fscope, "DELETE FROM previews WHERE item_hash = decode($1, 'hex')", .{@as([]const u8, &hashes[i])}) catch {};
+    }
+    _ = try db.exec(&fscope, "UPDATE previews SET status = 'skipped', reason = 'test reset' WHERE status = 'pending'", .{});
+    try cid.client.workspace.init(arena, io, producer.dir, "cid@test:test/datasets/media", "g@h:media.git");
+    var pws = try cid.client.workspace.open(arena, io, producer.dir);
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "sound and words", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+
+    // One worker pass: the WAV is sniffed as audio and gets its waveform
+    // as its thumbnail (and the blurred copy restricted views use); the
+    // text is sniffed as text and gets no thumbnail, in words.
+    _ = try cid.preview.processPending(arena, io, &standalone.db, &scope, &s3c, .{});
+    const Prev = struct {
+        pub const nilo_table = .projection;
+        media_type: []const u8,
+        status: []const u8,
+        reason: ?[]const u8,
+    };
+    const sound = (try db.rawOne(Prev, &fscope, "SELECT i.media_type, p.status, p.reason FROM items i JOIN previews p USING (item_hash) WHERE i.item_hash = decode($1, 'hex')", .{@as([]const u8, &hashes[0])})).?;
+    try std.testing.expectEqualStrings("audio/wav", sound.media_type);
+    try std.testing.expectEqualStrings("done", sound.status);
+    const waveform = try s3c.getObjectAlloc(&scope, try cid.preview.thumbKey(arena, &hashes[0]));
+    try std.testing.expect(std.mem.startsWith(u8, waveform, "RIFF")); // a WebP picture
+    try std.testing.expect((try s3c.headObject(&scope, try cid.preview.blurKey(arena, &hashes[0]))) != null);
+    const words = (try db.rawOne(Prev, &fscope, "SELECT i.media_type, p.status, p.reason FROM items i JOIN previews p USING (item_hash) WHERE i.item_hash = decode($1, 'hex')", .{@as([]const u8, &hashes[1])})).?;
+    try std.testing.expectEqualStrings("text/plain", words.media_type);
+    try std.testing.expectEqualStrings("skipped", words.status);
+
+    // The drawer's text: the note whole; the binary file said so; the long
+    // file's first 64 KB, marked as such.
+    const Text = struct { text: ?[]const u8 = null, truncated: bool = false, binary: bool = false, size: u64 = 0, withheld: bool = false };
+    const textOf = struct {
+        fn get(al: std.mem.Allocator, d: *cid.api.Deps, sc: anytype, hash: []const u8) !Text {
+            const res = cid.api.handle(al, d, sc, "GET", try std.fmt.allocPrint(al, "/v0/datasets/test/datasets/media/-/text?hash={s}", .{hash}), "Bearer test-token", "");
+            if (res.status != .ok) return error.TextRefused;
+            return std.json.parseFromSliceLeaky(Text, al, res.body, .{ .ignore_unknown_fields = true });
+        }
+    }.get;
+    const note = try textOf(arena, &deps, &scope, &hashes[1]);
+    try std.testing.expectEqualStrings(notes, note.text.?);
+    try std.testing.expect(!note.truncated);
+    try std.testing.expect((try textOf(arena, &deps, &scope, &hashes[2])).binary);
+    const head = try textOf(arena, &deps, &scope, &hashes[3]);
+    try std.testing.expect(head.truncated);
+    try std.testing.expectEqual(@as(usize, 64 * 1024), head.text.?.len);
+    try std.testing.expectEqual(@as(u64, 70 * 1024), head.size);
+
+    // Restricted: withheld, and given by the logged reveal.
+    _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = 'test/datasets/media'", .{});
+    defer _ = db.exec(&fscope, "UPDATE datasets SET restricted = false WHERE name = 'test/datasets/media'", .{}) catch {};
+    const hidden = try textOf(arena, &deps, &scope, &hashes[1]);
+    try std.testing.expect(hidden.withheld);
+    try std.testing.expect(hidden.text == null);
+    const body = try std.fmt.allocPrint(arena, "{{\"hash\":\"{s}\"}}", .{&hashes[1]});
+    const revealed = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/media/-/reveal", "Bearer test-token", body);
+    try std.testing.expect(std.mem.indexOf(u8, revealed.body, "UTF-8 is fine") != null);
+    try std.testing.expect(std.mem.indexOf(u8, revealed.body, "\"logged\":true") != null);
 }
