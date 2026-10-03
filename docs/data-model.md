@@ -404,10 +404,14 @@ CREATE TABLE accounts (
   source        text NOT NULL CHECK (source IN ('gitlab','dashboard','deploy')),
   synced_at     timestamptz
 );
-CREATE TABLE ssh_keys (
+CREATE TABLE ssh_keys (                -- one key, one account: a registered key is refused
   fingerprint   text PRIMARY KEY,        -- SHA256:… as OpenSSH prints it
   account_id    text NOT NULL REFERENCES accounts(account_id),
   public_key    text NOT NULL,
+  title         text NOT NULL DEFAULT '',
+  source        text NOT NULL DEFAULT 'gitlab' -- gitlab (the sync replaces these) |
+                CHECK (source IN ('gitlab','dashboard','admin')), -- dashboard (its owner removes them) | admin
+  added_at      timestamptz NOT NULL DEFAULT now(),
   synced_at     timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE access (

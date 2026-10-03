@@ -343,6 +343,51 @@ test('a reader of a restricted dataset cannot read its activity log', async ({ p
   await expect(page.getByRole('alert')).toContainText("for the dataset's owners");
 });
 
+test('a signed-in person adds an SSH key, sees a bad one refused, and removes theirs', async ({ page }) => {
+  // A fresh key each run: one key belongs to one account, forever.
+  const dir = mkdtempSync(resolve(tmpdir(), 'cid-e2e-key-'));
+  execSync(`ssh-keygen -q -t ed25519 -N '' -C e2e@cid -f ${dir}/id`);
+  const publicKey = readFileSync(`${dir}/id.pub`, 'utf8');
+  const fingerprint = execSync(`ssh-keygen -lf ${dir}/id.pub`).toString().split(' ')[1];
+
+  await page.goto('/signin');
+  await page.getByRole('link', { name: 'Sign in with GitLab' }).click();
+  await expect(page.getByRole('heading', { name: 'Datasets' })).toBeVisible();
+  await page.getByRole('link', { name: 'SSH keys' }).click();
+  await expect(page.getByRole('heading', { name: 'SSH keys' })).toBeVisible();
+
+  // Not a key: refused, saying what to paste instead.
+  await page.getByLabel('Public key').fill('hello');
+  await page.getByRole('button', { name: 'Add key' }).click();
+  await expect(page.getByRole('alert')).toContainText('not an OpenSSH public key');
+  await expect(page.getByRole('alert')).toContainText('.pub');
+
+  await page.getByLabel('Title').fill('e2e laptop');
+  await page.getByLabel('Public key').fill(publicKey);
+  await page.getByRole('button', { name: 'Add key' }).click();
+  const list = page.getByRole('list', { name: 'Your keys' });
+  await expect(list.getByText('e2e laptop')).toBeVisible();
+  await expect(list.getByRole('button', { name: new RegExp(`^${fingerprint.slice(0, 19).replace(/[+/]/g, '.')}`) })).toBeVisible();
+  // Kept on the server: a reload still lists it.
+  await page.reload();
+  await expect(page.getByRole('list', { name: 'Your keys' }).getByText('e2e laptop')).toBeVisible();
+  // The page as a person sees it, a key listed and the form open, is accessible too.
+  const found = (await new AxeBuilder({ page }).analyze()).violations.filter(
+    (v) => v.impact === 'serious' || v.impact === 'critical',
+  );
+  expect(found.map((v) => v.id)).toEqual([]);
+
+  await page.getByRole('button', { name: 'Remove key e2e laptop' }).click();
+  await expect(page.getByRole('list', { name: 'Your keys' }).getByText('e2e laptop')).toHaveCount(0);
+});
+
+test('the server token has no keys, and the keys page says how to get yours', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/keys');
+  await expect(page.getByRole('status')).toContainText('server token');
+  await expect(page.getByRole('button', { name: 'Add key' })).toHaveCount(0);
+});
+
 test('a GitLab callback with a forged state is refused, in words', async ({ page }) => {
   await page.goto('/auth/gitlab/callback?code=anything&state=forged-state-value-x');
   await expect(page).toHaveURL(/\/signin\?error=/);
@@ -457,7 +502,7 @@ test('media opens as media: a sound plays with its waveform, a note reads as tex
 
 test('accessibility: no serious or critical axe findings', async ({ page }) => {
   await signIn(page);
-  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt']) {
+  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/keys']) {
     await page.goto(path);
     await page.waitForLoadState('networkidle');
     const results = await new AxeBuilder({ page }).analyze();

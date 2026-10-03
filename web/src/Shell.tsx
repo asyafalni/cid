@@ -21,6 +21,9 @@ export function Shell() {
               <p className="rail-who" title={me.data.account ?? undefined}>
                 {me.data.display_name}
               </p>
+              <Link to="/keys" className="rail-link">
+                SSH keys
+              </Link>
               {me.data.via === 'gitlab' ? (
                 // A POST, so no link elsewhere can sign anybody out.
                 <form method="post" action="/auth/signout">

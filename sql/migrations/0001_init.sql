@@ -294,10 +294,17 @@ CREATE TABLE accounts (
   synced_at     timestamptz
 );
 
+-- One key, one account: a key already registered is refused, so nobody
+-- can claim another person's (public) key. Where it came from decides who
+-- may remove it: the GitLab sync replaces only its own, a person removes
+-- what they added in the dashboard.
 CREATE TABLE ssh_keys (
   fingerprint   text PRIMARY KEY,   -- SHA256:… as OpenSSH prints it
   account_id    text NOT NULL REFERENCES accounts(account_id),
   public_key    text NOT NULL,
+  title         text NOT NULL DEFAULT '',
+  source        text NOT NULL DEFAULT 'gitlab' CHECK (source IN ('gitlab','dashboard','admin')),
+  added_at      timestamptz NOT NULL DEFAULT now(),
   synced_at     timestamptz NOT NULL DEFAULT now()
 );
 

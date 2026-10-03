@@ -103,8 +103,8 @@ must be able to use it after reading `cid help`.
    and for people who produce data, `add`, `commit`, `push`.
 3. **No login, just SSH keys, exactly like git.** Datasets have addresses like git
    remotes: `cid@cidhub.com:your-org/datasets/person-vehicle`. The SSH key you already
-   use for GitLab is your identity; if you can open the dataset's GitLab project, you
-   can clone the dataset. Creating a dataset asks for exactly two addresses: the cid
+   use for GitLab is your identity (or one you add on the dashboard's SSH keys page);
+   if you can open the dataset's GitLab project, you can clone the dataset. Creating a dataset asks for exactly two addresses: the cid
    address and the dataset's git repository (`cid init <address> --git <git-url>`).
    A cloned folder already knows both. The staging area behaves like git's, and
    `cid commit -a` skips it.
@@ -421,7 +421,7 @@ Deep dives: `docs/data-model.md` · `docs/access.md` · `docs/git-repository.md`
     are always accepted and stored as-is.
 16. **Local state is recoverable.** An interrupted `push`, `pull` or `checkout` leaves
     `.cid/` consistent; running the same command again finishes the job.
-17. **The dashboard changes no data** (a person's stars aside). Card editing and making
+17. **The dashboard changes no data** (a person's own stars and SSH keys aside). Card editing and making
     releases there are parked decisions; annotations are edited only in the annotation
     platform.
 18. **One bad file never breaks a view.** If an item can't be previewed or parsed, only

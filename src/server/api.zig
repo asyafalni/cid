@@ -28,6 +28,7 @@ const release_mod = @import("../core/release.zig");
 const git_writer = @import("../gitrepo/writer.zig");
 const protection = @import("../gitrepo/protection.zig");
 const gitlab_sync = @import("../access/gitlab_sync.zig");
+const keys_mod = @import("../access/keys.zig");
 const preview_worker = @import("../preview/worker.zig");
 const duck = @import("../store/duck.zig");
 const table_stats = @import("../tabular/stats.zig");
@@ -174,6 +175,7 @@ fn handleInner(
     if (eql(method, "GET") and eql(target, "/v0/auth/config"))
         return json(arena, .ok, .{ .gitlab = deps.gitlab_signin });
     if (eql(method, "GET") and eql(target, "/v0/me")) return me(arena, deps, scope, caller);
+    if (std.mem.startsWith(u8, target, "/v0/me/keys")) return myKeys(arena, deps, scope, caller, method, target, body);
 
     if (eql(method, "POST") and eql(target, "/v0/datasets")) {
         // The dataset's name is in the body; createDataset checks scope.
@@ -1383,6 +1385,71 @@ fn me(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller) Han
     if (tokenOk(deps.token, caller.header))
         return json(arena, .ok, .{ .via = "token", .account = @as(?[]const u8, null), .display_name = "server token" });
     return errorResponse(arena, .unauthorized, "not signed in", "Run the sign-in again from the dashboard.");
+}
+
+const AddKeyBody = struct { title: []const u8 = "", key: []const u8 };
+
+/// A signed-in person's own SSH keys, the identity `cid clone` and the rest
+/// use (invariant 17 allows the dashboard to change these). Listed with
+/// where each came from; a key added here is removed here, a GitLab key in
+/// GitLab. `GET` lists, `POST {title, key}` adds, `DELETE ?fingerprint=`
+/// removes.
+fn myKeys(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, method: []const u8, target: []const u8, body: []const u8) HandleError!Response {
+    const account = caller.account orelse
+        return errorResponse(arena, .unprocessable_entity, "SSH keys belong to a person, and the server token is not one", "Run 'Sign in with GitLab' on the dashboard, then open your keys again.");
+    const Row = struct {
+        pub const nilo_table = .projection;
+        fingerprint: []const u8,
+        title: []const u8,
+        key_type: []const u8,
+        source: []const u8,
+        added_at: []const u8,
+    };
+    const list_sql = "SELECT fingerprint, title, split_part(public_key, ' ', 1) AS key_type, source, " ++
+        "to_char(added_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS added_at " ++
+        "FROM ssh_keys WHERE account_id = $1 ORDER BY added_at, fingerprint";
+
+    if (eql(method, "GET") and eql(target, "/v0/me/keys")) {
+        const rows = deps.db.raw(Row, scope, list_sql, .{account}) catch return error.Db;
+        return json(arena, .ok, .{ .keys = rows });
+    }
+    if (eql(method, "POST") and eql(target, "/v0/me/keys")) {
+        const req = parseBody(AddKeyBody, arena, body) orelse return error.BadRequest;
+        const key = keys_mod.parse(arena, req.key) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.UnsupportedType => errorResponse(arena, .unprocessable_entity, "cid does not accept that key type", "Paste an ed25519 key (make one with 'ssh-keygen -t ed25519'), or ECDSA, or RSA of 2048 bits or more."),
+            error.WeakKey => errorResponse(arena, .unprocessable_entity, "that RSA key is shorter than 2048 bits", "Make a new key with 'ssh-keygen -t ed25519' and paste its .pub file."),
+            error.NotAKey, error.TypeMismatch => errorResponse(arena, .unprocessable_entity, "that is not an OpenSSH public key", "Paste the one line of your .pub file (for example ~/.ssh/id_ed25519.pub), which starts with 'ssh-'."),
+        };
+        const title = std.mem.trim(u8, req.title, " \t\r\n");
+        if (title.len > 100 or std.mem.indexOfAny(u8, title, "\r\n\t") != null)
+            return errorResponse(arena, .unprocessable_entity, "the title is longer than 100 characters or has line breaks", "Use a short name, such as the machine the key is on, then add it again.");
+        // One key, one account: a key someone already registered (here,
+        // in GitLab, or by an administrator) is refused, so nobody can
+        // claim another person's public key.
+        const added = deps.db.rawOne([]const u8, scope, "INSERT INTO ssh_keys (fingerprint, account_id, public_key, title, source) " ++
+            "VALUES ($1, $2, $3, $4, 'dashboard') ON CONFLICT (fingerprint) DO NOTHING RETURNING fingerprint", .{ key.fingerprint, account, key.line, if (title.len > 0) title else key.comment }) catch return error.Db;
+        if (added == null) {
+            const mine = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM ssh_keys WHERE fingerprint = $1 AND account_id = $2", .{ key.fingerprint, account }) catch return error.Db;
+            return if (mine != null)
+                errorResponse(arena, .conflict, "that key is already one of yours", "Use it as it is: run 'cid clone' with it.")
+            else
+                errorResponse(arena, .conflict, "that key is already registered to another account", "Make a new key with 'ssh-keygen -t ed25519' and add its .pub file.");
+        }
+        const rows = deps.db.raw(Row, scope, list_sql, .{account}) catch return error.Db;
+        return json(arena, .created, .{ .fingerprint = key.fingerprint, .keys = rows });
+    }
+    if (eql(method, "DELETE") and std.mem.startsWith(u8, target, "/v0/me/keys?fingerprint=")) {
+        const fp = std.Uri.percentDecodeInPlace(try arena.dupe(u8, target["/v0/me/keys?fingerprint=".len..]));
+        const source = deps.db.rawOne([]const u8, scope, "SELECT source FROM ssh_keys WHERE fingerprint = $1 AND account_id = $2", .{ fp, account }) catch return error.Db;
+        const from = source orelse return errorResponse(arena, .not_found, "you have no key with that fingerprint", "Reload your keys and try again.");
+        if (!eql(from, "dashboard"))
+            return errorResponse(arena, .conflict, if (eql(from, "gitlab")) "that key comes from your GitLab account" else "an administrator registered that key", if (eql(from, "gitlab")) "Remove it in GitLab (Preferences > SSH Keys); cid drops it at the next sync." else "Ask the administrator to remove it.");
+        _ = deps.db.exec(scope, "DELETE FROM ssh_keys WHERE fingerprint = $1 AND account_id = $2 AND source = 'dashboard'", .{ fp, account }) catch return error.Db;
+        const rows = deps.db.raw(Row, scope, list_sql, .{account}) catch return error.Db;
+        return json(arena, .ok, .{ .keys = rows });
+    }
+    return errorResponse(arena, .not_found, "no such route", "Update cid and try again.");
 }
 
 /// What a dataset card needs about a commit, cached in `commits.stats`.

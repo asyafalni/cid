@@ -253,6 +253,94 @@ test "ssh create: a GitLab Maintainer of the same path creates the dataset and o
     _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = $1", .{name});
 }
 
+test "dashboard keys: a person adds and removes their own, one key per account, GitLab's stay GitLab's" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
+
+    const key_a = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHHl0xIHijNwXo6AjVvQDeqCWMAbWwBjnSVkLiS1mfzx fixture-a@cid";
+    const fp_a = "SHA256:pSL6q+Ep5ziz6I2Y3Vk6EWL26D3tGhZlWjii1otEiuI";
+    const key_b = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPwm/k8CgafNJDzrJE9cxz0SZdCa9pnK+EG5vlohtMMR fixture-b@cid";
+    const fp_b = "SHA256:KtA/YfxknM55ZVuMIlCZ1rJ+QUHlhzkaorosiIekKHc";
+    _ = try db.exec(&fscope, "DELETE FROM ssh_keys WHERE account_id IN ('gitlab:9301', 'gitlab:9302')", .{});
+    _ = try db.exec(&fscope, "INSERT INTO accounts (account_id, display_name, source) VALUES ('gitlab:9301', 'Kai Keys', 'gitlab'), ('gitlab:9302', 'Other Person', 'gitlab') ON CONFLICT DO NOTHING", .{});
+    const kai: cid.api.Caller = .{ .account = "gitlab:9301" };
+    const other: cid.api.Caller = .{ .account = "gitlab:9302" };
+
+    const Listed = struct { keys: []const struct { fingerprint: []const u8, title: []const u8, key_type: []const u8, source: []const u8 } };
+    const list = struct {
+        fn of(a: std.mem.Allocator, body: []const u8) !Listed {
+            return std.json.parseFromSliceLeaky(Listed, a, body, .{ .ignore_unknown_fields = true });
+        }
+    }.of;
+
+    // None yet; then one, named, from the dashboard; SSH knows it at once.
+    const empty = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/me/keys", kai, "");
+    try std.testing.expectEqual(std.http.Status.ok, empty.status);
+    try std.testing.expectEqual(@as(usize, 0), (try list(arena, empty.body)).keys.len);
+    const add = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .title = "laptop", .key = "  " ++ key_a ++ "\n" }, .{})});
+    const added = cid.api.handleAs(arena, &deps, &scope, "POST", "/v0/me/keys", kai, add);
+    try std.testing.expectEqual(std.http.Status.created, added.status);
+    const after = try list(arena, added.body);
+    try std.testing.expectEqual(@as(usize, 1), after.keys.len);
+    try std.testing.expectEqualStrings(fp_a, after.keys[0].fingerprint);
+    try std.testing.expectEqualStrings("laptop", after.keys[0].title);
+    try std.testing.expectEqualStrings("ssh-ed25519", after.keys[0].key_type);
+    try std.testing.expectEqualStrings("dashboard", after.keys[0].source);
+    const line = (try cid.access.auth.authorizedKeysLine(arena, db, &fscope, fp_a)).?;
+    try std.testing.expect(std.mem.indexOf(u8, line, "--account=gitlab:9301") != null);
+
+    // One key, one account: again is refused, and so is someone else.
+    try std.testing.expectEqual(std.http.Status.conflict, cid.api.handleAs(arena, &deps, &scope, "POST", "/v0/me/keys", kai, add).status);
+    const stolen = cid.api.handleAs(arena, &deps, &scope, "POST", "/v0/me/keys", other, add);
+    try std.testing.expectEqual(std.http.Status.conflict, stolen.status);
+    try std.testing.expect(std.mem.indexOf(u8, stolen.body, "another account") != null);
+    // Not a key, and not a person.
+    try std.testing.expectEqual(std.http.Status.unprocessable_entity, cid.api.handleAs(arena, &deps, &scope, "POST", "/v0/me/keys", kai, "{\"key\":\"hello\"}").status);
+    try std.testing.expectEqual(std.http.Status.unprocessable_entity, cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/me/keys", .{ .header = "Bearer test-token" }, "").status);
+
+    // The GitLab sync adds its key beside it and leaves the dashboard's.
+    _ = try cid.access.gitlab.applyKeys(arena, db, &fscope, 9301, &.{.{ .id = 1, .key = key_b, .title = "from gitlab" }});
+    const both = try list(arena, cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/me/keys", kai, "").body);
+    try std.testing.expectEqual(@as(usize, 2), both.keys.len);
+    _ = try cid.access.gitlab.applyKeys(arena, db, &fscope, 9301, &.{});
+    try std.testing.expectEqual(@as(usize, 1), (try list(arena, cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/me/keys", kai, "").body)).keys.len);
+
+    // A GitLab key is removed in GitLab; one's own dashboard key, here.
+    _ = try cid.access.gitlab.applyKeys(arena, db, &fscope, 9301, &.{.{ .id = 1, .key = key_b }});
+    const del_b = try std.fmt.allocPrint(arena, "/v0/me/keys?fingerprint={s}", .{"SHA256%3AKtA%2FYfxknM55ZVuMIlCZ1rJ%2BQUHlhzkaorosiIekKHc"});
+    const refused = cid.api.handleAs(arena, &deps, &scope, "DELETE", del_b, kai, "");
+    try std.testing.expectEqual(std.http.Status.conflict, refused.status);
+    try std.testing.expect(std.mem.indexOf(u8, refused.body, "GitLab") != null);
+    try std.testing.expectEqual(std.http.Status.not_found, cid.api.handleAs(arena, &deps, &scope, "DELETE", del_b, other, "").status);
+    const gone = cid.api.handleAs(arena, &deps, &scope, "DELETE", "/v0/me/keys?fingerprint=SHA256%3ApSL6q%2BEp5ziz6I2Y3Vk6EWL26D3tGhZlWjii1otEiuI", kai, "");
+    try std.testing.expectEqual(std.http.Status.ok, gone.status);
+    const left = try list(arena, gone.body);
+    try std.testing.expectEqual(@as(usize, 1), left.keys.len);
+    try std.testing.expectEqualStrings(fp_b, left.keys[0].fingerprint);
+    try std.testing.expect((try cid.access.auth.authorizedKeysLine(arena, db, &fscope, fp_a)) == null);
+
+    _ = try db.exec(&fscope, "DELETE FROM ssh_keys WHERE account_id IN ('gitlab:9301', 'gitlab:9302')", .{});
+}
+
 test "seaweedfs s3 is reachable" {
     const addr = try std.Io.net.IpAddress.parse("127.0.0.1", seaweed_s3_port);
     const io = std.testing.io;

@@ -411,3 +411,37 @@ export function getMe(): Promise<Me> {
 export function getAuthConfig(): Promise<{ gitlab: boolean }> {
   return request('/v0/auth/config');
 }
+
+export type SshKey = {
+  fingerprint: string;
+  title: string;
+  key_type: string;
+  /** gitlab: synced from GitLab, removed there; dashboard: added here,
+   *  removed here; admin: registered by an administrator. */
+  source: 'gitlab' | 'dashboard' | 'admin';
+  added_at: string;
+};
+
+/** The signed-in person's SSH keys, the identity the CLI signs in with. */
+export function listKeys(): Promise<{ keys: SshKey[] }> {
+  return request('/v0/me/keys');
+}
+
+async function send<T>(path: string, method: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const parsed = (await res.json().catch(() => ({}))) as T & { error?: string; next?: string };
+  if (!res.ok) throw new ApiError(res.status, parsed.error ?? `the server answered ${res.status}`, parsed.next ?? null);
+  return parsed;
+}
+
+export function addKey(title: string, key: string): Promise<{ fingerprint: string; keys: SshKey[] }> {
+  return send('/v0/me/keys', 'POST', { title, key });
+}
+
+export function removeKey(fingerprint: string): Promise<{ keys: SshKey[] }> {
+  return send(`/v0/me/keys?fingerprint=${encodeURIComponent(fingerprint)}`, 'DELETE');
+}

@@ -473,8 +473,8 @@ fn runAddKey(
     ) catch return fail(io, .network, "database error: {s}", .{lastDbProblem()});
     _ = standalone.db.exec(
         &scope,
-        "INSERT INTO ssh_keys (fingerprint, account_id, public_key) VALUES ($1, $2, $3) " ++
-            "ON CONFLICT (fingerprint) DO UPDATE SET account_id = excluded.account_id, public_key = excluded.public_key",
+        "INSERT INTO ssh_keys (fingerprint, account_id, public_key, source) VALUES ($1, $2, $3, 'admin') " ++
+            "ON CONFLICT (fingerprint) DO UPDATE SET account_id = excluded.account_id, public_key = excluded.public_key, source = 'admin'",
         .{ fp, @as([]const u8, account), @as([]const u8, key_line) },
     ) catch return fail(io, .network, "database error: {s}", .{lastDbProblem()});
     out.print("Registered key {s} for {s}.\n", .{ fp, account }) catch return .network;

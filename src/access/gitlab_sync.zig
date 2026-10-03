@@ -33,6 +33,7 @@ pub const Member = struct {
 pub const UserKey = struct {
     id: u64,
     key: []const u8,
+    title: []const u8 = "",
 };
 
 pub const MemberOutcome = struct {
@@ -96,7 +97,9 @@ pub const KeyOutcome = struct {
 };
 
 /// Applies one user's key list: fingerprints computed here, stale
-/// gitlab-synced keys for that account removed.
+/// gitlab-synced keys for that account removed. Keys the person added in
+/// the dashboard are theirs to remove and stay; GitLab, which keeps each
+/// key on one account, wins a key some other account holds.
 pub fn applyKeys(
     arena: std.mem.Allocator,
     db: *dbx.sql.Db,
@@ -115,10 +118,10 @@ pub fn applyKeys(
         };
         _ = db.exec(
             scope,
-            "INSERT INTO ssh_keys (fingerprint, account_id, public_key, synced_at) VALUES ($1, $2, $3, now()) " ++
+            "INSERT INTO ssh_keys (fingerprint, account_id, public_key, title, source, synced_at) VALUES ($1, $2, $3, $4, 'gitlab', now()) " ++
                 "ON CONFLICT (fingerprint) DO UPDATE SET account_id = excluded.account_id, " ++
-                "public_key = excluded.public_key, synced_at = now()",
-            .{ fp, account, k.key },
+                "public_key = excluded.public_key, title = excluded.title, source = 'gitlab', synced_at = now()",
+            .{ fp, account, k.key, k.title },
         ) catch return error.Db;
         outcome.upserted += 1;
         if (keep.items.len > 0) try keep.append(arena, ',');
@@ -127,7 +130,7 @@ pub fn applyKeys(
 
     const removed = db.exec(
         scope,
-        "DELETE FROM ssh_keys WHERE account_id = $1 " ++
+        "DELETE FROM ssh_keys WHERE account_id = $1 AND source = 'gitlab' " ++
             "AND fingerprint <> ALL (string_to_array($2, ','))",
         .{ account, keep.items },
     ) catch return error.Db;

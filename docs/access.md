@@ -75,15 +75,22 @@ Nothing to manage in cid:
   syncs every `CID_SYNC_INTERVAL_SECS` seconds (default 600), and
   `cid admin sync-gitlab` runs it now. Someone removed from the project, or a key
   removed from their GitLab account, loses cid access at the next sync. Access rows
-  granted by hand are left alone; SSH keys are not: a synced account ends up with
-  exactly the keys GitLab lists for it.
+  granted by hand are left alone, and so are keys added on the dashboard; the keys
+  that came from GitLab end up exactly the ones GitLab lists.
+- **Your own keys:** a signed-in person adds and removes SSH keys on the dashboard's
+  SSH keys page (`/keys`; `GET`/`POST /v0/me/keys`, `DELETE /v0/me/keys?fingerprint=`),
+  for a machine whose key is not in GitLab. A key works over SSH as soon as it is
+  added. One key belongs to one account: a key already registered, by anyone, is
+  refused, so nobody can claim someone else's public key; GitLab's sync still wins a
+  key it lists. Keys from GitLab are listed there too and removed in GitLab. Accepted
+  types: ed25519 and ECDSA (security keys included), and RSA of 2048 bits or more.
 - **Dashboard:** people sign in with GitLab (OAuth); the same account and role apply
   as over SSH. See "Sign-in" in `docs/dashboard.md`.
 - **Other hosts:** where there is no GitLab to sync from, an administrator registers
   keys and access by hand: `cid admin add-key <account> <name> "<public key>"` and
   `cid admin grant <dataset> <account> <read|write|maintain>` (the dataset must exist).
-  Not built yet: managing keys and members in the dashboard. (Email one-time-link
-  sign-in is **not now**: it would add an SMTP dependency.)
+  Not built yet: managing members in the dashboard. (Email one-time-link sign-in is
+  **not now**: it would add an SMTP dependency.)
 
 ### Creating a dataset
 

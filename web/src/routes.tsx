@@ -8,6 +8,7 @@ import { Shell } from './Shell';
 import { SignIn } from './pages/SignIn';
 import { Home } from './pages/Home';
 import { DatasetOverview } from './pages/DatasetOverview';
+import { Keys } from './pages/Keys';
 import { getMe } from './api';
 
 // Signed in means the server says so: a GitLab session cookie or a pasted
@@ -98,7 +99,14 @@ const datasetRoute = createRoute({
 
 export { datasetRoute };
 
-const routeTree = rootRoute.addChildren([signInRoute, homeRoute, datasetRoute]);
+const keysRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/keys',
+  beforeLoad: requireSignIn,
+  component: Keys,
+});
+
+const routeTree = rootRoute.addChildren([signInRoute, homeRoute, datasetRoute, keysRoute]);
 
 export const router = createRouter({ routeTree });
 

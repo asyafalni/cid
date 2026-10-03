@@ -18,7 +18,7 @@ automatic, readable record of its releases, and every dataset page links to it w
 "view in git".
 
 **The dashboard is view-only.** It changes no data. Stars are per-person bookmarks, not
-data. Editing the dataset card and making releases from the dashboard are parked
+data, and a person's SSH keys are their own identity, not data (invariant 17). Editing the dataset card and making releases from the dashboard are parked
 decisions: the server has `GET`/`PUT …/-/card` (owners only for `PUT`), but the
 dashboard has no UI for it.
 
@@ -33,7 +33,7 @@ path/split/class/type filters in the URL, SVG overlays for box, polygon and poin
 masks painted to a canvas, the item drawer with history, table statistics, text,
 audio and video; Compare (totals, change list, visual before/after, row-level table
 diff); Files tab (folder tree, sizes, download); Activity (owners only); restricted
-blur and logged reveal; the preview worker (ffmpeg only).
+blur and logged reveal; your SSH keys; the preview worker (ffmpeg only).
 
 **Not built yet** (the spec below says so where it applies): the health badge, Health
 tab and Validator tiles; card completeness and the sample strip; most Browse filters,
@@ -384,6 +384,16 @@ There is no Health tab yet. Per-file table statistics already exist (in the draw
   told so in words.
 - *Planned:* filtering.
 
+### 4.8 Your SSH keys
+
+- *Built:* `/keys`, linked from the rail under your name. Your keys, one row each: the
+  title, the type, the fingerprint as a chip that copies it whole, when it was added,
+  and where it came from. A key added here has Remove; a key from GitLab says so and is
+  removed in GitLab. Below, the add form: a title and the one line of a `.pub` file,
+  with the `ssh-keygen` command for someone who has no key yet. A refused key says why
+  and what to paste instead. Signed in with the server token, the page says that token
+  has no keys and how to sign in as yourself. See "Your own keys" in `docs/access.md`.
+
 ---
 
 ## 5. Out of scope
@@ -444,6 +454,7 @@ There is no Health tab yet. Per-file table statistics already exist (in the draw
   | `PUT` / `DELETE …/star` | the signed-in person's bookmark |
   | `GET /v0/datasets` | home |
   | `GET /v0/me`, `GET /v0/auth/config`, `GET /v0/ping` | who is signed in, sign-in options, server up |
+  | `GET`/`POST /v0/me/keys`, `DELETE /v0/me/keys?fingerprint=` | your SSH keys |
 
   The server also answers `GET …/info`, `GET …/releases` and `GET`/`PUT …/card`; the
   dashboard does not call them.
