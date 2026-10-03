@@ -56,6 +56,8 @@ fi
 DS=$(psql -c "SELECT dataset_id FROM datasets WHERE name = '$NAME'")
 
 # Each batch: BATCH revisions, 2 of every 5 an item, 3 a box on one.
+# Item hashes are stand-ins (any 32 bytes; the bytes are never stored),
+# made by Postgres's own sha256().
 # Annotation ids are UUIDv7, time-ordered, as the platform mints them: the
 # (dataset, branch, annotation_id) index then grows at its end. Random ids
 # would land all over a large index (7.7 s a batch against 0.95 at 10M).

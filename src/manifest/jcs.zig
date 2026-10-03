@@ -1,5 +1,5 @@
 //! RFC 8785 (JSON Canonicalization Scheme) serialization of a parsed
-//! JSON value — the encoding `manifest_sha256` uses for annotation
+//! JSON value — the encoding `manifest_hash` uses for annotation
 //! `geometry` and `attrs` (docs/data-model.md): sorted object keys, fixed
 //! escapes, shortest-round-trip numbers. Without this, float formatting
 //! would break manifest repeatability.

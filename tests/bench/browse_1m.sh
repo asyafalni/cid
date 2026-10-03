@@ -59,6 +59,8 @@ CREATE FUNCTION pg_temp.rev(ms bigint, n bigint) RETURNS uuid LANGUAGE sql AS \$
           || '-7000-8000-' || lpad(to_hex(n), 12, '0'))::uuid \$\$;
 CREATE TEMP TABLE at AS SELECT (extract(epoch FROM now()) * 1000)::bigint - 60000 AS ms,
   (SELECT dataset_id FROM datasets WHERE name = '$NAME') AS ds;
+-- Stand-in item hashes: any 32 distinct bytes do (the bytes are never
+-- stored), so Postgres's own sha256() makes them, not BLAKE3.
 CREATE TEMP TABLE seed AS
   SELECT i, sha256(convert_to('$NAME/' || i, 'UTF8')) AS hash, gen_random_uuid() AS item_id,
          'cam' || (i % 50) || '/' || lpad(i::text, 8, '0') || '.jpg' AS path,

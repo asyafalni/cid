@@ -1,5 +1,5 @@
-//! The canonical manifest row stream (invariant 6): `manifest_sha256` is
-//! the SHA-256 of these exact bytes, never of any storage encoding of
+//! The canonical manifest row stream (invariant 6): `manifest_hash` is
+//! the BLAKE3 (util/hash.zig) of these exact bytes, never of any storage encoding of
 //! them. Rebuilding a release must reproduce the hash bit for bit, so
 //! this format is frozen once released datasets exist:
 //!
@@ -11,6 +11,7 @@
 //! that extension bumps the header version.
 
 const std = @import("std");
+const hash = @import("../util/hash.zig");
 
 pub const header = "cid-manifest 1\n";
 /// Annotated datasets: item rows then annotation rows. File-dataset
@@ -43,10 +44,10 @@ pub const AnnRow = struct {
 };
 
 /// Renders the full canonical stream for file-dataset rows (already sorted
-/// by path) and returns it with its SHA-256.
+/// by path) and returns it with its hash.
 pub const Rendered = struct {
     bytes: []const u8,
-    sha256_hex: [64]u8,
+    hash_hex: [64]u8,
 };
 
 pub fn render(arena: std.mem.Allocator, rows: []const ItemRow) !Rendered {
@@ -58,9 +59,7 @@ pub fn render(arena: std.mem.Allocator, rows: []const ItemRow) !Rendered {
         prev = row.path;
         try appendItemRow(arena, &out, row);
     }
-    var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(out.items, &digest, .{});
-    return .{ .bytes = out.items, .sha256_hex = std.fmt.bytesToHex(digest, .lower) };
+    return .{ .bytes = out.items, .hash_hex = hash.hex(out.items) };
 }
 
 pub const RenderError = error{ OutOfMemory, BadAnnotationText };
@@ -112,10 +111,8 @@ pub fn appendAnnRow(arena: std.mem.Allocator, out: *std.ArrayList(u8), ann: AnnR
     });
 }
 
-pub fn hashOf(bytes: []const u8) [64]u8 {
-    var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
-    return std.fmt.bytesToHex(digest, .lower);
+pub fn hashOf(bytes: []const u8) hash.Hex {
+    return hash.hex(bytes);
 }
 
 test "the canonical stream is frozen: golden hash" {
@@ -136,12 +133,11 @@ test "the canonical stream is frozen: golden hash" {
     );
     // The golden hash: if this ever changes, released manifests break.
     // Recorded from the stream above; the format is now frozen.
-    try std.testing.expectEqualStrings(&hashOf(rendered.bytes), &rendered.sha256_hex);
-    try std.testing.expectEqual(@as(usize, 64), rendered.sha256_hex.len);
+    try std.testing.expectEqualStrings("e734a4bbdaafa68dce61ab1d324503305f2e22d6621659229aaf15af7ed9039d", &rendered.hash_hex);
 
     // Same rows → same bytes → same hash (repeatability).
     const again = try render(arena, &rows);
-    try std.testing.expectEqualStrings(&rendered.sha256_hex, &again.sha256_hex);
+    try std.testing.expectEqualStrings(&rendered.hash_hex, &again.hash_hex);
 }
 
 test "empty manifest is just the header" {

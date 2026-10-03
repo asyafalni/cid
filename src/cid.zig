@@ -16,6 +16,7 @@ pub const cli_clone = @import("cli/clone.zig");
 pub const cli_checkout = @import("cli/checkout.zig");
 pub const cli_tag = @import("cli/tag.zig");
 pub const cli_restore = @import("cli/restore.zig");
+pub const cli_hash_object = @import("cli/hash_object.zig");
 pub const cli_diff = @import("cli/diff.zig");
 pub const cli_branch = @import("cli/branch.zig");
 pub const cli_merge = @import("cli/merge.zig");
@@ -49,6 +50,7 @@ pub const gitrepo = struct {
 };
 pub const uuid7 = @import("util/uuid7.zig");
 pub const progress = @import("util/progress.zig");
+pub const hash = @import("util/hash.zig");
 pub const access = struct {
     pub const token = @import("access/token.zig");
     pub const auth = @import("access/auth.zig");

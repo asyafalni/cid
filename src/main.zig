@@ -62,6 +62,7 @@ fn run(
         .checkout => |cmd_args| cid.cli_checkout.run(&ctx, cmd_args),
         .tag => |cmd_args| cid.cli_tag.run(&ctx, cmd_args),
         .restore => |cmd_args| cid.cli_restore.run(&ctx, cmd_args),
+        .hash_object => |cmd_args| cid.cli_hash_object.run(&ctx, cmd_args),
         .diff => |cmd_args| cid.cli_diff.run(&ctx, cmd_args),
         .branch => |cmd_args| cid.cli_branch.run(&ctx, cmd_args),
         .merge => |cmd_args| cid.cli_merge.run(&ctx, cmd_args),

@@ -434,7 +434,7 @@ function ItemDrawer({
             </dd>
           </>
         )}
-        <dt>sha-256</dt>
+        <dt>blake3</dt>
         <dd>
           <HashChip hash={item.hash} />
         </dd>

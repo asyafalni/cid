@@ -24,7 +24,7 @@ README.md          dataset name; latest release, item count, total size and date
                    `cid clone <git-url>`; one link to browse this release in the
                    dashboard; then the release's card fields (see below)
 CHANGELOG.md       every release in full, newest first: name, date, message, item count
-release.json       dataset, release, commit (cid commit id), manifest_sha256,
+release.json       dataset, release, commit (cid commit id), manifest_hash,
                    created_at (date), items, clone (the git URL), dashboard (server URL)
 stats.yaml         release, items, bytes, files_by_extension; for annotated datasets
                    also annotations, annotations_by_class and items_by_split (one

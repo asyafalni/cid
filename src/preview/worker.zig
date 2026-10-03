@@ -14,6 +14,7 @@ const blob = @import("../store/blob.zig");
 const sniff_mod = @import("../media/sniff.zig");
 const duck = @import("../store/duck.zig");
 const table_stats = @import("../tabular/stats.zig");
+const content_hash = @import("../util/hash.zig");
 
 pub const Config = struct {
     /// Scratch space for input/output files; created if missing.
@@ -140,7 +141,7 @@ fn buildTable(
             return .{ .failed = "could not open DuckDB" };
     }
 
-    const item_key = std.fmt.allocPrint(arena, "items/sha256/{s}/{s}/{s}", .{ hash[0..2], hash[2..4], hash }) catch
+    const item_key = content_hash.itemKey(arena, hash) catch
         return .{ .failed = "out of memory" };
     const bytes = s3.getObjectAlloc(scope, item_key) catch
         return .{ .failed = "could not fetch the item from storage" };
@@ -189,9 +190,7 @@ fn buildOne(
         return .{ .skipped = "too large to preview; raise the worker's limit to include it" };
 
     // Fetch the bytes to scratch (never previewed twice, so no cache).
-    const item_key = std.fmt.allocPrint(arena, "items/sha256/{s}/{s}/{s}", .{
-        hash[0..2], hash[2..4], hash,
-    }) catch return .{ .failed = "out of memory" };
+    const item_key = content_hash.itemKey(arena, hash) catch return .{ .failed = "out of memory" };
     const bytes = s3.getObjectAlloc(scope, item_key) catch
         return .{ .failed = "could not fetch the item from storage" };
 

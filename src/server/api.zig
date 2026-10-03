@@ -36,6 +36,7 @@ const versions = @import("../core/version.zig");
 const nilo = @import("nilo_http");
 const token_mod = @import("../access/token.zig");
 const Uuid = @import("../util/uuid7.zig").Uuid;
+const content_hash = @import("../util/hash.zig");
 
 pub const Deps = struct {
     db: *dbx.sql.Db,
@@ -1680,7 +1681,7 @@ const state_provisional_secs = 10 * 60;
 
 /// A version as the CLI downloads it: a gzip file of JSON lines in
 /// storage, written by one streamed pass (core/version.zig) and handed
-/// out as a presigned URL with its SHA-256, which the client checks as it
+/// out as a presigned URL with its hash, which the client checks as it
 /// reads (invariant 14). Written once per version and kept; a version
 /// whose media metadata is still arriving gets a provisional file,
 /// written again after a while, so dimensions are never frozen blank.
@@ -1712,31 +1713,31 @@ fn versionFile(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
         }),
     };
     const url = deps.s3.presignGet(scope, file.key, presign_secs) catch return error.Storage;
-    return json(arena, .ok, .{ .commit = commit_id, .url = url, .sha256 = file.sha, .final = file.final, .total = total });
+    return json(arena, .ok, .{ .commit = commit_id, .url = url, .hash = file.file_hash, .final = file.final, .total = total });
 }
 
 const VersionFile = union(enum) {
-    ready: struct { key: []const u8, sha: []const u8, final: bool },
+    ready: struct { key: []const u8, file_hash: []const u8, final: bool },
     failed: bundle_mod.Failure,
 };
 
 /// A version file in storage, kept or written now: one streamed pass →
 /// gzip → hashed → a file in the work folder → storage, named by its own
-/// SHA-256 (the same content is the same object). What a request asks
+/// hash (the same content is the same object). What a request asks
 /// for, and what the background worker prepares before anyone asks.
 fn ensureVersionFile(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit_id: []const u8, kind: bundle_mod.Kind, subset: bundle_mod.Subset) HandleError!VersionFile {
     const subset_key = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .splits = subset.splits, .classes = subset.classes }, .{})});
     const Kept = struct {
         pub const nilo_table = .projection;
-        sha: []const u8,
+        file_hash: []const u8,
         final: bool,
         fresh: bool,
     };
-    const kept = deps.db.rawOne(Kept, scope, "SELECT sha256 AS sha, final, " ++
+    const kept = deps.db.rawOne(Kept, scope, "SELECT file_hash, final, " ++
         "built_at > now() - interval '" ++ std.fmt.comptimePrint("{d}", .{state_provisional_secs}) ++ " seconds' AS fresh " ++
         "FROM version_files WHERE commit_id = $1::uuid AND kind = $2 AND subset = $3", .{ commit_id, @tagName(kind), subset_key }) catch return error.Db;
     if (kept) |k| if (k.final or k.fresh)
-        return .{ .ready = .{ .key = try fileKey(arena, ds.id, commit_id, kind, subset_key, k.sha), .sha = k.sha, .final = k.final } };
+        return .{ .ready = .{ .key = try fileKey(arena, ds.id, commit_id, kind, subset_key, k.file_hash), .file_hash = k.file_hash, .final = k.final } };
 
     const path = try std.fmt.allocPrint(arena, "{s}/{s}-{t}-{s}.gz", .{ deps.work_dir, commit_id, kind, (try subsetHash(arena, subset_key))[0..16] });
     const gz = try GzFile.open(deps, path);
@@ -1753,14 +1754,14 @@ fn ensureVersionFile(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: 
             return .{ .failed = .{ .path = try arena.dupe(u8, f.path), .why = f.why } };
         },
     };
-    const sha = try arena.dupe(u8, &(try gz.finish()));
+    const file_hash = try arena.dupe(u8, &(try gz.finish()));
     const final = !written.media_pending;
-    const key = try fileKey(arena, ds.id, commit_id, kind, subset_key, sha);
-    if (!(kept != null and eql(kept.?.sha, sha)))
+    const key = try fileKey(arena, ds.id, commit_id, kind, subset_key, file_hash);
+    if (!(kept != null and eql(kept.?.file_hash, file_hash)))
         deps.s3.putFile(scope, deps.io, key, path) catch return error.Storage;
-    _ = deps.db.exec(scope, "INSERT INTO version_files (commit_id, kind, subset, sha256, final) VALUES ($1::uuid, $2, $3, $4, $5) " ++
-        "ON CONFLICT (commit_id, kind, subset) DO UPDATE SET sha256 = excluded.sha256, final = excluded.final, built_at = now()", .{ commit_id, @tagName(kind), subset_key, sha, final }) catch return error.Db;
-    return .{ .ready = .{ .key = key, .sha = sha, .final = final } };
+    _ = deps.db.exec(scope, "INSERT INTO version_files (commit_id, kind, subset, file_hash, final) VALUES ($1::uuid, $2, $3, $4, $5) " ++
+        "ON CONFLICT (commit_id, kind, subset) DO UPDATE SET file_hash = excluded.file_hash, final = excluded.final, built_at = now()", .{ commit_id, @tagName(kind), subset_key, file_hash, final }) catch return error.Db;
+    return .{ .ready = .{ .key = key, .file_hash = file_hash, .final = final } };
 }
 
 fn sortedCopy(arena: std.mem.Allocator, list: []const []const u8) HandleError![]const []const u8 {
@@ -1774,29 +1775,27 @@ fn sortedCopy(arena: std.mem.Allocator, list: []const []const u8) HandleError![]
 }
 
 fn subsetHash(arena: std.mem.Allocator, subset_key: []const u8) HandleError![]const u8 {
-    var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(subset_key, &digest, .{});
-    return arena.dupe(u8, &std.fmt.bytesToHex(digest, .lower));
+    return arena.dupe(u8, &content_hash.hex(subset_key));
 }
 
 /// states/… for a version's items, exports/… for an export
 /// (CLAUDE.md, storage layout); subset and content named by hash.
-fn fileKey(arena: std.mem.Allocator, dataset_id: []const u8, commit_id: []const u8, kind: bundle_mod.Kind, subset_key: []const u8, sha: []const u8) HandleError![]const u8 {
+fn fileKey(arena: std.mem.Allocator, dataset_id: []const u8, commit_id: []const u8, kind: bundle_mod.Kind, subset_key: []const u8, file_hash: []const u8) HandleError![]const u8 {
     const sub = (try subsetHash(arena, subset_key))[0..16];
     return switch (kind) {
-        .state => std.fmt.allocPrint(arena, "states/{s}/{s}-{s}-{s}.jsonl.gz", .{ dataset_id, commit_id, sub, sha[0..16] }),
-        .jsonl, .yolo => std.fmt.allocPrint(arena, "exports/{s}/{s}/{t}-{s}-{s}.jsonl.gz", .{ dataset_id, commit_id, kind, sub, sha[0..16] }),
+        .state => std.fmt.allocPrint(arena, "states/{s}/{s}-{s}-{s}.jsonl.gz", .{ dataset_id, commit_id, sub, file_hash[0..16] }),
+        .jsonl, .yolo => std.fmt.allocPrint(arena, "exports/{s}/{s}/{t}-{s}-{s}.jsonl.gz", .{ dataset_id, commit_id, kind, sub, file_hash[0..16] }),
     };
 }
 
-/// A gzip file of JSON lines being written in the work folder, its SHA-256
+/// A gzip file of JSON lines being written in the work folder, its hash
 /// taken over the compressed bytes as they go out: the shape of every
 /// large answer the CLI downloads (a version, a diff).
 const GzFile = struct {
     path: []const u8,
     file: std.Io.File,
     fw: std.Io.File.Writer,
-    hashed: std.Io.Writer.Hashed(std.crypto.hash.sha2.Sha256),
+    hashed: std.Io.Writer.Hashed(content_hash.Hasher),
     gz: std.compress.flate.Compress,
     file_buf: [64 * 1024]u8,
     hash_buf: [64 * 1024]u8,
@@ -1810,7 +1809,7 @@ const GzFile = struct {
         self.path = path;
         self.file = cwd.createFile(deps.io, path, .{ .truncate = true }) catch return error.Storage;
         self.fw = self.file.writer(deps.io, &self.file_buf);
-        self.hashed = self.fw.interface.hashed(std.crypto.hash.sha2.Sha256.init(.{}), &self.hash_buf);
+        self.hashed = self.fw.interface.hashed(content_hash.init(), &self.hash_buf);
         self.gz = std.compress.flate.Compress.init(&self.hashed.writer, &self.window, .gzip, .level_1) catch {
             self.file.close(deps.io);
             return error.Storage;
@@ -1826,9 +1825,7 @@ const GzFile = struct {
         self.gz.finish() catch return error.Storage;
         self.hashed.writer.flush() catch return error.Storage;
         self.fw.interface.flush() catch return error.Storage;
-        var digest: [32]u8 = undefined;
-        self.hashed.hasher.final(&digest);
-        return std.fmt.bytesToHex(digest, .lower);
+        return content_hash.hexOf(&self.hashed.hasher);
     }
 
     /// Closes and removes the file (it has gone to storage, or failed).
@@ -1842,7 +1839,7 @@ const GzFile = struct {
 /// What changed from one version to another, as the CLI reads it (`cid
 /// diff`): DuckDB joins the two versions' browse indexes (0.5 s at 1M
 /// items), the change lines are kept in storage as a gzip file with its
-/// SHA-256, and handed out presigned with the summary counts. Both
+/// hash, and handed out presigned with the summary counts. Both
 /// versions are sealed, so a diff is written once and kept.
 fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, pair: []const u8) HandleError!Response {
     const slash = std.mem.indexOfScalar(u8, pair, '/') orelse return error.BadRequest;
@@ -1852,12 +1849,12 @@ fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, p
         return errorResponse(arena, .bad_request, "those are not commit ids", "Run 'cid log' to list commits.");
     const Kept = struct {
         pub const nilo_table = .projection;
-        sha256: []const u8,
+        file_hash: []const u8,
         summary: []const u8,
     };
-    if (deps.db.rawOne(Kept, scope, "SELECT sha256, summary::text AS summary FROM version_diffs WHERE commit_a = $1::uuid AND commit_b = $2::uuid AND dataset_id = $3::uuid", .{ a, b, ds.id }) catch return error.Db) |kept| {
-        const url = deps.s3.presignGet(scope, try diffKey(arena, ds.id, a, b, kept.sha256), presign_secs) catch return error.Storage;
-        return json(arena, .ok, .{ .url = url, .sha256 = kept.sha256, .summary = jsonValue(arena, kept.summary) });
+    if (deps.db.rawOne(Kept, scope, "SELECT file_hash, summary::text AS summary FROM version_diffs WHERE commit_a = $1::uuid AND commit_b = $2::uuid AND dataset_id = $3::uuid", .{ a, b, ds.id }) catch return error.Db) |kept| {
+        const url = deps.s3.presignGet(scope, try diffKey(arena, ds.id, a, b, kept.file_hash), presign_secs) catch return error.Storage;
+        return json(arena, .ok, .{ .url = url, .hash = kept.file_hash, .summary = jsonValue(arena, kept.summary) });
     }
 
     // Both versions' indexes, joined by DuckDB into change lines (items by
@@ -1895,17 +1892,17 @@ fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, p
         var fr = file.reader(deps.io, &buf);
         _ = fr.interface.streamRemaining(gz.writer()) catch return error.Storage;
     }
-    const sha = try gz.finish();
-    deps.s3.putFile(scope, deps.io, try diffKey(arena, ds.id, a, b, &sha), path) catch return error.Storage;
+    const file_hash = try gz.finish();
+    deps.s3.putFile(scope, deps.io, try diffKey(arena, ds.id, a, b, &file_hash), path) catch return error.Storage;
     const summary_text = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(summary, .{})});
-    _ = deps.db.exec(scope, "INSERT INTO version_diffs (dataset_id, commit_a, commit_b, sha256, summary) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::jsonb) " ++
-        "ON CONFLICT DO NOTHING", .{ ds.id, a, b, @as([]const u8, &sha), summary_text }) catch return error.Db;
-    const url = deps.s3.presignGet(scope, try diffKey(arena, ds.id, a, b, &sha), presign_secs) catch return error.Storage;
-    return json(arena, .ok, .{ .url = url, .sha256 = @as([]const u8, &sha), .summary = summary });
+    _ = deps.db.exec(scope, "INSERT INTO version_diffs (dataset_id, commit_a, commit_b, file_hash, summary) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::jsonb) " ++
+        "ON CONFLICT DO NOTHING", .{ ds.id, a, b, @as([]const u8, &file_hash), summary_text }) catch return error.Db;
+    const url = deps.s3.presignGet(scope, try diffKey(arena, ds.id, a, b, &file_hash), presign_secs) catch return error.Storage;
+    return json(arena, .ok, .{ .url = url, .hash = @as([]const u8, &file_hash), .summary = summary });
 }
 
-fn diffKey(arena: std.mem.Allocator, dataset_id: []const u8, a: []const u8, b: []const u8, sha: []const u8) HandleError![]const u8 {
-    return std.fmt.allocPrint(arena, "diffs/{s}/{s}-{s}-{s}.jsonl.gz", .{ dataset_id, a, b, sha[0..16] });
+fn diffKey(arena: std.mem.Allocator, dataset_id: []const u8, a: []const u8, b: []const u8, file_hash: []const u8) HandleError![]const u8 {
+    return std.fmt.allocPrint(arena, "diffs/{s}/{s}-{s}-{s}.jsonl.gz", .{ dataset_id, a, b, file_hash[0..16] });
 }
 
 /// Stored jsonb text → a JSON value for the response (never re-encoded as
@@ -2017,7 +2014,7 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
     return json(arena, .created, .{
         .release = created.name,
         .commit = @as([]const u8, created.commit_id),
-        .manifest_sha256 = &created.manifest_sha256,
+        .manifest_hash = &created.manifest_hash,
         .items = created.items,
         .git = git_status,
     });
@@ -2028,9 +2025,9 @@ fn releases(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) 
         pub const nilo_table = .projection;
         name: []const u8,
         commit: []const u8,
-        manifest_sha256: []const u8,
+        manifest_hash: []const u8,
     };
-    const list = deps.db.raw(Entry, scope, "SELECT name, commit_id::text AS commit, encode(manifest_sha256, 'hex') AS manifest_sha256 FROM refs " ++
+    const list = deps.db.raw(Entry, scope, "SELECT name, commit_id::text AS commit, encode(manifest_hash, 'hex') AS manifest_hash FROM refs " ++
         "WHERE dataset_id = $1::uuid AND kind = 'release' ORDER BY commit_id DESC", .{ds.id}) catch return error.Db;
     return json(arena, .ok, .{ .releases = list });
 }
@@ -2572,8 +2569,8 @@ fn heldHere(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, 
 const Admit = enum { admitted, missing, mismatch };
 
 /// Admits an item's bytes (invariant 2): held here already, or uploaded to
-/// this dataset's staging area — then streamed through SHA-256 into a work
-/// file, and only if they match (and the size, when one is claimed) stored
+/// this dataset's staging area — then streamed through the content hash into a
+/// work file, and only if they match (and the size, when one is claimed) stored
 /// under the item's key, if absent. The staged copy goes either way.
 fn admit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, hash: []const u8, size: ?u64) HandleError!Admit {
     if (try heldHere(arena, deps, scope, ds, hash)) return .admitted;
@@ -2592,7 +2589,7 @@ fn admit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, has
         var buf: [64 * 1024]u8 = undefined;
         var fw = file.writer(deps.io, &buf);
         var hbuf: [64 * 1024]u8 = undefined;
-        var hashed = fw.interface.hashed(std.crypto.hash.sha2.Sha256.init(.{}), &hbuf);
+        var hashed = fw.interface.hashed(content_hash.init(), &hbuf);
         var n: u64 = 0;
         if (count == 1) {
             n = deps.s3.streamTo(scope, staged, &hashed.writer) catch return .missing;
@@ -2601,9 +2598,7 @@ fn admit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, has
         }
         hashed.writer.flush() catch return error.Storage;
         fw.interface.flush() catch return error.Storage;
-        var digest: [32]u8 = undefined;
-        hashed.hasher.final(&digest);
-        break :blk .{ n, std.fmt.bytesToHex(digest, .lower) };
+        break :blk .{ n, content_hash.hexOf(&hashed.hasher) };
     };
     defer if (count == 1) {
         deps.s3.deleteObject(scope, staged) catch {};
@@ -2639,11 +2634,9 @@ fn optEql(a: ?[]const u8, b: ?[]const u8) bool {
 // Small helpers
 // ---------------------------------------------------------------------------
 
-/// Storage layout: items/sha256/<aa>/<bb>/<hex>.
+/// Storage layout: items/blake3/<aa>/<bb>/<hex>.
 pub fn itemKey(arena: std.mem.Allocator, hash_hex: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(arena, "items/sha256/{s}/{s}/{s}", .{
-        hash_hex[0..2], hash_hex[2..4], hash_hex,
-    });
+    return content_hash.itemKey(arena, hash_hex);
 }
 
 pub fn validHashHex(hash: []const u8) bool {
@@ -2699,7 +2692,7 @@ test "hash and key helpers" {
     try std.testing.expect(validHashHex(h));
     try std.testing.expect(!validHashHex("xyz"));
     try std.testing.expectEqualStrings(
-        "items/sha256/ab/cd/" ++ h,
+        "items/blake3/ab/cd/" ++ h,
         try itemKey(arena_state.allocator(), h),
     );
 }

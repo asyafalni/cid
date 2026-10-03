@@ -7,6 +7,7 @@ const std = @import("std");
 const dbx = @import("../store/db.zig");
 const blob = @import("../store/blob.zig");
 const worker = @import("../preview/worker.zig");
+const content_hash = @import("../util/hash.zig");
 
 pub const Error = error{
     NoSuchDataset,
@@ -72,9 +73,7 @@ pub fn purge(
         .{ dataset_id, purged_by, hash_hex, detail },
     ) catch return error.Db;
 
-    const key = std.fmt.allocPrint(arena, "items/sha256/{s}/{s}/{s}", .{
-        hash_hex[0..2], hash_hex[2..4], hash_hex,
-    }) catch return error.OutOfMemory;
+    const key = content_hash.itemKey(arena, hash_hex) catch return error.OutOfMemory;
     s3.deleteObject(scope, key) catch return error.Storage;
     // Its previews are its content too (invariant 19): the thumbnail, the
     // blurred rendition, and the queue row (which also holds a table's

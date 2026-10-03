@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -29,6 +29,11 @@ const env = {
   CID_TOKEN: token,
   CID_SERVER: 'http://127.0.0.1:7178',
 };
+
+// A file's content hash (BLAKE3), as cid names and checks the bytes.
+function hashOf(path: string): string {
+  return run(`${cid} hash-object ${path}`);
+}
 
 function run(cmd: string, cwd?: string): string {
   return execSync(cmd, { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -110,8 +115,7 @@ function seedBoxes(dir: string) {
   run(
     `ffmpeg -nostdin -loglevel error -f lavfi -i testsrc=size=200x150:rate=1 -frames:v 1 -y ${png}`,
   );
-  const bytes = readFileSync(png);
-  const hash = createHash('sha256').update(bytes).digest('hex');
+  const hash = hashOf(png);
   const size = statSync(png).size;
 
   const check = api('POST', `/v0/datasets/${name}/-/check-hashes`, { hashes: [hash] }) as {
@@ -230,7 +234,7 @@ function seedMasks(dir: string) {
   if (!datasetId) throw new Error('could not create the masks dataset');
   const png = join(dir, 'masked.png');
   run(`ffmpeg -nostdin -loglevel error -f lavfi -i smptebars=size=200x150:rate=1 -frames:v 1 -y ${png}`);
-  const hash = createHash('sha256').update(readFileSync(png)).digest('hex');
+  const hash = hashOf(png);
   const check = api('POST', `/v0/datasets/${name}/-/check-hashes`, { hashes: [hash] }) as {
     missing: { hash: string; url: string }[];
   };

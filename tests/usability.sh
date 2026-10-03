@@ -152,9 +152,10 @@ expect_ok   "third push"   "$CID" push
 cd "$WORK/reader"
 echo "local edit" >> a.txt
 # Editing a checked-out file in place never reaches the shared cache.
-h=$(printf 'hello again\n' | sha256sum | cut -d' ' -f1)
+printf 'hello again\n' > "$WORK/expected.txt"
+h=$("$CID" hash-object "$WORK/expected.txt")
 c="${XDG_CACHE_HOME:-$HOME/.cache}/cid/items/$(printf %.2s "$h")/$h"
-if [ "$(sha256sum < "$c" | cut -d' ' -f1)" = "$h" ]; then say "ok: in-place edit leaves the cache intact"
+if [ "$("$CID" hash-object "$c")" = "$h" ]; then say "ok: in-place edit leaves the cache intact"
 else say "FAIL: in-place edit changed the cached copy"; fails=$((fails+1)); fi
 expect_ok   "stage the edit" "$CID" add a.txt
 expect_hint "pull over staged changes"        "$CID" pull
@@ -220,10 +221,11 @@ expect_ok   "push once the server is back"       "$CID" push
 expect_code 5 "a token the server refuses"       env CID_TOKEN=wrong "$CID" pull
 # Bytes damaged in storage never reach a folder: a fresh cache downloads,
 # the hash check fails, exit 3.
-h=$(printf '%s\n' "$OFF" | sha256sum | cut -d' ' -f1)
+printf '%s\n' "$OFF" > "$WORK/off-copy.txt"
+h=$("$CID" hash-object "$WORK/off-copy.txt")
 a=$(printf %.2s "$h"); b=$(printf %s "$h" | cut -c3-4)
 curl -sf --aws-sigv4 'aws:amz:us-east-1:s3' --user "$CID_S3_ACCESS_KEY:$CID_S3_SECRET_KEY" \
-    -X PUT --data-binary 'tampered' "$CID_S3_ENDPOINT/cid/items/sha256/$a/$b/$h" >/dev/null \
+    -X PUT --data-binary 'tampered' "$CID_S3_ENDPOINT/cid/items/blake3/$a/$b/$h" >/dev/null \
     || { say "FAIL: could not tamper with storage for the integrity check"; fails=$((fails+1)); }
 cd "$WORK"
 export XDG_CACHE_HOME="$WORK/fresh-cache"

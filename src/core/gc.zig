@@ -19,6 +19,7 @@ const dbx = @import("../store/db.zig");
 const blob = @import("../store/blob.zig");
 const version = @import("version.zig");
 const worker = @import("../preview/worker.zig");
+const content_hash = @import("../util/hash.zig");
 
 pub const Error = error{ Db, Storage, OutOfMemory };
 
@@ -136,7 +137,7 @@ fn collect(gpa: std.mem.Allocator, db: *dbx.sql.Db, s3: *blob.Client, days: i64,
         for (rows) |r| {
             _ = tx.exec(&batch, "INSERT INTO collected_items (item_hash) VALUES (decode($1, 'hex'))", .{r.hash_hex}) catch return error.Db;
             _ = tx.exec(&batch, "DELETE FROM previews WHERE item_hash = decode($1, 'hex')", .{r.hash_hex}) catch return error.Db;
-            const key = try std.fmt.allocPrint(arena, "items/sha256/{s}/{s}/{s}", .{ r.hash_hex[0..2], r.hash_hex[2..4], r.hash_hex });
+            const key = try content_hash.itemKey(arena, r.hash_hex);
             inline for (.{ worker.thumbKey, worker.blurKey }) |keyOf| {
                 s3.deleteObject(&batch, try keyOf(arena, r.hash_hex)) catch |err| switch (err) {
                     error.NotFound => {},

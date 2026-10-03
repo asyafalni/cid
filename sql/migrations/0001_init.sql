@@ -42,7 +42,7 @@ CREATE TABLE dataset_cards (
 ---------------------------------------------------------------------------
 
 CREATE TABLE items (
-  item_hash   bytea PRIMARY KEY CHECK (octet_length(item_hash) = 32),
+  item_hash   bytea PRIMARY KEY CHECK (octet_length(item_hash) = 32),  -- BLAKE3 of the bytes
   size_bytes  bigint NOT NULL CHECK (size_bytes >= 0),
   media_type  text NOT NULL,
   meta        jsonb NOT NULL DEFAULT '{}',
@@ -237,7 +237,7 @@ CREATE TABLE refs (
   commit_id        uuid NOT NULL REFERENCES commits(commit_id),
   start_commit_id  uuid REFERENCES commits(commit_id),
   manifest_path    text,
-  manifest_sha256  bytea CHECK (manifest_sha256 IS NULL OR octet_length(manifest_sha256) = 32),
+  manifest_hash    bytea CHECK (manifest_hash IS NULL OR octet_length(manifest_hash) = 32),
   card             jsonb,                          -- card snapshot at release time
   PRIMARY KEY (dataset_id, name)
 );
@@ -378,13 +378,13 @@ CREATE TABLE row_diffs (
 
 -- A version as the CLI downloads it (export/bundle.zig): its items, or an
 -- export of it, whole or narrowed to a subset — a gzip file in storage,
--- named by its own SHA-256. Final once no item waits for media metadata;
+-- named by its own BLAKE3. Final once no item waits for media metadata;
 -- until then provisional, and written again after a while.
 CREATE TABLE version_files (
   commit_id  uuid NOT NULL REFERENCES commits(commit_id),
   kind       text NOT NULL CHECK (kind IN ('state','jsonl','yolo')),
   subset     text NOT NULL,             -- canonical JSON: sorted splits, sorted classes
-  sha256     text NOT NULL,
+  file_hash  text NOT NULL,
   final      boolean NOT NULL,
   built_at   timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (commit_id, kind, subset)
@@ -411,7 +411,7 @@ CREATE TABLE version_diffs (
   dataset_id uuid  NOT NULL REFERENCES datasets(dataset_id),
   commit_a   uuid  NOT NULL REFERENCES commits(commit_id),
   commit_b   uuid  NOT NULL REFERENCES commits(commit_id),
-  sha256     text  NOT NULL,
+  file_hash  text  NOT NULL,
   summary    jsonb NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (commit_a, commit_b)

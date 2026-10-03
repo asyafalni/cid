@@ -12,6 +12,7 @@ const std = @import("std");
 const dbx = @import("../store/db.zig");
 const canonical = @import("../manifest/canonical.zig");
 const jcs = @import("../manifest/jcs.zig");
+const hash = @import("../util/hash.zig");
 
 pub const Error = error{ NoSuchCommit, BadAnnotationText, Db, WriteFailed, OutOfMemory };
 
@@ -88,7 +89,7 @@ pub const Visitor = struct {
 };
 
 pub const Written = struct {
-    sha256_hex: ?[64]u8 = null,
+    hash_hex: ?[64]u8 = null,
     items: u64 = 0,
     annotations: u64 = 0,
 };
@@ -164,7 +165,7 @@ pub fn pass(
         "array_to_json(array_agg(coalesce(class, '') ORDER BY annotation_id))::text AS classes FROM v_alive GROUP BY item_id", .{}) catch return error.Db;
     _ = tx.exec(scope, "ANALYZE v_classes", .{}) catch return error.Db;
 
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var hasher = hash.init();
     var written: Written = .{};
     if (outputs.manifest) |m| {
         const header = if (outputs.annotated) canonical.header_v2 else canonical.header;
@@ -252,9 +253,7 @@ pub fn pass(
 
     inline for (.{ outputs.manifest, outputs.items, outputs.annotations }) |maybe| if (maybe) |w| w.flush() catch return error.WriteFailed;
     if (outputs.manifest != null) {
-        var digest: [32]u8 = undefined;
-        hasher.final(&digest);
-        written.sha256_hex = std.fmt.bytesToHex(digest, .lower);
+        written.hash_hex = hash.hexOf(&hasher);
     }
     return written;
 }

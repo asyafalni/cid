@@ -69,8 +69,12 @@ CREATE TABLE dataset_cards (
 
 Two different things, deliberately separated:
 
-- **Content** is bytes, stored once globally by SHA-256 (`items`), shared by every
-  dataset that holds them. Content is immutable.
+- **Content** is bytes, stored once globally by its BLAKE3 hash (`items`), shared by every
+  dataset that holds them. Content is immutable. BLAKE3 (256 bits, lower-case hex)
+  names every item, manifest, version file and diff, in the server and the CLI alike
+  (`src/util/hash.zig`); `cid hash-object <file>` prints a file's hash, for writers
+  that register items themselves. Protocols keep their own SHA-256: S3 request
+  signing, OpenSSH key fingerprints, HMAC tokens.
 - **Identity** is "this item of this dataset" (`dataset_items.item_id`), and it
   **survives re-encoding**: stripping EXIF, re-compressing or blurring a region gives
   the same `item_id` a new `item_hash`. Annotations attach to `item_id`, so cleaning a
@@ -79,7 +83,7 @@ Two different things, deliberately separated:
 
 ```sql
 CREATE TABLE items (
-  item_hash   bytea PRIMARY KEY CHECK (octet_length(item_hash) = 32),  -- SHA-256
+  item_hash   bytea PRIMARY KEY CHECK (octet_length(item_hash) = 32),  -- BLAKE3
   size_bytes  bigint NOT NULL CHECK (size_bytes >= 0),
   media_type  text NOT NULL,              -- MIME type, 'application/octet-stream' if unknown
   meta        jsonb NOT NULL DEFAULT '{}',-- width/height, when known
@@ -112,8 +116,8 @@ or, for a file larger than one piece (64 MB), to numbered pieces
 `uploads/<dataset_id>/<hash>.part-NNNNNN`, each its own PUT. Pieces already staged by a
 push that stopped are not asked for again. When the push (or `register-items`) is
 recorded, the server streams the staged object, or its pieces in order as one stream,
-through SHA-256 and checks the hash and size. Only matching bytes are stored at
-`items/sha256/…`, and only if that key is absent; a stored object of the wrong size is
+through BLAKE3 and checks the hash and size. Only matching bytes are stored at
+`items/blake3/…`, and only if that key is absent; a stored object of the wrong size is
 damage, and the verified upload overwrites it as a repair. The staged copy is removed
 either way, and a verified upload deletes the hash's `collected_items` row (the bytes
 are back). A mismatch refuses the whole push before anything is recorded. This
@@ -238,7 +242,7 @@ CREATE TABLE refs (
   commit_id        uuid NOT NULL REFERENCES commits(commit_id),
   start_commit_id  uuid REFERENCES commits(commit_id),
   manifest_path    text,
-  manifest_sha256  bytea CHECK (manifest_sha256 IS NULL OR octet_length(manifest_sha256) = 32),
+  manifest_hash    bytea CHECK (manifest_hash IS NULL OR octet_length(manifest_hash) = 32),
   card             jsonb,                 -- snapshot of dataset_cards.body at release time
   PRIMARY KEY (dataset_id, name)
 );
@@ -363,7 +367,7 @@ version and kept:
 
 A release's manifest is a canonical tab-separated text stream, stored as is at
 `manifests/<dataset_id>/<commit_id>.manifest` (`src/core/release.zig`,
-`src/manifest/canonical.zig`). `manifest_sha256` is the SHA-256 of exactly those bytes.
+`src/manifest/canonical.zig`). `manifest_hash` is the BLAKE3 of exactly those bytes.
 The format is frozen:
 
 ```
@@ -482,7 +486,7 @@ Built from content or from sealed versions, so never stale; each row is written 
 - `row_diffs (hash_a, hash_b, kind_a, kind_b, status done|unreadable, result, reason)`:
   the row-level diff of two table contents, computed the first time anyone asks and
   kept; an unreadable table is an answer too, never retried.
-- `version_files (commit_id, kind state|jsonl|yolo, subset, sha256, final, built_at)`:
+- `version_files (commit_id, kind state|jsonl|yolo, subset, file_hash, final, built_at)`:
   a version's items file (`state`) or an export, whole or narrowed to a subset
   (canonical JSON of sorted splits and classes), as a gzip file in storage. `final` is
   false while any item still waits for its media metadata; such a file is written
@@ -492,7 +496,7 @@ Built from content or from sealed versions, so never stale; each row is written 
   (statistics, browse index, items file, default export), queued after each push,
   commit, merge and release. Index `version_jobs_pending (queued_at) WHERE status IN
   ('pending','building')`.
-- `version_diffs (dataset_id, commit_a, commit_b, sha256, summary)`: what changed
+- `version_diffs (dataset_id, commit_a, commit_b, file_hash, summary)`: what changed
   between two versions, as a gzip file in storage plus its summary.
 
 ---
@@ -503,17 +507,17 @@ All in the one bucket, `cid`:
 
 | Key | What |
 |---|---|
-| `items/sha256/<aa>/<bb>/<hex>` | an item's bytes, stored once |
+| `items/blake3/<aa>/<bb>/<hex>` | an item's bytes, stored once |
 | `uploads/<dataset_id>/<hash>`, `….part-NNNNNN` | staged uploads (whole, or 64 MB pieces) until verified |
 | `previews/<aa>/<hex>/thumb.webp`, `…/blur.webp` | thumbnail and blurred rendition |
 | `manifests/<dataset_id>/<commit_id>.manifest` | a release's canonical manifest |
 | `manifests/<dataset_id>/<commit_id>.items.parquet`, `.anns.parquet` | a version's browse index |
-| `states/<dataset_id>/<commit>-<subset>-<sha>.jsonl.gz` | a version's items file, as the CLI downloads it |
-| `exports/<dataset_id>/<commit>/<format>-<subset>-<sha>.jsonl.gz` | an export, as a bundle of files |
-| `diffs/<dataset_id>/<a>-<b>-<sha>.jsonl.gz` | what changed between two versions, for `cid diff` |
+| `states/<dataset_id>/<commit>-<subset>-<hash>.jsonl.gz` | a version's items file, as the CLI downloads it |
+| `exports/<dataset_id>/<commit>/<format>-<subset>-<hash>.jsonl.gz` | an export, as a bundle of files |
+| `diffs/<dataset_id>/<a>-<b>-<hash>.jsonl.gz` | what changed between two versions, for `cid diff` |
 | `diffs/<dataset_id>/<a>-<b>.items.parquet`, `.anns.parquet` | the same compare, for the dashboard |
 
-`<subset>` and `<sha>` are the first 16 hex characters of the SHA-256 of the subset
+`<subset>` and `<hash>` are the first 16 hex characters of the BLAKE3 of the subset
 key and of the file.
 
 ---

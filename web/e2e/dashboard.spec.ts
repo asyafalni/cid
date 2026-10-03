@@ -51,7 +51,7 @@ test('browse shows thumbnails for images and honest tiles for the rest', async (
   // The drawer: facts, hash chip, annotations absent on a file dataset.
   await page.getByRole('button', { name: /img-a\.png/ }).click();
   await expect(page).toHaveURL(/item=img/);
-  await expect(page.getByText('sha-256')).toBeVisible();
+  await expect(page.getByText('blake3')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Download the file' })).toBeVisible();
   // Dimensions arrived through sniffing, not from any client claim.
   await expect(page.getByText('200×150')).toBeVisible();

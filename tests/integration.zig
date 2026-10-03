@@ -102,7 +102,7 @@ test "s3: put, head, get, presign round trip against SeaweedFS" {
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
 
-    const key = "items/sha256/ab/abcd-test-object";
+    const key = "items/blake3/ab/abcd-test-object";
     const body = "cid stores any bytes \x00\x01\x02 exactly";
 
     try std.testing.expectEqual(@as(?u64, null), try s3.headObject(&scope, "items/missing"));
@@ -195,9 +195,9 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
     const content_a = "api test content A";
     const content_b = "api test content B, longer";
     var dg: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(content_a, &dg, .{});
+    cid.hash.Hasher.hash(content_a, &dg, .{});
     const hash_a = std.fmt.bytesToHex(dg, .lower);
-    std.crypto.hash.sha2.Sha256.hash(content_b, &dg, .{});
+    cid.hash.Hasher.hash(content_b, &dg, .{});
     const hash_b = std.fmt.bytesToHex(dg, .lower);
 
     // Earlier runs may have uploaded these; start from a clean slate.
@@ -523,7 +523,7 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     // upload counts are exact.
     inline for (.{ "version one of a\n", "\x00\x01\x02\xff binary", "version TWO of a\n", "the new file c\n", "my local edit", "d" }) |content| {
         var content_digest: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(content, &content_digest, .{});
+        cid.hash.Hasher.hash(content, &content_digest, .{});
         const content_hex = std.fmt.bytesToHex(content_digest, .lower);
         try s3c.deleteObject(&scope, try cid.api.itemKey(arena, &content_hex));
     }
@@ -1419,7 +1419,7 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
     for (untouched) |item| {
         if (std.mem.eql(u8, item.path, "shared.txt")) {
             var dgst: [32]u8 = undefined;
-            std.crypto.hash.sha2.Sha256.hash("main version", &dgst, .{});
+            cid.hash.Hasher.hash("main version", &dgst, .{});
             try std.testing.expectEqualStrings(&std.fmt.bytesToHex(dgst, .lower), item.hash);
         }
     }
@@ -1431,7 +1431,7 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
     const shaOf = struct {
         fn hex(bytes: []const u8) [64]u8 {
             var d: [32]u8 = undefined;
-            std.crypto.hash.sha2.Sha256.hash(bytes, &d, .{});
+            cid.hash.Hasher.hash(bytes, &d, .{});
             return std.fmt.bytesToHex(d, .lower);
         }
     }.hex;
@@ -1465,7 +1465,7 @@ test "s3 multipart: a large object goes up in parts and comes back identical" {
     const big = try arena.alloc(u8, 12 * 1024 * 1024);
     for (big, 0..) |*b, i| b.* = @truncate(i *% 31 +% (i >> 8));
 
-    const key = "items/sha256/mp/multipart-test-object";
+    const key = "items/blake3/mp/multipart-test-object";
     try s3c.deleteObject(&scope, key);
     try s3c.putObject(&scope, key, big);
 
@@ -1511,7 +1511,7 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
 
     const sensitive = "a face image that must be erasable";
     var dg: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(sensitive, &dg, .{});
+    cid.hash.Hasher.hash(sensitive, &dg, .{});
     const sensitive_hash = std.fmt.bytesToHex(dg, .lower);
     {
         const hz = try arena.dupeZ(u8, &sensitive_hash);
@@ -1613,9 +1613,9 @@ test "annotated: the platform writes revisions, the server commits, state compos
     const frame1 = "frame one pixels";
     const frame2 = "frame two pixels, longer";
     var dg: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(frame1, &dg, .{});
+    cid.hash.Hasher.hash(frame1, &dg, .{});
     const h1 = std.fmt.bytesToHex(dg, .lower);
-    std.crypto.hash.sha2.Sha256.hash(frame2, &dg, .{});
+    cid.hash.Hasher.hash(frame2, &dg, .{});
     const h2 = std.fmt.bytesToHex(dg, .lower);
     try s3c.deleteObject(&scope, try cid.api.itemKey(arena, &h1));
     try s3c.deleteObject(&scope, try cid.api.itemKey(arena, &h2));
@@ -2108,7 +2108,7 @@ test "item identity: re-encoding keeps annotations; identical files at two paths
     var hashes: [bytes.len][64]u8 = undefined;
     for (bytes, &hashes) |b, *h| {
         var dg: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(b, &dg, .{});
+        cid.hash.Hasher.hash(b, &dg, .{});
         h.* = std.fmt.bytesToHex(dg, .lower);
         try s3c.putObject(&scope, try cid.api.stagedKey(arena, ds_id, h), b);
     }
@@ -2231,7 +2231,7 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     // One image with one box, platform-style (bytes + register + revisions).
     const pix = "annrel pixels";
     var dg: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(pix, &dg, .{});
+    cid.hash.Hasher.hash(pix, &dg, .{});
     const hh = std.fmt.bytesToHex(dg, .lower);
     try s3c.putObject(&scope, try cid.api.stagedKey(arena, ds_id, &hh), pix);
     try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len }});
@@ -2332,7 +2332,7 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     // One 640x480 image with one person box, platform-style.
     const pix = "fmt pixels pretending to be a jpeg";
     var dg: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(pix, &dg, .{});
+    cid.hash.Hasher.hash(pix, &dg, .{});
     const hh = std.fmt.bytesToHex(dg, .lower);
     try s3c.putObject(&scope, try cid.api.stagedKey(arena, ds_id, &hh), pix);
     try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len, .media_type = "image/jpeg", .width = 640, .height = 480 }});
@@ -2522,7 +2522,7 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
 
     const pix = "anngit pixels";
     var dg: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(pix, &dg, .{});
+    cid.hash.Hasher.hash(pix, &dg, .{});
     const hh = std.fmt.bytesToHex(dg, .lower);
     try s3c.putObject(&scope, try cid.api.stagedKey(arena, ds_id, &hh), pix);
     try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len, .width = 100, .height = 100 }});
@@ -2594,10 +2594,10 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     const png = try std.Io.Dir.cwd().readFileAlloc(io, png_path, arena, .limited(1024 * 1024));
 
     var dg: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(png, &dg, .{});
+    cid.hash.Hasher.hash(png, &dg, .{});
     const png_hash = std.fmt.bytesToHex(dg, .lower);
     const text = "just text, never a thumbnail";
-    std.crypto.hash.sha2.Sha256.hash(text, &dg, .{});
+    cid.hash.Hasher.hash(text, &dg, .{});
     const text_hash = std.fmt.bytesToHex(dg, .lower);
 
     // Earlier tests enqueued their pushes too; park that backlog so this
@@ -2689,7 +2689,7 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     } });
     const png = try std.Io.Dir.cwd().readFileAlloc(io, png_path, arena, .limited(1024 * 1024));
     var dg: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(png, &dg, .{});
+    cid.hash.Hasher.hash(png, &dg, .{});
     const hh = std.fmt.bytesToHex(dg, .lower);
 
     _ = try db.exec(&fscope, "UPDATE previews SET status = 'skipped', reason = 'test reset' WHERE status = 'pending'", .{});
@@ -2732,7 +2732,7 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     const released = try remote.tag(arena, "v1.0.0");
     // The version as the CLI downloads it: provisional while the worker
     // has yet to look (no dimensions, so none are frozen blank).
-    const VersionWhere = struct { url: []const u8, sha256: []const u8, final: bool };
+    const VersionWhere = struct { url: []const u8, hash: []const u8, final: bool };
     const early_res = cid.api.handle(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/sniff/-/version/{s}", .{released.commit}), "Bearer test-token", "");
     const early = try std.json.parseFromSliceLeaky(VersionWhere, arena, early_res.body, .{ .ignore_unknown_fields = true });
     try std.testing.expect(!early.final);
@@ -2774,12 +2774,12 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
         const where_res = cid.api.handle(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/sniff/-/version/{s}", .{released.commit}), "Bearer test-token", "");
         const where = try std.json.parseFromSliceLeaky(VersionWhere, arena, where_res.body, .{ .ignore_unknown_fields = true });
         try std.testing.expect(where.final);
-        try std.testing.expect(!std.mem.eql(u8, where.sha256, early.sha256));
+        try std.testing.expect(!std.mem.eql(u8, where.hash, early.hash));
         // A state file changed in storage is refused, never half-trusted.
         const ds_id = (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/sniff'", .{})).?;
         var whole: [32]u8 = undefined; // the subset key of "no subset"
-        std.crypto.hash.sha2.Sha256.hash("{\"splits\":[],\"classes\":[]}", &whole, .{});
-        const key = try std.fmt.allocPrint(arena, "states/{s}/{s}-{s}-{s}.jsonl.gz", .{ ds_id, released.commit, (&std.fmt.bytesToHex(whole, .lower))[0..16], where.sha256[0..16] });
+        cid.hash.Hasher.hash("{\"splits\":[],\"classes\":[]}", &whole, .{});
+        const key = try std.fmt.allocPrint(arena, "states/{s}/{s}-{s}-{s}.jsonl.gz", .{ ds_id, released.commit, (&std.fmt.bytesToHex(whole, .lower))[0..16], where.hash[0..16] });
         const genuine = try s3c.getObjectAlloc(&scope, key);
         try s3c.putObject(&scope, key, "not the state you are looking for");
         try std.testing.expectError(error.Corrupt, remote.state(arena, released.commit));
@@ -2897,7 +2897,7 @@ test "table statistics: CSV, Parquet and JSONL, withheld when restricted" {
     for (files, 0..) |name, i| {
         const bytes = try fixtures.readFileAlloc(io, name, arena, .limited(1 << 20));
         var dg: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(bytes, &dg, .{});
+        cid.hash.Hasher.hash(bytes, &dg, .{});
         hashes[i] = std.fmt.bytesToHex(dg, .lower);
         try producer.dir.writeFile(io, .{ .sub_path = name, .data = bytes });
         // A fresh queue row each run, so the worker really builds it.
@@ -3024,7 +3024,7 @@ test "row diffs: rows added and removed between versions, cached, withheld when 
     var hashes: [2][64]u8 = undefined;
     for ([_][]const u8{ v1, v2 }, 0..) |bytes, i| {
         var dg: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(bytes, &dg, .{});
+        cid.hash.Hasher.hash(bytes, &dg, .{});
         hashes[i] = std.fmt.bytesToHex(dg, .lower);
     }
     // Computed afresh each run.
@@ -3145,7 +3145,7 @@ test "media: audio gets its waveform, text reads as text, restricted text withhe
     var hashes: [4][64]u8 = undefined;
     for ([_][]const u8{ wav, notes, "\x00\x01\x02binary\x00", long }, 0..) |bytes, i| {
         var dg: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(bytes, &dg, .{});
+        cid.hash.Hasher.hash(bytes, &dg, .{});
         hashes[i] = std.fmt.bytesToHex(dg, .lower);
         _ = db.exec(&fscope, "DELETE FROM previews WHERE item_hash = decode($1, 'hex')", .{@as([]const u8, &hashes[i])}) catch {};
     }
@@ -3241,7 +3241,7 @@ test "state at commit: random changes on main and a branch match an in-memory mo
     var hashes: [contents.len][64]u8 = undefined;
     for (contents, &hashes) |c, *h| {
         var dg: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(c, &dg, .{});
+        cid.hash.Hasher.hash(c, &dg, .{});
         h.* = std.fmt.bytesToHex(dg, .lower);
         try s3c.putObject(&scope, try cid.api.stagedKey(arena, ds_id, h), c);
     }
@@ -3429,7 +3429,7 @@ test "large files go up in pieces, and a push stopped mid-file carries on from t
     defer standalone.close();
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
-    // 1 MiB pieces, so a 3.5 MiB file is four of them.
+    // 5 MiB pieces (S3's smallest part), so a 17.5 MiB file is four of them.
     var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token", .piece_bytes = 1 << 20 };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/pieces", .gpa = std.testing.allocator };
@@ -3438,7 +3438,7 @@ test "large files go up in pieces, and a push stopped mid-file carries on from t
     const big = try arena.alloc(u8, (7 << 20) / 2);
     io.random(big);
     var dg: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(big, &dg, .{});
+    cid.hash.Hasher.hash(big, &dg, .{});
     const hash = std.fmt.bytesToHex(dg, .lower);
 
     var producer = std.testing.tmpDir(.{ .iterate = true });
@@ -3480,7 +3480,7 @@ test "large files go up in pieces, and a push stopped mid-file carries on from t
     // Pieces that do not add up to the file are refused, and nothing lands.
     const forged = try arena.alloc(u8, (5 << 20) / 2);
     io.random(forged);
-    std.crypto.hash.sha2.Sha256.hash(forged, &dg, .{});
+    cid.hash.Hasher.hash(forged, &dg, .{});
     const forged_hash = std.fmt.bytesToHex(dg, .lower);
     for (1..4) |n| try s3c.putObject(&scope, try cid.api.pieceKey(arena, ds_id, &forged_hash, @intCast(n)), forged[0 .. 1 << 20]);
     const body = try std.fmt.allocPrint(arena,
@@ -3529,7 +3529,7 @@ test "gc: never deletes what a release or branch head holds; collected bytes can
     var hashes: [contents.len][64]u8 = undefined;
     for (contents, &hashes) |c, *h| {
         var dg: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(c, &dg, .{});
+        cid.hash.Hasher.hash(c, &dg, .{});
         h.* = std.fmt.bytesToHex(dg, .lower);
     }
 

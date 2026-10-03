@@ -158,7 +158,7 @@ fn loadInput(
     kind: []const u8,
     release_name: []const u8,
 ) !render.Input {
-    const ref = (db.rawOne(RefInfo, scope, "SELECT r.commit_id::text AS commit_id, encode(r.manifest_sha256, 'hex') AS manifest_hex, " ++
+    const ref = (db.rawOne(RefInfo, scope, "SELECT r.commit_id::text AS commit_id, encode(r.manifest_hash, 'hex') AS manifest_hex, " ++
         "(extract(epoch from c.recorded_at) * 1000)::bigint AS created_ms, c.message, r.card::text AS card, d.restricted " ++
         "FROM refs r JOIN commits c ON c.commit_id = r.commit_id JOIN datasets d ON d.dataset_id = r.dataset_id " ++
         "WHERE r.dataset_id = $1::uuid AND r.name = $2 AND r.kind = 'release'", .{ dataset_id, release_name }) catch return error.Db) orelse return error.Db;
@@ -221,7 +221,7 @@ fn loadInput(
         .server_url = config.server_url,
         .release = release_name,
         .commit_id = commit_id,
-        .manifest_sha256_hex = manifest_hex,
+        .manifest_hash_hex = manifest_hex,
         .created_at_ms = created_ms,
         .items = st.items,
         .bytes = st.bytes,

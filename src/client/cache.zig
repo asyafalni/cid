@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const Progress = @import("../util/progress.zig").Progress;
+const hash = @import("../util/hash.zig");
 
 pub const Error = error{CacheWriteFailed} || std.mem.Allocator.Error ||
     std.Io.File.OpenError || std.Io.File.Reader.Error;
@@ -25,7 +26,7 @@ pub fn storeFile(
     var file = try work_dir.openFile(io, rel_path, .{});
     defer file.close(io);
 
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var hasher = hash.init();
     var size: u64 = 0;
 
     var tmp_name_buf: [64]u8 = undefined;
@@ -57,9 +58,7 @@ pub fn storeFile(
         fw.interface.flush() catch return error.CacheWriteFailed;
     }
 
-    var digest: [32]u8 = undefined;
-    hasher.final(&digest);
-    const hex = std.fmt.bytesToHex(digest, .lower);
+    const hex = hash.hexOf(&hasher);
 
     var item_path_buf: [80]u8 = undefined;
     const item_dir = std.fmt.bufPrint(&item_path_buf, "items/{s}", .{hex[0..2]}) catch unreachable;
@@ -82,7 +81,7 @@ pub fn storeFile(
 pub fn hashFile(io: std.Io, work_dir: std.Io.Dir, rel_path: []const u8) Error!Stored {
     var file = try work_dir.openFile(io, rel_path, .{});
     defer file.close(io);
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var hasher = hash.init();
     var size: u64 = 0;
     var rbuf: [64 * 1024]u8 = undefined;
     var chunk: [64 * 1024]u8 = undefined;
@@ -93,9 +92,7 @@ pub fn hashFile(io: std.Io, work_dir: std.Io.Dir, rel_path: []const u8) Error!St
         hasher.update(chunk[0..n]);
         size += n;
     }
-    var digest: [32]u8 = undefined;
-    hasher.final(&digest);
-    return .{ .hash_hex = std.fmt.bytesToHex(digest, .lower), .size = size };
+    return .{ .hash_hex = hash.hexOf(&hasher), .size = size };
 }
 
 test "store computes the right hash, deduplicates, and survives re-adds" {
@@ -110,10 +107,8 @@ test "store computes the right hash, deduplicates, and survives re-adds" {
     const first = try storeFile(io, tmp.dir, "hello.txt", cache_tmp.dir, null);
     try std.testing.expectEqual(@as(u64, 10), first.size);
 
-    // Verify against a known-good SHA-256 of "hello cid\n".
-    var expected_digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash("hello cid\n", &expected_digest, .{});
-    const expected_hex = std.fmt.bytesToHex(expected_digest, .lower);
+    // The content hash of "hello cid\n".
+    const expected_hex = hash.hex("hello cid\n");
     try std.testing.expectEqualStrings(&expected_hex, &first.hash_hex);
 
     // The cached copy exists, byte for byte.

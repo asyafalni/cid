@@ -246,7 +246,7 @@ makes every change between versions visible).
 | Word | Meaning |
 |---|---|
 | **dataset** | A versioned collection: a **file dataset** or an **annotated dataset**. Identified internally by a stable `dataset_id`; its path can be renamed |
-| **item** | One item of a dataset, identified by `item_id`, which **survives re-encoding**; its current content is a file stored once by SHA-256 (`item_hash`) |
+| **item** | One item of a dataset, identified by `item_id`, which **survives re-encoding**; its current content is a file stored once by its BLAKE3 hash (`item_hash`) |
 | **path** | Where an item sits in the dataset's folder tree, e.g. `audio/2026-03/call-0012.wav` |
 | **annotation** | Structured information on an item, in annotated datasets: box, polygon, points, mask, transcript, time segment, text span, class, identity, value. Attached to `item_id`, not to the bytes |
 | **change** | One add/update/delete of an item path or an annotation. Never edited afterwards |
@@ -256,7 +256,7 @@ makes every change between versions visible).
 | **push** | Uploading local commits and their new files; accepted only on top of the server's latest commit |
 | **branch** | A draft line of work. Always starts from `main` |
 | **release** | A tag on a commit, e.g. `v4.2.0`. Never moves. Has a manifest |
-| **manifest** | The canonical listing of every item (path, hash, size, split) and annotation in a release, hashed (`manifest_sha256`) and stored as `manifests/<dataset_id>/<commit_id>.manifest` |
+| **manifest** | The canonical listing of every item (path, hash, size, split) and annotation in a release, hashed (`manifest_hash`) and stored as `manifests/<dataset_id>/<commit_id>.manifest` |
 | **dataset path** | The dataset's full name, like a GitLab project path: `your-org/datasets/person-vehicle` |
 | **address** | Where to reach a dataset, git-style: `cid@cidhub.com:your-org/datasets/person-vehicle` (a trailing `.cid` is accepted and ignored) |
 | **dataset repository** | The git repository paired with a dataset. cid writes one git commit and tag per release; people only read it |
@@ -381,7 +381,7 @@ Deep dives: `docs/data-model.md` · `docs/access.md` · `docs/git-repository.md`
 4. **Annotations attach to item identity** (`item_id`), never to bytes; re-encoding an
    item must never orphan its annotations.
 5. **Releases never move.** Tagging an existing name is an error.
-6. **Manifests are repeatable.** `manifest_sha256` hashes the canonical row stream
+6. **Manifests are repeatable.** `manifest_hash` hashes the canonical row stream
    (sorted, fixed encoding, RFC 8785 for JSON fields — `docs/data-model.md`).
    Rebuilding a release from history reproduces the same hash.
 7. **Pushes only move forward.** The server accepts a push only if its first commit's
@@ -409,7 +409,7 @@ Deep dives: `docs/data-model.md` · `docs/access.md` · `docs/git-repository.md`
     they are written and uploaded from a file; statistics are one SQL aggregate,
     kept on the commit. The CLI reads a version (clone, pull, checkout, diff) as
     a gzip file of JSON lines the same pass writes once into storage, through a
-    presigned URL, SHA-256 checked as it streams; it is provisional, and written
+    presigned URL, hash-checked as it streams; it is provisional, and written
     again after ten minutes, while any item still waits for its media metadata.
     `tests/bench/browse_1m.sh` measures all of it at 1M items.
 14. **Downloads verify everything.** Every file is hash-checked before it appears in
@@ -446,16 +446,16 @@ If a change would weaken any of these, stop and ask.
 
 ```
 <bucket>/
-  items/sha256/<aa>/<bb>/<hex>                any file, stored once
+  items/blake3/<aa>/<bb>/<hex>                any file, stored once, named by its BLAKE3
   uploads/<dataset_id>/<hex>[.part-NNNNNN]    staged uploads (pieces over 64 MB),
                                               verified then stored, or cleaned by gc
   previews/<aa>/<hex>/thumb.webp, blur.webp   thumbnails/waveforms, blurred renditions
   manifests/<dataset_id>/<commit_id>.manifest the release's hashed canonical manifest
   manifests/<dataset_id>/<commit_id>.items.parquet, .anns.parquet
                                               a version's browse index (any version built)
-  states/<dataset_id>/<commit>-<subset>-<sha>.jsonl.gz        a version's items, as the CLI downloads them
-  exports/<dataset_id>/<commit>/<format>-<subset>-<sha>.jsonl.gz  an export, as a bundle of files
-  diffs/<dataset_id>/<a>-<b>-<sha>.jsonl.gz        what changed between two versions
+  states/<dataset_id>/<commit>-<subset>-<hash>.jsonl.gz        a version's items, as the CLI downloads them
+  exports/<dataset_id>/<commit>/<format>-<subset>-<hash>.jsonl.gz  an export, as a bundle of files
+  diffs/<dataset_id>/<a>-<b>-<hash>.jsonl.gz        what changed between two versions
   diffs/<dataset_id>/<a>-<b>.items.parquet, .anns.parquet     the pair's compare, kept
 ```
 
@@ -502,7 +502,7 @@ asks the server what it still lacks, whole files and pieces alike, and sends onl
   (with its annotations) by `src/export/bundle.zig`, which reads the version once on
   the server, narrowed in SQL to any `--split`/`--class` subset. An export reaches the
   CLI as a bundle of files (gzip JSON lines, a file's chunks together) that it writes
-  into the folder as it streams, SHA-256 checked; the CLI never holds a version's
+  into the folder as it streams, hash-checked; the CLI never holds a version's
   annotations. Adding a format never touches `core/`.
 
 **Row-level diff** (`cid diff`) for `.csv`, `.parquet` and `.jsonl`: rows added and
@@ -541,7 +541,8 @@ Everyday (shown by `cid help`):
 
 For dataset owners (`cid help --all`): `init <address> --git <url>` (both required),
 `tag`, `branch`, `merge [--continue]`. Rarely needed: `cid login <server>` /
-`cid logout` for machines that cannot use SSH.
+`cid logout` for machines that cannot use SSH. Plumbing, in no help:
+`cid hash-object <file>...` prints each file's content hash (BLAKE3), as git's does.
 `tag`, `branch` and `merge` act on the server and need everything pushed first; they
 say so and suggest `cid push` when there are local commits.
 Admins: `cid admin setup|migrate|verify|gc|purge|serve|previews|sync-gitlab|git|add-key|grant`.
@@ -713,7 +714,7 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
   exception: the last database problem message, kept for `cid admin` errors.
 - **Streaming I/O** with bounded buffers; hash files while uploading; batch DB work
   (about 5,000 rows).
-- **C libraries allowed:** DuckDB only. SHA-256, HMAC, JSON, UUIDv7 and media
+- **C libraries allowed:** DuckDB only. BLAKE3, SHA-256, HMAC, JSON, UUIDv7 and media
   metadata come from the Zig standard library or our own small code. New dependencies
   need a written reason.
 - **HTTP, Postgres and S3: Nilo** (`nevindra/nilo`), server side only. The written
@@ -776,10 +777,11 @@ Full dashboard budgets are in `docs/dashboard.md`.
 
 ## Working with the annotation platform
 
-- The platform uploads item bytes through the server API (presigned PUT, server-side
-  hash verification — invariant 2 has one enforcement point), then writes item paths
-  and annotation changes directly with the `cid_writer` role (INSERT only, never
-  `rev_id` or `ts`: the database mints both), holding the shared per-branch write lock
+- The platform uploads item bytes through the server API (presigned PUT, named by
+  their BLAKE3 hash, which `cid hash-object` prints; server-side hash verification —
+  invariant 2 has one enforcement point), then writes item paths and annotation
+  changes directly with the `cid_writer` role (INSERT only, never `rev_id` or `ts`:
+  the database mints both), holding the shared per-branch write lock
   for each transaction and inserting a `revision_batches` key with each batch so a
   retry never writes twice (`docs/data-model.md`).
 - For commit, release, branch, merge, diff and export it calls the cid server API

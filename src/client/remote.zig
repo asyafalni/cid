@@ -7,6 +7,7 @@
 const std = @import("std");
 const cache_mod = @import("cache.zig");
 const Progress = @import("../util/progress.zig").Progress;
+const hash = @import("../util/hash.zig");
 const local = @import("local.zig");
 const index_mod = @import("index.zig");
 
@@ -138,7 +139,7 @@ pub const Error = error{
     Stale, // someone pushed since you pulled
     MissingContent, // a file was not in storage; re-run push
     ExportImpossible, // the server says why in the log (an item it cannot export)
-    Corrupt, // a downloaded file failed its SHA-256 check (invariant 14)
+    Corrupt, // a downloaded file failed its hash check (invariant 14)
     Collected, // cleanup took bytes this version needs (in no release or branch head)
     ReleaseExists,
     BranchExists,
@@ -320,7 +321,7 @@ pub const Remote = struct {
     }
 
     /// Asks for a version file (items, or an export) and where to get it.
-    fn whereIs(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8, kind: []const u8, subset: Subset) Error!struct { url: []const u8, sha256: []const u8, total: u64 } {
+    fn whereIs(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8, kind: []const u8, subset: Subset) Error!struct { url: []const u8, hash: []const u8, total: u64 } {
         const res = try self.send(arena, "GET", try self.fileTarget(arena, commit_id, kind, subset), "");
         if (res.status == .not_found) return error.NoSuchDataset;
         if (res.status == .unprocessable_entity) {
@@ -330,9 +331,9 @@ pub const Remote = struct {
             return error.ExportImpossible;
         }
         if (res.status != .ok) return error.ServerRefused;
-        const Where = struct { url: []const u8, sha256: []const u8, total: u64 = 0 };
+        const Where = struct { url: []const u8, hash: []const u8, total: u64 = 0 };
         const where = parse(Where, arena, res.body) orelse return error.ServerRefused;
-        return .{ .url = where.url, .sha256 = where.sha256, .total = where.total };
+        return .{ .url = where.url, .hash = where.hash, .total = where.total };
     }
 
     pub const Version = struct {
@@ -343,7 +344,7 @@ pub const Remote = struct {
 
     /// A version's items (or a subset of them, chosen on the server),
     /// downloaded as the file the server wrote and read as it arrives,
-    /// SHA-256 checked over every byte (invariant 14).
+    /// hash-checked over every byte (invariant 14).
     pub fn versionOf(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8, subset: Subset) Error!Version {
         const where = try self.whereIs(arena, commit_id, "state", subset);
         var reading: StateReading = .{ .arena = arena, .gpa = self.gpa };
@@ -352,7 +353,7 @@ pub const Remote = struct {
             error.BadState => error.Corrupt,
             else => error.ServerUnreachable,
         };
-        if (!std.mem.eql(u8, &reading.sha256_hex, where.sha256)) return error.Corrupt;
+        if (!std.mem.eql(u8, &reading.hash_hex, where.hash)) return error.Corrupt;
         return .{ .items = reading.items.items, .total = where.total };
     }
 
@@ -364,7 +365,7 @@ pub const Remote = struct {
     };
 
     /// An export (`jsonl`, `yolo`) of a version, built on the server and
-    /// streamed into `sink` a chunk at a time, SHA-256 checked; on a
+    /// streamed into `sink` a chunk at a time, hash-checked; on a
     /// mismatch the error comes after the writes, so the caller must treat
     /// what was written as void.
     pub fn exportTo(self: *const Remote, arena: std.mem.Allocator, commit_id: []const u8, format: []const u8, subset: Subset, sink: FileSink) Error!void {
@@ -376,10 +377,10 @@ pub const Remote = struct {
             error.BadState => error.Corrupt,
             else => error.ServerUnreachable,
         };
-        if (!std.mem.eql(u8, &reading.sha256_hex, where.sha256)) return error.Corrupt;
+        if (!std.mem.eql(u8, &reading.hash_hex, where.hash)) return error.Corrupt;
     }
 
-    pub const TagResult = struct { release: []const u8, commit: []const u8, manifest_sha256: []const u8, items: u64 };
+    pub const TagResult = struct { release: []const u8, commit: []const u8, manifest_hash: []const u8, items: u64 };
 
     pub fn tag(self: *const Remote, arena: std.mem.Allocator, name: []const u8) Error!TagResult {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .name = name }, .{})});
@@ -392,7 +393,7 @@ pub const Remote = struct {
         return parse(TagResult, arena, res.body) orelse error.ServerRefused;
     }
 
-    pub const Release = struct { name: []const u8, commit: []const u8, manifest_sha256: []const u8 };
+    pub const Release = struct { name: []const u8, commit: []const u8, manifest_hash: []const u8 };
 
     pub fn releases(self: *const Remote, arena: std.mem.Allocator) Error![]const Release {
         const res = try self.send(arena, "GET", try self.target(arena, "releases", .{}), "");
@@ -498,14 +499,14 @@ pub const Remote = struct {
 
     /// What changed from `a` to `b`, computed by the server and read as it
     /// streams: each change goes to `visitor` and is gone, so a diff of two
-    /// million-item versions holds one line at a time. The SHA-256 is
+    /// million-item versions holds one line at a time. The hash is
     /// checked over every byte; on a mismatch the error comes after the
     /// visits, so a caller that printed them must say the output is void.
     pub fn compare(self: *const Remote, arena: std.mem.Allocator, a: []const u8, b: []const u8, visitor: DiffVisitor) Error!DiffSummary {
         const res = try self.send(arena, "GET", try self.target(arena, "compare/{s}/{s}", .{ a, b }), "");
         if (res.status == .not_found) return error.NoSuchDataset;
         if (res.status != .ok) return error.ServerRefused;
-        const Where = struct { url: []const u8, sha256: []const u8, summary: DiffSummary };
+        const Where = struct { url: []const u8, hash: []const u8, summary: DiffSummary };
         const where = parse(Where, arena, res.body) orelse return error.ServerRefused;
         var reading: DiffReading = .{ .visitor = visitor, .scratch = .init(self.gpa) };
         defer reading.scratch.deinit();
@@ -514,7 +515,7 @@ pub const Remote = struct {
             error.BadState => error.Corrupt,
             else => error.ServerUnreachable,
         };
-        if (!std.mem.eql(u8, &reading.sha256_hex, where.sha256)) return error.Corrupt;
+        if (!std.mem.eql(u8, &reading.hash_hex, where.hash)) return error.Corrupt;
         return where.summary;
     }
 
@@ -559,10 +560,10 @@ pub const Remote = struct {
 
 /// Reads a gzip stream of JSON lines as it arrives: every compressed byte
 /// hashed, the first line checked against `header`, each further line
-/// handed to `line` (valid only for that call). Answers the SHA-256.
+/// handed to `line` (valid only for that call). Answers the hash.
 fn readGzLines(gpa: std.mem.Allocator, body: *std.Io.Reader, header: []const u8, ctx: anytype, comptime line: fn (@TypeOf(ctx), []const u8) anyerror!void) anyerror![64]u8 {
     var hash_buf: [64 * 1024]u8 = undefined;
-    var hashed = body.hashed(std.crypto.hash.sha2.Sha256.init(.{}), &hash_buf);
+    var hashed = body.hashed(hash.init(), &hash_buf);
     var window: [std.compress.flate.max_window_len]u8 = undefined;
     var gz: std.compress.flate.Decompress = .init(&hashed.reader, .gzip, &window);
     var text: std.Io.Writer.Allocating = .init(gpa);
@@ -584,9 +585,7 @@ fn readGzLines(gpa: std.mem.Allocator, body: *std.Io.Reader, header: []const u8,
     }
     // Whatever follows the compressed stream is hashed too.
     _ = hashed.reader.discardRemaining() catch return error.BadState;
-    var digest: [32]u8 = undefined;
-    hashed.hasher.final(&digest);
-    return std.fmt.bytesToHex(digest, .lower);
+    return hash.hexOf(&hashed.hasher);
 }
 
 /// A `cid-state 1` stream, into the arena: items, then (when asked)
@@ -595,11 +594,11 @@ const StateReading = struct {
     arena: std.mem.Allocator,
     gpa: std.mem.Allocator,
     items: std.ArrayList(Remote.StateItem) = .empty,
-    sha256_hex: [64]u8 = @splat('0'),
+    hash_hex: [64]u8 = @splat('0'),
 
     fn read(ctx: *anyopaque, body: *std.Io.Reader) anyerror!void {
         const self: *StateReading = @ptrCast(@alignCast(ctx));
-        self.sha256_hex = try readGzLines(self.gpa, body, "{\"cid\":\"state\",\"v\":1,", self, line);
+        self.hash_hex = try readGzLines(self.gpa, body, "{\"cid\":\"state\",\"v\":1,", self, line);
     }
 
     fn line(self: *StateReading, text: []const u8) anyerror!void {
@@ -613,11 +612,11 @@ const StateReading = struct {
 const BundleReading = struct {
     sink: Remote.FileSink,
     scratch: std.heap.ArenaAllocator,
-    sha256_hex: [64]u8 = @splat('0'),
+    hash_hex: [64]u8 = @splat('0'),
 
     fn read(ctx: *anyopaque, body: *std.Io.Reader) anyerror!void {
         const self: *BundleReading = @ptrCast(@alignCast(ctx));
-        self.sha256_hex = try readGzLines(self.scratch.child_allocator, body, "{\"cid\":\"bundle\",\"v\":1,", self, line);
+        self.hash_hex = try readGzLines(self.scratch.child_allocator, body, "{\"cid\":\"bundle\",\"v\":1,", self, line);
     }
 
     fn line(self: *BundleReading, text: []const u8) anyerror!void {
@@ -633,11 +632,11 @@ const BundleReading = struct {
 const DiffReading = struct {
     visitor: Remote.DiffVisitor,
     scratch: std.heap.ArenaAllocator,
-    sha256_hex: [64]u8 = @splat('0'),
+    hash_hex: [64]u8 = @splat('0'),
 
     fn read(ctx: *anyopaque, body: *std.Io.Reader) anyerror!void {
         const self: *DiffReading = @ptrCast(@alignCast(ctx));
-        self.sha256_hex = try readGzLines(self.scratch.child_allocator, body, "{\"cid\":\"diff\",\"v\":1,", self, line);
+        self.hash_hex = try readGzLines(self.scratch.child_allocator, body, "{\"cid\":\"diff\",\"v\":1,", self, line);
     }
 
     fn line(self: *DiffReading, text: []const u8) anyerror!void {
@@ -722,7 +721,7 @@ fn putRange(http: *std.http.Client, io: std.Io, file: std.Io.File, from: u64, le
     _ = reader.discardRemaining() catch return error.TransferFailed;
 }
 
-/// Downloads a presigned GET URL into the cache, verifying the SHA-256
+/// Downloads a presigned GET URL into the cache, verifying the hash
 /// before the item becomes visible (invariant: downloads verify everything).
 pub fn downloadToCache(
     allocator: std.mem.Allocator,

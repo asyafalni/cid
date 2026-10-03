@@ -25,6 +25,8 @@ pub const Parsed = union(enum) {
     logout,
     /// `cid admin …`; the payload is everything after `admin`.
     admin: []const [:0]const u8,
+    /// Plumbing: a file's content hash, as `git hash-object`; never in help.
+    hash_object: []const [:0]const u8,
     /// sshd-only entry points; never in help.
     ssh_keys: []const [:0]const u8,
     ssh_auth: []const [:0]const u8,
@@ -63,6 +65,7 @@ pub fn parse(args: []const [:0]const u8) Parsed {
     if (eql(first, "login")) return .{ .login = args[1..] };
     if (eql(first, "logout")) return .logout;
     if (eql(first, "admin")) return .{ .admin = args[1..] };
+    if (eql(first, "hash-object")) return .{ .hash_object = args[1..] };
     if (eql(first, "ssh-keys")) return .{ .ssh_keys = args[1..] };
     if (eql(first, "ssh-auth")) return .{ .ssh_auth = args[1..] };
     for (not_yet_commands) |cmd| {

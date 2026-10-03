@@ -14,6 +14,7 @@ const dbx = @import("../store/db.zig");
 const blob = @import("../store/blob.zig");
 const version = @import("version.zig");
 const Uuid = @import("../util/uuid7.zig").Uuid;
+const hash = @import("../util/hash.zig");
 
 pub const Error = error{
     NoSuchCommit,
@@ -61,7 +62,7 @@ pub fn manifestKey(arena: std.mem.Allocator, dataset_id: []const u8, commit_id: 
 pub const Created = struct {
     name: []const u8,
     commit_id: []const u8,
-    manifest_sha256: [64]u8,
+    manifest_hash: [64]u8,
     items: u64,
 };
 
@@ -120,12 +121,12 @@ pub fn create(
         scope,
         // The card as it is now, kept with the release: re-rendering this
         // release later cannot pick up an edited card.
-        "INSERT INTO refs (dataset_id, name, kind, commit_id, manifest_path, manifest_sha256, card) " ++
+        "INSERT INTO refs (dataset_id, name, kind, commit_id, manifest_path, manifest_hash, card) " ++
             "VALUES ($1::uuid, $2, 'release', $3::uuid, $4, decode($5, 'hex'), " ++
             "(SELECT body FROM dataset_cards WHERE dataset_id = $1::uuid))",
-        .{ dataset_id, name, commit_id, key, @as([]const u8, &written.sha256_hex.?) },
+        .{ dataset_id, name, commit_id, key, @as([]const u8, &written.hash_hex.?) },
     ) catch return error.Db;
-    return .{ .name = name, .commit_id = commit_id, .manifest_sha256 = written.sha256_hex.?, .items = written.items };
+    return .{ .name = name, .commit_id = commit_id, .manifest_hash = written.hash_hex.?, .items = written.items };
 }
 
 pub const VerifyProblem = enum {
@@ -148,7 +149,7 @@ const RefRow = struct {
     pub const nilo_table = .projection;
     commit_id: []const u8,
     manifest_path: []const u8,
-    manifest_sha256: []const u8,
+    manifest_hash: []const u8,
 };
 
 /// Rebuilds the release from history and checks everything that must
@@ -168,7 +169,7 @@ pub fn verify(
         RefRow,
         scope,
         "SELECT commit_id::text AS commit_id, manifest_path, " ++
-            "encode(manifest_sha256, 'hex') AS manifest_sha256 FROM refs " ++
+            "encode(manifest_hash, 'hex') AS manifest_hash FROM refs " ++
             "WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'release'",
         .{ dataset_id, release_name },
     ) catch return error.Db) orelse return error.NoSuchCommit;
@@ -188,7 +189,7 @@ pub fn verify(
             if (self.missing) return true; // one is enough; the hash still needs the rest
             for (hashes) |h| {
                 var key_buf: [96]u8 = undefined;
-                const key = std.fmt.bufPrint(&key_buf, "items/sha256/{s}/{s}/{s}", .{ h[0..2], h[2..4], h }) catch {
+                const key = std.fmt.bufPrint(&key_buf, "items/" ++ hash.name ++ "/{s}/{s}/{s}", .{ h[0..2], h[2..4], h }) catch {
                     self.failed = error.Storage;
                     return false;
                 };
@@ -223,17 +224,15 @@ pub fn verify(
         .hashes = .{ .ctx = &presence, .visit = Presence.visit },
     }) catch |err| return mapVersion(err);
     if (presence.failed) |err| return err;
-    if (!std.mem.eql(u8, &rebuilt.sha256_hex.?, ref.manifest_sha256))
+    if (!std.mem.eql(u8, &rebuilt.hash_hex.?, ref.manifest_hash))
         problems.append(arena, .recomputed_hash_differs) catch return error.OutOfMemory;
     if (presence.missing) problems.append(arena, .item_missing_from_storage) catch return error.OutOfMemory;
 
     var buf: [64 * 1024]u8 = undefined;
-    var hashing: std.Io.Writer.Hashing(std.crypto.hash.sha2.Sha256) = .init(&buf);
+    var hashing: std.Io.Writer.Hashing(hash.Hasher) = .initHasher(hash.init(), &buf);
     if (s3.streamTo(scope, ref.manifest_path, &hashing.writer)) |_| {
         hashing.writer.flush() catch return error.Storage;
-        var digest: [32]u8 = undefined;
-        hashing.hasher.final(&digest);
-        if (!std.mem.eql(u8, &std.fmt.bytesToHex(digest, .lower), ref.manifest_sha256))
+        if (!std.mem.eql(u8, &hash.hexOf(&hashing.hasher), ref.manifest_hash))
             problems.append(arena, .stored_manifest_differs) catch return error.OutOfMemory;
     } else |_| {
         problems.append(arena, .stored_manifest_missing) catch return error.OutOfMemory;
