@@ -135,6 +135,9 @@ pub fn handle(
 pub const Caller = struct {
     header: ?[]const u8 = null,
     account: ?[]const u8 = null,
+    /// The account came from a personal token, not a dashboard session:
+    /// it may do what the person may, except manage their tokens.
+    personal: bool = false,
 };
 
 pub fn handleAs(
@@ -165,9 +168,16 @@ fn handleInner(
     scope: anytype,
     method: []const u8,
     target: []const u8,
-    caller: Caller,
+    given: Caller,
     body: []const u8,
 ) HandleError!Response {
+    // A personal token (Bearer, or the password of git-style Basic
+    // credentials) becomes its maker's account here, before anything else
+    // looks: from then on it is that person, as a session would be.
+    const caller = switch (try resolveCaller(arena, deps, scope, given)) {
+        .caller => |c| c,
+        .refused => |r| return r,
+    };
     const auth_header = caller.header;
     if (eql(method, "GET") and eql(target, "/v0/ping"))
         return json(arena, .ok, .{ .ok = true });
@@ -176,8 +186,11 @@ fn handleInner(
         return json(arena, .ok, .{ .gitlab = deps.gitlab_signin });
     if (eql(method, "GET") and eql(target, "/v0/me")) return me(arena, deps, scope, caller);
     if (std.mem.startsWith(u8, target, "/v0/me/keys")) return myKeys(arena, deps, scope, caller, method, target, body);
+    if (std.mem.startsWith(u8, target, "/v0/me/tokens")) return myTokens(arena, deps, scope, caller, method, target, body);
 
     if (eql(method, "POST") and eql(target, "/v0/datasets")) {
+        if (caller.personal)
+            return errorResponse(arena, .forbidden, "a personal token cannot create a dataset", "Run 'cid init' with your SSH key (a GitLab Maintainer of the project at that path may), or ask the administrator.");
         // The dataset's name is in the body; createDataset checks scope.
         return createDataset(arena, deps, scope, auth_header, body);
     }
@@ -1387,6 +1400,112 @@ fn me(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller) Han
     return errorResponse(arena, .unauthorized, "not signed in", "Run the sign-in again from the dashboard.");
 }
 
+/// What `resolveCaller` makes of the authorization header.
+const Resolved = union(enum) { caller: Caller, refused: Response };
+
+/// Basic credentials (`https://user:token@host/…`, as git sends them)
+/// carry their token as the password, so they become a Bearer header; the
+/// name is not read. A personal token (`cidp_…`) is looked up by its hash
+/// and, if live, becomes its maker's account; any other bearer token
+/// (the server's, or one minted over SSH) passes on unchanged.
+fn resolveCaller(arena: std.mem.Allocator, deps: *Deps, scope: anytype, given: Caller) HandleError!Resolved {
+    var caller = given;
+    const h = caller.header orelse return .{ .caller = caller };
+    if (std.mem.startsWith(u8, h, "Basic ")) {
+        const decoder = std.base64.standard.Decoder;
+        const raw = std.mem.trim(u8, h["Basic ".len..], " ");
+        const plain = try arena.alloc(u8, decoder.calcSizeForSlice(raw) catch return .{ .refused = badCredentials(arena) });
+        decoder.decode(plain, raw) catch return .{ .refused = badCredentials(arena) };
+        const colon = std.mem.indexOfScalar(u8, plain, ':') orelse return .{ .refused = badCredentials(arena) };
+        caller.header = try std.fmt.allocPrint(arena, "Bearer {s}", .{plain[colon + 1 ..]});
+    }
+    const bearer = caller.header.?;
+    if (!std.mem.startsWith(u8, bearer, "Bearer " ++ personal_prefix)) return .{ .caller = caller };
+    const hash_hex = content_hash.hex(bearer["Bearer ".len..]);
+    const account = deps.db.rawOne([]const u8, scope, "UPDATE personal_tokens SET last_used_at = now() " ++
+        "WHERE token_hash = decode($1, 'hex') AND expires_at > now() RETURNING account_id", .{@as([]const u8, &hash_hex)}) catch return error.Db;
+    const who = account orelse return .{ .refused = errorResponse(arena, .unauthorized, "that personal token is expired, revoked or unknown", "Make a new one on the dashboard's Tokens page, then run the command again with it.") };
+    return .{ .caller = .{ .account = who, .personal = true } };
+}
+
+fn badCredentials(arena: std.mem.Allocator) Response {
+    return errorResponse(arena, .unauthorized, "the credentials are not 'name:token'", "Put the token in the address as https://you:TOKEN@host/<dataset>, then run the command again.");
+}
+
+/// Personal tokens start with this, so a leaked one is easy to recognise
+/// and the server knows which lookup it needs.
+pub const personal_prefix = "cidp_";
+const token_days_default = 90;
+const token_days_max = 365;
+const tokens_per_account_max = 50;
+
+const NewTokenBody = struct { name: []const u8, days: u32 = token_days_default };
+
+/// A signed-in person's personal tokens, for scripts and CI: each acts as
+/// them until it expires or is revoked. Made and revoked from a dashboard
+/// session only, never by a token. `GET` lists, `POST {name, days}` makes
+/// one (shown this once), `DELETE ?id=` revokes.
+fn myTokens(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, method: []const u8, target: []const u8, body: []const u8) HandleError!Response {
+    const account = caller.account orelse
+        return errorResponse(arena, .unprocessable_entity, "tokens belong to a person, and the server token is not one", "Run 'Sign in with GitLab' on the dashboard, then open your tokens again.");
+    if (caller.personal)
+        return errorResponse(arena, .forbidden, "a token cannot manage tokens", "Open the dashboard's Tokens page, signed in with GitLab, to do this.");
+    const Row = struct {
+        pub const nilo_table = .projection;
+        id: []const u8,
+        name: []const u8,
+        prefix: []const u8,
+        created_at: []const u8,
+        expires_at: []const u8,
+        expired: bool,
+        last_used_at: ?[]const u8,
+    };
+    const iso = "'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'";
+    const list_sql = "SELECT token_id::text AS id, name, prefix, to_char(created_at AT TIME ZONE 'UTC', " ++ iso ++ ") AS created_at, " ++
+        "to_char(expires_at AT TIME ZONE 'UTC', " ++ iso ++ ") AS expires_at, expires_at <= now() AS expired, to_char(last_used_at AT TIME ZONE 'UTC', " ++ iso ++ ") AS last_used_at " ++
+        "FROM personal_tokens WHERE account_id = $1 ORDER BY created_at DESC";
+
+    if (eql(method, "GET") and eql(target, "/v0/me/tokens")) {
+        const rows = deps.db.raw(Row, scope, list_sql, .{account}) catch return error.Db;
+        return json(arena, .ok, .{ .tokens = rows });
+    }
+    if (eql(method, "POST") and eql(target, "/v0/me/tokens")) {
+        const req = parseBody(NewTokenBody, arena, body) orelse return error.BadRequest;
+        const name = std.mem.trim(u8, req.name, " \t\r\n");
+        if (name.len == 0 or name.len > 100 or std.mem.indexOfAny(u8, name, "\r\n\t") != null)
+            return errorResponse(arena, .unprocessable_entity, "a token needs a name of up to 100 characters on one line", "Name it after what will use it, such as 'nightly CI', then make it again.");
+        if (req.days < 1 or req.days > token_days_max)
+            return errorResponse(arena, .unprocessable_entity, "a token lives between 1 and 365 days", "Choose a lifetime in that range, then make it again.");
+        const count = (deps.db.rawOne(i64, scope, "SELECT count(*)::bigint FROM personal_tokens WHERE account_id = $1", .{account}) catch return error.Db) orelse 0;
+        if (count >= tokens_per_account_max)
+            return errorResponse(arena, .unprocessable_entity, "you have 50 tokens already", "Revoke the ones nothing uses any more, then make this one again.");
+
+        var secret: [32]u8 = undefined;
+        deps.io.random(&secret);
+        const b64 = std.base64.url_safe_no_pad.Encoder;
+        const token = try arena.alloc(u8, personal_prefix.len + b64.calcSize(secret.len));
+        @memcpy(token[0..personal_prefix.len], personal_prefix);
+        _ = b64.encode(token[personal_prefix.len..], &secret);
+        const hash_hex = content_hash.hex(token);
+        const id = Uuid.now(deps.io).toString();
+        _ = deps.db.exec(scope, "INSERT INTO personal_tokens (token_id, account_id, name, token_hash, prefix, expires_at) " ++
+            "VALUES ($1::uuid, $2, $3, decode($4, 'hex'), $5, now() + $6::bigint * interval '1 day')", .{
+            @as([]const u8, &id), account, name, @as([]const u8, &hash_hex), token[0 .. personal_prefix.len + 6], @as(i64, req.days),
+        }) catch return error.Db;
+        const rows = deps.db.raw(Row, scope, list_sql, .{account}) catch return error.Db;
+        return json(arena, .created, .{ .id = @as([]const u8, &id), .token = token, .tokens = rows });
+    }
+    if (eql(method, "DELETE") and std.mem.startsWith(u8, target, "/v0/me/tokens?id=")) {
+        const id = target["/v0/me/tokens?id=".len..];
+        if (Uuid.parse(id) == error.InvalidUuid) return errorResponse(arena, .not_found, "you have no token with that id", "Reload your tokens and try again.");
+        const gone = deps.db.exec(scope, "DELETE FROM personal_tokens WHERE token_id = $1::uuid AND account_id = $2", .{ id, account }) catch return error.Db;
+        if (gone == 0) return errorResponse(arena, .not_found, "you have no token with that id", "Reload your tokens and try again.");
+        const rows = deps.db.raw(Row, scope, list_sql, .{account}) catch return error.Db;
+        return json(arena, .ok, .{ .tokens = rows });
+    }
+    return errorResponse(arena, .not_found, "no such route", "Update cid and try again.");
+}
+
 const AddKeyBody = struct { title: []const u8 = "", key: []const u8 };
 
 /// A signed-in person's own SSH keys, the identity `cid clone` and the rest
@@ -1397,6 +1516,9 @@ const AddKeyBody = struct { title: []const u8 = "", key: []const u8 };
 fn myKeys(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, method: []const u8, target: []const u8, body: []const u8) HandleError!Response {
     const account = caller.account orelse
         return errorResponse(arena, .unprocessable_entity, "SSH keys belong to a person, and the server token is not one", "Run 'Sign in with GitLab' on the dashboard, then open your keys again.");
+    // A key outlives any token, so a token, which can leak, may not add one.
+    if (caller.personal)
+        return errorResponse(arena, .forbidden, "a token cannot manage SSH keys", "Open the dashboard's SSH keys page, signed in with GitLab, to do this.");
     const Row = struct {
         pub const nilo_table = .projection;
         fingerprint: []const u8,

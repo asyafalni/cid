@@ -445,3 +445,28 @@ export function addKey(title: string, key: string): Promise<{ fingerprint: strin
 export function removeKey(fingerprint: string): Promise<{ keys: SshKey[] }> {
   return send(`/v0/me/keys?fingerprint=${encodeURIComponent(fingerprint)}`, 'DELETE');
 }
+
+export type PersonalToken = {
+  id: string;
+  name: string;
+  /** Its first characters, to recognise it by; the token itself is shown once. */
+  prefix: string;
+  created_at: string;
+  expires_at: string;
+  /** By the server's clock. */
+  expired: boolean;
+  last_used_at: string | null;
+};
+
+/** The signed-in person's personal tokens, for scripts and CI. */
+export function listTokens(): Promise<{ tokens: PersonalToken[] }> {
+  return request('/v0/me/tokens');
+}
+
+export function makeToken(name: string, days: number): Promise<{ id: string; token: string; tokens: PersonalToken[] }> {
+  return send('/v0/me/tokens', 'POST', { name, days });
+}
+
+export function revokeToken(id: string): Promise<{ tokens: PersonalToken[] }> {
+  return send(`/v0/me/tokens?id=${encodeURIComponent(id)}`, 'DELETE');
+}

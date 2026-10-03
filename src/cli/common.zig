@@ -104,11 +104,17 @@ pub fn openCacheDir(ctx: *const Context) !std.Io.Dir {
 /// reachable or configured (exit 1).
 pub fn noRemote(ctx: *const Context, err: anyerror, comptime command: []const u8) ExitCode {
     if (err == error.AccessDenied) return denied(ctx, command);
+    if (err == error.NeedToken) return fail(ctx, .usage, need_token_msg ++ "'" ++ command ++ "' again.", .{});
     // The SSH call ran and failed: the server or the network (exit 4);
     // otherwise nothing says where the server is (exit 1).
     if (err == error.ServerUnreachable) return fail(ctx, .network, no_server_msg, .{});
     return fail(ctx, .usage, no_server_msg, .{});
 }
+
+pub const need_token_msg =
+    "this https address carries no token, and CID_TOKEN is not set.\n" ++
+    "Make a token on the dashboard's Tokens page, then put it in the address\n" ++
+    "(https://you:TOKEN@host/<dataset>) or export CID_TOKEN, then run ";
 
 pub const no_server_msg =
     "cannot reach a cid server: the SSH call failed and no override is set.\n" ++
@@ -125,9 +131,16 @@ pub fn remoteFor(
     var tok: []const u8 = undefined;
     var renew: ?*SshRenew = null;
     const login = @import("login.zig");
+    const https = if (address) |a| workspace.httpsOf(a) else null;
     if (ctx.env.get("CID_SERVER")) |s| {
         server = s;
         tok = ctx.env.get("CID_TOKEN") orelse return error.NoServer;
+    } else if (https) |h| {
+        // An https address is a server and, maybe, a token, as git takes
+        // one; a folder keeps its address without the token, so there it
+        // comes from CID_TOKEN.
+        server = try h.server(ctx.arena);
+        tok = h.token orelse ctx.env.get("CID_TOKEN") orelse return error.NeedToken;
     } else if (login.load(ctx)) |stored| {
         // 'cid login' is for machines without SSH; a stored login wins
         // over trying SSH and failing slowly.

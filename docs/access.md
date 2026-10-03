@@ -45,8 +45,13 @@ runs) and HTTP 401/403 answers are not logged.
 Before trying SSH, a command looks for two other ways in, in this order:
 
 1. **`CID_SERVER` and `CID_TOKEN` in the environment.** They win over everything else.
-   This is what CI uses today.
-2. **A stored `cid login`.** `echo "$TOKEN" | cid login <server-url>` stores the server
+2. **An https address**, `https://<name>:<token>@<host>/<dataset path>`, as git takes
+   credentials (`http://` too, for a server on the same machine). The server is the
+   scheme and host; the token is the password (the name is not read), or `CID_TOKEN`
+   when the address has none. A folder keeps its address **without** the token
+   (`.cid/config.zon` is copied and zipped along with the folder), so commands in a
+   folder cloned this way read `CID_TOKEN`, and say so when it is missing.
+3. **A stored `cid login`.** `echo "$TOKEN" | cid login <server-url>` stores the server
    and token in `~/.config/cid/credentials` (mode 0600, like `~/.netrc`; tokens only,
    never keys; not an OS keychain, which would need a platform C library per OS).
    When present it is used for every dataset, in preference to SSH. `cid logout`
@@ -110,8 +115,25 @@ dataset with the server's static token (`CID_SERVER`/`CID_TOKEN`).
 
 ## CI, scripts and machines
 
-CI jobs today export `CID_SERVER` and `CID_TOKEN` (see "Overrides" above). A machine
-that cannot use SSH at all uses `cid login`.
+**Personal tokens** are what scripts and CI use. A signed-in person makes one on the
+dashboard's Tokens page (`/tokens`; `GET`/`POST /v0/me/tokens`,
+`DELETE /v0/me/tokens?id=`), names it after what will use it, and copies it once:
+only its BLAKE3 hash is kept (`personal_tokens`). It acts as its maker, with their
+access from the `access` table, until it expires (90 days unless chosen, at most 365)
+or is revoked. It is sent as `Authorization: Bearer cidp_…`, or as the password of
+Basic credentials, which is what `https://name:token@host/…` becomes:
+
+```bash
+cid clone https://ci:$CID_PAT@cid.example/your-org/datasets/speech-id
+cd speech-id && CID_TOKEN=$CID_PAT cid pull
+```
+
+A token cannot make tokens, add SSH keys (a key would outlive the token) or create
+datasets: those need the person, signed in, or their SSH key. Up to 50 per person.
+Revoked or expired, it is refused with a pointer to the Tokens page.
+
+The server's static token (`CID_SERVER`/`CID_TOKEN`, see "Overrides" above) still
+works, for administrators and trusted automation.
 
 Not built yet: deploy keys, i.e. an SSH key registered for one dataset (read-only or
 read-write) in the dashboard, so CI can use SSH like git does. The `accounts` table

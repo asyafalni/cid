@@ -32,7 +32,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         return common.fail(ctx, .usage, "every dataset is paired with a git repository; {s}", .{usage_hint});
 
     const path = workspace.datasetPathOf(addr) orelse
-        return common.fail(ctx, .usage, "'{s}' is not a cid address (expected cid@host:org/path); {s}", .{ addr, usage_hint });
+        return common.fail(ctx, .usage, "'{s}' is not a cid address (expected cid@host:org/path); {s}", .{ workspace.redacted(ctx.arena, addr) catch "that address", usage_hint });
     const work_dir = std.Io.Dir.cwd().openDir(ctx.io, ".", .{ .iterate = true }) catch
         return common.fail(ctx, .usage, "cannot open the current folder. Run 'cid init' from the dataset folder.", .{});
     if (work_dir.access(ctx.io, ".cid", .{})) |_| {
@@ -55,18 +55,22 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
                 registered = true;
                 made = m;
             },
-            .exists => return common.fail(ctx, .usage, "{s} already exists. Run 'cid clone {s}' to work with it.", .{ path, addr }),
+            .exists => return common.fail(ctx, .usage, "{s} already exists. Run 'cid clone {s}' to work with it.", .{ path, workspace.withoutCredentials(ctx.arena, addr) catch "<address>" }),
             .refused => |r| return common.fail(ctx, .usage, "{s}. {s}", .{ r.what, r.next }),
         }
-    } else |err| if (err == error.AccessDenied) return refusedCreate(ctx, path);
+    } else |err| switch (err) {
+        error.AccessDenied => return refusedCreate(ctx, path),
+        error.NeedToken => return common.noRemote(ctx, err, "cid init"),
+        else => {},
+    }
 
     workspace.init(ctx.arena, ctx.io, work_dir, addr, git) catch |err| switch (err) {
-        error.BadAddress => return common.fail(ctx, .usage, "'{s}' is not a cid address (expected cid@host:org/path); {s}", .{ addr, usage_hint }),
+        error.BadAddress => return common.fail(ctx, .usage, "'{s}' is not a cid address (expected cid@host:org/path); {s}", .{ workspace.redacted(ctx.arena, addr) catch "that address", usage_hint }),
         error.AlreadyADataset => return common.fail(ctx, .usage, "this folder is already a cid dataset. Run 'cid status'.", .{}),
         else => return common.fail(ctx, .network, "could not write .cid/ here. Check folder permissions, then run 'cid init' again.", .{}),
     };
 
-    if (common.emitJson(ctx, .{ .dataset = path, .address = addr, .git = git, .on_server = registered, .warnings = made.warnings })) return .ok;
+    if (common.emitJson(ctx, .{ .dataset = path, .address = workspace.withoutCredentials(ctx.arena, addr) catch addr, .git = git, .on_server = registered, .warnings = made.warnings })) return .ok;
     for (made.warnings) |w| common.warn(ctx, "{s}", .{w});
     ctx.out.print(
         "Initialized {s} from this folder{s}.\nNext: 'cid add .' to stage files, then 'cid commit -m \"First import\"'.\n",

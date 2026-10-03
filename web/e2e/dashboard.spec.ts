@@ -388,6 +388,49 @@ test('the server token has no keys, and the keys page says how to get yours', as
   await expect(page.getByRole('button', { name: 'Add key' })).toHaveCount(0);
 });
 
+test('a personal token: made once, works as git-style credentials, and stops when revoked', async ({ page }) => {
+  await page.goto('/signin');
+  await page.getByRole('link', { name: 'Sign in with GitLab' }).click();
+  await expect(page.getByRole('heading', { name: 'Datasets' })).toBeVisible();
+  await page.getByRole('link', { name: 'Tokens' }).click();
+  await expect(page.getByRole('heading', { name: 'Tokens' })).toBeVisible();
+
+  const job = `e2e job ${Date.now()}`;
+  await page.getByLabel('Name').fill(job);
+  await page.getByLabel('Expires after').selectOption('30');
+  await page.getByRole('button', { name: 'Make token' }).click();
+  const fresh = page.getByRole('status');
+  await expect(fresh).toContainText(`${job} is ready`);
+  const tokenText = (await fresh.locator('code').first().textContent()) ?? '';
+  expect(tokenText).toMatch(/^cidp_/);
+  await expect(fresh.locator('code').nth(1)).toContainText(`you:${tokenText}@`);
+
+  // As Rhea, through Basic credentials, the way git sends them: what she
+  // may read, and nothing she may not.
+  const basic = `Basic ${Buffer.from(`rhea:${tokenText}`).toString('base64')}`;
+  const ok = await page.request.get('/v0/datasets/e2e/datasets/boxes/-/info', { headers: { authorization: basic } });
+  expect(ok.status()).toBe(200);
+  const no = await page.request.get('/v0/datasets/e2e/datasets/demo/-/info', { headers: { authorization: basic } });
+  expect([401, 403]).toContain(no.status());
+
+  // Shown once: a reload lists it by name, used, and without the token.
+  await page.reload();
+  const list = page.getByRole('list', { name: 'Your tokens' });
+  const row = list.getByRole('listitem').filter({ hasText: job });
+  await expect(row).toContainText('used ');
+  await expect(row).toContainText('expires ');
+  await expect(page.getByText(tokenText)).toHaveCount(0);
+  const found = (await new AxeBuilder({ page }).analyze()).violations.filter(
+    (v) => v.impact === 'serious' || v.impact === 'critical',
+  );
+  expect(found.map((v) => v.id)).toEqual([]);
+
+  await page.getByRole('button', { name: `Revoke token ${job}` }).click();
+  await expect(list.getByText(job)).toHaveCount(0);
+  const after = await page.request.get('/v0/datasets/e2e/datasets/boxes/-/info', { headers: { authorization: basic } });
+  expect(after.status()).toBe(401);
+});
+
 test('a GitLab callback with a forged state is refused, in words', async ({ page }) => {
   await page.goto('/auth/gitlab/callback?code=anything&state=forged-state-value-x');
   await expect(page).toHaveURL(/\/signin\?error=/);
@@ -502,7 +545,7 @@ test('media opens as media: a sound plays with its waveform, a note reads as tex
 
 test('accessibility: no serious or critical axe findings', async ({ page }) => {
   await signIn(page);
-  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/keys']) {
+  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/keys', '/tokens']) {
     await page.goto(path);
     await page.waitForLoadState('networkidle');
     const results = await new AxeBuilder({ page }).analyze();

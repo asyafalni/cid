@@ -341,6 +341,84 @@ test "dashboard keys: a person adds and removes their own, one key per account, 
     _ = try db.exec(&fscope, "DELETE FROM ssh_keys WHERE account_id IN ('gitlab:9301', 'gitlab:9302')", .{});
 }
 
+test "personal tokens: made on the dashboard, act as their maker, Bearer or Basic, until expired or revoked" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
+
+    const name = "test/datasets/pat";
+    _ = try db.exec(&fscope, "DELETE FROM personal_tokens WHERE account_id = 'gitlab:9401'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM access WHERE account_id = 'gitlab:9401'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = $1", .{name});
+    _ = try db.exec(&fscope, "INSERT INTO accounts (account_id, display_name, source) VALUES ('gitlab:9401', 'Cy Script', 'gitlab') ON CONFLICT DO NOTHING", .{});
+    try std.testing.expectEqual(std.http.Status.created, cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"" ++ name ++ "\",\"git_url\":\"/srv/git/pat.git\"}").status);
+    _ = try db.exec(&fscope, "INSERT INTO access (dataset_id, account_id, level, source) SELECT dataset_id, 'gitlab:9401', 'read', 'gitlab' FROM datasets WHERE name = $1", .{name});
+
+    // Made from a session, shown once, listed by its prefix only.
+    const session: cid.api.Caller = .{ .account = "gitlab:9401" };
+    const made = cid.api.handleAs(arena, &deps, &scope, "POST", "/v0/me/tokens", session, "{\"name\":\"nightly CI\"}");
+    try std.testing.expectEqual(std.http.Status.created, made.status);
+    const Made = struct { id: []const u8, token: []const u8 };
+    const m = try std.json.parseFromSliceLeaky(Made, arena, made.body, .{ .ignore_unknown_fields = true });
+    try std.testing.expect(std.mem.startsWith(u8, m.token, cid.api.personal_prefix));
+    const listed = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/me/tokens", session, "");
+    try std.testing.expect(std.mem.indexOf(u8, listed.body, "nightly CI") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed.body, m.token) == null);
+    const stored = try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM personal_tokens WHERE token_hash = decode($1, 'hex')", .{@as([]const u8, &cid.hash.hex(m.token))});
+    try std.testing.expectEqual(@as(?i64, 1), stored);
+
+    // As its maker: reads what they may read, Bearer or git-style Basic,
+    // and no more.
+    const bearer = try std.fmt.allocPrint(arena, "Bearer {s}", .{m.token});
+    try std.testing.expectEqual(std.http.Status.ok, cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/" ++ name ++ "/-/info", bearer, "").status);
+    const creds = try std.fmt.allocPrint(arena, "ci:{s}", .{m.token});
+    const enc = std.base64.standard.Encoder;
+    const basic_b64 = try arena.alloc(u8, enc.calcSize(creds.len));
+    _ = enc.encode(basic_b64, creds);
+    const basic = try std.fmt.allocPrint(arena, "Basic {s}", .{basic_b64});
+    try std.testing.expectEqual(std.http.Status.ok, cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/" ++ name ++ "/-/info", basic, "").status);
+    const push = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/" ++ name ++ "/-/check-hashes", bearer, "{\"hashes\":[]}");
+    try std.testing.expect(push.status == .unauthorized or push.status == .forbidden);
+
+    // A token may not make tokens, add SSH keys, or create datasets.
+    try std.testing.expectEqual(std.http.Status.forbidden, cid.api.handle(arena, &deps, &scope, "POST", "/v0/me/tokens", bearer, "{\"name\":\"more\"}").status);
+    try std.testing.expectEqual(std.http.Status.forbidden, cid.api.handle(arena, &deps, &scope, "GET", "/v0/me/keys", bearer, "").status);
+    try std.testing.expectEqual(std.http.Status.forbidden, cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", bearer, "{\"name\":\"test/datasets/pat-2\",\"git_url\":\"/x\"}").status);
+    // Lifetimes: a year at most.
+    try std.testing.expectEqual(std.http.Status.unprocessable_entity, cid.api.handleAs(arena, &deps, &scope, "POST", "/v0/me/tokens", session, "{\"name\":\"forever\",\"days\":400}").status);
+
+    // Expired, then revoked: refused, saying what to do.
+    _ = try db.exec(&fscope, "UPDATE personal_tokens SET expires_at = now() - interval '1 second' WHERE token_id = $1::uuid", .{m.id});
+    const expired = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/" ++ name ++ "/-/info", bearer, "");
+    try std.testing.expectEqual(std.http.Status.unauthorized, expired.status);
+    try std.testing.expect(std.mem.indexOf(u8, expired.body, "Tokens page") != null);
+    _ = try db.exec(&fscope, "UPDATE personal_tokens SET expires_at = now() + interval '1 day' WHERE token_id = $1::uuid", .{m.id});
+    const revoke = try std.fmt.allocPrint(arena, "/v0/me/tokens?id={s}", .{m.id});
+    try std.testing.expectEqual(std.http.Status.ok, cid.api.handleAs(arena, &deps, &scope, "DELETE", revoke, session, "").status);
+    try std.testing.expectEqual(std.http.Status.unauthorized, cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/" ++ name ++ "/-/info", bearer, "").status);
+
+    _ = try db.exec(&fscope, "DELETE FROM access WHERE account_id = 'gitlab:9401'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = $1", .{name});
+}
+
 test "seaweedfs s3 is reachable" {
     const addr = try std.Io.net.IpAddress.parse("127.0.0.1", seaweed_s3_port);
     const io = std.testing.io;

@@ -323,6 +323,22 @@ CREATE TABLE stars (
   PRIMARY KEY (account_id, dataset_id)
 );
 
+-- Personal access tokens, made on the dashboard for scripts and CI: a
+-- token acts as the person who made it, with their access, until it
+-- expires or is revoked (deleted). Only its hash is kept; the token itself
+-- is shown once.
+CREATE TABLE personal_tokens (
+  token_id      uuid PRIMARY KEY,
+  account_id    text NOT NULL REFERENCES accounts(account_id),
+  name          text NOT NULL,
+  token_hash    bytea NOT NULL UNIQUE CHECK (octet_length(token_hash) = 32),  -- BLAKE3
+  prefix        text NOT NULL,          -- its first characters, to recognise it by
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  expires_at    timestamptz NOT NULL,
+  last_used_at  timestamptz
+);
+CREATE INDEX personal_tokens_by_account ON personal_tokens (account_id);
+
 CREATE TABLE auth_events (
   ts           timestamptz NOT NULL,
   account_id   text,

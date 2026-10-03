@@ -214,10 +214,17 @@ cid admin grant <dataset> <account> <read|write|maintain>
 
 ### CI and scripts
 
-CI jobs today use `CID_SERVER` + `CID_TOKEN` (the server's static token, full access;
-it wins over SSH and over a stored login) or `cid login <server>` (token in
-`~/.config/cid/credentials`, 0600; used for every dataset once stored). Per-dataset
-deploy keys are planned, not built.
+CI jobs use a personal token, made on the dashboard's Tokens page (acts as its maker,
+expires, revocable), in an https address as git takes credentials, or in `CID_TOKEN`:
+
+```bash
+cid clone https://ci:$CID_PAT@cidhub.com/your-org/datasets/speech-id
+cd speech-id && CID_TOKEN=$CID_PAT cid pull   # a folder never keeps the token
+```
+
+Administrators can still use `CID_SERVER` + `CID_TOKEN` with the server's static token
+(full access; it wins over everything), or `cid login <server>` (token in
+`~/.config/cid/credentials`, 0600). Per-dataset deploy keys are planned, not built.
 
 ---
 
@@ -421,7 +428,7 @@ Deep dives: `docs/data-model.md` · `docs/access.md` · `docs/git-repository.md`
     are always accepted and stored as-is.
 16. **Local state is recoverable.** An interrupted `push`, `pull` or `checkout` leaves
     `.cid/` consistent; running the same command again finishes the job.
-17. **The dashboard changes no data** (a person's own stars and SSH keys aside). Card editing and making
+17. **The dashboard changes no data** (a person's own stars, SSH keys and tokens aside). Card editing and making
     releases there are parked decisions; annotations are edited only in the annotation
     platform.
 18. **One bad file never breaks a view.** If an item can't be previewed or parsed, only
@@ -569,9 +576,10 @@ Rules for every command:
 
 There is no user config to write. SSH settings come from the user's normal
 `~/.ssh/config`; a folder's `.cid/config.zon` (written by `clone`/`init`) holds its
-address and git URL. `cid login` (rare) stores its token in
-`~/.config/cid/credentials` (0600). `CID_SERVER` + `CID_TOKEN` in the environment
-override both (scripts, CI). A token from the SSH front door lives 15 minutes; a longer
+address and git URL, never a token. An https address carries a personal token for
+the command it is given to; in a folder, `CID_TOKEN` does. `cid login` (rare) stores
+its token in `~/.config/cid/credentials` (0600). `CID_SERVER` + `CID_TOKEN` in the
+environment override all of them. A token from the SSH front door lives 15 minutes; a longer
 command asks for a fresh one and retries.
 
 `cid clone <git-url>` (a URL ending in `.git`) works by reading the `.cid` marker file

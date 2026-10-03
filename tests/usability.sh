@@ -206,6 +206,20 @@ expect_ok   "register the key (the GitLab sync's job)" "$CID" admin add-key gitl
 expect_code 5 "clone before being given access"   by_key "$CID" clone "cid@127.0.0.1:$DS" by-stranger
 expect_ok   "Reporter access (the GitLab sync's job)" "$CID" admin grant "$DS" gitlab:9001 read
 expect_ok   "clone with only an SSH key"         by_key "$CID" clone "cid@127.0.0.1:$DS" by-key
+# A personal token in an https address, as git takes credentials. (Made
+# here the way the dashboard keeps one: only its hash, for Rina.)
+PAT="cidp_usability$(date +%s%N)"
+printf '%s' "$PAT" > "$WORK/pat.txt"
+docker compose -f "$ROOT/docker-compose.test.yml" exec -T timescaledb psql -qtA -U cid -d cid_test -c \
+    "INSERT INTO personal_tokens (token_id, account_id, name, token_hash, prefix, expires_at) VALUES (gen_random_uuid(), 'gitlab:9001', 'usability', decode('$("$CID" hash-object "$WORK/pat.txt")', 'hex'), 'cidp_u', now() + interval '1 day')" >/dev/null
+no_env() { env -u CID_SERVER -u CID_TOKEN HOME="$SSHHOME" "$@"; }
+HOSTPORT=${CID_SERVER#http://}
+expect_ok   "clone with a token in an https address" no_env "$CID" clone "http://rina:$PAT@$HOSTPORT/$DS" by-token
+if grep -q "$PAT" by-token/.cid/config.zon; then say "FAIL: the folder kept the token"; fails=$((fails+1)); else say "ok: the folder keeps the address without the token"; fi
+cd by-token
+expect_code 1 "pull in it with no token"        no_env "$CID" pull
+expect_ok   "pull in it with CID_TOKEN"         no_env env CID_TOKEN="$PAT" "$CID" pull
+cd "$WORK"
 # Creating over SSH needs the front door to ask GitLab for the Maintainer
 # role; with no GitLab to ask, it is refused, saying why and what next.
 mkdir -p "$WORK/by-key-new" && cd "$WORK/by-key-new"

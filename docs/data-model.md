@@ -427,6 +427,16 @@ CREATE TABLE stars (
   created_at    timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (account_id, dataset_id)
 );
+CREATE TABLE personal_tokens (           -- made on the dashboard; act as their maker
+  token_id      uuid PRIMARY KEY,
+  account_id    text NOT NULL REFERENCES accounts(account_id),
+  name          text NOT NULL,
+  token_hash    bytea NOT NULL UNIQUE,   -- BLAKE3 of the token; the token is shown once
+  prefix        text NOT NULL,           -- its first characters, to recognise it by
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  expires_at    timestamptz NOT NULL,    -- required: 90 days unless chosen, at most 365
+  last_used_at  timestamptz              -- revoking deletes the row
+);
 
 -- hypertables, 7-day chunks
 CREATE TABLE auth_events (               -- every token handed out (or refused) over SSH

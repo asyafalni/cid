@@ -1497,3 +1497,49 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* --- personal tokens: the same rows, and the once-only reveal --- */
+
+.key-add select {
+  font-family: var(--font-ui);
+  font-size: 0.875rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  padding: var(--space-2) var(--space-3);
+  align-self: flex-start;
+}
+
+.key-add select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.token-fresh {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  margin-bottom: var(--space-6);
+  border-color: var(--aether);
+}
+
+.token-fresh h2 {
+  font-size: 1.1rem;
+  margin: 0;
+}
+
+.token-fresh .key-remove {
+  align-self: flex-start;
+}
+
+.token-line-label {
+  display: block;
+  font-size: 0.8125rem;
+  margin-bottom: var(--space-1);
+}
+
+.token-expired {
+  color: var(--warn);
+}

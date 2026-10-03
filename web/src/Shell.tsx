@@ -24,6 +24,9 @@ export function Shell() {
               <Link to="/keys" className="rail-link">
                 SSH keys
               </Link>
+              <Link to="/tokens" className="rail-link">
+                Tokens
+              </Link>
               {me.data.via === 'gitlab' ? (
                 // A POST, so no link elsewhere can sign anybody out.
                 <form method="post" action="/auth/signout">

@@ -9,6 +9,7 @@ import { SignIn } from './pages/SignIn';
 import { Home } from './pages/Home';
 import { DatasetOverview } from './pages/DatasetOverview';
 import { Keys } from './pages/Keys';
+import { Tokens } from './pages/Tokens';
 import { getMe } from './api';
 
 // Signed in means the server says so: a GitLab session cookie or a pasted
@@ -106,7 +107,14 @@ const keysRoute = createRoute({
   component: Keys,
 });
 
-const routeTree = rootRoute.addChildren([signInRoute, homeRoute, datasetRoute, keysRoute]);
+const tokensRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/tokens',
+  beforeLoad: requireSignIn,
+  component: Tokens,
+});
+
+const routeTree = rootRoute.addChildren([signInRoute, homeRoute, datasetRoute, keysRoute, tokensRoute]);
 
 export const router = createRouter({ routeTree });
 

@@ -48,7 +48,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
             return common.fail(ctx, .usage, "could not read the dataset marker from that git repository. Check the URL, or run 'cid clone' with the cid address instead.", .{});
     }
     const name = workspace.datasetPathOf(address) orelse
-        return common.fail(ctx, .usage, "'{s}' is not a cid address (expected cid@host:org/path). Check it and run 'cid clone' again.", .{address});
+        return common.fail(ctx, .usage, "'{s}' is not a cid address (expected cid@host:org/path). Check it and run 'cid clone' again.", .{workspace.redacted(ctx.arena, address) catch "that"});
 
     const dest = if (positional.items.len == 2) positional.items[1] else lastSegment(name);
     const cwd = std.Io.Dir.cwd();

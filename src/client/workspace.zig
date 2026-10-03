@@ -144,7 +144,9 @@ pub fn initFull(
     var config_buf: std.ArrayList(u8) = .empty;
     var aw: std.Io.Writer.Allocating = .init(arena);
     std.zon.stringify.serialize(Config{
-        .address = address,
+        // Never a token: a folder is zipped and shared, and credentials
+        // given in an https address are for the command they came with.
+        .address = withoutCredentials(arena, address) catch return error.InitFailed,
         .git_url = git_url,
         .kind = kind,
         .format = format,
@@ -161,9 +163,68 @@ pub fn initFull(
     local.writeFileAtomic(io, cid_dir, "tracked", "cid-tracked 1\n") catch return error.InitFailed;
 }
 
-/// The dataset path inside an address: cid@host:org/datasets/name → org/datasets/name.
-/// A trailing .cid is accepted and ignored (CLAUDE.md, words).
+/// An HTTPS address: `https://[name:token@]host[:port]/<dataset path>`,
+/// for scripts and machines without SSH, as git takes one. `http://` is
+/// accepted for a server on the same machine; anything else should be TLS.
+pub const Https = struct {
+    scheme: []const u8, // "https://" or "http://"
+    host: []const u8, // host[:port]
+    path: []const u8,
+    /// The password of the credentials, if the address carries them; the
+    /// name before it is not read.
+    token: ?[]const u8,
+
+    /// Where the API is: scheme, host and port.
+    pub fn server(self: Https, arena: std.mem.Allocator) error{OutOfMemory}![]const u8 {
+        return std.fmt.allocPrint(arena, "{s}{s}", .{ self.scheme, self.host });
+    }
+};
+
+pub fn httpsOf(address: []const u8) ?Https {
+    const scheme: []const u8 = if (std.mem.startsWith(u8, address, "https://"))
+        "https://"
+    else if (std.mem.startsWith(u8, address, "http://"))
+        "http://"
+    else
+        return null;
+    const rest = address[scheme.len..];
+    const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return null;
+    var host = rest[0..slash];
+    var token: ?[]const u8 = null;
+    if (std.mem.lastIndexOfScalar(u8, host, '@')) |at| {
+        const userinfo = host[0..at];
+        if (std.mem.indexOfScalar(u8, userinfo, ':')) |c| {
+            if (c + 1 < userinfo.len) token = userinfo[c + 1 ..];
+        }
+        host = host[at + 1 ..];
+    }
+    var path = std.mem.trim(u8, rest[slash + 1 ..], "/");
+    if (std.mem.endsWith(u8, path, ".cid")) path = path[0 .. path.len - ".cid".len];
+    if (host.len == 0 or path.len == 0) return null;
+    return .{ .scheme = scheme, .host = host, .path = path, .token = token };
+}
+
+/// An address fit to print: any credentials in it hidden, even in one
+/// that is not a valid cid address (the CLI never prints a token).
+pub fn redacted(arena: std.mem.Allocator, address: []const u8) error{OutOfMemory}![]const u8 {
+    const scheme_end = (std.mem.indexOf(u8, address, "://") orelse return address) + 3;
+    const rest = address[scheme_end..];
+    const authority_end = std.mem.indexOfScalar(u8, rest, '/') orelse rest.len;
+    const at = std.mem.lastIndexOfScalar(u8, rest[0..authority_end], '@') orelse return address;
+    return std.fmt.allocPrint(arena, "{s}***@{s}", .{ address[0..scheme_end], rest[at + 1 ..] });
+}
+
+/// The address as a folder keeps it: an https one without its credentials.
+pub fn withoutCredentials(arena: std.mem.Allocator, address: []const u8) error{OutOfMemory}![]const u8 {
+    const h = httpsOf(address) orelse return address;
+    return std.fmt.allocPrint(arena, "{s}{s}/{s}", .{ h.scheme, h.host, h.path });
+}
+
+/// The dataset path inside an address: cid@host:org/datasets/name → org/datasets/name,
+/// https://host/org/datasets/name → the same. A trailing .cid is accepted and
+/// ignored (CLAUDE.md, words).
 pub fn datasetPathOf(address: []const u8) ?[]const u8 {
+    if (httpsOf(address)) |h| return h.path;
     const colon = std.mem.indexOfScalar(u8, address, ':') orelse return null;
     const at = std.mem.indexOfScalar(u8, address, '@') orelse return null;
     if (at > colon) return null;
@@ -577,6 +638,27 @@ test "address parsing" {
     try std.testing.expect(datasetPathOf("no-colon") == null);
     try std.testing.expect(datasetPathOf("host:path-no-user") == null);
     try std.testing.expect(datasetPathOf("cid@host:") == null);
+}
+
+test "https addresses: path, server and token, and what a folder keeps" {
+    const h = httpsOf("https://ci:cidp_secret@cid.example:8443/org/datasets/speech").?;
+    try std.testing.expectEqualStrings("org/datasets/speech", h.path);
+    try std.testing.expectEqualStrings("cidp_secret", h.token.?);
+    const server = try h.server(std.testing.allocator);
+    defer std.testing.allocator.free(server);
+    try std.testing.expectEqualStrings("https://cid.example:8443", server);
+    try std.testing.expectEqualStrings("org/datasets/speech", datasetPathOf("https://cid.example/org/datasets/speech.cid/").?);
+    try std.testing.expect(httpsOf("https://cid.example/org/x").?.token == null);
+    try std.testing.expect(httpsOf("https://ci@cid.example/org/x").?.token == null);
+    try std.testing.expect(httpsOf("https://cid.example/") == null);
+    try std.testing.expect(httpsOf("cid@h:o/d") == null);
+    const kept = try withoutCredentials(std.testing.allocator, "https://ci:cidp_secret@cid.example/org/x");
+    defer std.testing.allocator.free(kept);
+    try std.testing.expectEqualStrings("https://cid.example/org/x", kept);
+    const shown = try redacted(std.testing.allocator, "https://ci:cidp_secret@cid.example/");
+    defer std.testing.allocator.free(shown);
+    try std.testing.expectEqualStrings("https://***@cid.example/", shown);
+    try std.testing.expectEqualStrings("cid@h:o/d", try redacted(std.testing.allocator, "cid@h:o/d"));
 }
 
 test "restore: unstage, throw away edits, leave untracked files alone" {
