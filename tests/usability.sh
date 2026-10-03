@@ -74,9 +74,28 @@ if curl -sf "$CID_SERVER/v0/ping" >/dev/null 2>&1; then
 fi
 "$CID" admin serve --port "$PORT" >"$WORK/serve.log" 2>&1 &
 SERVE_PID=$!
+# Stops the server as a deployment would, with one SIGTERM, and gives it
+# 15 seconds. A server still there by then is a failure, said with what
+# it was doing (its threads, the end of its log, the version jobs), and
+# then killed: a run never hangs waiting for it.
+stop_server() {
+    [ -n "$SERVE_PID" ] || return 0
+    kill "$SERVE_PID" 2>/dev/null || { SERVE_PID=; return 0; }
+    for _ in $(seq 30); do
+        kill -0 "$SERVE_PID" 2>/dev/null || { wait "$SERVE_PID" 2>/dev/null; SERVE_PID=; return 0; }
+        sleep 0.5
+    done
+    say "FAIL: the server did not stop within 15 s of SIGTERM. What it was doing:"
+    for t in /proc/"$SERVE_PID"/task/*; do printf '     thread %s: %s\n' "$(cat "$t/comm")" "$(cat "$t/wchan")"; done | sort | uniq -c
+    say "     version jobs: $(docker compose -f "$ROOT/docker-compose.test.yml" exec -T timescaledb psql -qtA -U cid -d cid_test \
+        -c "SELECT string_agg(status || ' ' || n, ', ') FROM (SELECT status, count(*) AS n FROM version_jobs GROUP BY 1) j" 2>/dev/null)"
+    tail -20 "$WORK/serve.log" | sed 's/^/     log: /'
+    kill -9 "$SERVE_PID" 2>/dev/null; wait "$SERVE_PID" 2>/dev/null; SERVE_PID=
+    return 1
+}
 # Wait for the server to be gone on exit, so a run right after this one
 # never meets it on the same port; and for it to answer before starting.
-trap 'kill $SERVE_PID 2>/dev/null; wait $SERVE_PID 2>/dev/null; chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
+trap 'stop_server; chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 for _ in 1 2 3 4 5 6 7 8 9 10; do
     curl -sf "$CID_SERVER/v0/ping" >/dev/null 2>&1 && break
     sleep 0.5
@@ -318,6 +337,9 @@ else say "FAIL: error under --json (exit $code): $err"; fails=$((fails+1)); fi
 # --- piped --version is one parseable line ----------------------------------
 lines=$("$CID" --version | wc -l)
 if [ "$lines" -eq 1 ]; then say "ok: piped --version is one line"; else say "FAIL: piped --version"; fails=$((fails+1)); fi
+
+# --- the server stops when asked ---------------------------------------------
+if stop_server; then say "ok: the server stops on SIGTERM"; else fails=$((fails+1)); fi
 
 say ""
 if [ "$fails" -eq 0 ]; then

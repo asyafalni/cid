@@ -95,6 +95,7 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
         .port = options.port,
         .max_body = max_body,
     });
+    std.log.info("requests and background work finished; closing", .{});
 }
 
 fn checkBucket(run: *nilo.Run, blobs: *blob.Client) !void {
@@ -166,9 +167,13 @@ fn dispatch(deps: *api.Deps, s: signin.Session, c: *nilo.Ctx) !void {
 /// The background worker: every couple of seconds, prepares whatever
 /// versions are queued (api.prepareNext), one at a time.
 fn prepareVersions(deps: *api.Deps) void {
+    // Said on the way out: a stop that never finishes is then plainly
+    // waiting on a version being prepared, if this line is missing.
+    defer std.log.info("version worker stopped", .{});
     while (true) {
         nilo.sleep(2_000) catch return; // the server is going
-        while (true) {
+        if (!serving()) return;
+        while (serving()) {
             var run = nilo.Run.initIo(deps.gpa, deps.io);
             defer run.deinit();
             const more = api.prepareNext(run.arena(), deps, &run) catch |err| {
@@ -179,3 +184,16 @@ fn prepareVersions(deps: *api.Deps) void {
         }
     }
 }
+
+/// Whether the server is still running, asked without relying on a
+/// cancellation. A stop cancels this worker once, and that cancel can be
+/// spent inside a job (a cancelled S3 call reads as a storage error and
+/// the job carries on); the sleep after it then never ends, and neither
+/// does the stop. A server winding down takes no new background work
+/// (nilo ADR 028), so a refused spawn means it is going.
+fn serving() bool {
+    nilo.spawn(idle, .{}) catch return false;
+    return true;
+}
+
+fn idle() void {}
