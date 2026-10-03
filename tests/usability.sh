@@ -206,6 +206,12 @@ expect_ok   "register the key (the GitLab sync's job)" "$CID" admin add-key gitl
 expect_code 5 "clone before being given access"   by_key "$CID" clone "cid@127.0.0.1:$DS" by-stranger
 expect_ok   "Reporter access (the GitLab sync's job)" "$CID" admin grant "$DS" gitlab:9001 read
 expect_ok   "clone with only an SSH key"         by_key "$CID" clone "cid@127.0.0.1:$DS" by-key
+# Creating over SSH needs the front door to ask GitLab for the Maintainer
+# role; with no GitLab to ask, it is refused, saying why and what next.
+mkdir -p "$WORK/by-key-new" && cd "$WORK/by-key-new"
+expect_code 5 "init over SSH with no GitLab to ask" by_key "$CID" init "cid@127.0.0.1:$DS-by-key" --git "$REPO"
+if [ -e .cid ]; then say "FAIL: a refused init over SSH left .cid/"; fails=$((fails+1)); else say "ok: a refused init over SSH leaves nothing"; fi
+cd "$WORK"
 # The forced command is all a key gets: no shell, no other command.
 for cmd in "" "bash" "cat /etc/passwd" "cid-auth $DS admin"; do
     out=$(env PATH="$FAKEBIN:$PATH" HOME="$SSHHOME" ssh cid@127.0.0.1 $cmd 2>&1); code=$?

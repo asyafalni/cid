@@ -44,7 +44,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     // Nothing is written locally unless it agrees.
     var registered = false;
     var made: Remote.Made = .{};
-    if (common.remoteFor(ctx, path, .write, addr)) |remote| {
+    if (common.remoteFor(ctx, path, .create, addr)) |remote| {
         const created = remote.create(ctx.arena, git) catch |err| switch (err) {
             error.AccessDenied => return common.denied(ctx, "cid init"),
             error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server to create the dataset. Check the connection, then run 'cid init' again.", .{}),
@@ -58,7 +58,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
             .exists => return common.fail(ctx, .usage, "{s} already exists. Run 'cid clone {s}' to work with it.", .{ path, addr }),
             .refused => |r| return common.fail(ctx, .usage, "{s}. {s}", .{ r.what, r.next }),
         }
-    } else |err| if (err == error.AccessDenied) return common.denied(ctx, "cid init");
+    } else |err| if (err == error.AccessDenied) return refusedCreate(ctx, path);
 
     workspace.init(ctx.arena, ctx.io, work_dir, addr, git) catch |err| switch (err) {
         error.BadAddress => return common.fail(ctx, .usage, "'{s}' is not a cid address (expected cid@host:org/path); {s}", .{ addr, usage_hint }),
@@ -73,4 +73,12 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         .{ path, if (!registered) "" else if (made.git_checked) " (created on the server; its git repository is writable)" else " (created on the server)" },
     ) catch return .network;
     return .ok;
+}
+
+/// Creating is refused for its own reasons (the dataset exists, no
+/// Maintainer role on the GitLab project at that path), which the server's
+/// front door has just printed; the role advice of a plain refusal would
+/// be wrong here.
+fn refusedCreate(ctx: *const common.Context, path: []const u8) common.ExitCode {
+    return common.fail(ctx, .access, "the server would not create {s} for your key; its reason is above. Fix that, then run 'cid init' again.", .{path});
 }

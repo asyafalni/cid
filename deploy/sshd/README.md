@@ -7,7 +7,7 @@ SSH only authenticates; data moves over HTTPS (invariant 22).
 ## How a request flows
 
 ```
-cid CLI ── ssh cid@host "cid-auth <dataset> <read|write|maintain>"
+cid CLI ── ssh cid@host "cid-auth <dataset> <read|write|maintain|create>"
    sshd ── AuthorizedKeysCommand → cid-ssh-keys %f
              └─ prints: restrict,command="cid ssh-auth --account=<id>" <key>
    sshd ── runs the forced command through the cid user's shell; the
@@ -29,6 +29,9 @@ cid CLI ── talks HTTPS to <url> with the token (15 minutes, one
    #   CID_DB='host=… user=… password=… dbname=…'
    #   CID_TOKEN_SECRET='a long random string, same as the server's'
    #   CID_PUBLIC_URL='https://cid.example'
+   #   CID_GITLAB_TOKEN='…'   optional: lets a GitLab Maintainer create a
+   #                          dataset over SSH (cid init); same as the server's
+   #   CID_GITLAB_URL='https://gitlab.example'   when not gitlab.com
    ```
 
    The `cid` user needs a real shell: sshd runs the forced command

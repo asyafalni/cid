@@ -81,8 +81,8 @@ and everything heavy link to the cid dashboard. Full spec: `docs/git-repository.
   appears that only matters for the hosted cloud, choose the simple internal answer.
 - **First milestone ("cid exists") is reached:** the file-dataset round trip against a
   real server, the SSH front door, the git writer, previews and the dashboard all run.
-  Still open, each needing a decision first: creating a dataset with only an SSH key
-  (today it needs the server token or `cid login`), and Postgres row-level security for
+  A GitLab Maintainer of the project at the same path creates a dataset with only
+  an SSH key (checked live with GitLab). Still open: Postgres row-level security for
   restricted datasets (invariant 11).
 - **AI stays out of cid.** cid never calls an LLM or judgment API (TypeSafe/Jev
   included) in the CLI or server. The one permitted future exception is advisory-only

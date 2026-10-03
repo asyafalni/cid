@@ -323,6 +323,17 @@ fn tokenOk(expected: []const u8, auth_header: ?[]const u8) bool {
     return diff == 0;
 }
 
+/// The account a scoped token was minted for, if the header holds a valid
+/// one (never for the static token, which names nobody).
+fn tokenAccount(arena: std.mem.Allocator, deps: *Deps, auth_header: ?[]const u8) ?[]const u8 {
+    const secret = deps.token_secret orelse return null;
+    const h = auth_header orelse return null;
+    if (!std.mem.startsWith(u8, h, "Bearer ") or tokenOk(deps.token, h)) return null;
+    const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(deps.io, .real).toSeconds()));
+    const claims = token_mod.verify(arena, secret, h["Bearer ".len..], now) catch return null;
+    return claims.account;
+}
+
 /// Static token: everything. Scoped token: this dataset, this level or
 /// higher, not expired.
 fn authorized(
@@ -1417,6 +1428,14 @@ fn createDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, auth_hea
         "INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES ($1::uuid, $2, $3, $4)",
         .{ @as([]const u8, &id), req.name, req.kind, req.git_url },
     ) catch return error.Db;
+    // Made with a token the SSH front door minted for a GitLab Maintainer
+    // (cid-auth <dataset> create): its creator owns it from now, not from
+    // the next GitLab sync, which will find the same role.
+    if (tokenAccount(arena, deps, auth_header)) |account| {
+        _ = deps.db.exec(scope, "INSERT INTO access (dataset_id, account_id, level, source) " ++
+            "SELECT $1::uuid, $2, 'maintain', 'gitlab' WHERE EXISTS (SELECT 1 FROM accounts WHERE account_id = $2) " ++
+            "ON CONFLICT (dataset_id, account_id) DO UPDATE SET level = 'maintain'", .{ @as([]const u8, &id), account }) catch return error.Db;
+    }
     const warnings: []const []const u8 = if (warning) |w| try arena.dupe([]const u8, &.{w}) else &.{};
     return json(arena, .created, .{ .name = req.name, .dataset_id = &id, .git_checked = deps.git != null, .warnings = warnings });
 }

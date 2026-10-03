@@ -10,12 +10,14 @@
 //!                                         as JSON.
 //!
 //! Both read CID_DB; ssh-auth also reads CID_TOKEN_SECRET and
-//! CID_PUBLIC_URL. See deploy/sshd/.
+//! CID_PUBLIC_URL, and CID_GITLAB_TOKEN (with CID_GITLAB_URL) to let a
+//! GitLab Maintainer create a dataset. See deploy/sshd/.
 
 const std = @import("std");
 const root = @import("../cid.zig");
 const dbx = @import("../store/db.zig");
 const auth = @import("../access/auth.zig");
+const gitlab = @import("../access/gitlab_sync.zig");
 
 const ExitCode = root.ExitCode;
 
@@ -57,7 +59,7 @@ pub fn runAuth(
     }
     const acct = account orelse return quietFail(io, "ssh-auth needs --account=");
     const original = env.get("SSH_ORIGINAL_COMMAND") orelse
-        return quietFail(io, "no command. This endpoint only answers: cid-auth <dataset> <read|write|maintain>");
+        return quietFail(io, "no command. This endpoint only answers: cid-auth <dataset> <read|write|maintain|create>");
     const secret = env.get("CID_TOKEN_SECRET") orelse
         return quietFail(io, "server misconfigured (CID_TOKEN_SECRET unset); tell the administrator");
     const server_url = env.get("CID_PUBLIC_URL") orelse
@@ -70,9 +72,20 @@ pub fn runAuth(
     defer scope.deinit();
 
     const req = auth.parseOriginalCommand(original, acct) catch
-        return quietFail(io, "refused. This endpoint only answers: cid-auth <dataset> <read|write|maintain>");
+        return quietFail(io, "refused. This endpoint only answers: cid-auth <dataset> <read|write|maintain|create>");
     const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
-    const grant = auth.authorize(arena, &standalone.db, &scope, secret, server_url, now, req) catch |err| switch (err) {
+    const grant = if (req.create) blk: {
+        const gitlab_config: ?gitlab.Config = if (env.get("CID_GITLAB_TOKEN")) |t| .{
+            .base_url = env.get("CID_GITLAB_URL") orelse "https://gitlab.com",
+            .token = t,
+        } else null;
+        const answer = auth.authorizeCreate(arena, io, &standalone.db, &scope, secret, server_url, now, gitlab_config, req) catch
+            return quietFail(io, "the server could not answer; try again or tell the administrator");
+        switch (answer) {
+            .granted => |g| break :blk g,
+            .refused => |why| return quietFail(io, auth.createRefusalText(arena, why, req.dataset) catch "refused"),
+        }
+    } else auth.authorize(arena, &standalone.db, &scope, secret, server_url, now, req) catch |err| switch (err) {
         error.AccessDenied => return quietFail(io, "access denied. Ask for access to the dataset's project, then try again."),
         else => return quietFail(io, "the server could not answer; try again or tell the administrator"),
     };

@@ -11,7 +11,9 @@ const hash = @import("../util/hash.zig");
 const local = @import("local.zig");
 const index_mod = @import("index.zig");
 
-pub const TokenLevel = enum { read, write, maintain };
+/// What the SSH front door is asked for: a token at a level, or `create`,
+/// a maintain token for a dataset that does not exist yet.
+pub const TokenLevel = enum { read, write, maintain, create };
 
 pub const Response = struct {
     status: std.http.Status,

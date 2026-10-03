@@ -23,9 +23,10 @@ reads it; a renamed dataset is reachable only at its new path.
 The same pattern Git LFS uses over SSH:
 
 1. The CLI runs the system `ssh` program (so `~/.ssh/config`, agents and hardware keys
-   all work): `ssh cid@cidhub.com cid-auth <dataset-path> <read|write|maintain>`.
-   `read` for clone, pull, checkout, log and diff; `write` for init and push;
-   `maintain` for tag, branch and merge (and editing the dataset card).
+   all work): `ssh cid@cidhub.com cid-auth <dataset-path> <read|write|maintain|create>`.
+   `read` for clone, pull, checkout, log and diff; `write` for push;
+   `maintain` for tag, branch and merge (and editing the dataset card); `create` for
+   init (see "Creating a dataset").
 2. On the server, OpenSSH asks cid which account owns that key
    (`AuthorizedKeysCommand`), and runs only cid's restricted command (forced command:
    no shell, no port forwarding, no terminal).
@@ -84,13 +85,21 @@ Nothing to manage in cid:
   Not built yet: managing keys and members in the dashboard. (Email one-time-link
   sign-in is **not now**: it would add an SMTP dependency.)
 
-### Known gap: creating a dataset
+### Creating a dataset
 
-Creating a dataset (`cid init`, which registers it on the server) needs the server's
-static token (`CID_SERVER`/`CID_TOKEN`) or a `cid login` with it. Over SSH alone it is
-refused (exit 5): the front door grants only what an `access` row allows, and a dataset
-that does not exist yet has no access rows. Who may create datasets over SSH is a
-decision still to be made.
+`cid init <address> --git <url>` over SSH asks the front door for
+`cid-auth <dataset> create`. A dataset that does not exist yet has no `access` rows,
+so the front door asks GitLab instead, live: the person may create it when they are a
+Maintainer or Owner of the GitLab project at the same path (directly or through a
+group, `members/all`), the role that will own the dataset anyway. They get a
+15-minute maintain token for that one name, the server creates the dataset with it,
+and records them as its owner at once rather than at the next sync.
+
+Refused (exit 5), each with its reason: the dataset already exists; the person is not
+a Maintainer of that project (or it does not exist on GitLab yet: create it first);
+their account is not a GitLab one; or the front door has no GitLab to ask
+(`CID_GITLAB_TOKEN` unset in `/etc/cid/env`). An administrator can always create a
+dataset with the server's static token (`CID_SERVER`/`CID_TOKEN`).
 
 ## CI, scripts and machines
 
@@ -105,8 +114,8 @@ allows source `deploy`, but `access` does not, and nothing creates them.
 
 - SSH is used only to authenticate and hand out tokens; data never flows over the SSH
   connection.
-- The forced command accepts only `cid-auth` with a dataset path and `read`, `write`
-  or `maintain`; anything else is refused (exit 5). Each level is granted only to the
+- The forced command accepts only `cid-auth` with a dataset path and `read`, `write`,
+  `maintain` or `create`; anything else is refused (exit 5). Each level is granted only to the
   matching GitLab role or above (Reporter, Developer, Maintainer), and each covers the
   ones below it. A Developer asking to tag is refused at the front door, and a write
   token sent to an owner's route (tag, branch, merge, card edit) gets a 403 that says
