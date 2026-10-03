@@ -8,9 +8,23 @@ the platform's create-dataset API). When the server has a git writer configured
 (`CID_GIT_WORKDIR`), it checks at that moment that it can reach the repository and
 push to it: it pushes a throwaway ref, `refs/cid/write-check`, then deletes it;
 branches and tags are untouched. If either step fails, the dataset is not created and
-the error gives git's own reason and what to fix. Nothing else is checked: not
-whether the repository is empty, and not its branch protection. A server without a
-git writer creates the dataset without the check.
+the error gives git's own reason and what to fix. A server without a git writer
+creates the dataset without the check.
+
+Creation then looks at `main`'s protection, and only ever warns (`cid init` prints
+the warning; `--json` and the API return it in `warnings`); cid works with any git
+host and never refuses a repository for this (`src/gitrepo/protection.zig`):
+
+- On the GitLab the server syncs from (`CID_GITLAB_URL` and `CID_GITLAB_TOKEN`), it
+  asks GitLab's protected-branches API and warns when `main` is not protected or
+  allows force pushes (anyone who can push could rewrite the dataset's history), or
+  when no one may push to it (the write check passes on its scratch ref, and the first
+  release would fail).
+  GitLab shows a project's protected branches only to its Maintainers, so the token's
+  user needs that role on dataset projects; without it the warning says cid could not
+  check.
+- On any other host it notes once that it cannot check, and what to protect.
+- A local repository (a path) gets nothing.
 
 ---
 
@@ -127,8 +141,9 @@ This section is advice for administrators; cid does not configure GitLab.
   access** on each dataset project. Deploy keys work on every GitLab tier and can be
   allowed to push to protected branches, so no paid seat or personal token is needed.
 - **Protection:** make `main` a protected branch with "Allowed to push and merge" set
-  to the cid deploy key only, and protect release tags the same way. cid does not
-  check these settings.
+  to the cid deploy key only, and protect release tags the same way. cid warns at
+  creation when `main` is unprotected, allows force pushes or lets no one push (see
+  above); it does not check tags.
 - **What leaves your network:** only the small files above. Keep dataset names, cards
   and release notes free of customer names or anything contractually confidential, and
   restricted datasets never send more than counts.

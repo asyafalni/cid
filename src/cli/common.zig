@@ -23,6 +23,15 @@ pub const Context = struct {
     env: *const std.process.Environ.Map,
 };
 
+/// Something the user should know that did not stop the command, on
+/// stderr (so it never mixes into a result on stdout).
+pub fn warn(ctx: *const Context, comptime fmt: []const u8, args: anytype) void {
+    var buf: [2048]u8 = undefined;
+    var stderr_writer = std.Io.File.stderr().writer(ctx.io, &buf);
+    stderr_writer.interface.print("cid: warning: " ++ fmt ++ "\n", args) catch {};
+    stderr_writer.interface.flush() catch {};
+}
+
 /// Every error ends with the command to run next.
 /// The server refused this identity or this action (exit 5). Roles come
 /// from the dataset's GitLab project: Reporter reads, Developer pushes,

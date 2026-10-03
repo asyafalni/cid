@@ -4,6 +4,7 @@
 const std = @import("std");
 const common = @import("common.zig");
 const workspace = @import("../client/workspace.zig");
+const Remote = @import("../client/remote.zig").Remote;
 
 const usage_hint =
     "run 'cid init <address> --git <git-url>', e.g.\n" ++
@@ -42,6 +43,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     // repository, so a wrong URL fails here, not at the first release.
     // Nothing is written locally unless it agrees.
     var registered = false;
+    var made: Remote.Made = .{};
     if (common.remoteFor(ctx, path, .write, addr)) |remote| {
         const created = remote.create(ctx.arena, git) catch |err| switch (err) {
             error.AccessDenied => return common.denied(ctx, "cid init"),
@@ -49,7 +51,10 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
             else => return common.fail(ctx, .network, "the server could not create the dataset. Run 'cid init' again; if it persists, tell the administrator.", .{}),
         };
         switch (created) {
-            .created => registered = true,
+            .created => |m| {
+                registered = true;
+                made = m;
+            },
             .exists => return common.fail(ctx, .usage, "{s} already exists. Run 'cid clone {s}' to work with it.", .{ path, addr }),
             .refused => |r| return common.fail(ctx, .usage, "{s}. {s}", .{ r.what, r.next }),
         }
@@ -61,10 +66,11 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         else => return common.fail(ctx, .network, "could not write .cid/ here. Check folder permissions, then run 'cid init' again.", .{}),
     };
 
-    if (common.emitJson(ctx, .{ .dataset = path, .address = addr, .git = git, .on_server = registered })) return .ok;
+    if (common.emitJson(ctx, .{ .dataset = path, .address = addr, .git = git, .on_server = registered, .warnings = made.warnings })) return .ok;
+    for (made.warnings) |w| common.warn(ctx, "{s}", .{w});
     ctx.out.print(
         "Initialized {s} from this folder{s}.\nNext: 'cid add .' to stage files, then 'cid commit -m \"First import\"'.\n",
-        .{ path, if (registered) " (created on the server; its git repository is writable)" else "" },
+        .{ path, if (!registered) "" else if (made.git_checked) " (created on the server; its git repository is writable)" else " (created on the server)" },
     ) catch return .network;
     return .ok;
 }

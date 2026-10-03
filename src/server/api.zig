@@ -26,6 +26,8 @@ const dbx = @import("../store/db.zig");
 const blob = @import("../store/blob.zig");
 const release_mod = @import("../core/release.zig");
 const git_writer = @import("../gitrepo/writer.zig");
+const protection = @import("../gitrepo/protection.zig");
+const gitlab_sync = @import("../access/gitlab_sync.zig");
 const preview_worker = @import("../preview/worker.zig");
 const duck = @import("../store/duck.zig");
 const table_stats = @import("../tabular/stats.zig");
@@ -52,6 +54,10 @@ pub const Deps = struct {
     git: ?git_writer.Config = null,
     /// Whether "Sign in with GitLab" is configured (the sign-in page asks).
     gitlab_signin: bool = false,
+    /// The GitLab the server syncs members from (CID_GITLAB_URL and
+    /// CID_GITLAB_TOKEN): also asked, at creation, whether a dataset
+    /// repository on it protects main.
+    gitlab: ?gitlab_sync.Config = null,
     /// The server's one DuckDB database for browse queries,
     /// confined to browse_dir, opened by `cid admin serve`: every query
     /// takes a connection, so one memory ceiling covers them all at once.
@@ -1402,13 +1408,17 @@ fn createDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, auth_hea
         }
     }
 
+    // Whether only cid can push to main: warned about, never refused.
+    const warning = offload(deps, protection.check, .{ arena, deps.io, deps.gitlab, req.git_url }) catch return error.OutOfMemory;
+
     const id = Uuid.now(deps.io).toString();
     _ = deps.db.exec(
         scope,
         "INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES ($1::uuid, $2, $3, $4)",
         .{ @as([]const u8, &id), req.name, req.kind, req.git_url },
     ) catch return error.Db;
-    return json(arena, .created, .{ .name = req.name, .dataset_id = &id });
+    const warnings: []const []const u8 = if (warning) |w| try arena.dupe([]const u8, &.{w}) else &.{};
+    return json(arena, .created, .{ .name = req.name, .dataset_id = &id, .git_checked = deps.git != null, .warnings = warnings });
 }
 
 const InfoRow = struct {

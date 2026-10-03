@@ -351,7 +351,9 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   commit and tag to the dataset repository, using the `git` program on the server. It
   runs when `CID_GIT_WORKDIR` is set (otherwise releases queue for
   `cid admin git --resync`); creating a dataset then first proves it can push
-  (a throwaway `refs/cid/write-check`). Restricted datasets render counts only.
+  (a throwaway `refs/cid/write-check`), and warns, never refuses, when `main` is not
+  protected for cid alone (GitLab's API; other hosts get a note). Restricted datasets
+  render counts only.
 - **SSH front door:** OpenSSH `sshd` on the cid host accepts only the user `cid`, looks
   up keys through cid, and runs cid's restricted command. SSH only authenticates and
   hands out short-lived HTTPS credentials; data moves over HTTPS in parallel.

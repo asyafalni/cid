@@ -180,7 +180,15 @@ pub const Remote = struct {
 
     /// The server's answer to creating this dataset: refused carries its
     /// words (an unreachable or read-only git repository, say).
-    pub const Created = union(enum) { created, exists, refused: struct { what: []const u8, next: []const u8 } };
+    pub const Created = union(enum) {
+        created: Made,
+        exists,
+        refused: struct { what: []const u8, next: []const u8 },
+    };
+
+    /// A new dataset: whether the server proved it can push to the git
+    /// repository, and anything it warns about (an unprotected main).
+    pub const Made = struct { git_checked: bool = false, warnings: []const []const u8 = &.{} };
 
     pub fn create(self: *const Remote, arena: std.mem.Allocator, git_url: []const u8) Error!Created {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{
@@ -189,7 +197,9 @@ pub const Remote = struct {
             .git_url = git_url,
         }, .{})});
         const res = try self.send(arena, "POST", "/v0/datasets", body);
-        if (res.status == .created) return .created;
+        if (res.status == .created) {
+            return .{ .created = parse(Made, arena, res.body) orelse Made{} };
+        }
         if (res.status == .conflict) return .exists;
         if (res.status == .unprocessable_entity) {
             const Refusal = struct { @"error": []const u8, next: []const u8 = "" };

@@ -76,6 +76,116 @@ fn expectRefused(db: anytype, scope: anytype, sql: []const u8, needle: []const u
     }
 }
 
+/// A stand-in GitLab: answers each request with the next canned reply and
+/// keeps the request lines it was asked, on a port of its own.
+const FakeGitLab = struct {
+    const Reply = struct { status: []const u8, body: []const u8 };
+    server: std.Io.net.Server,
+    replies: []const Reply,
+    asked: [4][256]u8 = undefined,
+    asked_len: [4]usize = @splat(0),
+    thread: std.Thread = undefined,
+
+    fn start(self: *FakeGitLab, io: std.Io) !u16 {
+        const addr = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+        self.server = try addr.listen(io, .{ .reuse_address = true });
+        self.thread = try std.Thread.spawn(.{}, serve, .{ self, io });
+        return self.server.socket.address.getPort();
+    }
+
+    fn serve(self: *FakeGitLab, io: std.Io) void {
+        for (self.replies, 0..) |reply, i| {
+            var stream = self.server.accept(io) catch return;
+            defer stream.close(io);
+            var rbuf: [4096]u8 = undefined;
+            var r = stream.reader(io, &rbuf);
+            const line = r.interface.takeDelimiterExclusive('\n') catch return;
+            const n = @min(line.len, self.asked[i].len);
+            @memcpy(self.asked[i][0..n], line[0..n]);
+            self.asked_len[i] = n;
+            while (true) {
+                const h = r.interface.takeDelimiterExclusive('\n') catch return;
+                if (std.mem.trim(u8, h, "\r").len == 0) break;
+            }
+            var wbuf: [4096]u8 = undefined;
+            var w = stream.writer(io, &wbuf);
+            w.interface.print("HTTP/1.1 {s}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ reply.status, reply.body.len, reply.body }) catch return;
+            w.interface.flush() catch return;
+        }
+    }
+
+    fn stop(self: *FakeGitLab, io: std.Io) void {
+        self.thread.join();
+        self.server.deinit(io);
+    }
+
+    fn request(self: *const FakeGitLab, i: usize) []const u8 {
+        return self.asked[i][0..self.asked_len[i]];
+    }
+};
+
+test "init's branch-protection warning: GitLab asked about main, other hosts noted" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+
+    var fake: FakeGitLab = .{ .server = undefined, .replies = &.{
+        .{ .status = "404 Not Found", .body = "{\"message\":\"404 Not found\"}" },
+        .{ .status = "200 OK", .body = "{\"name\":\"main\",\"push_access_levels\":[{\"access_level\":40}],\"allow_force_push\":false}" },
+    } };
+    const port = try fake.start(io);
+    var deps: cid.api.Deps = .{
+        .db = &standalone.db,
+        .s3 = &s3c,
+        .io = io,
+        .gpa = std.testing.allocator,
+        .token = "test-token",
+        .gitlab = .{ .base_url = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}", .{port}), .token = "t" },
+    };
+
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name LIKE 'test/datasets/protect-%'", .{});
+    const Made = struct { warnings: []const []const u8 };
+    const cases = .{
+        .{ "test/datasets/protect-open", "git@127.0.0.1:org/datasets/open.git", "main is not protected" },
+        .{ "test/datasets/protect-shut", "ssh://git@127.0.0.1/org/datasets/shut.git", "" },
+        .{ "test/datasets/protect-elsewhere", "git@github.com:org/x.git", "cannot check branch protection on github.com" },
+    };
+    inline for (cases) |c| {
+        const body = try std.fmt.allocPrint(arena, "{{\"name\":\"{s}\",\"git_url\":\"{s}\"}}", .{ c[0], c[1] });
+        const res = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", body);
+        try std.testing.expectEqual(std.http.Status.created, res.status);
+        const made = try std.json.parseFromSliceLeaky(Made, arena, res.body, .{ .ignore_unknown_fields = true });
+        if (c[2].len == 0) {
+            try std.testing.expectEqual(@as(usize, 0), made.warnings.len);
+        } else {
+            try std.testing.expectEqual(@as(usize, 1), made.warnings.len);
+            try std.testing.expect(std.mem.indexOf(u8, made.warnings[0], c[2]) != null);
+        }
+    }
+    fake.stop(io);
+    // GitLab was asked exactly about each project's main, by its path.
+    try std.testing.expect(std.mem.startsWith(u8, fake.request(0), "GET /api/v4/projects/org%2Fdatasets%2Fopen/protected_branches/main "));
+    try std.testing.expect(std.mem.startsWith(u8, fake.request(1), "GET /api/v4/projects/org%2Fdatasets%2Fshut/protected_branches/main "));
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name LIKE 'test/datasets/protect-%'", .{});
+}
+
 test "seaweedfs s3 is reachable" {
     const addr = try std.Io.net.IpAddress.parse("127.0.0.1", seaweed_s3_port);
     const io = std.testing.io;

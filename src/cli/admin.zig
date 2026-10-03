@@ -52,7 +52,7 @@ const admin_help =
     \\  CID_GIT_WORKDIR  turns the git writer on: clones of dataset
     \\             repositories live here (serve)
     \\  CID_GITLAB_TOKEN, CID_GITLAB_URL  member and key sync (serve,
-    \\             sync-gitlab)
+    \\             sync-gitlab); main's protection, checked at init (serve)
     \\  CID_SYNC_INTERVAL_SECS  the background loop's period: previews,
     \\             GitLab sync, git retries (default 600) (serve)
     \\  The bucket is always named 'cid'; create it on the store first
@@ -235,6 +235,10 @@ fn runServe(
     var deps: api.Deps = .{ .db = &db, .s3 = &s3_client, .io = io, .gpa = std.heap.smp_allocator, .token = token, .token_secret = token_secret };
     if (env.get("CID_BROWSE_DIR")) |dir| deps.browse_dir = dir;
     if (env.get("CID_WORK_DIR")) |dir| deps.work_dir = dir;
+    if (env.get("CID_GITLAB_TOKEN")) |t| deps.gitlab = .{
+        .base_url = env.get("CID_GITLAB_URL") orelse "https://gitlab.com",
+        .token = t,
+    };
     if (env.get("CID_GIT_WORKDIR")) |git_workdir| {
         deps.git = .{
             .workdir = git_workdir,

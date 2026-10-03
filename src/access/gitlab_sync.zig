@@ -196,6 +196,30 @@ pub fn fetchPaged(
     return joined.items;
 }
 
+/// One GET of a single object, for an answer whose status matters as
+/// much as its body (a 404 that means "not protected"). The body is
+/// whatever came back, read in full.
+pub fn fetchOne(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    config: Config,
+    comptime path_fmt: []const u8,
+    args: anytype,
+) Error!struct { status: u16, body: []const u8 } {
+    var http: std.http.Client = .{ .allocator = arena, .io = io };
+    defer http.deinit();
+    const url = try std.fmt.allocPrint(arena, "{s}" ++ path_fmt, .{config.base_url} ++ args);
+    var aw: std.Io.Writer.Allocating = .init(arena);
+    const res = http.fetch(.{
+        .location = .{ .url = url },
+        .raw_uri = true,
+        .keep_alive = false,
+        .response_writer = &aw.writer,
+        .extra_headers = &.{.{ .name = "PRIVATE-TOKEN", .value = config.token }},
+    }) catch return error.GitLabUnreachable;
+    return .{ .status = @intFromEnum(res.status), .body = aw.writer.buffered() };
+}
+
 /// Everything, for every dataset: members of the same-path project, then
 /// each member's keys. Datasets whose project cannot be read are reported
 /// and skipped — one broken project never stops the sync.
@@ -255,7 +279,7 @@ pub fn syncAll(
 }
 
 /// GitLab wants the project path URL-encoded, '/' included (%2F).
-fn urlEncodePath(arena: std.mem.Allocator, path: []const u8) Error![]const u8 {
+pub fn urlEncodePath(arena: std.mem.Allocator, path: []const u8) Error![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     for (path) |ch| {
         switch (ch) {
