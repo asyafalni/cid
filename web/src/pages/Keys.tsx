@@ -118,7 +118,7 @@ function KeyRow({ k, removing, onRemove }: { k: SshKey; removing: boolean; onRem
       <span className="data quiet key-added">added {k.added_at.slice(0, 10)}</span>
       {k.source === 'dashboard' ? (
         <button
-          className="action action--quiet"
+          className="key-remove"
           onClick={onRemove}
           disabled={removing}
           aria-label={`Remove key ${k.title || k.fingerprint}`}

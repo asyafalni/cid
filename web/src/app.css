@@ -1473,3 +1473,27 @@
     grid-template-columns: 1fr auto;
   }
 }
+
+/* Removing a key is quiet until you reach for it. */
+.key-remove {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  padding: 2px var(--space-3);
+}
+
+.key-remove:hover {
+  color: var(--fail);
+  border-color: var(--fail);
+}
+
+.key-remove:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.key-remove:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
