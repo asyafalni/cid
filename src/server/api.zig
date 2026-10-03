@@ -885,6 +885,20 @@ fn releaseSlot(deps: *Deps) void {
     deps.browse_building.store(false, .release);
 }
 
+/// Whether the server is still running, asked without relying on a
+/// cancellation. A stop cancels background work once, and that cancel can
+/// be spent inside a job (a cancelled S3 call reads as a storage error and
+/// the job carries on); a wait after it then runs its full length, and the
+/// stop waits with it. A server winding down takes no new background work
+/// (nilo ADR 028), so a refused spawn means it is going. Every wait that
+/// background work can reach asks this too.
+pub fn serving() bool {
+    nilo.spawn(idle, .{}) catch return false;
+    return true;
+}
+
+fn idle() void {}
+
 /// How long a request waits for the build of the very version it asked
 /// for (a 1M-item index takes about 25 s).
 const browse_wait_ms = 90_000;
@@ -906,7 +920,7 @@ fn browseIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
         // worker started on it after the push): wait for it, in a server.
         if (deps.offload and deps.browse_building_commit.load(.acquire) == wanted) {
             var waited: u32 = 0;
-            while (waited < browse_wait_ms) : (waited += 250) {
+            while (waited < browse_wait_ms and serving()) : (waited += 250) {
                 nilo.sleep(250) catch break;
                 if (cwd.statFile(deps.io, index.files.items, .{})) |_| return index else |_| {}
             }

@@ -185,15 +185,4 @@ fn prepareVersions(deps: *api.Deps) void {
     }
 }
 
-/// Whether the server is still running, asked without relying on a
-/// cancellation. A stop cancels this worker once, and that cancel can be
-/// spent inside a job (a cancelled S3 call reads as a storage error and
-/// the job carries on); the sleep after it then never ends, and neither
-/// does the stop. A server winding down takes no new background work
-/// (nilo ADR 028), so a refused spawn means it is going.
-fn serving() bool {
-    nilo.spawn(idle, .{}) catch return false;
-    return true;
-}
-
-fn idle() void {}
+const serving = api.serving;
