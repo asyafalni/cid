@@ -155,11 +155,12 @@ CREATE TABLE item_revisions (
   branch      text        NOT NULL DEFAULT 'main',
   path        text        NOT NULL,
   op          text        NOT NULL CHECK (op IN ('add','update','delete')),
-  item_id     uuid,                       -- null for delete
+  item_id     uuid,                       -- may be null for delete
   item_hash   bytea CHECK (item_hash IS NULL OR octet_length(item_hash) = 32),
   split       text,                       -- train | val | test | null
   author      text        NOT NULL,
-  CHECK ((op = 'delete') = (item_hash IS NULL))
+  CHECK ((op = 'delete') = (item_hash IS NULL)),
+  CHECK (op = 'delete' OR item_id IS NOT NULL)  -- the manifest names every live item
 );
 
 -- structured annotations, annotated datasets only; attached to item identity
@@ -368,17 +369,19 @@ version and kept:
 A release's manifest is a canonical tab-separated text stream, stored as is at
 `manifests/<dataset_id>/<commit_id>.manifest` (`src/core/release.zig`,
 `src/manifest/canonical.zig`). `manifest_hash` is the BLAKE3 of exactly those bytes.
-The format is frozen:
+One format serves both kinds of dataset, and it is frozen at the first public release:
 
 ```
-cid-manifest 1\n                                        file datasets
-cid-manifest 2\n                                        annotated datasets
-item\t<path>\t<hash>\t<size>\t<split>\n                 one per item
+cid-manifest 1\n
+item\t<path>\t<item_id>\t<hash>\t<size>\t<split>\n         one per item
 ann\t<item_id>\t<annotation_id>\t<kind>\t<class>\t<geometry>\t<attrs>\t<author>\t<policy_ver>\n
 ```
 
-- items sorted by `path`, bytewise (`COLLATE "C"`); in a v2 stream, all item rows
-  first, then annotation rows sorted by `(item_id, annotation_id)`;
+- every item row names the item's identity as well as its content, so a release
+  records which item each path is (a rename or a re-encode shows), and every `ann`
+  row points at an item row; a file dataset has no `ann` rows;
+- items sorted by `path`, bytewise (`COLLATE "C"`); all item rows first, then
+  annotation rows sorted by `(item_id, annotation_id)`;
 - UTF-8; hashes lower-case hex; size in decimal; `-` for a null field;
 - `geometry` and `attrs` serialized with **RFC 8785 (JCS)** canonical JSON — without
   this, float formatting breaks repeatability;
@@ -386,9 +389,6 @@ ann\t<item_id>\t<annotation_id>\t<kind>\t<class>\t<geometry>\t<attrs>\t<author>\
 - a tab or newline in an annotation's text field is an error, never a silent mangling.
 
 Rebuilding a release must reproduce the same hash.
-
-Known gap: v2 item rows carry no `item_id`, so the manifest alone cannot tie an
-annotation row to its item's path; history can.
 
 ---
 

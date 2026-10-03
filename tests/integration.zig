@@ -2260,13 +2260,15 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
     }
     _ = try remote.commitServer(arena, "main", "one box", "agent:annotator");
 
-    // Tag: the stored manifest is version 2 with a JCS annotation row.
+    // Tag: the stored manifest names the item's identity on its item row,
+    // and the annotation row (in JCS form) points at it.
     const t = try remote.tag(arena, "v1.0.0");
     try std.testing.expectEqual(@as(u64, 1), t.items);
     const mkey = try cid.release.manifestKey(arena, ds_id, t.commit);
     const stored = try s3c.getObjectAlloc(&scope, mkey);
-    try std.testing.expect(std.mem.startsWith(u8, stored, "cid-manifest 2\n"));
-    try std.testing.expect(std.mem.indexOf(u8, stored, "item\timg/a.jpg\t") != null);
+    try std.testing.expect(std.mem.startsWith(u8, stored, cid.canonical.header));
+    const item_row = try std.fmt.allocPrint(arena, "item\timg/a.jpg\t{s}\t", .{&item_id});
+    try std.testing.expect(std.mem.indexOf(u8, stored, item_row) != null);
     const ann_line = try std.fmt.allocPrint(arena, "ann\t{s}\t{s}\tbox\tperson\t{{\"h\":40,\"w\":30.5,\"x\":10,\"y\":20}}\t-\tagent:annotator\tpolicy-v1\n", .{ &item_id, &box_id });
     try std.testing.expect(std.mem.indexOf(u8, stored, ann_line) != null);
 

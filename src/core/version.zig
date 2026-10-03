@@ -71,7 +71,6 @@ pub fn extOf(comptime path: []const u8) []const u8 {
 pub const Outputs = struct {
     /// The canonical manifest stream (canonical.zig), hashed as written.
     manifest: ?*std.Io.Writer = null,
-    annotated: bool = false,
     /// Browse index lines: one JSON object per item, in path order…
     items: ?*std.Io.Writer = null,
     /// …and one per annotation, by (item_id, annotation_id).
@@ -168,9 +167,8 @@ pub fn pass(
     var hasher = hash.init();
     var written: Written = .{};
     if (outputs.manifest) |m| {
-        const header = if (outputs.annotated) canonical.header_v2 else canonical.header;
-        hasher.update(header);
-        m.writeAll(header) catch return error.WriteFailed;
+        hasher.update(canonical.header);
+        m.writeAll(canonical.header) catch return error.WriteFailed;
     }
 
     _ = tx.exec(scope, "DECLARE pass_items NO SCROLL CURSOR FOR SELECT l.path, encode(l.item_hash, 'hex') AS hash_hex, " ++
@@ -183,7 +181,14 @@ pub fn pass(
         const rows = tx.raw(PassItem, &batch, "FETCH 5000 FROM pass_items", .{}) catch return error.Db;
         if (outputs.manifest) |m| {
             var text: std.ArrayList(u8) = .empty;
-            for (rows) |r| try canonical.appendItemRow(arena, &text, .{ .path = r.path, .hash_hex = r.hash_hex, .size = @intCast(r.size_bytes), .split = r.split });
+            for (rows) |r| try canonical.appendItemRow(arena, &text, .{
+                .path = r.path,
+                // A live item always has one: the schema refuses an add without it.
+                .item_id = r.item_id orelse return error.Db,
+                .hash_hex = r.hash_hex,
+                .size = @intCast(r.size_bytes),
+                .split = r.split,
+            });
             hasher.update(text.items);
             m.writeAll(text.items) catch return error.WriteFailed;
         }
@@ -203,7 +208,7 @@ pub fn pass(
         if (rows.len < batch_rows) break;
     }
 
-    if (outputs.annotations != null or (outputs.manifest != null and outputs.annotated)) {
+    if (outputs.annotations != null or outputs.manifest != null) {
         _ = tx.exec(scope, "DECLARE pass_anns NO SCROLL CURSOR FOR SELECT annotation_id::text AS annotation_id, item_id::text AS item_id, " ++
             "kind, class, geometry::text AS geometry, attrs::text AS attrs, author, policy_ver FROM v_alive ORDER BY item_id, annotation_id", .{}) catch return error.Db;
         while (true) {
@@ -211,7 +216,7 @@ pub fn pass(
             defer batch.deinit();
             const arena = batch.arena();
             const rows = tx.raw(PassAnn, &batch, "FETCH 5000 FROM pass_anns", .{}) catch return error.Db;
-            if (outputs.manifest) |m| if (outputs.annotated) {
+            if (outputs.manifest) |m| {
                 var text: std.ArrayList(u8) = .empty;
                 for (rows) |r| canonical.appendAnnRow(arena, &text, .{
                     .item_id = r.item_id,
@@ -228,7 +233,7 @@ pub fn pass(
                 };
                 hasher.update(text.items);
                 m.writeAll(text.items) catch return error.WriteFailed;
-            };
+            }
             if (outputs.annotations) |w| for (rows) |r| {
                 w.print("{{\"id\":\"{s}\",\"item_id\":\"{s}\",\"kind\":{f},\"class\":{f},\"geometry\":{s},\"attrs\":{s},\"author\":{f},\"policy_ver\":{f}}}\n", .{
                     r.annotation_id,             r.item_id,

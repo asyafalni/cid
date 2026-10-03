@@ -48,12 +48,6 @@ fn mapVersion(err: version.Error) Error {
     };
 }
 
-fn isAnnotated(db: *dbx.sql.Db, scope: anytype, dataset_id: []const u8) Error!bool {
-    const kind = (db.rawOne([]const u8, scope, "SELECT kind FROM datasets WHERE dataset_id = $1::uuid", .{dataset_id}) catch
-        return error.Db) orelse return error.Db;
-    return std.mem.eql(u8, kind, "annotated");
-}
-
 pub fn manifestKey(arena: std.mem.Allocator, dataset_id: []const u8, commit_id: []const u8) Error![]const u8 {
     return std.fmt.allocPrint(arena, "manifests/{s}/{s}.manifest", .{ dataset_id, commit_id }) catch
         error.OutOfMemory;
@@ -95,7 +89,6 @@ pub fn create(
     if (!validName(name)) return error.BadName;
     const existing = db.rawOne(i64, scope, "SELECT 1::bigint FROM refs WHERE dataset_id = $1::uuid AND name = $2", .{ dataset_id, name }) catch return error.Db;
     if (existing != null) return error.ReleaseExists;
-    const annotated = try isAnnotated(db, scope, dataset_id);
 
     const cwd = std.Io.Dir.cwd();
     cwd.createDirPath(work.io, work.dir) catch return error.Storage;
@@ -108,7 +101,6 @@ pub fn create(
         var fw = file.writer(work.io, &buf);
         break :blk version.pass(work.gpa, db, scope, dataset_id, commit_id, .{
             .manifest = &fw.interface,
-            .annotated = annotated,
             .items = work.items,
             .annotations = work.annotations,
             .stats = true,
@@ -217,10 +209,8 @@ pub fn verify(
     // item's presence checked as its batch goes by, up to the first one
     // missing (one is enough to fail; the hash still needs every row).
     var discard: std.Io.Writer.Discarding = .init(&.{});
-    const annotated = try isAnnotated(db, scope, dataset_id);
     const rebuilt = version.pass(gpa, db, scope, dataset_id, ref.commit_id, .{
         .manifest = &discard.writer,
-        .annotated = annotated,
         .hashes = .{ .ctx = &presence, .visit = Presence.visit },
     }) catch |err| return mapVersion(err);
     if (presence.failed) |err| return err;

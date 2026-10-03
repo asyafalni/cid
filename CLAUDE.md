@@ -256,7 +256,7 @@ makes every change between versions visible).
 | **push** | Uploading local commits and their new files; accepted only on top of the server's latest commit |
 | **branch** | A draft line of work. Always starts from `main` |
 | **release** | A tag on a commit, e.g. `v4.2.0`. Never moves. Has a manifest |
-| **manifest** | The canonical listing of every item (path, hash, size, split) and annotation in a release, hashed (`manifest_hash`) and stored as `manifests/<dataset_id>/<commit_id>.manifest` |
+| **manifest** | The canonical listing of every item (path, item_id, hash, size, split) and annotation in a release, hashed (`manifest_hash`) and stored as `manifests/<dataset_id>/<commit_id>.manifest` |
 | **dataset path** | The dataset's full name, like a GitLab project path: `your-org/datasets/person-vehicle` |
 | **address** | Where to reach a dataset, git-style: `cid@cidhub.com:your-org/datasets/person-vehicle` (a trailing `.cid` is accepted and ignored) |
 | **dataset repository** | The git repository paired with a dataset. cid writes one git commit and tag per release; people only read it |

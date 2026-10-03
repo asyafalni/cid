@@ -140,11 +140,13 @@ CREATE TABLE item_revisions (
   branch      text        NOT NULL DEFAULT 'main',
   path        text        NOT NULL,
   op          text        NOT NULL CHECK (op IN ('add','update','delete')),
-  item_id     uuid,                                -- null for delete
+  item_id     uuid,                                -- may be null for delete
   item_hash   bytea CHECK (item_hash IS NULL OR octet_length(item_hash) = 32),
   split       text,
   author      text        NOT NULL,
-  CHECK ((op = 'delete') = (item_hash IS NULL))
+  CHECK ((op = 'delete') = (item_hash IS NULL)),
+  -- Every live item has an identity: the manifest names it (canonical.zig).
+  CHECK (op = 'delete' OR item_id IS NOT NULL)
 );
 SELECT create_hypertable('item_revisions', 'ts', chunk_time_interval => INTERVAL '7 days');
 CREATE INDEX item_revisions_lookup
