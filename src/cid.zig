@@ -20,7 +20,6 @@ pub const cli_hash_object = @import("cli/hash_object.zig");
 pub const cli_diff = @import("cli/diff.zig");
 pub const cli_branch = @import("cli/branch.zig");
 pub const cli_merge = @import("cli/merge.zig");
-pub const cli_login = @import("cli/login.zig");
 pub const db = @import("store/db.zig");
 pub const blob = @import("store/blob.zig");
 pub const duck = @import("store/duck.zig");

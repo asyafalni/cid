@@ -130,7 +130,6 @@ pub fn remoteFor(
     var server: []const u8 = undefined;
     var tok: []const u8 = undefined;
     var renew: ?*SshRenew = null;
-    const login = @import("login.zig");
     const https = if (address) |a| workspace.httpsOf(a) else null;
     if (ctx.env.get("CID_SERVER")) |s| {
         server = s;
@@ -141,11 +140,6 @@ pub fn remoteFor(
         // comes from CID_TOKEN.
         server = try h.server(ctx.arena);
         tok = h.token orelse ctx.env.get("CID_TOKEN") orelse return error.NeedToken;
-    } else if (login.load(ctx)) |stored| {
-        // 'cid login' is for machines without SSH; a stored login wins
-        // over trying SSH and failing slowly.
-        server = stored.server;
-        tok = stored.token;
     } else {
         const addr = address orelse return error.NoServer;
         const grant = try sshToken(ctx, addr, dataset_name, level);

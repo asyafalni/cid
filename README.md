@@ -27,9 +27,9 @@ cid push
 cid tag v1.0.0
 ```
 
-For now, creating a dataset needs the server token (`CID_SERVER` and `CID_TOKEN`) or
-`cid login`; creating one over SSH alone is refused until who may create datasets is
-decided (see [`docs/access.md`](docs/access.md)).
+Creating a dataset over SSH takes the Maintainer role on the GitLab project at the
+same path (see [`docs/access.md`](docs/access.md)). Scripts and CI use a personal
+token from the dashboard, in an https address: `cid clone https://ci:TOKEN@host/<dataset>`.
 
 If you know git, you already know cid: `add`, `commit`, `push`, `pull`, `checkout`,
 `status`, `log`, `diff` — same verbs, same meaning.

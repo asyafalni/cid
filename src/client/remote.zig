@@ -73,7 +73,7 @@ pub const HttpTransport = struct {
     token: []const u8,
     /// Asks for a fresh token (the SSH front door again) when the server
     /// says the current one is no good: tokens live 15 minutes, a large
-    /// push longer. Null for a fixed token (CID_TOKEN, `cid login`).
+    /// push longer. Null for a fixed token (CID_TOKEN, an https address).
     renew: ?Renew = null,
 
     pub const Renew = struct {

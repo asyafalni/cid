@@ -223,8 +223,8 @@ cd speech-id && CID_TOKEN=$CID_PAT cid pull   # a folder never keeps the token
 ```
 
 Administrators can still use `CID_SERVER` + `CID_TOKEN` with the server's static token
-(full access; it wins over everything), or `cid login <server>` (token in
-`~/.config/cid/credentials`, 0600). Per-dataset deploy keys are planned, not built.
+(full access; it wins over everything). The CLI writes no credentials file. Per-dataset
+deploy keys are planned, not built.
 
 ---
 
@@ -549,8 +549,8 @@ Everyday (shown by `cid help`):
 | `cid push` | Upload local commits and their new files; resumes if interrupted |
 
 For dataset owners (`cid help --all`): `init <address> --git <url>` (both required),
-`tag`, `branch`, `merge [--continue]`. Rarely needed: `cid login <server>` /
-`cid logout` for machines that cannot use SSH. Plumbing, in no help:
+`tag`, `branch`, `merge [--continue]`. Without SSH (scripts, CI), any address may be
+`https://you:TOKEN@host/<dataset>` with a personal token. Plumbing, in no help:
 `cid hash-object <file>...` prints each file's content hash (BLAKE3), as git's does.
 `tag`, `branch` and `merge` act on the server and need everything pushed first; they
 say so and suggest `cid push` when there are local commits.
@@ -577,9 +577,8 @@ Rules for every command:
 There is no user config to write. SSH settings come from the user's normal
 `~/.ssh/config`; a folder's `.cid/config.zon` (written by `clone`/`init`) holds its
 address and git URL, never a token. An https address carries a personal token for
-the command it is given to; in a folder, `CID_TOKEN` does. `cid login` (rare) stores
-its token in `~/.config/cid/credentials` (0600). `CID_SERVER` + `CID_TOKEN` in the
-environment override all of them. A token from the SSH front door lives 15 minutes; a longer
+the command it is given to; in a folder, `CID_TOKEN` does. `CID_SERVER` + `CID_TOKEN`
+in the environment override both. A token from the SSH front door lives 15 minutes; a longer
 command asks for a fresh one and retries.
 
 `cid clone <git-url>` (a URL ending in `.git`) works by reading the `.cid` marker file

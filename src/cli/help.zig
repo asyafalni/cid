@@ -34,7 +34,8 @@ const owner_text =
     \\  branch <name>      a draft line of work, starting from main
     \\  merge <name>       merge a branch into main; conflicts are listed
     \\
-    \\Rarely needed: 'cid login <server>' for machines without SSH.
+    \\Without SSH (scripts, CI): a token from the dashboard, in the address:
+    \\  cid clone https://you:TOKEN@host/<dataset>
     \\Server administration: 'cid admin'.
     \\
 ;

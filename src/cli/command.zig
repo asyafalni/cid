@@ -21,8 +21,6 @@ pub const Parsed = union(enum) {
     diff: []const [:0]const u8,
     branch: []const [:0]const u8,
     merge: []const [:0]const u8,
-    login: []const [:0]const u8,
-    logout,
     /// `cid admin …`; the payload is everything after `admin`.
     admin: []const [:0]const u8,
     /// Plumbing: a file's content hash, as `git hash-object`; never in help.
@@ -62,8 +60,6 @@ pub fn parse(args: []const [:0]const u8) Parsed {
     if (eql(first, "diff")) return .{ .diff = args[1..] };
     if (eql(first, "branch")) return .{ .branch = args[1..] };
     if (eql(first, "merge")) return .{ .merge = args[1..] };
-    if (eql(first, "login")) return .{ .login = args[1..] };
-    if (eql(first, "logout")) return .logout;
     if (eql(first, "admin")) return .{ .admin = args[1..] };
     if (eql(first, "hash-object")) return .{ .hash_object = args[1..] };
     if (eql(first, "ssh-keys")) return .{ .ssh_keys = args[1..] };

@@ -40,7 +40,7 @@ Every permission decision on a well-formed `cid-auth` request, granted or refuse
 an `auth_events` row. Malformed commands, unknown keys (sshd refuses them before cid
 runs) and HTTP 401/403 answers are not logged.
 
-### Overrides: CI, scripts and stored logins
+### Overrides: CI and scripts
 
 Before trying SSH, a command looks for two other ways in, in this order:
 
@@ -51,14 +51,12 @@ Before trying SSH, a command looks for two other ways in, in this order:
    when the address has none. A folder keeps its address **without** the token
    (`.cid/config.zon` is copied and zipped along with the folder), so commands in a
    folder cloned this way read `CID_TOKEN`, and say so when it is missing.
-3. **A stored `cid login`.** `echo "$TOKEN" | cid login <server-url>` stores the server
-   and token in `~/.config/cid/credentials` (mode 0600, like `~/.netrc`; tokens only,
-   never keys; not an OS keychain, which would need a platform C library per OS).
-   When present it is used for every dataset, in preference to SSH. `cid logout`
-   deletes it.
 
-The token in either can be an SSH-issued one or the server's static token: the
-`CID_TOKEN` that `cid admin serve` was started with. **The static token has full
+The CLI writes no credentials file: a token lives in the environment or in the
+address given to one command.
+
+The token can be a personal token, an SSH-issued one, or the server's static token
+(the `CID_TOKEN` that `cid admin serve` was started with). **The static token has full
 access to every dataset**: it is the one exception to "tokens are scoped to one
 dataset", and it also lists datasets across the server. Keep it for administrators and
 trusted automation.
@@ -150,8 +148,8 @@ allows source `deploy`, but `access` does not, and nothing creates them.
   token sent to an owner's route (tag, branch, merge, card edit) gets a 403 that says
   only the dataset's owners (Maintainers of its project) can.
 - SSH-issued tokens are scoped to one dataset and one access level, expire in
-  15 minutes, and are never written to disk by the CLI (the `cid login` credentials
-  file is the one exception, for SSH-less machines). The server's static token is not
+  15 minutes, and are never written to disk by the CLI; nor is a personal token, which
+  lives in an address or in `CID_TOKEN`. The server's static token is not
   scoped (see "Overrides").
 - **Hash-existence privacy:** the push protocol's "do you already have this hash?"
   check is answered truthfully only for hashes already referenced by datasets the
