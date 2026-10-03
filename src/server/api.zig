@@ -2801,50 +2801,42 @@ fn heldHere(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, 
 const Admit = enum { admitted, missing, mismatch };
 
 /// Admits an item's bytes (invariant 2): held here already, or uploaded to
-/// this dataset's staging area — then streamed through the content hash into a
-/// work file, and only if they match (and the size, when one is claimed) stored
+/// this dataset's staging area — then streamed through the content hash,
+/// and only if they match (and the size, when one is claimed) stored
 /// under the item's key, if absent. The staged copy goes either way.
 fn admit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, hash: []const u8, size: ?u64) HandleError!Admit {
     if (try heldHere(arena, deps, scope, ds, hash)) return .admitted;
     const staged = try stagedKey(arena, ds.id, hash);
-    const cwd = std.Io.Dir.cwd();
-    cwd.createDirPath(deps.io, deps.work_dir) catch return error.Storage;
-    const path = try std.fmt.allocPrint(arena, "{s}/{s}.upload", .{ deps.work_dir, hash });
-    defer cwd.deleteFile(deps.io, path) catch {};
     // Whole, or in pieces when the file is larger than one (and was not
     // sent whole): the pieces stream through the hash in order, as one.
     const whole = (deps.s3.headObject(scope, staged) catch return error.Storage) != null;
     const count: u32 = if (whole or size == null or size.? <= deps.piece_bytes) 1 else @intCast((size.? + deps.piece_bytes - 1) / deps.piece_bytes);
-    const got = blk: {
-        var file = cwd.createFile(deps.io, path, .{ .truncate = true }) catch return error.Storage;
-        defer file.close(deps.io);
-        var buf: [64 * 1024]u8 = undefined;
-        var fw = file.writer(deps.io, &buf);
-        var hbuf: [64 * 1024]u8 = undefined;
-        var hashed = fw.interface.hashed(content_hash.init(), &hbuf);
-        var n: u64 = 0;
-        if (count == 1) {
-            n = deps.s3.streamTo(scope, staged, &hashed.writer) catch return .missing;
-        } else for (1..count + 1) |piece| {
-            n += deps.s3.streamTo(scope, try pieceKey(arena, ds.id, hash, @intCast(piece)), &hashed.writer) catch return .missing;
-        }
-        hashed.writer.flush() catch return error.Storage;
-        fw.interface.flush() catch return error.Storage;
-        break :blk .{ n, content_hash.hexOf(&hashed.hasher) };
-    };
-    defer if (count == 1) {
-        deps.s3.deleteObject(scope, staged) catch {};
-    } else for (1..count + 1) |piece| {
-        deps.s3.deleteObject(scope, pieceKey(arena, ds.id, hash, @intCast(piece)) catch continue) catch {};
-    };
-    if (!eql(&got[1], hash) or (size != null and size.? != got[0])) return .mismatch;
+    const pieces = try arena.alloc([]const u8, count);
+    if (count == 1) pieces[0] = staged else for (pieces, 1..) |*key, n| key.* = try pieceKey(arena, ds.id, hash, @intCast(n));
+    defer for (pieces) |key| deps.s3.deleteObject(scope, key) catch {};
+
+    // Read once, for the hash (invariant 2): through BLAKE3 into nothing.
+    // The bytes are kept by the store itself, below, never written here.
+    var sink: std.Io.Writer.Discarding = .init(&.{});
+    var hbuf: [64 * 1024]u8 = undefined;
+    var hashed = sink.writer.hashed(content_hash.init(), &hbuf);
+    var got: u64 = 0;
+    for (pieces) |key| got += deps.s3.streamTo(scope, key, &hashed.writer) catch return .missing;
+    hashed.writer.flush() catch return error.Storage;
+    if (!eql(&content_hash.hexOf(&hashed.hasher), hash) or (size != null and size.? != got)) return .mismatch;
+
     const key = itemKey(arena, hash) catch return error.OutOfMemory;
     // Stored only if absent, never overwritten (invariant 2), except bytes
     // that cannot be these: a stored object of another size is damage, and
-    // the verified upload repairs it.
+    // the verified upload repairs it. Copied (or the pieces joined) inside
+    // the store: no byte passes through the server a second time.
     const stored = deps.s3.headObject(scope, key) catch return error.Storage;
-    if (stored == null or stored.? != got[0])
-        deps.s3.putFile(scope, deps.io, key, path) catch return error.Storage;
+    if (stored == null or stored.? != got) {
+        if (count == 1)
+            deps.s3.copyObject(scope, staged, key) catch return error.Storage
+        else
+            deps.s3.compose(scope, key, pieces) catch return error.Storage;
+    }
     // Verified bytes are back in storage: whatever cleanup took returns.
     _ = deps.db.exec(scope, "DELETE FROM collected_items WHERE item_hash = decode($1, 'hex')", .{hash}) catch return error.Db;
     return .admitted;

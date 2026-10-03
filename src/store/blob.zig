@@ -156,6 +156,17 @@ pub const Client = struct {
         return self.items.list(scope, .{ .prefix = prefix, .cursor = cursor });
     }
 
+    /// `from` copied to `to` inside the store; no byte comes through here.
+    pub fn copyObject(self: *Client, scope: anytype, from: []const u8, to: []const u8) Error!void {
+        return self.items.copy(scope, from, to);
+    }
+
+    /// `parts`, in order, joined into one object at `to` inside the store
+    /// (every part but the last at least 5 MiB, S3's rule).
+    pub fn compose(self: *Client, scope: anytype, to: []const u8, parts: []const []const u8) Error!void {
+        return self.items.compose(scope, to, parts);
+    }
+
     pub fn deleteObject(self: *Client, scope: anytype, key: []const u8) Error!void {
         return self.items.delete(scope, key);
     }
