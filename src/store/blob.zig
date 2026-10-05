@@ -163,8 +163,11 @@ pub const Client = struct {
 
     /// `parts`, in order, joined into one object at `to` inside the store
     /// (every part but the last at least 5 MiB, S3's rule).
+    /// Joins staged pieces into one item, inside the store. Its type is
+    /// octet-stream: what an item really is gets sniffed later, from its
+    /// bytes (the preview worker), never taken from an upload.
     pub fn compose(self: *Client, scope: anytype, to: []const u8, parts: []const []const u8) Error!void {
-        return self.items.compose(scope, to, parts);
+        return self.items.compose(scope, to, parts, .{ .content_type = "application/octet-stream" });
     }
 
     pub fn deleteObject(self: *Client, scope: anytype, key: []const u8) Error!void {
