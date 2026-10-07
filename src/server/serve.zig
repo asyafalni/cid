@@ -172,8 +172,12 @@ fn prepareVersions(deps: *api.Deps) void {
     defer std.log.info("version worker stopped", .{});
     while (true) {
         nilo.sleep(2_000) catch return; // the server is going
-        if (!serving()) return;
-        while (serving()) {
+        while (true) {
+            // Between jobs too: a job can spend the stop's one cancel and
+            // carry on (a cancelled S3 call reads as a storage error), and
+            // in spawned work a sleep refuses for as long as the server is
+            // stopping (nilo ADR 028), so this is where the worker hears it.
+            nilo.sleep(0) catch return;
             var run = nilo.Run.initIo(deps.gpa, deps.io);
             defer run.deinit();
             const more = api.prepareNext(run.arena(), deps, &run) catch |err| {
@@ -184,5 +188,3 @@ fn prepareVersions(deps: *api.Deps) void {
         }
     }
 }
-
-const serving = api.serving;
