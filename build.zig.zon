@@ -5,8 +5,8 @@
     .fingerprint = 0x4b30d9c479f4d7dc,
     .dependencies = .{
         .nilo = .{
-            .url = "git+https://github.com/nevindra/nilo#401cc94ad82babd005cdfa61dbfab3fe05b3d2e8",
-            .hash = "nilo-0.6.0-5HEqwsP0gAA8isiTXsktcjrFPkk7uKlveM-kMbRg1Gfc",
+            .url = "git+https://github.com/nevindra/nilo#2cb0abde2e4b9aff0522728eea63360e909cdafd",
+            .hash = "nilo-0.7.0-5HEqwgcogwCnBgUZgXoSDbSAaQ0iHrv7UOdZ3--mqZLZ",
         },
         .duckdb = .{
             .url = "https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-linux-amd64.zip",

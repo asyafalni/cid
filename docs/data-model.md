@@ -117,7 +117,9 @@ or, for a file larger than one piece (64 MB), to numbered pieces
 push that stopped are not asked for again. When the push (or `register-items`) is
 recorded, the server streams the staged object, or its pieces in order as one stream,
 through BLAKE3 and checks the hash and size. Only matching bytes are stored at
-`items/blake3/…`, and only if that key is absent; a stored object of the wrong size is
+`items/blake3/…`, and only if that key is absent. They are put there by a copy inside
+the store, never through the server: S3 CopyObject for one staged object, a multipart
+upload whose parts are copied from the pieces (UploadPartCopy) for several; a stored object of the wrong size is
 damage, and the verified upload overwrites it as a repair. The staged copy is removed
 either way, and a verified upload deletes the hash's `collected_items` row (the bytes
 are back). A mismatch refuses the whole push before anything is recorded. This

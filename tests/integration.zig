@@ -3775,12 +3775,12 @@ test "large files go up in pieces, and a push stopped mid-file carries on from t
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
     // 5 MiB pieces (S3's smallest part), so a 17.5 MiB file is four of them.
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token", .piece_bytes = 1 << 20 };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token", .piece_bytes = 5 << 20 };
     var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
     const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/pieces", .gpa = std.testing.allocator };
 
     // Fresh bytes each run, so storage has never seen them.
-    const big = try arena.alloc(u8, (7 << 20) / 2);
+    const big = try arena.alloc(u8, (35 << 20) / 2);
     io.random(big);
     var dg: [32]u8 = undefined;
     cid.hash.Hasher.hash(big, &dg, .{});
@@ -3823,11 +3823,11 @@ test "large files go up in pieces, and a push stopped mid-file carries on from t
     for (1..5) |n| try std.testing.expect((try s3c.headObject(&scope, try cid.api.pieceKey(arena, ds_id, &hash, @intCast(n)))) == null);
 
     // Pieces that do not add up to the file are refused, and nothing lands.
-    const forged = try arena.alloc(u8, (5 << 20) / 2);
+    const forged = try arena.alloc(u8, (25 << 20) / 2);
     io.random(forged);
     cid.hash.Hasher.hash(forged, &dg, .{});
     const forged_hash = std.fmt.bytesToHex(dg, .lower);
-    for (1..4) |n| try s3c.putObject(&scope, try cid.api.pieceKey(arena, ds_id, &forged_hash, @intCast(n)), forged[0 .. 1 << 20]);
+    for (1..4) |n| try s3c.putObject(&scope, try cid.api.pieceKey(arena, ds_id, &forged_hash, @intCast(n)), forged[0 .. 5 << 20]);
     const body = try std.fmt.allocPrint(arena,
         \\{{"branch":"main","commits":[{{"id":"{s}","parent":"{s}","message":"forged","author":"user:test","authored_at_ms":1760000000000,"changes":[{{"op":"add","path":"forged.bin","hash":"{s}","size":{d}}}]}}]}}
     , .{ &cid.uuid7.Uuid.now(io).toString(), (try remote.head(arena, "main")).?, &forged_hash, forged.len });

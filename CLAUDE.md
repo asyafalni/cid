@@ -495,8 +495,10 @@ Files added with `cid add` are hashed and copied into the local cache at `add` t
 `cid commit` is instant and works offline. `cid push` uploads only files the server does
 not have (checked by hash, under invariant 12), then records the commits. A file over
 64 MB goes up in 64 MB pieces, each its own presigned PUT to
-`uploads/<dataset_id>/<hash>.part-NNNNNN`; the server hashes the pieces in order as one
-file when the push is recorded. Resuming needs no local state: re-running `cid push`
+`uploads/<dataset_id>/<hash>.part-NNNNNN`; when the push is recorded the server
+streams the pieces in order through BLAKE3 as one file, then copies the verified bytes
+into place inside the store (S3 CopyObject, or a multipart copy joining the pieces),
+so nothing passes through the server's disk. Resuming needs no local state: re-running `cid push`
 asks the server what it still lacks, whole files and pieces alike, and sends only that.
 
 ---
@@ -772,7 +774,7 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
 | `cid add` | limited by disk read speed (hashing), 100k small files < 30 s |
 | `cid commit` | < 100 ms, no network |
 | Platform migration, 10M revisions (4 writers, batches as `cid_writer`, server commit per 1M) | < 10 min with progress, resumable (`tests/bench/ingest_10m.sh`: 257 s) |
-| `cid push` | limited by upload speed; server-side recording < 1 s (today it grows with the bytes uploaded, which the server hashes as it records; a server-side copy is planned) |
+| `cid push` | limited by upload speed; server-side recording < 1 s for small files; a large file costs one read of its bytes (the hash) plus a copy inside the store: 1 GB in 21 s on SeaweedFS, which copies the bytes; S3 copies without reading them |
 | `cid tag` (write manifest), 1M items or annotations | < 60 s |
 | `cid diff` of two releases, 1M rows each | < 10 s |
 | `cid checkout` between releases | only changed files transferred |
