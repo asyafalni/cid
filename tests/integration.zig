@@ -1223,6 +1223,113 @@ test "rename: as in git, the old address stops answering and a folder follows wi
     try std.testing.expectEqual(@as(usize, 2), (try new_remote.log(arena, "main")).len);
 }
 
+/// One of several servers asking for the same version file at once: its
+/// own database pool, store client and scope, as the worker and a
+/// request each have their own.
+const VersionAsker = struct {
+    work_dir: []const u8,
+    path: []const u8,
+    status: std.http.Status = .internal_server_error,
+    hash: [64]u8 = undefined,
+    failed: ?anyerror = null,
+
+    fn run(self: *VersionAsker) void {
+        self.ask() catch |err| {
+            self.failed = err;
+        };
+    }
+
+    fn ask(self: *VersionAsker) !void {
+        var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena_state.deinit();
+        const io = std.testing.io;
+        var s3c: cid.blob.Client = undefined;
+        try s3c.open(std.heap.page_allocator, .{ .endpoint = "http://127.0.0.1:8333", .access_key = "cid-test-key", .secret_key = "cid-test-secret" });
+        defer s3c.deinit();
+        try s3c.start(io);
+        var standalone: cid.db.Standalone = undefined;
+        try standalone.open(std.heap.page_allocator, conninfo);
+        defer standalone.close();
+        var scope = cid.db.Run.init(std.heap.page_allocator);
+        defer scope.deinit();
+        var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.heap.page_allocator, .token = "test-token", .work_dir = self.work_dir };
+        const res = cid.api.handle(arena_state.allocator(), &deps, &scope, "GET", self.path, "Bearer test-token", "");
+        self.status = res.status;
+        const Where = struct { hash: []const u8 };
+        const where = std.json.parseFromSliceLeaky(Where, arena_state.allocator(), res.body, .{ .ignore_unknown_fields = true }) catch return;
+        if (where.hash.len == 64) @memcpy(&self.hash, where.hash);
+    }
+};
+
+test "a version file asked for by several servers at once is built whole by each" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var work = std.testing.tmpDir(.{ .iterate = true });
+    defer work.cleanup();
+    const work_dir = try work.dir.realPathFileAlloc(io, ".", arena);
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token", .work_dir = work_dir };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const name = try std.fmt.allocPrint(arena, "test/datasets/race-files-{d}", .{std.Io.Clock.real.now(io).nanoseconds});
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = name, .gpa = std.testing.allocator };
+    _ = db;
+
+    // A version with enough in it that building its file takes a moment.
+    var folder = std.testing.tmpDir(.{ .iterate = true });
+    defer folder.cleanup();
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    for (0..300) |i| {
+        var name_buf: [32]u8 = undefined;
+        try folder.dir.writeFile(io, .{ .sub_path = try std.fmt.bufPrint(&name_buf, "f{d:0>4}.txt", .{i}), .data = try std.fmt.allocPrint(arena, "file {d}\n", .{i}) });
+    }
+    try cid.client.workspace.init(arena, io, folder.dir, try std.fmt.allocPrint(arena, "cid@test:{s}", .{name}), "g@h:race-files.git");
+    var ws = try cid.client.workspace.open(arena, io, folder.dir);
+    _ = try cid.client.workspace.add(arena, io, &ws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &ws, "many files", "user:race");
+    _ = try cid.client.sync.push(arena, io, &ws, cache.dir, &remote);
+    const head = (try remote.head(arena, "main")).?;
+
+    // Four at once, as the background worker and a checkout were: every
+    // one builds the file whole, and all agree on its bytes.
+    const path = try std.fmt.allocPrint(arena, "/v0/datasets/{s}/-/version/{s}", .{ name, head });
+    var askers: [4]VersionAsker = undefined;
+    var threads: [4]std.Thread = undefined;
+    for (&askers, &threads) |*a, *t| {
+        a.* = .{ .work_dir = work_dir, .path = path };
+        t.* = try std.Thread.spawn(.{}, VersionAsker.run, .{a});
+    }
+    for (threads) |t| t.join();
+    for (askers) |a| {
+        if (a.failed) |err| return err;
+        try std.testing.expectEqual(std.http.Status.ok, a.status);
+        try std.testing.expectEqualSlices(u8, &askers[0].hash, &a.hash);
+    }
+    // And each build cleaned up after itself.
+    var it = work.dir.iterate();
+    while (try it.next(io)) |entry| {
+        std.debug.print("left behind in the work folder: {s}\n", .{entry.name});
+        return error.WorkFileLeftBehind;
+    }
+}
+
 test "clone round trip: clone, checkout and pull give exactly the release's files, for every fixture type" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

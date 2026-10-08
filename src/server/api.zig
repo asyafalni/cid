@@ -447,17 +447,22 @@ pub fn prepareNext(arena: std.mem.Allocator, deps: *Deps, scope: anytype) Handle
         return true;
     };
     finishJob(deps, scope, job.commit_id, "done", null);
+    std.log.scoped(.prepare).debug("{s}: done", .{job.commit_id});
     return true;
 }
 
 fn prepare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit_id: []const u8, default_format: []const u8) HandleError!void {
+    // Each step said as it starts, so a stuck one names itself.
+    std.log.scoped(.prepare).debug("{s}: statistics", .{commit_id});
     _ = versions.stats(arena, deps.db, scope, ds.id, commit_id) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.Db,
     };
     // The browse index; another build holding the slot means it is busy
     // with some version's index, and this one is built by its first view.
+    std.log.scoped(.prepare).debug("{s}: browse index", .{commit_id});
     _ = try browseIndex(arena, deps, scope, ds, commit_id);
+    std.log.scoped(.prepare).debug("{s}: items file", .{commit_id});
     _ = try ensureVersionFile(arena, deps, scope, ds, commit_id, .state, .{});
     // A release: its diff with the release before it, which Compare opens
     // on by default.
@@ -465,6 +470,7 @@ fn prepare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, c
         "AND p.kind = 'release' AND p.commit_id < r.commit_id WHERE r.dataset_id = $1::uuid AND r.commit_id = $2::uuid AND r.kind = 'release' " ++
         "ORDER BY p.commit_id DESC LIMIT 1", .{ ds.id, commit_id }) catch return error.Db;
     if (previous) |prev| {
+        std.log.scoped(.prepare).debug("{s}: diff with {s}", .{ commit_id, prev });
         if (try browseIndex(arena, deps, scope, ds, prev)) |ia| if (try browseIndex(arena, deps, scope, ds, commit_id)) |ib| {
             _ = try diffIndex(arena, deps, scope, ds, prev, commit_id, ia, ib);
         };
@@ -472,6 +478,7 @@ fn prepare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, c
     if (eql(ds.kind, "annotated")) {
         if (std.meta.stringToEnum(bundle_mod.Kind, default_format)) |kind| if (kind != .state) {
             // An impossible export is an answer too; the clone says why.
+            std.log.scoped(.prepare).debug("{s}: {s} export", .{ commit_id, default_format });
             _ = try ensureVersionFile(arena, deps, scope, ds, commit_id, kind, .{});
         };
     }
@@ -2000,7 +2007,7 @@ fn ensureVersionFile(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: 
         return .{ .ready = .{ .key = try fileKey(arena, ds.id, commit_id, kind, subset_key, k.file_hash), .file_hash = k.file_hash, .final = k.final } };
 
     const path = try std.fmt.allocPrint(arena, "{s}/{s}-{t}-{s}.gz", .{ deps.work_dir, commit_id, kind, (try subsetHash(arena, subset_key))[0..16] });
-    const gz = try GzFile.open(deps, path);
+    const gz = try GzFile.open(arena, deps, path);
     defer gz.close(deps);
     const outcome = bundle_mod.build(deps.gpa, deps.db, scope, ds.id, commit_id, kind, subset, gz.writer()) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
@@ -2018,7 +2025,7 @@ fn ensureVersionFile(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: 
     const final = !written.media_pending;
     const key = try fileKey(arena, ds.id, commit_id, kind, subset_key, file_hash);
     if (!(kept != null and eql(kept.?.file_hash, file_hash)))
-        deps.s3.putFile(scope, deps.io, key, path) catch return error.Storage;
+        deps.s3.putFile(scope, deps.io, key, gz.path) catch return error.Storage;
     _ = deps.db.exec(scope, "INSERT INTO version_files (commit_id, kind, subset, file_hash, final) VALUES ($1::uuid, $2, $3, $4, $5) " ++
         "ON CONFLICT (commit_id, kind, subset) DO UPDATE SET file_hash = excluded.file_hash, final = excluded.final, built_at = now()", .{ commit_id, @tagName(kind), subset_key, file_hash, final }) catch return error.Db;
     return .{ .ready = .{ .key = key, .file_hash = file_hash, .final = final } };
@@ -2061,13 +2068,16 @@ const GzFile = struct {
     hash_buf: [64 * 1024]u8,
     window: [std.compress.flate.max_window_len]u8,
 
-    fn open(deps: *Deps, path: []const u8) HandleError!*GzFile {
+    /// At a name of this build's own beside `path`: the background worker
+    /// and a request (or two requests) may build the same file at once,
+    /// and one must never truncate, or delete, what the other is writing.
+    fn open(arena: std.mem.Allocator, deps: *Deps, path: []const u8) HandleError!*GzFile {
         const cwd = std.Io.Dir.cwd();
         cwd.createDirPath(deps.io, deps.work_dir) catch return error.Storage;
         const self = deps.gpa.create(GzFile) catch return error.OutOfMemory;
         errdefer deps.gpa.destroy(self);
-        self.path = path;
-        self.file = cwd.createFile(deps.io, path, .{ .truncate = true }) catch return error.Storage;
+        self.path = try uniqueTmp(arena, deps, path);
+        self.file = cwd.createFile(deps.io, self.path, .{ .truncate = true }) catch return error.Storage;
         self.fw = self.file.writer(deps.io, &self.file_buf);
         self.hashed = self.fw.interface.hashed(content_hash.init(), &self.hash_buf);
         self.gz = std.compress.flate.Compress.init(&self.hashed.writer, &self.window, .gzip, .level_1) catch {
@@ -2127,9 +2137,10 @@ fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, p
         .ready => |ix| ix,
         .refused => |res| return res,
     };
+    // This request's own names: two diffs of one pair may run at once.
     const lines: browse_mod.CompareFiles = .{
-        .items = try std.fmt.allocPrint(arena, "{s}/{s}-{s}.changes.jsonl", .{ ia.dir, a, b }),
-        .anns = try std.fmt.allocPrint(arena, "{s}/{s}-{s}.annchanges.jsonl", .{ ia.dir, a, b }),
+        .items = try uniqueTmp(arena, deps, try std.fmt.allocPrint(arena, "{s}/{s}-{s}.changes.jsonl", .{ ia.dir, a, b })),
+        .anns = try uniqueTmp(arena, deps, try std.fmt.allocPrint(arena, "{s}/{s}-{s}.annchanges.jsonl", .{ ia.dir, a, b })),
     };
     const cwd = std.Io.Dir.cwd();
     defer cwd.deleteFile(deps.io, lines.items) catch {};
@@ -2142,7 +2153,7 @@ fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, p
         break :blk offload(deps, browse_mod.compareLines, .{ arena, &db, d, lines }) catch |err| return duckErr(err);
     };
     const path = try std.fmt.allocPrint(arena, "{s}/{s}-{s}.diff.gz", .{ deps.work_dir, a, b });
-    const gz = try GzFile.open(deps, path);
+    const gz = try GzFile.open(arena, deps, path);
     defer gz.close(deps);
     gz.writer().print("{{\"cid\":\"diff\",\"v\":1,\"a\":\"{s}\",\"b\":\"{s}\"}}\n", .{ a, b }) catch return error.Storage;
     for ([_][]const u8{ lines.items, lines.anns }) |part| {
@@ -2153,7 +2164,7 @@ fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, p
         _ = fr.interface.streamRemaining(gz.writer()) catch return error.Storage;
     }
     const file_hash = try gz.finish();
-    deps.s3.putFile(scope, deps.io, try diffKey(arena, ds.id, a, b, &file_hash), path) catch return error.Storage;
+    deps.s3.putFile(scope, deps.io, try diffKey(arena, ds.id, a, b, &file_hash), gz.path) catch return error.Storage;
     const summary_text = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(summary, .{})});
     _ = deps.db.exec(scope, "INSERT INTO version_diffs (dataset_id, commit_a, commit_b, file_hash, summary) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::jsonb) " ++
         "ON CONFLICT DO NOTHING", .{ ds.id, a, b, @as([]const u8, &file_hash), summary_text }) catch return error.Db;

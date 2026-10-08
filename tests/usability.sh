@@ -6,7 +6,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CID="$ROOT/zig-out/bin/cid"
+CID="${CID:-$ROOT/zig-out/bin/cid}"
 WORK="$(mktemp -d)"
 # A port of its own per run: a server orphaned by an earlier, killed run
 # can never answer for this one.
@@ -382,4 +382,7 @@ if [ "$fails" -eq 0 ]; then
     exit 0
 fi
 say "usability: $fails failure(s)."
+# The server's own account of the run outlives its folder.
+kept="${TMPDIR:-/tmp}/cid-usability-$$.serve.log"
+cp "$WORK/serve.log" "$kept" 2>/dev/null && say "The server's log: $kept"
 exit 1
