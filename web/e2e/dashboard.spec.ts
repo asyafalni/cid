@@ -65,6 +65,15 @@ test('compare between the two releases reads as a sentence', async ({ page }) =>
   await expect(page.getByText('notes.txt')).toBeVisible();
 });
 
+test('the history marks a release the dataset repository does not have yet', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/demo?view=releases');
+  const history = page.getByRole('region', { name: 'History' });
+  const waiting = history.locator('.moment').filter({ hasText: 'v1.1.0' });
+  await expect(waiting.getByText('not in git yet')).toBeVisible();
+  await expect(history.locator('.moment').filter({ hasText: 'v1.0.0' }).getByText('not in git yet')).toHaveCount(0);
+});
+
 test('the files tab walks the committed tree', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?view=files');

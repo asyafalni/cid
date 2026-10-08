@@ -367,6 +367,12 @@ export default function setup() {
       INSERT INTO access (dataset_id, account_id, level, source)
         SELECT dataset_id, 'gitlab:5151', 'maintain', 'dashboard' FROM datasets WHERE name = 'e2e/datasets/boxes'
         ON CONFLICT (dataset_id, account_id) DO NOTHING;
+      -- This server has no git writer, so every release waits for git; say
+      -- demo's v1.0.0 reached it, and v1.1.0 is still waiting.
+      INSERT INTO git_writes (dataset_id, release, status)
+        SELECT dataset_id, r.release, CASE WHEN r.release = 'v1.0.0' THEN 'done' ELSE 'pending' END
+        FROM datasets, (VALUES ('v1.0.0'), ('v1.1.0')) AS r(release) WHERE name = 'e2e/datasets/demo'
+        ON CONFLICT (dataset_id, release) DO UPDATE SET status = excluded.status;
     `);
     if (!already.includes('e2e/datasets/faces')) seedFaces(dir);
     if (!already.includes('e2e/datasets/masks')) seedMasks(dir);
