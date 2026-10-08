@@ -1429,9 +1429,9 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     // Clean slate, then a dataset whose git_url is the bare repo.
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
     inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
-        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/datasets/gitw')", .{});
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name IN ('test/datasets/gitw', 'test/datasets/gitw-moved'))", .{});
     }
-    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/gitw'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name IN ('test/datasets/gitw', 'test/datasets/gitw-moved')", .{});
     _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
 
     var producer = std.testing.tmpDir(.{ .iterate = true });
@@ -1589,6 +1589,44 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     try std.testing.expectEqualStrings("print('train on the release')\n", code.stdout);
     const readme6 = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", bare_url, "show", "v6.0.0:README.md" } });
     try std.testing.expect(std.mem.indexOf(u8, readme6.stdout, "hand-written") == null);
+
+    // A rename with the repository moved too (as a host does: here a copy
+    // at a new path). cid checks it can push there first, renames, then
+    // rewrites its files with plain git — the .cid marker that
+    // `cid clone <git-url>` reads names the dataset — as one commit on
+    // main. No tag moves; someone's code stays.
+    const moved_url = try std.fmt.allocPrintSentinel(arena, "{s}/moved.git", .{root_path}, 0);
+    _ = try std.process.run(arena, io, .{ .argv = &.{ "git", "clone", "-q", "--bare", bare_url, moved_url } });
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("CID_DB", conninfo);
+    try env.put("CID_GIT_WORKDIR", work_root);
+    try env.put("CID_PUBLIC_URL", "https://cid.example");
+    var out_buf: [2048]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buf);
+    const nowhere = try std.fmt.allocPrintSentinel(arena, "{s}/nowhere.git", .{root_path}, 0);
+    try std.testing.expectEqual(cid.ExitCode.network, cid.admin.run(arena, io, &out, &env, &.{ "rename", "test/datasets/gitw", "test/datasets/gitw-moved", "--git", nowhere }));
+    try std.testing.expect((try db.rawOne(i64, &fscope, "SELECT 1::bigint FROM datasets WHERE name = 'test/datasets/gitw'", .{})) != null);
+
+    out = .fixed(&out_buf);
+    try std.testing.expectEqual(cid.ExitCode.ok, cid.admin.run(arena, io, &out, &env, &.{ "rename", "test/datasets/gitw", "test/datasets/gitw-moved", "--git", moved_url }));
+    try std.testing.expect(std.mem.indexOf(u8, out.buffered(), "Its git repository now names it: commit ") != null);
+    const moved_marker = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", moved_url, "show", "main:.cid" } });
+    try std.testing.expect(std.mem.indexOf(u8, moved_marker.stdout, "dataset test/datasets/gitw-moved\n") != null);
+    const subject = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", moved_url, "log", "-1", "--format=%s", "main" } });
+    try std.testing.expectEqualStrings("dataset: now test/datasets/gitw-moved\n", subject.stdout);
+    const tags_moved = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", moved_url, "tag" } });
+    try std.testing.expectEqualStrings("v1.0.0\nv2.0.0\nv3.0.0\nv4.0.0\nv5.0.0\nv6.0.0\n", tags_moved.stdout);
+    const v6_marker = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", moved_url, "show", "v6.0.0:.cid" } });
+    try std.testing.expect(std.mem.indexOf(u8, v6_marker.stdout, "dataset test/datasets/gitw\n") != null);
+    const kept = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", moved_url, "show", "main:train.py" } });
+    try std.testing.expectEqualStrings("print('train on the release')\n", kept.stdout);
+
+    // Once is enough: again, nothing differs and nothing is pushed.
+    const commits_before = try commitsOnMain(arena, io, moved_url);
+    const refreshed = try cid.gitrepo.writer.refresh(arena, io, &standalone.db, &scope, deps.git.?, "test/datasets/gitw-moved");
+    try std.testing.expect(refreshed == .up_to_date);
+    try std.testing.expectEqualStrings(commits_before, try commitsOnMain(arena, io, moved_url));
 }
 
 test "access: key lookup, forced command, scoped tokens enforced by routes" {

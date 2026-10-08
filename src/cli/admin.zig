@@ -37,7 +37,8 @@ const admin_help =
     \\  add-key <account> <name> <public-key>   register an SSH key by hand
     \\  grant <dataset> <account> <read|write|maintain>   give access by hand
     \\  rename <dataset> <new-name> [--git <git-url>]   after its GitLab project
-    \\             moved; the old address stops answering, as in git
+    \\             moved; the old address stops answering, as in git, and
+    \\             its git repository's files are rewritten to name it
     \\
     \\All of them read configuration from the environment:
     \\  CID_DB     the TimescaleDB connection (setup, migrate, serve)
@@ -402,6 +403,15 @@ fn runGitAdmin(
         const outcome = git_writer.processDataset(arena, io, &standalone.db, &scope, config, dataset_name) catch
             return fail(io, .network, "resync could not run. Check the dataset name and the database.", .{});
         out.print("Resync: {d} release{s} written, {d} failed.\n", .{ outcome.processed, plural(outcome.processed), outcome.failed }) catch return .network;
+        // And the newest one's files as the dataset is named now (after a
+        // rename whose git update failed, this is the retry).
+        if (outcome.failed == 0) {
+            const r = git_writer.refresh(arena, io, &standalone.db, &scope, config, dataset_name) catch {
+                out.flush() catch {};
+                return fail(io, .network, "could not bring the repository's files up to date (see the git error above). Fix the cause, then run 'cid admin git {s} --resync' again.", .{dataset_name});
+            };
+            if (r == .committed) out.print("Brought its files up to date: commit {s} on main.\n", .{r.committed[0..@min(12, r.committed.len)]}) catch return .network;
+        }
         out.flush() catch return .network;
         return if (outcome.failed == 0) .ok else .network;
     }
@@ -561,14 +571,49 @@ fn runRename(
     const taken = standalone.db.rawOne(i64, &scope, "SELECT 1::bigint FROM datasets WHERE name = $1", .{new}) catch
         return fail(io, .network, "database error: {s}", .{lastDbProblem()});
     if (taken != null) return fail(io, .usage, "a dataset named {s} already exists. Pick another name, then run 'cid admin rename {s} <new-name>'.", .{ new, old });
-    const renamed = standalone.db.rawOne(i64, &scope, "UPDATE datasets SET name = $2, git_url = coalesce($3, git_url) WHERE name = $1 RETURNING 1::bigint", .{ old, new, git_url }) catch
+    const exists = standalone.db.rawOne(i64, &scope, "SELECT 1::bigint FROM datasets WHERE name = $1", .{old}) catch
         return fail(io, .network, "database error: {s}", .{lastDbProblem()});
-    if (renamed == null) return fail(io, .usage, "no dataset named {s}. Check the name, then run 'cid admin rename <dataset> <new-name>'.", .{old});
-    out.print("Renamed {s} to {s}. The old address no longer answers.\nIn each folder of it, run: cid remote set-url cid@<host>:{s}", .{ old, new, new }) catch return .network;
+    if (exists == null) return fail(io, .usage, "no dataset named {s}. Check the name, then run 'cid admin rename <dataset> <new-name>'.", .{old});
+
+    // A new git URL must take a push before anything moves, as at init.
+    const writer_config: ?git_writer.Config = if (env.get("CID_GIT_WORKDIR")) |workdir| .{
+        .workdir = workdir,
+        .server_url = env.get("CID_PUBLIC_URL") orelse "http://127.0.0.1:7070",
+    } else null;
+    if (git_url) |url| if (writer_config) |config| {
+        const probed = git_writer.probe(arena, io, config, url) catch
+            return fail(io, .network, "could not run git to check {s}. Check git is installed, then run 'cid admin rename' again.", .{url});
+        switch (probed) {
+            .ok => {},
+            .unreachable_repo => |why| return fail(io, .network, "cid cannot reach {s} ({s}); nothing was renamed. Move the repository on its host first, then run 'cid admin rename' again.", .{ url, why }),
+            .not_writable => |why| return fail(io, .access, "cid cannot push to {s} ({s}); nothing was renamed. Give the server's key write access there, then run 'cid admin rename' again.", .{ url, why }),
+        }
+    };
+
+    _ = standalone.db.exec(&scope, "UPDATE datasets SET name = $2, git_url = coalesce($3, git_url) WHERE name = $1", .{ old, new, git_url }) catch
+        return fail(io, .network, "database error: {s}", .{lastDbProblem()});
+    out.print("Renamed {s} to {s}. The old address no longer answers.\n", .{ old, new }) catch return .network;
+
+    // The repository's own files name the dataset (the .cid marker that
+    // `cid clone <git-url>` reads, the README): rewritten now, by git.
+    var code: ExitCode = .ok;
+    if (writer_config) |config| {
+        if (git_writer.refresh(arena, io, &standalone.db, &scope, config, new)) |r| switch (r) {
+            .nothing_released => out.writeAll("Its git repository gets its files at the first release.\n") catch return .network,
+            .up_to_date => out.writeAll("Its git repository already names it.\n") catch return .network,
+            .committed => |sha| out.print("Its git repository now names it: commit {s} on main.\n", .{sha[0..@min(12, sha.len)]}) catch return .network,
+        } else |_| {
+            out.print("Its git repository could not be updated (see the git error above). Fix the cause, then run 'cid admin git {s} --resync'.\n", .{new}) catch return .network;
+            code = .network;
+        }
+    } else {
+        out.print("This machine has no git writer (CID_GIT_WORKDIR unset): run 'cid admin git {s} --resync' where it has one, to update its git repository.\n", .{new}) catch return .network;
+    }
+    out.print("In each folder of it, run: cid remote set-url cid@<host>:{s}", .{new}) catch return .network;
     if (git_url) |url| out.print(" --git {s}", .{url}) catch return .network;
     out.writeAll("\n") catch return .network;
     out.flush() catch return .network;
-    return .ok;
+    return code;
 }
 
 /// A dataset path as GitLab spells project paths: `/`-joined segments of

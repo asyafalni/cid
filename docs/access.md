@@ -16,7 +16,9 @@ A trailing `.cid` is accepted and ignored.
 **Renames work as in git.** Access follows the GitLab project at the same path, so
 when a project moves, an administrator moves its dataset to match:
 `cid admin rename <dataset> <new-path> [--git <new-git-url>]`. The old address then
-answers "not found", exactly as a moved git remote does, and nothing redirects. Each
+answers "not found", exactly as a moved git remote does, and nothing redirects. The
+dataset repository's own files are rewritten to name the new path, by git
+(`docs/git-repository.md`). Each
 folder points itself at the new one with `cid remote set-url <address> [--git <url>]`,
 git's own command; its local commits, staged changes and cache stay.
 

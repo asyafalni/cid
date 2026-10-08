@@ -211,7 +211,8 @@ cid admin git <dataset>            # git repository status: last release written
 cid admin git <dataset> --resync   # write any pending releases into the repository
 cid admin add-key <account> <name> <public-key>   # register a key by hand
 cid admin grant <dataset> <account> <read|write|maintain>
-cid admin rename <dataset> <new-path> [--git <url>]   # after its GitLab project moved
+cid admin rename <dataset> <new-path> [--git <url>]   # after its GitLab project moved;
+                       # rewrites the repository's files to name it, with git
 ```
 
 ### CI and scripts
@@ -450,7 +451,8 @@ Deep dives: `docs/data-model.md` · `docs/access.md` · `docs/git-repository.md`
     is logged. A presigned URL to clear restricted content exists only after the
     logged reveal.
 21. **Every dataset has a git repository**, and cid is the only writer of its own files
-    there (`render.owned_paths`): one commit and tag per release, small text files only,
+    there (`render.owned_paths`): one commit and tag per release (plus one untagged
+    commit when the dataset is renamed, naming its new path), small text files only,
     never data, never restricted content. Files cid did not write are never changed or
     removed. A git failure delays the git copy; it never blocks or changes a release.
 22. **SSH only authenticates.** No data, no shell, no forwarding over SSH; the forced

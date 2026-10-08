@@ -116,10 +116,15 @@ time, so it makes no new commit. `.cid` and `release.json` are never cut.
   Not built yet: noticing a force-push or a deleted tag and restoring it.
 - **Links, not copies.** Anything heavy (browsing items, comparing releases) is a link
   into the cid dashboard, pinned to that release.
-- **Renames:** renaming a dataset does not move its git repository; cid keeps pushing
-  to the configured `git_url`. When the repository moved too, `cid admin rename
-  <dataset> <new-path> --git <new-url>` records the new URL, and the next write pushes
-  there.
+- **Renames:** cid never moves a repository on its host (no git command does; that is
+  the host's own setting). After a move there, `cid admin rename <dataset> <new-path>
+  [--git <new-url>]` first checks it can push to a new URL (the write check `init`
+  makes, and nothing is renamed if it fails), renames, then, with plain git, renders
+  the newest release in the repository again under the new name and URL and pushes it
+  to `main` as one commit, `dataset: now <new-path>`. That rewrites the `.cid` marker
+  (which `cid clone <git-url>` reads) and the README. No tag moves: old releases keep
+  the files they were made with. If the push fails, the rename stands and
+  `cid admin git <dataset> --resync` retries it; it never commits twice for one rename.
 
 The write queue:
 

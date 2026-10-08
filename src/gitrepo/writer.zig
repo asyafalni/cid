@@ -63,40 +63,21 @@ pub fn processDataset(
     return outcome;
 }
 
-/// Renders and pushes one release. Returns the git commit sha.
-fn writeOne(
-    arena: std.mem.Allocator,
-    io: std.Io,
-    db: *dbx.sql.Db,
-    scope: anytype,
-    config: Config,
-    dataset_id: []const u8,
-    dataset_name: []const u8,
-    git_url: []const u8,
-    kind: []const u8,
-    release_name: []const u8,
-) ![]const u8 {
+/// The dataset's clone in the workdir, made if missing, pointed at its
+/// current git URL (`cid admin rename --git` may have changed it).
+fn openClone(arena: std.mem.Allocator, io: std.Io, config: Config, dataset_id: []const u8, git_url: []const u8) ![]const u8 {
     const repo_dir = try std.fmt.allocPrint(arena, "{s}/{s}", .{ config.workdir, dataset_id });
     std.Io.Dir.cwd().access(io, repo_dir, .{}) catch {
         std.Io.Dir.cwd().createDirPath(io, config.workdir) catch return error.GitFailed;
         try git(arena, io, config, null, &.{ "clone", git_url, repo_dir });
     };
-    // The dataset's git URL may have changed since this clone was made
-    // (`cid admin rename --git`); it is always the one to push to.
     try git(arena, io, config, repo_dir, &.{ "remote", "set-url", "origin", git_url });
+    return repo_dir;
+}
 
-    // A release whose tag the repository already has is written: nothing
-    // to do, ever. Rendering it again would put an older release's files
-    // on top of newer ones.
-    const tag_ref = try std.fmt.allocPrint(arena, "refs/tags/{s}", .{release_name});
-    const remote_tag = try gitOutput(arena, io, config, repo_dir, &.{ "ls-remote", "origin", tag_ref });
-    if (remote_tag.len > 0) {
-        try git(arena, io, config, repo_dir, &.{ "fetch", "origin", "--tags" });
-        const sha = try gitOutput(arena, io, config, repo_dir, &.{ "rev-parse", try std.fmt.allocPrint(arena, "{s}^{{commit}}", .{tag_ref}) });
-        return std.mem.trim(u8, sha, " \n");
-    }
-
-    const input = try loadInput(arena, db, scope, config, dataset_id, dataset_name, git_url, kind, release_name);
+/// Puts a render of `input` on main, as the remote has it, and commits it
+/// with `message` when anything differs. Answers whether it committed.
+fn commitRendered(arena: std.mem.Allocator, io: std.Io, config: Config, repo_dir: []const u8, input: render.Input, message: []const u8) !bool {
     const files = try render.renderAll(arena, input);
     // Always sync to the remote first; our own branch is always 'main'.
     try git(arena, io, config, repo_dir, &.{ "fetch", "origin" });
@@ -108,7 +89,7 @@ fn writeOne(
 
     var repo = std.Io.Dir.cwd().openDir(io, repo_dir, .{}) catch return error.GitFailed;
     defer repo.close(io);
-    // cid's files are exactly this release's: whatever an earlier release
+    // cid's files are exactly this render's: whatever an earlier release
     // wrote and this one does not (files.txt once a dataset is restricted
     // or too large) goes. Only cid's own paths: anything else in the
     // repository, someone's code or docs, is left as it is.
@@ -124,15 +105,91 @@ fn writeOne(
 
     try git(arena, io, config, repo_dir, &.{ "add", "-A" });
     const dirty = try gitOutput(arena, io, config, repo_dir, &.{ "status", "--porcelain" });
-    if (dirty.len > 0) {
-        const msg = try std.fmt.allocPrint(arena, "release: {s}", .{release_name});
-        try git(arena, io, config, repo_dir, &.{
-            "-c",     "user.name=cid",
-            "-c",     "user.email=cid@invalid",
-            "commit", "-m",
-            msg,
-        });
+    if (dirty.len == 0) return false;
+    try git(arena, io, config, repo_dir, &.{
+        "-c",     "user.name=cid",
+        "-c",     "user.email=cid@invalid",
+        "commit", "-m",
+        message,
+    });
+    return true;
+}
+
+pub const Refreshed = union(enum) {
+    /// Nothing is in the repository yet: the first release writes it all.
+    nothing_released,
+    /// The repository already says what cid would.
+    up_to_date,
+    /// One commit on main, pushed; its sha.
+    committed: []const u8,
+};
+
+/// After a rename, the repository's files still name the old path and
+/// URL — the `.cid` marker most of all, which `cid clone <git-url>`
+/// reads. This renders the newest release the repository holds again,
+/// with the dataset's current name and git URL, and pushes the result to
+/// main as one commit ("dataset: now <name>"), with plain git and no
+/// help from the host. No tag moves; nothing is pushed when nothing
+/// differs, so running it twice is safe.
+pub fn refresh(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    db: *dbx.sql.Db,
+    scope: anytype,
+    config: Config,
+    dataset_name: []const u8,
+) Error!Refreshed {
+    const ds = (db.rawOne(DatasetRow, scope, "SELECT dataset_id::text AS dataset_id, git_url, kind FROM datasets WHERE name = $1", .{dataset_name}) catch return error.Db) orelse return error.Db;
+    const newest = (db.rawOne([]const u8, scope, "SELECT w.release FROM git_writes w JOIN refs r ON r.dataset_id = w.dataset_id AND r.name = w.release AND r.kind = 'release' " ++
+        "WHERE w.dataset_id = $1::uuid AND w.status = 'done' ORDER BY r.commit_id DESC, w.release DESC LIMIT 1", .{ds.dataset_id}) catch return error.Db) orelse
+        return .nothing_released;
+    const repo_dir = openClone(arena, io, config, ds.dataset_id, ds.git_url) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.GitFailed,
+    };
+    const input = loadInput(arena, db, scope, config, ds.dataset_id, dataset_name, ds.git_url, ds.kind, newest) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.Db,
+    };
+    const message = try std.fmt.allocPrint(arena, "dataset: now {s}", .{dataset_name});
+    const committed = commitRendered(arena, io, config, repo_dir, input, message) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.GitFailed,
+    };
+    if (!committed) return .up_to_date;
+    git(arena, io, config, repo_dir, &.{ "push", "origin", "main" }) catch return error.GitFailed;
+    const sha = gitOutput(arena, io, config, repo_dir, &.{ "rev-parse", "HEAD" }) catch return error.GitFailed;
+    return .{ .committed = std.mem.trim(u8, sha, " \n") };
+}
+
+/// Renders and pushes one release. Returns the git commit sha.
+fn writeOne(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    db: *dbx.sql.Db,
+    scope: anytype,
+    config: Config,
+    dataset_id: []const u8,
+    dataset_name: []const u8,
+    git_url: []const u8,
+    kind: []const u8,
+    release_name: []const u8,
+) ![]const u8 {
+    const repo_dir = try openClone(arena, io, config, dataset_id, git_url);
+
+    // A release whose tag the repository already has is written: nothing
+    // to do, ever. Rendering it again would put an older release's files
+    // on top of newer ones.
+    const tag_ref = try std.fmt.allocPrint(arena, "refs/tags/{s}", .{release_name});
+    const remote_tag = try gitOutput(arena, io, config, repo_dir, &.{ "ls-remote", "origin", tag_ref });
+    if (remote_tag.len > 0) {
+        try git(arena, io, config, repo_dir, &.{ "fetch", "origin", "--tags" });
+        const sha = try gitOutput(arena, io, config, repo_dir, &.{ "rev-parse", try std.fmt.allocPrint(arena, "{s}^{{commit}}", .{tag_ref}) });
+        return std.mem.trim(u8, sha, " \n");
     }
+
+    const input = try loadInput(arena, db, scope, config, dataset_id, dataset_name, git_url, kind, release_name);
+    _ = try commitRendered(arena, io, config, repo_dir, input, try std.fmt.allocPrint(arena, "release: {s}", .{release_name}));
     if (!gitOk(arena, io, config, repo_dir, &.{ "rev-parse", "--verify", try std.fmt.allocPrint(arena, "refs/tags/{s}", .{release_name}) })) {
         try git(arena, io, config, repo_dir, &.{ "tag", release_name });
     }
