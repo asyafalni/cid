@@ -26,7 +26,6 @@ const dbx = @import("../store/db.zig");
 const blob = @import("../store/blob.zig");
 const release_mod = @import("../core/release.zig");
 const git_writer = @import("../gitrepo/writer.zig");
-const protection = @import("../gitrepo/protection.zig");
 const gitlab_sync = @import("../access/gitlab_sync.zig");
 const keys_mod = @import("../access/keys.zig");
 const preview_worker = @import("../preview/worker.zig");
@@ -1645,9 +1644,6 @@ fn createDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, auth_hea
         }
     }
 
-    // Whether only cid can push to main: warned about, never refused.
-    const warning = offload(deps, protection.check, .{ arena, deps.io, deps.gitlab, req.git_url }) catch return error.OutOfMemory;
-
     const id = Uuid.now(deps.io).toString();
     _ = deps.db.exec(
         scope,
@@ -1662,8 +1658,7 @@ fn createDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, auth_hea
             "SELECT $1::uuid, $2, 'maintain', 'gitlab' WHERE EXISTS (SELECT 1 FROM accounts WHERE account_id = $2) " ++
             "ON CONFLICT (dataset_id, account_id) DO UPDATE SET level = 'maintain'", .{ @as([]const u8, &id), account }) catch return error.Db;
     }
-    const warnings: []const []const u8 = if (warning) |w| try arena.dupe([]const u8, &.{w}) else &.{};
-    return json(arena, .created, .{ .name = req.name, .dataset_id = &id, .git_checked = deps.git != null, .warnings = warnings });
+    return json(arena, .created, .{ .name = req.name, .dataset_id = &id, .git_checked = deps.git != null });
 }
 
 const InfoRow = struct {

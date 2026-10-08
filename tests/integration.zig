@@ -124,7 +124,7 @@ const FakeGitLab = struct {
     }
 };
 
-test "init's branch-protection warning: GitLab asked about main, other hosts noted" {
+test "a dataset's git repository may live on any host: the same answer for GitHub, GitLab, Gitea or a path" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -146,44 +146,39 @@ test "init's branch-protection warning: GitLab asked about main, other hosts not
     var scope = cid.db.Run.init(std.testing.allocator);
     defer scope.deinit();
 
-    var fake: FakeGitLab = .{ .server = undefined, .replies = &.{
-        .{ .status = "404 Not Found", .body = "{\"message\":\"404 Not found\"}" },
-        .{ .status = "200 OK", .body = "{\"name\":\"main\",\"push_access_levels\":[{\"access_level\":40}],\"allow_force_push\":false}" },
-    } };
-    const port = try fake.start(io);
+    // A GitLab configured for access sync is never asked about git: cid's
+    // side of the repository is plain git, whoever hosts it. (Nothing
+    // listens there: a call would fail and show in the answer.)
     var deps: cid.api.Deps = .{
         .db = &standalone.db,
         .s3 = &s3c,
         .io = io,
         .gpa = std.testing.allocator,
         .token = "test-token",
-        .gitlab = .{ .base_url = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}", .{port}), .token = "t" },
+        .gitlab = .{ .base_url = "http://127.0.0.1:9", .token = "t" },
     };
 
-    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name LIKE 'test/datasets/protect-%'", .{});
-    const Made = struct { warnings: []const []const u8 };
-    const cases = .{
-        .{ "test/datasets/protect-open", "git@127.0.0.1:org/datasets/open.git", "main is not protected" },
-        .{ "test/datasets/protect-shut", "ssh://git@127.0.0.1/org/datasets/shut.git", "" },
-        .{ "test/datasets/protect-elsewhere", "git@github.com:org/x.git", "cannot check branch protection on github.com" },
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name LIKE 'test/datasets/host-%'", .{});
+    const urls = .{
+        .{ "test/datasets/host-github", "git@github.com:org/datasets/x.git" },
+        .{ "test/datasets/host-gitlab", "git@gitlab.com:org/datasets/x.git" },
+        .{ "test/datasets/host-gitea", "ssh://git@gitea.example:2222/org/x.git" },
+        .{ "test/datasets/host-self", "https://git.example.internal/org/x.git" },
+        .{ "test/datasets/host-path", "/srv/git/x.git" },
     };
-    inline for (cases) |c| {
+    var first: ?[]const u8 = null;
+    inline for (urls) |c| {
         const body = try std.fmt.allocPrint(arena, "{{\"name\":\"{s}\",\"git_url\":\"{s}\"}}", .{ c[0], c[1] });
         const res = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", body);
         try std.testing.expectEqual(std.http.Status.created, res.status);
+        // Everything but the dataset's own name and id is the same.
+        const Made = struct { git_checked: bool };
         const made = try std.json.parseFromSliceLeaky(Made, arena, res.body, .{ .ignore_unknown_fields = true });
-        if (c[2].len == 0) {
-            try std.testing.expectEqual(@as(usize, 0), made.warnings.len);
-        } else {
-            try std.testing.expectEqual(@as(usize, 1), made.warnings.len);
-            try std.testing.expect(std.mem.indexOf(u8, made.warnings[0], c[2]) != null);
-        }
+        const shape = try std.fmt.allocPrint(arena, "{any}", .{made});
+        if (first) |f| try std.testing.expectEqualStrings(f, shape) else first = shape;
+        try std.testing.expect(std.mem.indexOf(u8, res.body, "warning") == null);
     }
-    fake.stop(io);
-    // GitLab was asked exactly about each project's main, by its path.
-    try std.testing.expect(std.mem.startsWith(u8, fake.request(0), "GET /api/v4/projects/org%2Fdatasets%2Fopen/protected_branches/main "));
-    try std.testing.expect(std.mem.startsWith(u8, fake.request(1), "GET /api/v4/projects/org%2Fdatasets%2Fshut/protected_branches/main "));
-    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name LIKE 'test/datasets/protect-%'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name LIKE 'test/datasets/host-%'", .{});
 }
 
 test "ssh create: a GitLab Maintainer of the same path creates the dataset and owns it" {
@@ -1725,6 +1720,62 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     try std.testing.expectEqualStrings("print('train on the release')\n", code.stdout);
     const readme6 = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", bare_url, "show", "v6.0.0:README.md" } });
     try std.testing.expect(std.mem.indexOf(u8, readme6.stdout, "hand-written") == null);
+
+    // The repository is read back with plain git, the same on any host:
+    // whole, it matches; a deleted or moved tag, or a main reset under
+    // cid's commits, is named and exits 3 (integrity). Nothing is repaired.
+    {
+        var genv = std.process.Environ.Map.init(std.testing.allocator);
+        defer genv.deinit();
+        try genv.put("CID_DB", conninfo);
+        try genv.put("CID_GIT_WORKDIR", work_root);
+        var gbuf: [4096]u8 = undefined;
+        var gout: std.Io.Writer = .fixed(&gbuf);
+        try std.testing.expectEqual(cid.ExitCode.ok, cid.admin.run(arena, io, &gout, &genv, &.{ "git", "test/datasets/gitw" }));
+        try std.testing.expect(std.mem.indexOf(u8, gout.buffered(), "Repository: matches what cid wrote (6 releases).") != null);
+
+        const shaOf = struct {
+            fn get(a: std.mem.Allocator, i: std.Io, repo: []const u8, rev: []const u8) ![]const u8 {
+                const r = try std.process.run(a, i, .{ .argv = &.{ "git", "-C", repo, "rev-parse", rev } });
+                return std.mem.trim(u8, r.stdout, " \n");
+            }
+        }.get;
+        const main_was = try shaOf(arena, io, bare_url, "main");
+        const v2 = try shaOf(arena, io, bare_url, "v2.0.0");
+        const v5 = try shaOf(arena, io, bare_url, "v5.0.0");
+        const v1 = try shaOf(arena, io, bare_url, "v1.0.0");
+        inline for (.{
+            &[_][]const u8{ "tag", "-d", "v2.0.0" },
+            &[_][]const u8{ "tag", "-f", "v3.0.0", "v1.0.0" },
+            &[_][]const u8{ "update-ref", "refs/heads/main", "v5.0.0" },
+        }) |args| {
+            const ran = try std.process.run(arena, io, .{ .argv = &(.{ "git", "-C", bare_url } ++ args.*) });
+            try std.testing.expect(ran.term == .exited and ran.term.exited == 0);
+        }
+        gout = .fixed(&gbuf);
+        try std.testing.expectEqual(cid.ExitCode.integrity, cid.admin.run(arena, io, &gout, &genv, &.{ "git", "test/datasets/gitw" }));
+        const said = gout.buffered();
+        try std.testing.expect(std.mem.indexOf(u8, said, "Repository: changed since cid wrote it:") != null);
+        try std.testing.expect(std.mem.indexOf(u8, said, "v2.0.0: its tag is gone") != null);
+        try std.testing.expect(std.mem.indexOf(u8, said, try std.fmt.allocPrint(arena, "v3.0.0: its tag points at {s}", .{v1[0..12]})) != null);
+        try std.testing.expect(std.mem.indexOf(u8, said, "main no longer holds v6.0.0") != null);
+        try std.testing.expect(std.mem.indexOf(u8, said, "v1.0.0:") == null);
+        _ = v5;
+
+        // Put back by hand, as the advice says; then it matches again.
+        const v3 = (try db.rawOne([]const u8, &fscope, "SELECT git_commit FROM git_writes w JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/gitw' AND w.release = 'v3.0.0'", .{})).?;
+        inline for (.{
+            &[_][]const u8{ "tag", "v2.0.0", v2 },
+            &[_][]const u8{ "tag", "-f", "v3.0.0", v3 },
+            &[_][]const u8{ "update-ref", "refs/heads/main", main_was },
+        }) |args| {
+            const ran = try std.process.run(arena, io, .{ .argv = &(.{ "git", "-C", bare_url } ++ args.*) });
+            try std.testing.expect(ran.term == .exited and ran.term.exited == 0);
+        }
+        gout = .fixed(&gbuf);
+        try std.testing.expectEqual(cid.ExitCode.ok, cid.admin.run(arena, io, &gout, &genv, &.{ "git", "test/datasets/gitw" }));
+        try std.testing.expect(std.mem.indexOf(u8, gout.buffered(), "Repository: matches what cid wrote (6 releases).") != null);
+    }
 
     // A rename with the repository moved too (as a host does: here a copy
     // at a new path). cid checks it can push there first, renames, then

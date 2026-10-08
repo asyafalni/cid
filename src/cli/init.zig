@@ -70,8 +70,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         else => return common.fail(ctx, .network, "could not write .cid/ here. Check folder permissions, then run 'cid init' again.", .{}),
     };
 
-    if (common.emitJson(ctx, .{ .dataset = path, .address = workspace.withoutCredentials(ctx.arena, addr) catch addr, .git = git, .on_server = registered, .warnings = made.warnings })) return .ok;
-    for (made.warnings) |w| common.warn(ctx, "{s}", .{w});
+    if (common.emitJson(ctx, .{ .dataset = path, .address = workspace.withoutCredentials(ctx.arena, addr) catch addr, .git = git, .on_server = registered })) return .ok;
     ctx.out.print(
         "Initialized {s} from this folder{s}.\nNext: 'cid add .' to stage files, then 'cid commit -m \"First import\"'.\n",
         .{ path, if (!registered) "" else if (made.git_checked) " (created on the server; its git repository is writable)" else " (created on the server)" },

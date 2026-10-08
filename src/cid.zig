@@ -47,7 +47,6 @@ pub const exports = struct {
 pub const gitrepo = struct {
     pub const render = @import("gitrepo/render.zig");
     pub const writer = @import("gitrepo/writer.zig");
-    pub const protection = @import("gitrepo/protection.zig");
 };
 pub const uuid7 = @import("util/uuid7.zig");
 pub const progress = @import("util/progress.zig");
@@ -108,7 +107,6 @@ test {
     _ = access.keys;
     _ = access.gitlab;
     _ = gitrepo.writer;
-    _ = gitrepo.protection;
     _ = uuid7;
     _ = progress;
     _ = hash;

@@ -28,7 +28,8 @@ const admin_help =
     \\  migrate    apply new SQL migrations
     \\  serve      run the cid server (--port <n>, default 7070)
     \\  verify <dataset> <release>   rebuild a release and check its hash
-    \\  git <dataset> [--resync]     dataset repository status; --resync retries
+    \\  git <dataset> [--resync]     dataset repository status, and whether it still
+    \\             holds what cid wrote; --resync retries
     \\  gc [--days <n>] [--apply]    show unreferenced files (untouched for n days,
     \\             default 30); --apply deletes them
     \\  purge <dataset> <path|hash> --reason "why"   audited erasure of one item
@@ -59,8 +60,7 @@ const admin_help =
     \\  CID_GIT_WORKDIR  turns the git writer on: clones of dataset
     \\             repositories live here (serve)
     \\  CID_GITLAB_TOKEN, CID_GITLAB_URL  member and key sync (serve,
-    \\             sync-gitlab); main's protection, checked at init (serve);
-    \\             who may create a dataset (ssh-auth)
+    \\             sync-gitlab); who may create a dataset (ssh-auth)
     \\  CID_SYNC_INTERVAL_SECS  the background loop's period: previews,
     \\             GitLab sync, git retries (default 600) (serve)
     \\  The bucket is always named 'cid'; create it on the store first
@@ -447,8 +447,34 @@ fn runGitAdmin(
     }
     if (any_failed)
         out.writeAll("Fix the cause, then run 'cid admin git <dataset> --resync'.\n") catch return .network;
+
+    // Whether the repository still holds what cid wrote, by plain git, so
+    // the same on every host. A rewrite is an integrity failure (exit 3).
+    const workdir = env.get("CID_GIT_WORKDIR") orelse {
+        out.writeAll("Repository: not checked here (CID_GIT_WORKDIR is not set; run this where the git writer runs).\n") catch return .network;
+        out.flush() catch return .network;
+        return .ok;
+    };
+    const config: git_writer.Config = .{ .workdir = workdir, .server_url = env.get("CID_PUBLIC_URL") orelse "http://127.0.0.1:7070" };
+    const seen = git_writer.inspect(arena, io, &standalone.db, &scope, config, dataset_name) catch |err| {
+        out.flush() catch {};
+        return switch (err) {
+            error.GitFailed => fail(io, .network, "could not read the git repository (see git's words above). Check it is reachable, then run 'cid admin git {s}' again.", .{dataset_name}),
+            else => fail(io, .network, "database error: {s}", .{lastDbProblem()}),
+        };
+    };
+    if (seen.problems.len == 0) {
+        out.print("Repository: matches what cid wrote ({d} release{s}).\n", .{ seen.releases, plural(seen.releases) }) catch return .network;
+        out.flush() catch return .network;
+        return .ok;
+    }
+    out.writeAll("Repository: changed since cid wrote it:\n") catch return .network;
+    for (seen.problems) |p| out.print("  {s}\n", .{p}) catch return .network;
+    out.writeAll("Someone with push rights rewrote it; cid repairs nothing by itself. Protect main and release tags on its host\n" ++
+        "so only cid's key may push, then put back what is missing from a clone that still has it\n" ++
+        "(git push origin <tag>, or git push --force origin <commit>:main), and run 'cid admin git <dataset>' again.\n") catch return .network;
     out.flush() catch return .network;
-    return .ok;
+    return .integrity;
 }
 
 /// Opens a Standalone pool for a one-shot admin command, with the usual

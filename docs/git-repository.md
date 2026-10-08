@@ -11,20 +11,13 @@ branches and tags are untouched. If either step fails, the dataset is not create
 the error gives git's own reason and what to fix. A server without a git writer
 creates the dataset without the check.
 
-Creation then looks at `main`'s protection, and only ever warns (`cid init` prints
-the warning; `--json` and the API return it in `warnings`); cid works with any git
-host and never refuses a repository for this (`src/gitrepo/protection.zig`):
-
-- On the GitLab the server syncs from (`CID_GITLAB_URL` and `CID_GITLAB_TOKEN`), it
-  asks GitLab's protected-branches API and warns when `main` is not protected or
-  allows force pushes (anyone who can push could rewrite the dataset's history), or
-  when no one may push to it (the write check passes on its scratch ref, and the first
-  release would fail).
-  GitLab shows a project's protected branches only to its Maintainers, so the token's
-  user needs that role on dataset projects; without it the warning says cid could not
-  check.
-- On any other host it notes once that it cannot check, and what to protect.
-- A local repository (a path) gets nothing.
+**Plain git, on every host.** Everything cid does with the repository is a git
+command (`clone`, `fetch`, `commit`, `push`, `ls-remote`), so GitHub, GitLab, Gitea,
+any other host or a bare repository on disk behave exactly the same. cid never asks a
+host's own API about git. Branch and tag protection are a host's settings, not git,
+so cid cannot see them: protect `main` and release tags on your host so only cid's
+key may push (below), and `cid admin git <dataset>` shows whether the repository
+still holds what cid wrote (see "History matches").
 
 ---
 
@@ -112,8 +105,14 @@ time, so it makes no new commit. `.cid` and `release.json` are never cut.
   Until a release is written, readers are told: `cid log` decorates its commit
   `(release: v1.2.0; not in git yet)` and the dashboard's history marks it.
 - **History matches.** Git tags equal cid release names; git commit order equals
-  release order. cid never rewrites its own earlier commits.
-  Not built yet: noticing a force-push or a deleted tag and restoring it.
+  release order. cid never rewrites its own earlier commits. `cid admin git
+  <dataset>` reads the repository back with plain git (`ls-remote`, then `fetch` and
+  `merge-base --is-ancestor`): every release's tag must still point at the commit cid
+  recorded (`git_writes.git_commit`), and `main` must still hold the last one. A
+  deleted or moved tag, or a `main` force-pushed or reset under cid's commits, is
+  named and the command exits 3. cid repairs nothing by itself: someone with push
+  rights did it, and a person puts back what is missing (`git push origin <tag>`) after
+  protecting the branch. The next release still lands on top of whatever `main` holds.
 - **Links, not copies.** Anything heavy (browsing items, comparing releases) is a link
   into the cid dashboard, pinned to that release.
 - **Renames:** cid never moves a repository on its host (no git command does; that is
@@ -193,9 +192,8 @@ This section is advice for administrators; cid does not configure GitLab.
 - **Protection:** make `main` a protected branch with "Allowed to push and merge" set
   to the cid deploy key only, and protect release tags the same way. (To keep code
   beside the dataset in the same repository, let its maintainers merge to `main` too;
-  cid leaves their files alone, but then it warns at creation that others can push.) cid warns at
-  creation when `main` is unprotected, allows force pushes or lets no one push (see
-  above); it does not check tags.
+  cid leaves their files alone.) The same applies on any host: GitHub's branch
+  protection and rulesets, Gitea's protected branches and tags.
 - **What leaves your network:** only the small files above. Keep dataset names, cards
   and release notes free of customer names or anything contractually confidential, and
   restricted datasets never send more than counts.
@@ -204,8 +202,6 @@ This section is advice for administrators; cid does not configure GitLab.
   queue.
 - Everything here is GitLab-specific configuration only; the git writer itself speaks
   plain git and works with any host (self-hosted GitLab, Gitea, GitHub).
-
-Not built yet: GitLab Releases (a GitLab Release per tag, with the release notes).
 
 The GitLab token with `read_api` scope (`CID_GITLAB_TOKEN`) is separate from the git
 writer: it is used only to read project membership and users' public SSH keys

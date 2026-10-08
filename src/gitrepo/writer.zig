@@ -162,6 +162,86 @@ pub fn refresh(
     return .{ .committed = std.mem.trim(u8, sha, " \n") };
 }
 
+pub const Inspection = struct {
+    /// Releases cid wrote, all of them looked at.
+    releases: u32 = 0,
+    /// Each way the repository differs from what cid wrote, in words.
+    problems: []const []const u8 = &.{},
+};
+
+/// Whether the dataset repository still holds what cid wrote, asked with
+/// plain git so it means the same on every host (docs/git-repository.md):
+/// every release's tag where cid put it, and main still holding the last
+/// commit cid wrote. Reports only; cid never repairs a repository on its
+/// own (someone with push rights rewrote it, and a person decides).
+pub fn inspect(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    db: *dbx.sql.Db,
+    scope: anytype,
+    config: Config,
+    dataset_name: []const u8,
+) Error!Inspection {
+    const ds = (db.rawOne(DatasetRow, scope, "SELECT dataset_id::text AS dataset_id, git_url, kind FROM datasets WHERE name = $1", .{dataset_name}) catch return error.Db) orelse return error.Db;
+    const Written = struct {
+        pub const nilo_table = .projection;
+        release: []const u8,
+        git_commit: []const u8,
+    };
+    const written = db.raw(Written, scope, "SELECT w.release, w.git_commit FROM git_writes w JOIN refs r ON r.dataset_id = w.dataset_id AND r.name = w.release AND r.kind = 'release' " ++
+        "WHERE w.dataset_id = $1::uuid AND w.status = 'done' AND w.git_commit IS NOT NULL ORDER BY r.commit_id, w.release", .{ds.dataset_id}) catch return error.Db;
+    if (written.len == 0) return .{};
+
+    const repo_dir = openClone(arena, io, config, ds.dataset_id, ds.git_url) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.GitFailed,
+    };
+    // The remote's tags and main as they are now. An annotated tag lists
+    // twice, the second time peeled (`^{}`) to its commit, which wins.
+    const listed = gitOutput(arena, io, config, repo_dir, &.{ "ls-remote", "origin", "refs/tags/*", "refs/heads/main" }) catch return error.GitFailed;
+    var tags: std.StringHashMapUnmanaged([]const u8) = .empty;
+    var main_sha: ?[]const u8 = null;
+    var lines = std.mem.tokenizeScalar(u8, listed, '\n');
+    while (lines.next()) |line| {
+        const tab = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
+        const sha = line[0..tab];
+        const ref = line[tab + 1 ..];
+        if (std.mem.eql(u8, ref, "refs/heads/main")) {
+            main_sha = sha;
+        } else if (std.mem.startsWith(u8, ref, "refs/tags/")) {
+            const name = ref["refs/tags/".len..];
+            if (std.mem.endsWith(u8, name, "^{}")) {
+                try tags.put(arena, name[0 .. name.len - 3], sha);
+            } else if (!tags.contains(name)) try tags.put(arena, name, sha);
+        }
+    }
+
+    var problems: std.ArrayList([]const u8) = .empty;
+    for (written) |w| {
+        const now = tags.get(w.release) orelse {
+            try problems.append(arena, try std.fmt.allocPrint(arena, "{s}: its tag is gone", .{w.release}));
+            continue;
+        };
+        if (!std.mem.eql(u8, now, w.git_commit))
+            try problems.append(arena, try std.fmt.allocPrint(arena, "{s}: its tag points at {s}, not the commit cid wrote ({s})", .{ w.release, short(now), short(w.git_commit) }));
+    }
+    const last = written[written.len - 1];
+    if (main_sha) |_| {
+        git(arena, io, config, repo_dir, &.{ "fetch", "--quiet", "origin", "main" }) catch return error.GitFailed;
+        // Present here (cid wrote it from this clone) and, on main, still
+        // an ancestor of what main is now: anything else is a rewrite.
+        if (!gitOk(arena, io, config, repo_dir, &.{ "merge-base", "--is-ancestor", last.git_commit, "FETCH_HEAD" }))
+            try problems.append(arena, try std.fmt.allocPrint(arena, "main no longer holds {s} ({s}): it was force-pushed or reset", .{ last.release, short(last.git_commit) }));
+    } else {
+        try problems.append(arena, "main is gone");
+    }
+    return .{ .releases = @intCast(written.len), .problems = problems.items };
+}
+
+fn short(sha: []const u8) []const u8 {
+    return sha[0..@min(12, sha.len)];
+}
+
 /// Renders and pushes one release. Returns the git commit sha.
 fn writeOne(
     arena: std.mem.Allocator,

@@ -207,7 +207,8 @@ cid admin serve        # run the cid server (its background loop also drains pre
                        # syncs GitLab and retries git writes)
 cid admin previews     # one pass of the preview worker
 cid admin sync-gitlab  # sync members and SSH keys now
-cid admin git <dataset>            # git repository status: last release written, errors
+cid admin git <dataset>            # git repository status: releases written, errors, and
+                                   # whether it still holds what cid wrote (exit 3 if not)
 cid admin git <dataset> --resync   # write any pending releases into the repository
 cid admin add-key <account> <name> <public-key>   # register a key by hand
 cid admin grant <dataset> <account> <read|write|maintain>
@@ -365,9 +366,10 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   commit and tag to the dataset repository, using the `git` program on the server. It
   runs when `CID_GIT_WORKDIR` is set (otherwise releases queue for
   `cid admin git --resync`); creating a dataset then first proves it can push
-  (a throwaway `refs/cid/write-check`), and warns, never refuses, when `main` is not
-  protected for cid alone (GitLab's API; other hosts get a note). Restricted datasets
-  render counts only.
+  (a throwaway `refs/cid/write-check`). It is plain git only, so every host (GitHub,
+  GitLab, Gitea, a path) behaves the same; `cid admin git <dataset>` reads the
+  repository back and names any tag or `main` rewritten since cid wrote it (exit 3,
+  never repaired). Restricted datasets render counts only.
 - **SSH front door:** OpenSSH `sshd` on the cid host accepts only the user `cid`, looks
   up keys through cid, and runs cid's restricted command. SSH only authenticates and
   hands out short-lived HTTPS credentials; data moves over HTTPS in parallel.
@@ -632,7 +634,7 @@ src/export/                  bundle.zig (the streamed version), jsonl.zig, yolo.
 src/server/browse/           dashboard API: manifest queries, facets, cursors, compare
 src/preview/                 preview worker: calls ffmpeg, stores by item hash
 src/gitrepo/                 dataset repository: render release files, queue, push, resync,
-                             main's protection check (protection.zig)
+                             read back (writer.inspect), all plain git
 src/access/                  key lookup and forced-command checks (auth.zig), tokens,
                              GitLab member and key sync; their CLI entry points are
                              src/cli/sshcmd.zig (cid ssh-keys, cid ssh-auth)

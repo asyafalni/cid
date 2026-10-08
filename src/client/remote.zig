@@ -189,8 +189,8 @@ pub const Remote = struct {
     };
 
     /// A new dataset: whether the server proved it can push to the git
-    /// repository, and anything it warns about (an unprotected main).
-    pub const Made = struct { git_checked: bool = false, warnings: []const []const u8 = &.{} };
+    /// repository.
+    pub const Made = struct { git_checked: bool = false };
 
     pub fn create(self: *const Remote, arena: std.mem.Allocator, git_url: []const u8) Error!Created {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{
