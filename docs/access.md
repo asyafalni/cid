@@ -13,8 +13,8 @@ cid@cidhub.com:your-org/datasets/person-vehicle
 
 A trailing `.cid` is accepted and ignored.
 
-**Renames work as in git.** Access follows the GitLab project at the same path, so
-when a project moves, an administrator moves its dataset to match:
+**Renames work as in git.** Access follows the repository the dataset's git URL
+names, so when a project moves, an administrator moves its dataset to match:
 `cid admin rename <dataset> <new-path> [--git <new-git-url>]`. The old address then
 answers "not found", exactly as a moved git remote does, and nothing redirects. The
 dataset repository's own files are rewritten to name the new path, by git
@@ -71,10 +71,11 @@ trusted automation.
 
 Nothing to manage in cid:
 
-- **Identity:** for each dataset, cid reads the members of the GitLab project with the
-  same path as the dataset, and the public SSH keys of each member (the same keys
-  people already use for `git clone`). A key maps to one GitLab user
-  (`gitlab:<user id>`).
+- **Identity:** for each dataset, cid reads the members of the GitLab project its git
+  URL names (`datasets.git_url`: `git@gitlab.example:org/x.git` is the project
+  `org/x`), and the public SSH keys of each member (the same keys people already use
+  for `git clone`). A key maps to one GitLab user (`gitlab:<user id>`). The dataset's
+  own path and its repository's path usually match, but nothing requires it.
 - **Permission:** the GitLab role on the dataset's project decides cid access.
   Reporter → read. Developer → write. Maintainer and Owner → maintain ("owner" in
   user-facing text means Maintainer). Each level covers the ones below it. Anyone else
@@ -104,19 +105,64 @@ Nothing to manage in cid:
 ### Creating a dataset
 
 `cid init <address> --git <url>` over SSH asks the front door for
-`cid-auth <dataset> create`. A dataset that does not exist yet has no `access` rows,
-so the front door asks GitLab instead, live: the person may create it when they are a
-Maintainer or Owner of the GitLab project at the same path (directly or through a
-group, `members/all`), the role that will own the dataset anyway. They get a
-15-minute maintain token for that one name, the server creates the dataset with it,
-and records them as its owner at once rather than at the next sync.
+`cid-auth <dataset> create`. A dataset that does not exist yet has no `access` rows:
+the front door hands a GitLab account a 15-minute maintain token for that one name,
+and the server decides when the dataset is created, where the git URL is known. On a
+server that takes access from GitLab:
 
-Refused (exit 5), each with its reason: the dataset already exists; the person is not
-a Maintainer of that project (or it does not exist on GitLab yet: create it first);
-their account is not a GitLab one; the front door has no GitLab to ask
-(`CID_GITLAB_TOKEN` unset in `/etc/cid/env`); or GitLab did not answer (run
-`cid init` again in a moment). An administrator can always create a
-dataset with the server's static token (`CID_SERVER`/`CID_TOKEN`).
+- **The repository must be on that GitLab** (exit 1 otherwise: "this server takes
+  access from gitlab.example, and … is not a repository there"), so cid and git agree
+  from the start. This holds for every way a dataset is made, the server's own token
+  and the platform's API included, and for `cid admin rename --git`.
+- **The person must hold Maintainer or Owner on that repository's project**, asked of
+  GitLab live (directly or through a group, `members/all`), the role that will own the
+  dataset anyway. They are recorded as its owner at once rather than at the next sync.
+
+Refused, each with its reason and the next step: the dataset already exists (exit 1);
+not a Maintainer of that project, or it does not exist yet (exit 5); not a GitLab
+account, or the front door has no GitLab to ask (`CID_GITLAB_TOKEN` unset in
+`/etc/cid/env`) (exit 5); GitLab did not answer (exit 4, run `cid init` again in a
+moment). An administrator can always create a dataset with the server's static token
+(`CID_SERVER`/`CID_TOKEN`); the repository must still be on the server's GitLab.
+
+## Other git hosts (planned)
+
+GitLab is the first host cid takes access from, not the only target: GitHub, Gitea,
+SourceForge or a plain git server should all work. The dataset repository already
+does (it is plain git, `docs/git-repository.md`). Access is the part git cannot do,
+having no members or roles, so it comes from a host's API through an adapter. Decided
+2026-10-08; built when a team on another host needs it, GitHub first.
+
+- **One host per server.** A deployment takes access from one host, set by that
+  host's own variables (`CID_GITLAB_*` today, `CID_GITHUB_*` later); the server refuses
+  to start with more than one set. Several hosts on one server is parked, for a
+  possible multi-tenant service (`CLAUDE.md`, explicitly not now).
+- **An adapter does four things**, exactly what the GitLab code does now:
+  1. a repository's members, each with a level (the sync);
+  2. one person's level on a repository, asked live (creating a dataset);
+  3. a person's public SSH keys (the sync);
+  4. sign-in: an OAuth authorize URL, the token exchange, and who signed in, as
+     `<host>:<user id>` with a display name.
+  Whatever a host cannot do falls back to the manual tier below.
+- **Levels.** cid has three, read, write and maintain ("owner"); each adapter maps
+  its host's roles onto them:
+
+  | cid | GitLab | GitHub |
+  |---|---|---|
+  | read | Reporter | read, triage |
+  | write | Developer | write |
+  | maintain | Maintainer, Owner | maintain, admin |
+
+- **Which repository:** the one the dataset's git URL names, on every host (a GitHub
+  repository is always `owner/name`, so a dataset's own path cannot stand for it).
+- **Accounts** stay `<host>:<user id>` (`gitlab:42`, `github:42`).
+- **The manual tier is supported, not a fallback:** with no adapter configured, any
+  host works. An administrator grants access (`cid admin grant`), people add keys on
+  the dashboard's SSH keys page (or `cid admin add-key`), and the dashboard signs in
+  with a token. This is how SourceForge, Gitolite or a bare git server are used.
+- **When the second adapter is built,** user-facing text moves from GitLab's role
+  names to cid's levels, each adapter adding its host's name ("needs maintain access
+  (Maintainer on GitLab)").
 
 ## CI, scripts and machines
 

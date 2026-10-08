@@ -78,12 +78,14 @@ such as code beside the dataset, is left as it is. Full spec: `docs/git-reposito
   at the first usable release; until then the schema and protocols may break freely.
 - **Explicitly not now** (ideas parked, not rejected; building any of these needs a
   decision first): a hosted "cidhub" cloud and anything multi-tenant; billing;
-  email one-time-link sign-in; complex dashboard administration. When a design choice
+  email one-time-link sign-in; complex dashboard administration; several git hosts on
+  one server (a possible premium feature of that service; one host per server until
+  then, `docs/access.md`, "Other git hosts"). When a design choice
   appears that only matters for the hosted cloud, choose the simple internal answer.
 - **First milestone ("cid exists") is reached:** the file-dataset round trip against a
   real server, the SSH front door, the git writer, previews and the dashboard all run.
-  A GitLab Maintainer of the project at the same path creates a dataset with only
-  an SSH key (checked live with GitLab). Restricted datasets are enforced by the
+  A GitLab Maintainer of the repository a dataset's `--git` URL names creates it with
+  only an SSH key (checked live with GitLab; the repository must be on that GitLab). Restricted datasets are enforced by the
   server inside per-dataset access, by decision: no row-level security (invariant 11).
 - **AI stays out of cid.** cid never calls an LLM or judgment API (TypeSafe/Jev
   included) in the CLI or server. The one permitted future exception is advisory-only
@@ -161,8 +163,8 @@ cid status                            # your branch, anything edited or unpushed
 cid init cid@cidhub.com:your-org/datasets/call-transcripts \
   --git git@gitlab.com:your-org/datasets/call-transcripts.git
                                       # create the dataset from the current folder,
-                                      # paired with its git repository (required);
-                                      # same path on both, by convention
+                                      # paired with its git repository (required),
+                                      # on the server's GitLab when it syncs one
 cid add .                             # stage every added, changed and deleted file
 cid commit -m "Add March calls"       # save locally: instant, works offline
 cid push                              # upload; resumes if the connection drops
