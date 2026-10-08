@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "cid-test",
+      "credentials": [{ "accessKey": "cid-test-key", "secretKey": "cid-test-secret" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

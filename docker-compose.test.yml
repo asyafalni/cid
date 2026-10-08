@@ -15,13 +15,19 @@ services:
       timeout: 2s
       retries: 30
 
+  # The store checks every signature with the test keys, as a real
+  # deployment's does: a URL signed for the wrong host or with the wrong
+  # key fails here too, instead of passing only in tests.
   seaweedfs:
     image: chrislusf/seaweedfs:4.48
-    command: server -dir=/data -s3 -s3.port=8333 -master.volumeSizeLimitMB=64
+    command: server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -master.volumeSizeLimitMB=64
+    volumes:
+      - ./tests/seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
     ports:
       - "127.0.0.1:8333:8333"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333 || exit 1"]
+      # Any answer will do: unsigned requests get a 403 now.
+      test: ["CMD-SHELL", "wget -S -q -O /dev/null http://127.0.0.1:8333 2>&1 | grep -q 'HTTP/'"]
       interval: 2s
       timeout: 2s
       retries: 30
