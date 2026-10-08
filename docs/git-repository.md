@@ -137,6 +137,16 @@ This section is advice for administrators; cid does not configure GitLab.
 
 - **One GitLab group** holds all dataset projects, e.g. `your-org/datasets/<dataset>`.
   Projects are **private**; people get Reporter (read) access through the group.
+- **Membership is cid access.** cid reads a dataset's permissions from the members of
+  its GitLab project (Reporter reads, Developer pushes, Maintainer owns;
+  `docs/access.md`), so onboarding someone to a dataset means adding them to the
+  project, and every cid user can also read its repository. The reverse does not
+  hold: to let people **watch a dataset's releases in git without cid access**, make
+  its project **internal** (visible to everyone signed in to your GitLab) and do not
+  add them as members. They can read and `git pull` the repository (card, release
+  notes, stats; counts only for a restricted dataset) but cannot clone the data or
+  open it on the dashboard. Guest membership does not do this: a Guest cannot read a
+  private project's repository, and gets no cid access either.
 - **Credential: one SSH deploy key** for the cid server's user, enabled with **write
   access** on each dataset project. Deploy keys work on every GitLab tier and can be
   allowed to push to protected branches, so no paid seat or personal token is needed.
