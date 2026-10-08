@@ -61,6 +61,7 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
     try app.provide(deps.db);
     try app.provide(&deps.s3.store);
     try app.provide(&deps.s3.items);
+    if (deps.s3.public) |signer| try app.provide(signer);
     try app.provide(deps);
     // One outbound client for the whole server (nilo_fetch): GitLab's
     // OAuth calls ride it, under a deadline, never blocking a thread.

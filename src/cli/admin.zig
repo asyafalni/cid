@@ -45,6 +45,9 @@ const admin_help =
     \\  CID_DB     the TimescaleDB connection (setup, migrate, serve)
     \\  CID_S3_ENDPOINT, CID_S3_ACCESS_KEY, CID_S3_SECRET_KEY,
     \\  CID_S3_REGION (optional), CID_TOKEN    (serve)
+    \\  CID_S3_PUBLIC_ENDPOINT  where clients reach the store, when not at
+    \\             CID_S3_ENDPOINT: the URLs they are given are signed
+    \\             for it (optional; deploy/proxy/README.md) (serve)
     \\  CID_GITLAB_OAUTH_ID, CID_GITLAB_OAUTH_SECRET, CID_PUBLIC_URL,
     \\  CID_SESSION_SECRET  "Sign in with GitLab" on the dashboard (serve)
     \\  CID_BROWSE_DIR  where the server keeps browse indexes, one
@@ -195,7 +198,8 @@ fn runServe(
         .access_key = s3_access,
         .secret_key = s3_secret,
         .region = s3_region,
-    }) catch return fail(io, .usage, "CID_S3_ENDPOINT must look like http://host:port. Fix it, then run 'cid admin serve' again.", .{});
+        .public_endpoint = env.get("CID_S3_PUBLIC_ENDPOINT"),
+    }) catch return fail(io, .usage, "CID_S3_ENDPOINT and CID_S3_PUBLIC_ENDPOINT must look like http://host:port. Fix them, then run 'cid admin serve' again.", .{});
     defer s3_client.deinit();
 
     // The background loop: GitLab sync and git-write retries, every 10

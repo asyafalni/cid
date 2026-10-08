@@ -537,6 +537,35 @@ test "s3: put, head, get, presign round trip against SeaweedFS" {
     try std.testing.expectEqual(std.http.Status.ok, res.status);
     try std.testing.expectEqualSlices(u8, body, aw.writer.buffered());
 
+    // The store checks signatures, as a real one does: no signature, or
+    // one made for another host, is refused. (localhost and 127.0.0.1 are
+    // two names for the same store.)
+    const unsigned = try plain.fetch(.{ .location = .{ .url = "http://127.0.0.1:8333/cid/" ++ key }, .keep_alive = false });
+    try std.testing.expectEqual(std.http.Status.forbidden, unsigned.status);
+    const other_host = try std.mem.replaceOwned(u8, arena, url, "http://127.0.0.1:8333", "http://localhost:8333");
+    const moved = try plain.fetch(.{ .location = .{ .url = other_host }, .raw_uri = true, .keep_alive = false });
+    try std.testing.expectEqual(std.http.Status.forbidden, moved.status);
+
+    // A server whose clients reach the store at another name signs for
+    // that name (CID_S3_PUBLIC_ENDPOINT), and the URL works there; its
+    // own calls still go to its endpoint.
+    var public: cid.blob.Client = undefined;
+    try public.open(std.testing.allocator, .{
+        .endpoint = "http://127.0.0.1:8333",
+        .access_key = "cid-test-key",
+        .secret_key = "cid-test-secret",
+        .public_endpoint = "http://localhost:8333",
+    });
+    defer public.deinit();
+    try public.start(io);
+    const public_url = try public.presignGet(&scope, key, 300);
+    try std.testing.expect(std.mem.startsWith(u8, public_url, "http://localhost:8333/"));
+    var aw2: std.Io.Writer.Allocating = .init(arena);
+    const res2 = try plain.fetch(.{ .location = .{ .url = public_url }, .raw_uri = true, .keep_alive = false, .response_writer = &aw2.writer });
+    try std.testing.expectEqual(std.http.Status.ok, res2.status);
+    try std.testing.expectEqualSlices(u8, body, aw2.writer.buffered());
+    try std.testing.expectEqualSlices(u8, body, try public.getObjectAlloc(&scope, key));
+
     try s3.deleteObject(&scope, key);
     try std.testing.expectEqual(@as(?u64, null), try s3.headObject(&scope, key));
 }

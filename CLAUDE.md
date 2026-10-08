@@ -769,7 +769,9 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
   create it (docker-compose.test.yml shows how; creation is never cid's
   job), CID_S3_BUCKET does not exist, and CID_S3_REGION is optional
   (default us-east-1). `cid admin serve` refuses to start without the
-  bucket, naming the fix.
+  bucket, naming the fix. `CID_S3_PUBLIC_ENDPOINT`, when set, is the name
+  presigned URLs are signed for (where clients reach the store behind a
+  proxy, `deploy/proxy/`); a second Store that only signs (`blob.Signer`).
 - **External programs allowed:** on the server, `ffmpeg` (preview worker; `vips` when
   PDF page images arrive),
   `git` (dataset repository writer) and OpenSSH `sshd` (front door, runs as its own

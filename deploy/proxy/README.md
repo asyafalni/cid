@@ -24,13 +24,15 @@ Replace `cid.example.com` and `s3.cid.example.com` with your names.
 ## The server's settings
 
 ```sh
-CID_PUBLIC_URL=https://cid.example.com        # in links, the .cid marker, SSH hand-outs
-CID_S3_ENDPOINT=https://s3.cid.example.com    # the name clients are sent to for files
+CID_PUBLIC_URL=https://cid.example.com               # in links, the .cid marker, SSH hand-outs
+CID_S3_ENDPOINT=http://127.0.0.1:8333                # how the server itself reaches the store
+CID_S3_PUBLIC_ENDPOINT=https://s3.cid.example.com    # the name clients are sent to for files
 ```
 
-`CID_S3_ENDPOINT` is also how the server itself reaches the store, so the server must
-be able to resolve and reach that name (through the proxy, or straight to the store
-with the same name in DNS on the inside). Set the same `CID_PUBLIC_URL` in
+The server signs the URLs it hands out for `CID_S3_PUBLIC_ENDPOINT` and does its own
+storage work at `CID_S3_ENDPOINT`, straight to the store, so its traffic never goes
+round through the proxy. Leave `CID_S3_PUBLIC_ENDPOINT` out when both are the same
+name. Set the same `CID_PUBLIC_URL` in
 `/etc/cid/env` for the SSH front door (`deploy/sshd/README.md`): it is the address the
 CLI is handed after it signs in with its key.
 

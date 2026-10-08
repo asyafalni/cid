@@ -29,6 +29,11 @@ pub const Config = struct {
     access_key: []const u8,
     secret_key: []const u8,
     region: []const u8 = "us-east-1",
+    /// The name clients reach the store at, when it is not the one the
+    /// server uses (CID_S3_PUBLIC_ENDPOINT, deploy/proxy/README.md):
+    /// presigned URLs are signed for it, everything else goes to
+    /// `endpoint`. Null signs for `endpoint` too.
+    public_endpoint: ?[]const u8 = null,
     /// Objects above this go up in parts (storage rules: multipart over
     /// 64 MB). Tests lower it; S3 parts must be at least 5 MB.
     multipart_threshold: u64 = 64 * 1024 * 1024,
@@ -36,9 +41,27 @@ pub const Config = struct {
 
 pub const Error = Items.Error;
 
+/// Signs URLs for the public name and nothing else: it never sends a
+/// request. Its own type, because nilo keeps one service per type and
+/// the server's own Store is already one; started the same way.
+pub const Signer = struct {
+    store: s3.Store,
+    items: Items,
+
+    /// nilo's Limits, as the Store's own start hook takes them.
+    const Limits = @typeInfo(@TypeOf(s3.Store.nilo_start)).@"fn".params[2].type.?;
+
+    pub fn nilo_start(self: *Signer, io: std.Io, limits: Limits) !void {
+        try self.store.nilo_start(io, limits);
+        try self.items.nilo_start(io, limits);
+    }
+};
+
 pub const Client = struct {
     store: s3.Store,
     items: Items,
+    /// Set when clients reach the store at another name (Config).
+    public: ?*Signer = null,
     multipart_threshold: u64,
     /// Holds a file below the multipart threshold while it goes up.
     gpa: std.mem.Allocator,
@@ -58,6 +81,23 @@ pub const Client = struct {
         });
         errdefer self.store.deinit();
         self.items = try Items.open(&self.store);
+        errdefer self.items.deinit();
+        self.public = null;
+        if (config.public_endpoint) |public| {
+            const signer = try gpa.create(Signer);
+            errdefer gpa.destroy(signer);
+            signer.store = try s3.open(gpa, .{
+                .endpoint = public,
+                .region = config.region,
+                .credentials = .{ .static = .{
+                    .access_key_id = config.access_key,
+                    .secret_access_key = config.secret_key,
+                } },
+            });
+            errdefer signer.store.deinit();
+            signer.items = try Items.open(&signer.store);
+            self.public = signer;
+        }
     }
 
     /// For a program that never calls `listen()`: admin commands, the
@@ -66,9 +106,15 @@ pub const Client = struct {
     pub fn start(self: *Client, io: std.Io) !void {
         try self.store.nilo_start(io, .off);
         try self.items.nilo_start(io, .off);
+        if (self.public) |p| try p.nilo_start(io, .off);
     }
 
     pub fn deinit(self: *Client) void {
+        if (self.public) |p| {
+            p.items.deinit();
+            p.store.deinit();
+            self.gpa.destroy(p);
+        }
         self.items.deinit();
         self.store.deinit();
     }
@@ -175,12 +221,14 @@ pub const Client = struct {
     }
 
     pub fn presignGet(self: *Client, scope: anytype, key: []const u8, seconds: u32) Error![]const u8 {
-        const link = try self.items.presign(scope, key, seconds);
+        const items = if (self.public) |p| &p.items else &self.items;
+        const link = try items.presign(scope, key, seconds);
         return link.url.view();
     }
 
     pub fn presignPut(self: *Client, scope: anytype, key: []const u8, seconds: u32) Error![]const u8 {
-        const link = try self.items.presignPut(scope, key, seconds);
+        const items = if (self.public) |p| &p.items else &self.items;
+        const link = try items.presignPut(scope, key, seconds);
         return link.url.view();
     }
 };

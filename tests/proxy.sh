@@ -3,8 +3,8 @@
 # server: each one, rewritten only to listen on local ports without TLS,
 # carries a push with a file large enough to go up in pieces, a clone of
 # it elsewhere (every file hash-checked), a release and the dashboard.
-# The server itself reaches the store through the proxy too, as the
-# README sets it up. Needs docker-compose.test.yml up, docker, and
+# The server reaches the store directly and signs for its public name,
+# as the README sets it up, so every file a client moves crosses the proxy. Needs docker-compose.test.yml up, docker, and
 # `zig build`. Run: sh tests/proxy.sh            (both)
 #                   PROXY=caddy sh tests/proxy.sh (one)
 set -u
@@ -21,9 +21,11 @@ export CID_DB='host=127.0.0.1 port=5433 user=cid password=cid-test dbname=cid_te
 export CID_S3_ACCESS_KEY='cid-test-key' CID_S3_SECRET_KEY='cid-test-secret'
 export CID_TOKEN='proxy-token' CID_TOKEN_SECRET='proxy-secret-proxy-secret-0123456789'
 export CID_AUTHOR='user:proxy'
-# Everyone, the server included, goes through the proxy's two names.
+# Clients go through the proxy's two names; the server reaches the store
+# straight, and signs the URLs it hands out for the store's public name
+# (deploy/proxy/README.md).
 export CID_SERVER="http://127.0.0.1:$API_PORT" CID_PUBLIC_URL="http://127.0.0.1:$API_PORT"
-export CID_S3_ENDPOINT="http://127.0.0.1:$S3_PORT"
+export CID_S3_ENDPOINT="http://127.0.0.1:$STORE_PORT" CID_S3_PUBLIC_ENDPOINT="http://127.0.0.1:$S3_PORT"
 
 fails=0
 say() { printf '%s\n' "$*"; }

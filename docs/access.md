@@ -187,6 +187,7 @@ HTTPS terminates at a reverse proxy (Caddy or nginx): Nilo's built-in TLS is you
 barely audited, and the Zig standard library has no TLS server, so the proxy is the
 supported path. The cid server listens on localhost behind it. `deploy/proxy/` holds a
 Caddyfile and an nginx config for it and for the file store, which clients reach
-directly through presigned URLs (so it needs a public name, and the proxy must keep
-the Host header the URLs were signed for); `tests/proxy.sh` runs both against a
+directly through presigned URLs (so it needs a public name, `CID_S3_PUBLIC_ENDPOINT`
+when the server reaches it at another, and the proxy must keep the Host header the
+URLs were signed for); `tests/proxy.sh` runs both against a
 store that checks every signature.
