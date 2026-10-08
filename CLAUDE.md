@@ -309,7 +309,8 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
 - **The cid server** is the only thing users talk to: SSH to prove who they are, then
   HTTPS with a short-lived token for everything else (`docs/access.md`). HTTP serving,
   Postgres and S3 all go through **Nilo** (see Zig conventions); TLS terminates at a
-  reverse proxy you bring (`deploy/` holds only the sshd setup). The dashboard also
+  reverse proxy in front of both the server and the file store (`deploy/proxy/`: a
+  Caddyfile and an nginx config, checked by `tests/proxy.sh`). The dashboard also
   signs people in with GitLab (OAuth: `CID_GITLAB_OAUTH_ID`, `CID_GITLAB_OAUTH_SECRET`,
   `CID_PUBLIC_URL`, `CID_SESSION_SECRET`).
 - **DuckDB** (C API, in-process on the server) answers every question asked of a
@@ -635,7 +636,8 @@ src/gitrepo/                 dataset repository: render release files, queue, pu
 src/access/                  key lookup and forced-command checks (auth.zig), tokens,
                              GitLab member and key sync; their CLI entry points are
                              src/cli/sshcmd.zig (cid ssh-keys, cid ssh-auth)
-deploy/sshd/                 hardened sshd_config and setup (reverse proxy: bring your own)
+deploy/sshd/                 hardened sshd_config and setup
+deploy/proxy/                reverse proxy configs (Caddy, nginx) for the server and the store
 web/                         dashboard: React + Vite + TypeScript (see docs/dashboard.md)
 web/e2e/                     Playwright tests: UX budgets, accessibility (axe), keyboard
 docs/                        data-model.md, access.md, git-repository.md, dashboard.md
@@ -660,6 +662,7 @@ docker compose -f docker-compose.test.yml up -d
 zig build integration              # needs the services
 
 sh tests/usability.sh              # the scripted CLI session (services + `zig build`)
+sh tests/proxy.sh                  # deploy/proxy/ configs carry a push, clone, release (docker)
 
 pnpm --dir web install
 pnpm --dir web dev                 # dashboard dev server, proxies /v0 to cid serve

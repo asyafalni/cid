@@ -1,0 +1,24 @@
+# cid behind Caddy: HTTPS for the server and for its file store, with
+# certificates Caddy gets and renews by itself. Replace the two names,
+# point their DNS here, and run `caddy run --config Caddyfile`.
+# What each part is for: README.md beside this file.
+
+# The cid server: the CLI, the dashboard and the SSH front door's
+# hand-outs all use this name (CID_PUBLIC_URL=https://cid.example.com).
+# Caddy sets no request size or response time limit by default, so long
+# requests (a release of a million items takes about half a minute) and
+# 64 MB API bodies pass as they are.
+cid.example.com {
+	reverse_proxy 127.0.0.1:7070
+}
+
+# The file store (SeaweedFS's S3 port). Clients fetch and upload files
+# here directly, through URLs the cid server signs for this name
+# (CID_S3_ENDPOINT=https://s3.cid.example.com), so the Host header must
+# reach the store unchanged: Caddy keeps it by default. Files stream
+# through; nothing is held back.
+s3.cid.example.com {
+	reverse_proxy 127.0.0.1:8333 {
+		flush_interval -1
+	}
+}
