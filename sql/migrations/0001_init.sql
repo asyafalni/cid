@@ -241,6 +241,8 @@ CREATE TABLE refs (
   manifest_path    text,
   manifest_hash    bytea CHECK (manifest_hash IS NULL OR octet_length(manifest_hash) = 32),
   card             jsonb,                          -- card snapshot at release time
+  changes_from     text,                           -- the release `changes` counts from
+  changes          jsonb,                          -- files and annotations added/changed/removed since it
   PRIMARY KEY (dataset_id, name)
 );
 

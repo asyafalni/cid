@@ -1,7 +1,7 @@
 # cid — the dataset's git repository
 
 Read with `CLAUDE.md`. This is how "git lives inside cid" works in practice: every
-dataset is paired with a git repository that cid writes and people only read.
+dataset is paired with a git repository that cid writes and people read.
 
 The pairing is set when the dataset is created (`cid init <address> --git <url>`, or
 the platform's create-dataset API). When the server has a git writer configured
@@ -42,9 +42,11 @@ once a dataset is restricted or too large) is removed; nothing else ever is.
 README.md          dataset name; latest release, item count, total size and date;
                    `cid clone <git-url>`; one link to browse this release in the
                    dashboard; then the release's card fields (see below)
-CHANGELOG.md       every release in full, newest first: name, date, message, item count
+CHANGELOG.md       every release in full, newest first: name, date, message, item count,
+                   and what changed since the release before it (see below)
 release.json       dataset, release, commit (cid commit id), manifest_hash,
-                   created_at (date), items, clone (the git URL), dashboard (server URL)
+                   created_at (date), items, changes_from and changes (the counts
+                   below), clone (the git URL), dashboard (server URL)
 stats.yaml         release, items, bytes, files_by_extension; for annotated datasets
                    also annotations, annotations_by_class and items_by_split (one
                    value per line, so git diffs between releases read clearly)
@@ -55,6 +57,16 @@ files.txt          releases under 10,000 items: one line per item, sorted by pat
 .cid               marker file: server URL and dataset name, so `cid clone <git-url>` works
 ```
 
+**What changed, per release.** Each `CHANGELOG.md` entry ends with what changed since
+the release before it, for a reader who follows the dataset in git without opening
+cid, e.g. `Since v1.2.0: 120 files added, 3 modified, 1 deleted; 540 annotations
+added, 12 changed, 4 removed.` (the annotation half for annotated datasets). Files
+are matched by path (modified: different bytes) and annotations by id (changed: a
+different kind, class, shape or attributes), the comparison `cid diff` makes. The
+counts are taken when the release is made and kept with it (`refs.changes`,
+`docs/data-model.md`), from the newest earlier release; the first release says so.
+`cid diff <a> <b>` and the dashboard's Compare show the changes themselves.
+
 The card fields in `README.md` render from the **release's card snapshot**
 (`refs.card`, see `docs/data-model.md`), never from the live card, so editing the card
 between releases cannot change what an old release renders. Known fields come first,
@@ -62,7 +74,7 @@ in this order: purpose, collection, license, provenance, known gaps; any other t
 fields follow, by name. Empty fields are left out.
 
 **Restricted datasets** get counts only: `README.md` without the card, `CHANGELOG.md`
-without release messages, `stats.yaml` without class or split names (the annotation
+without release messages (the change counts stay, with no names), `stats.yaml` without class or split names (the annotation
 total only), `release.json` and `.cid`. No `files.txt`, `classes.yaml` or `policy.md`.
 
 **What cid never writes to git:** data files, previews, the Parquet manifest, and any
@@ -74,15 +86,16 @@ Not built yet: size limits on rendered files (1 MB per file, 5 MB per release).
 
 ## Rules
 
-- **One-way.** cid writes; cid never reads data back from git. Humans get read access
-  only. (The single exception to "never reads": `cid clone <git-url>` reads the tiny
+- **One-way.** cid writes its files; cid never reads data back from git. People read
+  cid's files and never edit them (a hand edit is replaced at the next release). (The single exception to "never reads": `cid clone <git-url>` reads the tiny
   `.cid` marker to find the cid server; see below.)
 - **Deterministic.** The same release always renders the same files (sorted keys, fixed
   formats, the release's card snapshot, no times except the release's own date), so
   re-running produces no new git commit.
-- **Exact and in order.** Each commit's tree is exactly the release's rendered files
-  (a file an earlier release had and this one does not, like `files.txt` once a
-  dataset is restricted or reaches 10,000 items, is removed). Pending releases are
+- **Exact and in order.** cid's files in each commit are exactly the release's
+  rendered files (one an earlier release had and this one does not, like `files.txt`
+  once a dataset is restricted or reaches 10,000 items, is removed); files cid does
+  not write are left as they are. Pending releases are
   written in release order, and a release whose tag the repository already has is
   never rendered again, so a resync can never put an older release's files on top of
   a newer one.
@@ -156,7 +169,9 @@ This section is advice for administrators; cid does not configure GitLab.
   access** on each dataset project. Deploy keys work on every GitLab tier and can be
   allowed to push to protected branches, so no paid seat or personal token is needed.
 - **Protection:** make `main` a protected branch with "Allowed to push and merge" set
-  to the cid deploy key only, and protect release tags the same way. cid warns at
+  to the cid deploy key only, and protect release tags the same way. (To keep code
+  beside the dataset in the same repository, let its maintainers merge to `main` too;
+  cid leaves their files alone, but then it warns at creation that others can push.) cid warns at
   creation when `main` is unprotected, allows force pushes or lets no one push (see
   above); it does not check tags.
 - **What leaves your network:** only the small files above. Keep dataset names, cards

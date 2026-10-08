@@ -248,9 +248,18 @@ CREATE TABLE refs (
   manifest_path    text,
   manifest_hash    bytea CHECK (manifest_hash IS NULL OR octet_length(manifest_hash) = 32),
   card             jsonb,                 -- snapshot of dataset_cards.body at release time
+  changes_from     text,                  -- the previous release; null for the first
+  changes          jsonb,                 -- counted since it, at release time
   PRIMARY KEY (dataset_id, name)
 );
 ```
+
+A release keeps what changed since the release before it, counted when it is made
+(`version.changes`): files added, modified and deleted by path, and annotations added,
+changed and removed by id, the comparison `cid diff` makes. The previous release is
+the newest release whose commit is older than this one's; the first release has none,
+so it keeps no counts (`changes_from` and `changes` are null). The dataset repository's `CHANGELOG.md` and
+`release.json` show it (`docs/git-repository.md`).
 
 `commits.stats` holds the version's own statistics, not a change summary: items,
 bytes, file types, splits, a few visual items for the cover, annotations, classes and
@@ -397,8 +406,8 @@ Rebuilding a release must reproduce the same hash.
 
 ## Access, audit, activity
 
-Identities and access are synced from GitLab (or managed in the dashboard); the full
-flow is in `docs/access.md`.
+Identities and access are synced from GitLab (or granted by hand with
+`cid admin grant`); the full flow is in `docs/access.md`.
 
 ```sql
 CREATE TABLE accounts (

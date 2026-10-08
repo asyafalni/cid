@@ -186,9 +186,11 @@ fn loadInput(
         message: []const u8,
         created_ms: i64,
         commit_id: []const u8,
+        changes_from: ?[]const u8,
+        changes: ?[]const u8,
     };
     const all = db.raw(All, scope, "SELECT r.name, c.message, (extract(epoch from c.recorded_at) * 1000)::bigint AS created_ms, " ++
-        "c.commit_id::text AS commit_id FROM refs r JOIN commits c ON c.commit_id = r.commit_id " ++
+        "c.commit_id::text AS commit_id, r.changes_from, r.changes::text AS changes FROM refs r JOIN commits c ON c.commit_id = r.commit_id " ++
         "WHERE r.dataset_id = $1::uuid AND r.kind = 'release' ORDER BY r.commit_id DESC, r.name DESC", .{dataset_id}) catch return error.Db;
     const releases = try arena.alloc(render.ReleaseInfo, all.len);
     for (releases, all) |*r, row| {
@@ -198,6 +200,11 @@ fn loadInput(
             .message = row.message,
             .created_at_ms = @intCast(@max(0, row.created_ms)),
             .items = their.items,
+            .changes_from = row.changes_from,
+            .changes = if (row.changes) |text|
+                std.json.parseFromSliceLeaky(render.Changes, arena, text, .{ .ignore_unknown_fields = true }) catch null
+            else
+                null,
         };
     }
 

@@ -11,6 +11,20 @@ pub const ReleaseInfo = struct {
     message: []const u8,
     created_at_ms: u64,
     items: u64,
+    /// What changed since the release before it (`refs.changes`), and
+    /// which release that was; null for the first release.
+    changes_from: ?[]const u8 = null,
+    changes: ?Changes = null,
+};
+
+/// Counts only, so a restricted dataset shows them too.
+pub const Changes = struct {
+    added: u64 = 0,
+    modified: u64 = 0,
+    deleted: u64 = 0,
+    ann_added: u64 = 0,
+    ann_changed: u64 = 0,
+    ann_removed: u64 = 0,
 };
 
 pub const ClassCount = struct { name: []const u8, count: u64 };
@@ -112,9 +126,10 @@ fn readme(arena: std.mem.Allocator, input: Input) ![]const u8 {
     const head = try std.fmt.allocPrint(arena,
         \\# {s}
         \\
-        \\A dataset versioned with **cid · Controlled Iterative Datasets**. This
-        \\repository is cid's readable record of releases: cid writes it, people
-        \\read it. The data itself lives in cid.
+        \\A dataset versioned with **cid · Controlled Iterative Datasets**. cid keeps
+        \\its readable record of releases here (this README, CHANGELOG.md and the
+        \\other files it writes); anything else in this repository is left as it
+        \\is. The data itself lives in cid.
         \\
         \\**Latest release here: {s}** · {d} items · {s} · {s}
         \\
@@ -178,16 +193,39 @@ fn cardSection(arena: std.mem.Allocator, card_json: []const u8) ![]const u8 {
 fn changelog(arena: std.mem.Allocator, input: Input) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(arena, "# Changelog\n");
-    for (input.releases) |r| {
+    for (input.releases, 0..) |r, i| {
         if (input.restricted) {
-            try out.print(arena, "\n## {s} — {s}\n\n{d} items.\n", .{ r.name, &fmtDate(r.created_at_ms), r.items });
-            continue;
+            try out.print(arena, "\n## {s} — {s}\n\n{d} items.", .{ r.name, &fmtDate(r.created_at_ms), r.items });
+        } else {
+            try out.print(arena, "\n## {s} — {s}\n\n{s}\n\n{d} items.", .{
+                r.name, &fmtDate(r.created_at_ms), r.message, r.items,
+            });
         }
-        try out.print(arena, "\n## {s} — {s}\n\n{s}\n\n{d} items.\n", .{
-            r.name, &fmtDate(r.created_at_ms), r.message, r.items,
-        });
+        // Newest first, so the last is the first release.
+        if (r.changes) |c| {
+            try out.print(arena, " Since {s}: {s}", .{ r.changes_from orelse "the release before", try changeLine(arena, c, input.kind) });
+        } else if (i == input.releases.len - 1) {
+            try out.appendSlice(arena, " The first release.");
+        }
+        try out.append(arena, '\n');
     }
     return out.items;
+}
+
+/// "3 files added, 1 modified, 2 deleted; 40 annotations added, 2 changed,
+/// 1 removed." — the annotation half only where there are annotations.
+fn changeLine(arena: std.mem.Allocator, c: Changes, kind: []const u8) ![]const u8 {
+    const files = if (c.added + c.modified + c.deleted == 0)
+        try arena.dupe(u8, "no files changed")
+    else
+        try std.fmt.allocPrint(arena, "{d} file{s} added, {d} modified, {d} deleted", .{ c.added, plural(c.added), c.modified, c.deleted });
+    const annotated = std.mem.eql(u8, kind, "annotated") or c.ann_added + c.ann_changed + c.ann_removed > 0;
+    if (!annotated) return std.fmt.allocPrint(arena, "{s}.", .{files});
+    return std.fmt.allocPrint(arena, "{s}; {d} annotation{s} added, {d} changed, {d} removed.", .{ files, c.ann_added, plural(c.ann_added), c.ann_changed, c.ann_removed });
+}
+
+fn plural(n: u64) []const u8 {
+    return if (n == 1) "" else "s";
 }
 
 fn releaseJson(arena: std.mem.Allocator, input: Input) ![]const u8 {
@@ -198,6 +236,8 @@ fn releaseJson(arena: std.mem.Allocator, input: Input) ![]const u8 {
         .manifest_hash = input.manifest_hash_hex,
         .created_at = &fmtDate(input.created_at_ms),
         .items = input.items,
+        .changes_from = if (input.releases.len > 0) input.releases[0].changes_from else null,
+        .changes = if (input.releases.len > 0) input.releases[0].changes else null,
         .clone = input.git_url,
         .dashboard = input.server_url,
     }, .{ .whitespace = .indent_2 })});
@@ -323,6 +363,47 @@ test "rendering is deterministic and complete" {
         }
     }
     try std.testing.expect(seen_marker);
+}
+
+test "the changelog says what changed since the release before, in counts" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var input: Input = .{
+        .dataset_name = "org/datasets/calls",
+        .git_url = "git@example.invalid:org/datasets/calls.git",
+        .server_url = "https://cid.example",
+        .release = "v2",
+        .commit_id = "01a00000-0000-7000-8000-000000000002",
+        .manifest_hash_hex = "ab" ** 32,
+        .created_at_ms = 1769904000000,
+        .items = 3,
+        .bytes = 10,
+        .releases = &.{
+            .{ .name = "v2", .message = "March calls", .created_at_ms = 1769904000000, .items = 3, .changes_from = "v1", .changes = .{ .added = 2, .modified = 1, .deleted = 1 } },
+            .{ .name = "v1", .message = "first", .created_at_ms = 1769817600000, .items = 2 },
+        },
+    };
+    const files_log = try changelog(arena, input);
+    try std.testing.expect(std.mem.indexOf(u8, files_log, "3 items. Since v1: 2 files added, 1 modified, 1 deleted.\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, files_log, "2 items. The first release.\n") != null);
+    // No annotations in a files dataset, so no annotation half.
+    try std.testing.expect(std.mem.indexOf(u8, files_log, "annotation") == null);
+
+    // An annotated dataset says what happened to its annotations, even
+    // when no file changed; restricted, the counts stay and the message goes.
+    input.kind = "annotated";
+    input.restricted = true;
+    input.releases = &.{
+        .{ .name = "v2", .message = "relabelled alice-smith", .created_at_ms = 1769904000000, .items = 3, .changes_from = "v1", .changes = .{ .ann_added = 1, .ann_changed = 4 } },
+        .{ .name = "v1", .message = "first", .created_at_ms = 1769817600000, .items = 3 },
+    };
+    const ann_log = try changelog(arena, input);
+    try std.testing.expect(std.mem.indexOf(u8, ann_log, "Since v1: no files changed; 1 annotation added, 4 changed, 0 removed.\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ann_log, "alice-smith") == null);
+    const json = try releaseJson(arena, input);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"changes_from\": \"v1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"ann_changed\": 4") != null);
 }
 
 test "a restricted release renders counts only; the card renders from its snapshot" {

@@ -1412,6 +1412,12 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     const v2_at = std.mem.indexOf(u8, changelog, "v2.0.0").?;
     const v1_at = std.mem.indexOf(u8, changelog, "v1.0.0").?;
     try std.testing.expect(v2_at < v1_at);
+    // Each release says what changed since the one before: v2 added b.txt.
+    try std.testing.expect(std.mem.indexOf(u8, changelog, "Since v1.0.0: 1 file added, 0 modified, 0 deleted.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, changelog, "The first release.") != null);
+    const changes = (try db.rawOne([]const u8, &fscope, "SELECT r.changes::text FROM refs r JOIN datasets d USING (dataset_id) " ++
+        "WHERE d.name = 'test/datasets/gitw' AND r.name = 'v2.0.0'", .{})).?;
+    try std.testing.expect(std.mem.indexOf(u8, changes, "\"added\" : 1") != null or std.mem.indexOf(u8, changes, "\"added\": 1") != null);
 
     const commitsOnMain = struct {
         fn on(al: std.mem.Allocator, i: std.Io, url: []const u8) ![]const u8 {
@@ -2625,6 +2631,66 @@ test "item identity: re-encoding keeps annotations; identical files at two paths
             }
         }
     }
+
+    // What changed between versions, counted (version.changes): the
+    // re-encode is one file modified and no annotation touched.
+    const changed = struct {
+        fn of(al: std.mem.Allocator, d: *cid.db.sql.Db, sc: anytype, dsid: []const u8, a: []const u8, b: []const u8) !cid.state.Changes {
+            return std.json.parseFromSliceLeaky(cid.state.Changes, al, try cid.state.changes(d, sc, dsid, a, b), .{});
+        }
+    }.of;
+    try std.testing.expectEqual(cid.state.Changes{ .modified = 1 }, try changed(arena, db, &fscope, ds_id, c1, c2));
+
+    // Then a deleted file, an added box, a moved box, a removed box, and a
+    // box written again exactly as it was (no change at all).
+    const kept_box = "0190a1b2-c3d4-7e5f-8a9b-00000000b001";
+    const moved_box = "0190a1b2-c3d4-7e5f-8a9b-00000000b002";
+    const gone_box = "0190a1b2-c3d4-7e5f-8a9b-00000000b003";
+    const ann = struct {
+        fn write(tx: anytype, sc: anytype, al: std.mem.Allocator, dsid: []const u8, id: []const u8, item: []const u8, op: []const u8, x: u32) !void {
+            const sql = try std.fmt.allocPrintSentinel(al, "INSERT INTO annotation_revisions (dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+                "VALUES ('{s}', 'main', '{s}', '{s}', '{s}', 'box', 'car', '{{\"x\":{d},\"y\":2,\"w\":3,\"h\":4}}'::jsonb, 'agent:t', 'p1')", .{ dsid, id, item, op, x }, 0);
+            _ = try tx.exec(sc, sql, .{});
+        }
+    }.write;
+    {
+        var ptx = try db.begin(&fscope, .{});
+        defer ptx.deinit();
+        try platformWrite(&ptx, &fscope, ds_id);
+        inline for (.{ kept_box, moved_box, gone_box }) |id| try ann(&ptx, &fscope, arena, ds_id, id, &photo_id, "create", 1);
+        try ptx.commit();
+    }
+    const c3 = try remote.commitServer(arena, "main", "three more boxes", "agent:t");
+    {
+        var ptx = try db.begin(&fscope, .{});
+        defer ptx.deinit();
+        try platformWrite(&ptx, &fscope, ds_id);
+        _ = try ptx.exec(&fscope, try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (dataset_id, branch, path, op, item_id, author) " ++
+            "VALUES ('{s}', 'main', 'photos/copy-of-p.jpg', 'delete', '{s}', 'agent:t')", .{ ds_id, &copy_id }, 0), .{});
+        try ann(&ptx, &fscope, arena, ds_id, kept_box, &photo_id, "update", 1);
+        try ann(&ptx, &fscope, arena, ds_id, moved_box, &photo_id, "update", 9);
+        try ann(&ptx, &fscope, arena, ds_id, gone_box, &photo_id, "delete", 1);
+        try W.box(&ptx, &fscope, arena, io, ds_id, &clip_id, "person");
+        try ptx.commit();
+    }
+    const c4 = try remote.commitServer(arena, "main", "fourth batch", "agent:t");
+    try std.testing.expectEqual(cid.state.Changes{ .deleted = 1, .ann_added = 1, .ann_changed = 1, .ann_removed = 1 }, try changed(arena, db, &fscope, ds_id, c3, c4));
+
+    // A release keeps what changed since the release before it.
+    inline for (.{ .{ "v1", c3 }, .{ "v2", c4 } }) |r| {
+        const body = try std.fmt.allocPrint(arena, "{{\"name\":\"{s}\",\"commit\":\"{s}\"}}", .{ r[0], r[1] });
+        try std.testing.expectEqual(std.http.Status.created, cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/ident/-/tag", "Bearer test-token", body).status);
+    }
+    const kept = try db.raw(struct {
+        pub const nilo_table = .projection;
+        name: []const u8,
+        changes_from: ?[]const u8,
+        changes: ?[]const u8,
+    }, &fscope, "SELECT name, changes_from, changes::text AS changes FROM refs WHERE dataset_id = $1::uuid AND kind = 'release' ORDER BY name", .{ds_id});
+    try std.testing.expectEqual(@as(usize, 2), kept.len);
+    try std.testing.expect(kept[0].changes == null and kept[0].changes_from == null);
+    try std.testing.expectEqualStrings("v1", kept[1].changes_from.?);
+    try std.testing.expectEqual(cid.state.Changes{ .deleted = 1, .ann_added = 1, .ann_changed = 1, .ann_removed = 1 }, try std.json.parseFromSliceLeaky(cid.state.Changes, arena, kept[1].changes.?, .{}));
 }
 
 test "annotated releases: v2 manifest with JCS rows, verify catches smuggled boxes" {

@@ -109,14 +109,31 @@ pub fn create(
 
     const key = try manifestKey(arena, dataset_id, commit_id);
     s3.putFile(scope, work.io, key, path) catch return error.Storage;
+
+    // What changed since the release before it, kept with the release so
+    // the dataset repository can say so: the newest release whose commit
+    // is older, as the background worker's prepared diff takes it. The
+    // first release has none and keeps no counts.
+    const Previous = struct {
+        pub const nilo_table = .projection;
+        name: []const u8,
+        commit_id: []const u8,
+    };
+    const previous = db.rawOne(Previous, scope, "SELECT name, commit_id::text AS commit_id FROM refs " ++
+        "WHERE dataset_id = $1::uuid AND kind = 'release' AND commit_id < $2::uuid ORDER BY commit_id DESC LIMIT 1", .{ dataset_id, commit_id }) catch return error.Db;
+    const changes: ?[]const u8 = if (previous) |p|
+        version.changes(db, scope, dataset_id, p.commit_id, commit_id) catch |err| return mapVersion(err)
+    else
+        null;
+
     _ = db.exec(
         scope,
         // The card as it is now, kept with the release: re-rendering this
         // release later cannot pick up an edited card.
-        "INSERT INTO refs (dataset_id, name, kind, commit_id, manifest_path, manifest_hash, card) " ++
+        "INSERT INTO refs (dataset_id, name, kind, commit_id, manifest_path, manifest_hash, card, changes_from, changes) " ++
             "VALUES ($1::uuid, $2, 'release', $3::uuid, $4, decode($5, 'hex'), " ++
-            "(SELECT body FROM dataset_cards WHERE dataset_id = $1::uuid))",
-        .{ dataset_id, name, commit_id, key, @as([]const u8, &written.hash_hex.?) },
+            "(SELECT body FROM dataset_cards WHERE dataset_id = $1::uuid), $6, $7::jsonb)",
+        .{ dataset_id, name, commit_id, key, @as([]const u8, &written.hash_hex.?), if (previous) |p| @as(?[]const u8, p.name) else null, changes },
     ) catch return error.Db;
     return .{ .name = name, .commit_id = commit_id, .manifest_hash = written.hash_hex.?, .items = written.items };
 }

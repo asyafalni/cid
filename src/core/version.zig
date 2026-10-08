@@ -335,6 +335,72 @@ pub fn stats(arena: std.mem.Allocator, db: *dbx.sql.Db, scope: anytype, dataset_
     return st;
 }
 
+/// What changed from one version to another, counted: files by path
+/// (added, modified when their bytes differ, deleted) and annotations by
+/// id (added, changed when kind, class, shape or attributes differ,
+/// removed). The same comparison `cid diff` and Compare make, counted in
+/// Postgres in one statement so a release can keep it.
+pub const Changes = struct {
+    added: u64 = 0,
+    modified: u64 = 0,
+    deleted: u64 = 0,
+    ann_added: u64 = 0,
+    ann_changed: u64 = 0,
+    ann_removed: u64 = 0,
+};
+
+/// Between two commits of one line of history (main, or one branch over
+/// the same start) only what was written in between can differ, so the
+/// comparison reads just those paths and annotations, by the lookup
+/// indexes, instead of both whole versions: $8 is the branch, $9 and $10
+/// the two cutoffs. A release costs about what its changes do.
+const touched_filter_items = " AND path IN (SELECT path FROM item_revisions WHERE dataset_id = $1::uuid AND branch = $8 AND rev_id > $9::uuid AND rev_id <= $10::uuid)";
+const touched_filter_anns = " AND annotation_id IN (SELECT annotation_id FROM annotation_revisions WHERE dataset_id = $1::uuid AND branch = $8 AND rev_id > $9::uuid AND rev_id <= $10::uuid)";
+
+fn changesSql(comptime touched: bool) []const u8 {
+    const items_f = if (touched) touched_filter_items else "";
+    const anns_f = if (touched) touched_filter_anns else "";
+    const two = struct {
+        fn ctes(comptime p: []const u8, comptime br: []const u8, comptime cut: []const u8, comptime main: []const u8, comptime fi: []const u8, comptime fa: []const u8) []const u8 {
+            const own = "WHERE dataset_id = $1::uuid AND ((branch = 'main' AND rev_id <= $" ++ main ++ "::uuid) OR (branch = $" ++ br ++ " AND rev_id <= $" ++ cut ++ "::uuid))";
+            return p ++ "_s AS (SELECT DISTINCT ON (path) path, op, item_hash FROM item_revisions " ++ own ++ fi ++ " ORDER BY path, rev_id DESC), " ++
+                p ++ "_live AS (SELECT path, item_hash FROM " ++ p ++ "_s WHERE op <> 'delete'), " ++
+                p ++ "_a AS (SELECT DISTINCT ON (annotation_id) annotation_id, op, kind, class, geometry::text AS geometry, attrs::text AS attrs " ++
+                "FROM annotation_revisions " ++ own ++ fa ++ " ORDER BY annotation_id, rev_id DESC), " ++
+                p ++ "_alive AS (SELECT * FROM " ++ p ++ "_a WHERE op <> 'delete')";
+        }
+    }.ctes;
+    return "WITH " ++ two("x", "2", "3", "4", items_f, anns_f) ++ ", " ++ two("y", "5", "6", "7", items_f, anns_f) ++ ", " ++
+        "files AS (SELECT x_live.item_hash AS ha, y_live.item_hash AS hb FROM x_live FULL JOIN y_live USING (path)), " ++
+        "anns AS (SELECT x_alive.annotation_id AS ia, y_alive.annotation_id AS ib, " ++
+        "  (x_alive.kind, x_alive.class, x_alive.geometry, x_alive.attrs) IS DISTINCT FROM (y_alive.kind, y_alive.class, y_alive.geometry, y_alive.attrs) AS differs " ++
+        "  FROM x_alive FULL JOIN y_alive USING (annotation_id)) " ++
+        "SELECT json_build_object(" ++
+        "'added', (SELECT count(*) FROM files WHERE ha IS NULL), " ++
+        "'modified', (SELECT count(*) FROM files WHERE ha IS NOT NULL AND hb IS NOT NULL AND ha <> hb), " ++
+        "'deleted', (SELECT count(*) FROM files WHERE hb IS NULL), " ++
+        "'ann_added', (SELECT count(*) FROM anns WHERE ia IS NULL), " ++
+        "'ann_changed', (SELECT count(*) FROM anns WHERE ia IS NOT NULL AND ib IS NOT NULL AND differs), " ++
+        "'ann_removed', (SELECT count(*) FROM anns WHERE ib IS NULL))::text";
+}
+
+/// What changed from `from_commit` to `to_commit`, as JSON text (the
+/// shape of `Changes`), for a caller that keeps it.
+pub fn changes(db: *dbx.sql.Db, scope: anytype, dataset_id: []const u8, from_commit: []const u8, to_commit: []const u8) Error![]const u8 {
+    const x = try at(db, scope, dataset_id, from_commit);
+    const y = try at(db, scope, dataset_id, to_commit);
+    const args = .{ dataset_id, x.branch, x.cutoff, x.main_cutoff, y.branch, y.cutoff, y.main_cutoff };
+    // One line of history, read forward: only the window can differ.
+    const one_line = std.mem.eql(u8, x.branch, y.branch) and
+        (std.mem.eql(u8, x.branch, "main") or std.mem.eql(u8, x.main_cutoff, y.main_cutoff)) and
+        std.mem.order(u8, x.cutoff, y.cutoff) != .gt;
+    const text = if (one_line)
+        db.rawOne([]const u8, scope, comptime changesSql(true), args ++ .{ x.branch, x.cutoff, y.cutoff }) catch return error.Db
+    else
+        db.rawOne([]const u8, scope, comptime changesSql(false), args) catch return error.Db;
+    return text orelse error.Db;
+}
+
 /// The first `limit` items by path (the dataset repository's files.txt).
 pub const Listed = struct {
     pub const nilo_table = .projection;
