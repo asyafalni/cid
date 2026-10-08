@@ -516,7 +516,7 @@ There is no Health tab yet. Per-file table statistics already exist (in the draw
 | Browse: first 60 thumbnails visible after filter change | < 700 ms at 1M items | `web/e2e/bench.spec.ts`, opt-in (`BENCH_DATASET`, a dataset seeded by `tests/bench/browse_1m.sh`); last run 0.30 s |
 | Gallery scrolling | 60 fps, no blank tiles after 200 ms | not yet measured |
 | Item drawer open | < 300 ms | not yet measured |
-| Compare two releases, summary visible | < 2 s at 1M annotations | server side only, in `tests/bench/browse_1m.sh`: about 2.4 s the first time a pair is compared (over budget; the release before is prepared in the background, so a release and its predecessor are usually ready), 68 ms after; not yet measured in the browser |
+| Compare two releases, summary visible | < 2 s at 1M annotations | server side only, in `tests/bench/browse_1m.sh`: about 1.0 s the first time a pair is compared, 51 ms after; not yet measured in the browser |
 | JS bundle, first load | < 300 KB gzipped | `web/e2e/dashboard.spec.ts`, every e2e run |
 | Accessibility | WCAG 2.2 AA; full keyboard navigation | axe (serious and critical findings) on the main pages in `web/e2e/dashboard.spec.ts`, Daybreak only; full keyboard use not yet tested |
 
@@ -536,7 +536,8 @@ shareable URLs · restricted blur and reveal log · preview worker for images an
 *Status:* built, except: the auto card is partial (counts, class table and split sizes
 only; its counts are `main`'s head, not the pinned release); Browse filters are path,
 split, class and type only; the Releases timeline is partial (message, date, author,
-id; no release notes, counts, quality, git link or purge notice) and covers `main`
+id, and "not in git yet" on a release the server has not written to the dataset
+repository; no release notes, counts, quality, git link or purge notice) and covers `main`
 only, and commits cannot be pinned; the Files tab has no types, last change or
 preview panel.
 

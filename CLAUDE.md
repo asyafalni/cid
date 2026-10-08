@@ -337,13 +337,13 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   kept in storage as well, so a restart or another server fetches it.
 
   Measured at 1M items and 1.5M boxes (`tests/bench/browse_1m.sh` and
-  `web/e2e/bench.spec.ts`, ReleaseFast, 2026-10-08), server memory never above 490 MB:
-  release 36–38 s, with its change counts (only the paths and annotations written
+  `web/e2e/bench.spec.ts`, ReleaseFast, 2026-10-08), server memory never above 410 MB:
+  release 33 s, with its change counts (only the paths and annotations written
   since the release before are compared); a new head prepared in the background in
-  about 65 s, after which its overview, items file and default export answer in
-  1–5 ms; browse pages 0.23–0.43 s; filter change to 60 thumbnails in the browser
-  0.30 s; subset size 60 ms; a folder 31–146 ms; compare 2.4 s the first time a pair
-  is compared and 68 ms after (the
+  about 60 s, after which its overview, items file and default export answer in
+  1–5 ms; browse pages 0.20–0.37 s; filter change to 60 thumbnails in the browser
+  0.30 s; subset size 53 ms; a folder 27–129 ms; compare 1.0 s the first time a pair
+  is compared and 51 ms after (the
   pair's diff is kept beside the indexes, and a release's diff with the release before
   it is prepared in the background); `cid diff` 0.43 s, with a 19 MB client.
 - **The preview worker** builds thumbnails, audio waveforms, video posters and table
@@ -529,7 +529,7 @@ removed, by whole-row comparison (declaring a key column, to see rows changed, i
 built). Row-level diffs are computed **on the server** (where DuckDB lives); the
 CLI itself never reads a table. Comparing two versions is the server's job too: DuckDB
 joins their browse indexes (annotations compared as stored jsonb text, so formatting
-never counts) and the changes are written once to storage as gzip JSON lines, which
+never counts, through a digest the index keeps, so only changed rows are read whole) and the changes are written once to storage as gzip JSON lines, which
 `cid diff` prints as they stream in; the dashboard's compare pages through the same
 join. A merge reads only the paths
 the branch touched; every other path is the base's by construction. Other files are
