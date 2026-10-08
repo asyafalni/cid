@@ -185,7 +185,9 @@ pub const Remote = struct {
     pub const Created = union(enum) {
         created: Made,
         exists,
-        refused: struct { what: []const u8, next: []const u8 },
+        /// The server's reason, and what kind of refusal: no role for it
+        /// (access), something to fix first (usage), or try again (network).
+        refused: struct { what: []const u8, next: []const u8, kind: enum { usage, access, network } = .usage },
     };
 
     /// A new dataset: whether the server proved it can push to the git
@@ -198,17 +200,23 @@ pub const Remote = struct {
             .kind = "files",
             .git_url = git_url,
         }, .{})});
-        const res = try self.send(arena, "POST", "/v0/datasets", body);
+        // Not `send`: a refusal here says why (the role it needs, the host
+        // its repository must be on), and that is what the person reads.
+        const res = self.t.call(arena, "POST", "/v0/datasets", body) catch return error.ServerUnreachable;
         if (res.status == .created) {
             return .{ .created = parse(Made, arena, res.body) orelse Made{} };
         }
         if (res.status == .conflict) return .exists;
-        if (res.status == .unprocessable_entity) {
-            const Refusal = struct { @"error": []const u8, next: []const u8 = "" };
-            const r = parse(Refusal, arena, res.body) orelse return error.ServerRefused;
-            return .{ .refused = .{ .what = r.@"error", .next = r.next } };
-        }
-        return error.ServerRefused;
+        if (res.status == .unauthorized) return error.AccessDenied;
+        const kind: @FieldType(@FieldType(Created, "refused"), "kind") = switch (res.status) {
+            .unprocessable_entity => .usage,
+            .forbidden => .access,
+            .service_unavailable => .network,
+            else => return error.ServerRefused,
+        };
+        const Refusal = struct { @"error": []const u8, next: []const u8 = "" };
+        const r = parse(Refusal, arena, res.body) orelse return if (kind == .access) error.AccessDenied else error.ServerRefused;
+        return .{ .refused = .{ .what = r.@"error", .next = r.next, .kind = kind } };
     }
 
     pub const Info = struct { name: []const u8, kind: []const u8, git_url: []const u8, default_format: []const u8 };

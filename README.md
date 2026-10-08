@@ -27,8 +27,8 @@ cid push
 cid tag v1.0.0
 ```
 
-Creating a dataset over SSH takes the Maintainer role on the GitLab project at the
-same path (see [`docs/access.md`](docs/access.md)). Scripts and CI use a personal
+Creating a dataset over SSH takes the Maintainer role on its git repository's project
+on the server's GitLab (see [`docs/access.md`](docs/access.md)). Scripts and CI use a personal
 token from the dashboard, in an https address: `cid clone https://ci:TOKEN@host/<dataset>`.
 
 If you know git, you already know cid: `add`, `commit`, `push`, `pull`, `checkout`,

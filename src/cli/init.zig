@@ -56,7 +56,11 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
                 made = m;
             },
             .exists => return common.fail(ctx, .usage, "{s} already exists. Run 'cid clone {s}' to work with it.", .{ path, workspace.withoutCredentials(ctx.arena, addr) catch "<address>" }),
-            .refused => |r| return common.fail(ctx, .usage, "{s}. {s}", .{ r.what, r.next }),
+            .refused => |r| return common.fail(ctx, switch (r.kind) {
+                .usage => .usage,
+                .access => .access,
+                .network => .network,
+            }, "{s}. {s}", .{ r.what, r.next }),
         }
     } else |err| switch (err) {
         error.AccessDenied => return refusedCreate(ctx, path),
@@ -78,10 +82,9 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     return .ok;
 }
 
-/// Creating is refused for its own reasons (the dataset exists, no
-/// Maintainer role on the GitLab project at that path), which the server's
-/// front door has just printed; the role advice of a plain refusal would
-/// be wrong here.
+/// Creating is refused for its own reasons (the dataset exists, not a
+/// GitLab account), which the server's front door has just printed; the
+/// role advice of a plain refusal would be wrong here.
 fn refusedCreate(ctx: *const common.Context, path: []const u8) common.ExitCode {
     return common.fail(ctx, .access, "the server would not create {s} for your key; its reason is above. Fix that, then run 'cid init' again.", .{path});
 }

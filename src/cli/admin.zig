@@ -561,9 +561,9 @@ fn runGrant(
     return .ok;
 }
 
-/// A dataset's new path, as GitLab's project moved (access follows the
-/// project at the same path), and its repository's new URL when that
-/// moved too. As in git, nothing answers at the old path afterwards:
+/// A dataset's new path, and its repository's new URL when that moved
+/// (access follows the repository the URL names, so on a server synced
+/// with GitLab the new one must be there). As in git, nothing answers at the old path afterwards:
 /// each folder runs `cid remote set-url`.
 fn runRename(
     arena: std.mem.Allocator,
@@ -609,6 +609,14 @@ fn runRename(
     const exists = standalone.db.rawOne(i64, &scope, "SELECT 1::bigint FROM datasets WHERE name = $1", .{old}) catch
         return fail(io, .network, "database error: {s}", .{lastDbProblem()});
     if (exists == null) return fail(io, .usage, "no dataset named {s}. Check the name, then run 'cid admin rename <dataset> <new-name>'.", .{old});
+
+    // On a server that takes access from GitLab, the repository must be
+    // there, as at init: access comes from the repository the URL names.
+    if (git_url) |url| if (env.get("CID_GITLAB_TOKEN")) |_| {
+        const base = env.get("CID_GITLAB_URL") orelse "https://gitlab.com";
+        if (gitlab_sync.projectOf(url, base) == null)
+            return fail(io, .usage, "this server takes access from {s}, and {s} is not a repository there; nothing was renamed. Move the repository to {s}, then run 'cid admin rename' again with its URL.", .{ gitlab_sync.hostOf(base), url, gitlab_sync.hostOf(base) });
+    };
 
     // A new git URL must take a push before anything moves, as at init.
     const writer_config: ?git_writer.Config = if (env.get("CID_GIT_WORKDIR")) |workdir| .{

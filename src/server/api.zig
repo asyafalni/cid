@@ -26,6 +26,7 @@ const dbx = @import("../store/db.zig");
 const blob = @import("../store/blob.zig");
 const release_mod = @import("../core/release.zig");
 const git_writer = @import("../gitrepo/writer.zig");
+const auth = @import("../access/auth.zig");
 const gitlab_sync = @import("../access/gitlab_sync.zig");
 const keys_mod = @import("../access/keys.zig");
 const preview_worker = @import("../preview/worker.zig");
@@ -189,7 +190,7 @@ fn handleInner(
 
     if (eql(method, "POST") and eql(target, "/v0/datasets")) {
         if (caller.personal)
-            return errorResponse(arena, .forbidden, "a personal token cannot create a dataset", "Run 'cid init' with your SSH key (a GitLab Maintainer of the project at that path may), or ask the administrator.");
+            return errorResponse(arena, .forbidden, "a personal token cannot create a dataset", "Run 'cid init' with your SSH key (a GitLab Maintainer of its repository may), or ask the administrator.");
         // The dataset's name is in the body; createDataset checks scope.
         return createDataset(arena, deps, scope, auth_header, body);
     }
@@ -1631,6 +1632,20 @@ fn createDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, auth_hea
 
     if (lookupDataset(arena, deps, scope, req.name) != null)
         return errorResponse(arena, .conflict, "the dataset already exists", "Run 'cid clone' to work with it.");
+
+    // A server that takes access from GitLab takes it from the repository
+    // the git URL names: that repository must be there, and a person
+    // creating the dataset must own it (docs/access.md).
+    if (deps.gitlab) |cfg| {
+        if (try offload(deps, auth.checkCreate, .{ arena, deps.io, cfg, req.name, req.git_url, tokenAccount(arena, deps, auth_header) })) |refused| {
+            const status: std.http.Status = switch (refused.why) {
+                .other_host => .unprocessable_entity,
+                .not_an_account, .not_maintainer => .forbidden,
+                .no_answer => .service_unavailable,
+            };
+            return errorResponse(arena, status, refused.what, refused.next);
+        }
+    }
 
     // Every dataset has a git repository cid writes (invariant 21): with the
     // writer configured, find out now, not at the first release, whether

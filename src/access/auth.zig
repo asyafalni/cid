@@ -109,24 +109,21 @@ pub fn authorize(
     return .{ .token = tok, .url = server_url, .expires_in_secs = token_mod.default_ttl_secs };
 }
 
-/// Why a create was refused, in the words the person sees.
-pub const CreateRefusal = enum { exists, no_gitlab, not_gitlab_account, not_maintainer, gitlab_unreachable };
+/// Why a create over SSH was refused, in the words the person sees.
+pub const CreateRefusal = enum { exists, no_gitlab, not_gitlab_account };
 
 pub fn createRefusalText(arena: std.mem.Allocator, why: CreateRefusal, dataset: []const u8) error{OutOfMemory}![]const u8 {
     return switch (why) {
         .exists => std.fmt.allocPrint(arena, "{s} already exists. Run 'cid clone' to work with it.", .{dataset}),
         .no_gitlab => std.fmt.allocPrint(arena, "this server cannot check GitLab roles (CID_GITLAB_TOKEN unset), so it cannot create {s} over SSH. Ask the administrator to create it, then run 'cid clone' on it.", .{dataset}),
         .not_gitlab_account => std.fmt.allocPrint(arena, "only GitLab accounts can create datasets over SSH. Ask the administrator to create {s}, then run 'cid clone' on it.", .{dataset}),
-        .not_maintainer => std.fmt.allocPrint(arena, "creating {s} needs the Maintainer role on the GitLab project {s}. Create the project there, or ask its owner, then run 'cid init' again.", .{ dataset, dataset }),
-        .gitlab_unreachable => std.fmt.allocPrint(arena, "GitLab did not answer, so the server cannot check your role on {s}. Run 'cid init' again in a moment.", .{dataset}),
     };
 }
 
-/// A token to create `req.dataset`, for the GitLab Maintainer (or Owner)
-/// of the project at the same path, checked live with GitLab: the role
-/// that will own the dataset once it exists, asked at the moment it
-/// matters rather than at the last sync. A dataset that already exists
-/// is refused; its owners already have their way in.
+/// A token to create `req.dataset`, for a GitLab account. The role itself
+/// is checked when the dataset is created (checkCreate), where the git
+/// URL that names its repository is known: `cid-auth` sees only the name.
+/// A dataset that already exists is refused; its owners have their way in.
 pub fn authorizeCreate(
     arena: std.mem.Allocator,
     io: std.Io,
@@ -142,14 +139,11 @@ pub fn authorizeCreate(
     const refused: ?CreateRefusal = blk: {
         const exists = db.rawOne(i64, scope, "SELECT 1::bigint FROM datasets WHERE name = $1", .{req.dataset}) catch return error.Db;
         if (exists != null) break :blk .exists;
-        const cfg = gitlab_config orelse break :blk .no_gitlab;
-        const user_id = gitlabUserId(req.account) orelse break :blk .not_gitlab_account;
-        break :blk switch (try maintainerOf(arena, io, cfg, req.dataset, user_id)) {
-            .yes => null,
-            .no => .not_maintainer,
-            .unknown => .gitlab_unreachable,
-        };
+        _ = gitlab_config orelse break :blk .no_gitlab;
+        _ = gitlabUserId(req.account) orelse break :blk .not_gitlab_account;
+        break :blk null;
     };
+    _ = io;
     logAuthEvent(db, scope, req, refused == null);
     if (refused) |why| return .{ .refused = why };
     const tok = token_mod.mint(arena, secret, .{
@@ -165,6 +159,46 @@ pub fn authorizeCreate(
 fn gitlabUserId(account: []const u8) ?u64 {
     if (!std.mem.startsWith(u8, account, "gitlab:")) return null;
     return std.fmt.parseInt(u64, account["gitlab:".len..], 10) catch null;
+}
+
+/// Why creating a dataset was refused: what, and what to do next.
+pub const Refused = struct {
+    why: enum { other_host, not_an_account, not_maintainer, no_answer },
+    what: []const u8,
+    next: []const u8,
+};
+
+/// Whether a dataset may be created with this git URL, on a server that
+/// takes access from GitLab (docs/access.md): its repository must be on
+/// that GitLab, so cid and git agree from the start, and a person
+/// creating it (`account`; null for the server's own token) must hold
+/// Maintainer or Owner on that repository's project, asked live.
+pub fn checkCreate(arena: std.mem.Allocator, io: std.Io, cfg: gitlab.Config, dataset: []const u8, git_url: []const u8, account: ?[]const u8) error{OutOfMemory}!?Refused {
+    const host = gitlab.hostOf(cfg.base_url);
+    const project = gitlab.projectOf(git_url, cfg.base_url) orelse return .{
+        .why = .other_host,
+        .what = try std.fmt.allocPrint(arena, "this server takes access from {s}, and {s} is not a repository there", .{ host, git_url }),
+        .next = try std.fmt.allocPrint(arena, "Create the dataset's repository on {s}, then run 'cid init' again with its URL.", .{host}),
+    };
+    const who = account orelse return null;
+    const user_id = gitlabUserId(who) orelse return .{
+        .why = .not_an_account,
+        .what = try std.fmt.allocPrint(arena, "only {s} accounts can create datasets", .{host}),
+        .next = try std.fmt.allocPrint(arena, "Ask the administrator to create {s}, then run 'cid clone' on it.", .{dataset}),
+    };
+    return switch (try maintainerOf(arena, io, cfg, project, user_id)) {
+        .yes => null,
+        .no => .{
+            .why = .not_maintainer,
+            .what = try std.fmt.allocPrint(arena, "creating {s} needs the Maintainer role on {s} on {s}", .{ dataset, project, host }),
+            .next = "Ask the repository's owner for that role, then run 'cid init' again.",
+        },
+        .unknown => .{
+            .why = .no_answer,
+            .what = try std.fmt.allocPrint(arena, "{s} did not answer, so the server cannot check your role on {s}", .{ host, project }),
+            .next = "Run 'cid init' again in a moment.",
+        },
+    };
 }
 
 const Answer = enum { yes, no, unknown };

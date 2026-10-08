@@ -1,7 +1,7 @@
 //! GitLab sync (docs/access.md): who may do what comes from GitLab, so
 //! there is nothing to manage in cid. For every dataset, the members of
-//! the GitLab project with the same path become access rows; members'
-//! public SSH keys become ssh_keys rows. Removal works the same way:
+//! the GitLab project its git URL names (projectOf) become access rows;
+//! members' public SSH keys become ssh_keys rows. Removal works the same way:
 //! gone from GitLab means gone here at the next sync.
 //!
 //! The JSON appliers are pure (fixture-testable); only `fetch` talks HTTP.
@@ -223,8 +223,8 @@ pub fn fetchOne(
     return .{ .status = @intFromEnum(res.status), .body = aw.writer.buffered() };
 }
 
-/// Everything, for every dataset: members of the same-path project, then
-/// each member's keys. Datasets whose project cannot be read are reported
+/// Everything, for every dataset: members of the project its git URL
+/// names, then each member's keys. Datasets whose project cannot be read are reported
 /// and skipped — one broken project never stops the sync.
 pub const SyncOutcome = struct {
     datasets: u32 = 0,
@@ -242,14 +242,26 @@ pub fn syncAll(
     scope: anytype,
     config: Config,
 ) Error!SyncOutcome {
-    const names = db.raw([]const u8, scope, "SELECT name FROM datasets ORDER BY name", .{}) catch
+    const Row = struct {
+        pub const nilo_table = .projection;
+        name: []const u8,
+        git_url: []const u8,
+    };
+    const rows = db.raw(Row, scope, "SELECT name, git_url FROM datasets ORDER BY name", .{}) catch
         return error.Db;
 
     var outcome: SyncOutcome = .{};
     var synced_users: std.ArrayList(u64) = .empty;
 
-    for (names) |dataset_name| {
-        const encoded = try urlEncodePath(arena, dataset_name);
+    for (rows) |row| {
+        const dataset_name = row.name;
+        // Datasets made before this server took access from GitLab, or by
+        // hand on another host, have no project here: theirs is hand-granted.
+        const project = projectOf(row.git_url, config.base_url) orelse {
+            std.log.info("gitlab sync: {s}'s repository is not on {s}; its access is granted by hand", .{ dataset_name, hostOf(config.base_url) });
+            continue;
+        };
+        const encoded = try urlEncodePath(arena, project);
         const json = fetchPaged(arena, io, config, "/api/v4/projects/{s}/members/all", .{encoded}) catch {
             std.log.warn("gitlab sync: cannot read members of {s}; skipped", .{dataset_name});
             outcome.datasets_failed += 1;
@@ -279,6 +291,79 @@ pub fn syncAll(
         }
     }
     return outcome;
+}
+
+/// The project a dataset's git repository is, on the GitLab at
+/// `base_url`: access comes from the repository its `--git` URL names
+/// (docs/access.md). Null for a repository on another host, or a local
+/// path, which this GitLab knows nothing about. Takes the forms git takes:
+/// `git@host:org/x.git`, `ssh://git@host:2222/org/x.git`,
+/// `https://host/org/x.git`; a GitLab served under a path
+/// (`https://example.com/gitlab`) has that path left off its projects.
+pub fn projectOf(git_url: []const u8, base_url: []const u8) ?[]const u8 {
+    const base = splitUrl(base_url) orelse return null;
+    const repo: Split = if (std.mem.indexOf(u8, git_url, "://") != null)
+        splitUrl(git_url) orelse return null
+    else blk: {
+        // scp-like: [user@]host:path, the colon before any slash.
+        const colon = std.mem.indexOfScalar(u8, git_url, ':') orelse return null;
+        if (std.mem.indexOfScalar(u8, git_url[0..colon], '/') != null) return null;
+        const at = if (std.mem.lastIndexOfScalar(u8, git_url[0..colon], '@')) |i| i + 1 else 0;
+        break :blk .{ .host = git_url[at..colon], .path = git_url[colon + 1 ..] };
+    };
+    if (!std.ascii.eqlIgnoreCase(repo.host, base.host)) return null;
+    var path = std.mem.trim(u8, repo.path, "/");
+    const prefix = std.mem.trim(u8, base.path, "/");
+    if (prefix.len > 0) {
+        if (std.mem.startsWith(u8, path, prefix) and path.len > prefix.len and path[prefix.len] == '/')
+            path = path[prefix.len + 1 ..];
+    }
+    if (std.mem.endsWith(u8, path, ".git")) path = path[0 .. path.len - ".git".len];
+    path = std.mem.trimEnd(u8, path, "/");
+    if (path.len == 0 or std.mem.indexOfScalar(u8, path, '/') == null) return null;
+    return path;
+}
+
+/// The host of a URL or git URL, for messages ("gitlab.example").
+pub fn hostOf(url: []const u8) []const u8 {
+    return (splitUrl(url) orelse return url).host;
+}
+
+const Split = struct { host: []const u8, path: []const u8 };
+
+/// scheme://[user@]host[:port][/path] → host (no port) and path.
+fn splitUrl(url: []const u8) ?Split {
+    const scheme_end = (std.mem.indexOf(u8, url, "://") orelse return null) + 3;
+    const rest = url[scheme_end..];
+    const slash = std.mem.indexOfScalar(u8, rest, '/') orelse rest.len;
+    var authority = rest[0..slash];
+    if (std.mem.lastIndexOfScalar(u8, authority, '@')) |at| authority = authority[at + 1 ..];
+    if (std.mem.lastIndexOfScalar(u8, authority, ':')) |colon| authority = authority[0..colon];
+    if (authority.len == 0) return null;
+    return .{ .host = authority, .path = rest[slash..] };
+}
+
+test "a dataset's project is the repository its git URL names, on this GitLab only" {
+    const base = "https://gitlab.example";
+    const cases = [_][2][]const u8{
+        .{ "git@gitlab.example:org/datasets/x.git", "org/datasets/x" },
+        .{ "ssh://git@gitlab.example:2222/org/datasets/x.git", "org/datasets/x" },
+        .{ "https://gitlab.example/org/x.git", "org/x" },
+        .{ "https://ci:token@GitLab.Example/org/x", "org/x" },
+        .{ "gitlab.example:org/x.git/", "org/x" },
+    };
+    for (cases) |c| try std.testing.expectEqualStrings(c[1], projectOf(c[0], base).?);
+    for ([_][]const u8{
+        "git@github.com:org/x.git",
+        "https://gitlab.example.evil.com/org/x.git",
+        "/srv/git/x.git",
+        "file:///srv/git/x.git",
+        "git@gitlab.example:x.git",
+    }) |other| try std.testing.expect(projectOf(other, base) == null);
+    // A GitLab served under a path: its projects are below it.
+    try std.testing.expectEqualStrings("org/x", projectOf("https://example.com/gitlab/org/x.git", "https://example.com/gitlab").?);
+    try std.testing.expectEqualStrings("org/x", projectOf("git@example.com:org/x.git", "https://example.com/gitlab").?);
+    try std.testing.expectEqualStrings("gitlab.example", hostOf("https://gitlab.example:8443/x"));
 }
 
 /// GitLab wants the project path URL-encoded, '/' included (%2F).
