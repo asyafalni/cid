@@ -237,6 +237,8 @@ pub const Remote = struct {
         authored_at_ms: u64,
         /// Release names made at this commit, comma-separated.
         releases: ?[]const u8 = null,
+        /// Those not yet in the dataset repository.
+        git_pending: ?[]const u8 = null,
     };
 
     pub fn log(self: *const Remote, arena: std.mem.Allocator, branch: []const u8) Error![]const LogEntry {

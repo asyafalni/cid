@@ -551,7 +551,7 @@ Everyday (shown by `cid help`):
 | `cid pull [--continue]` | Get new commits; replays unpushed commits on top, or lists conflicts (`--continue` once decided) |
 | `cid checkout <release\|branch\|commit>` | Switch the folder; `--mine`/`--theirs <path>` decides a listed conflict of the pull or merge in progress |
 | `cid status` | Branch, staged and unstaged changes, unpushed commits, subset, pending conflicts (offline) |
-| `cid log` | The folder's branch, newest first: unpushed commits marked, then the server's, releases named |
+| `cid log` | The folder's branch, newest first: unpushed commits marked, then the server's, releases named (and marked "not in git yet" until the dataset repository has them) |
 | `cid diff [<a>] [<b>]` | What changed; no arguments = unstaged edits, `--staged` = staged |
 | `cid add <path>...` | Stage added, changed and deleted files (`cid add .` for everything) |
 | `cid restore [--staged] <path>` | Unstage (`--staged`) or throw away local edits |

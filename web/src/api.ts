@@ -77,6 +77,8 @@ export type TapeCommit = {
   author: string;
   at_ms: number;
   release: string | null;
+  /** The release is not in the dataset's git repository yet. */
+  git_pending?: boolean;
 };
 
 export type Overview = {

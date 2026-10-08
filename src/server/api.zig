@@ -1689,11 +1689,13 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) 
         author: []const u8,
         at_ms: i64,
         release: ?[]const u8,
+        /// The release is not in the dataset repository yet.
+        git_pending: bool,
     };
     const tape = deps.db.raw(TapeEntry, scope, "SELECT c.commit_id::text AS id, c.message, c.author, " ++
-        "(extract(epoch from c.recorded_at) * 1000)::bigint AS at_ms, rel.name AS release " ++
+        "(extract(epoch from c.recorded_at) * 1000)::bigint AS at_ms, rel.name AS release, coalesce(rel.pending, false) AS git_pending " ++
         "FROM commits c LEFT JOIN LATERAL (" ++
-        "  SELECT name FROM refs r WHERE r.dataset_id = c.dataset_id " ++
+        "  SELECT name, " ++ git_pending_sql ++ " AS pending FROM refs r WHERE r.dataset_id = c.dataset_id " ++
         "  AND r.commit_id = c.commit_id AND r.kind = 'release' ORDER BY name LIMIT 1) rel ON true " ++
         "WHERE c.dataset_id = $1::uuid AND c.branch = 'main' " ++
         "ORDER BY c.commit_id DESC LIMIT 100", .{ds.id}) catch return error.Db;
@@ -1726,6 +1728,12 @@ fn head(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, bran
     return json(arena, .ok, .{ .commit = commit });
 }
 
+/// A release `r` whose git copy is not in the dataset repository yet:
+/// queued, failing and retried, or waiting for `cid admin git --resync`
+/// (docs/git-repository.md). A git delay never holds a release back, so
+/// readers are told rather than left looking at an older one in git.
+const git_pending_sql = "NOT EXISTS (SELECT 1 FROM git_writes g WHERE g.dataset_id = r.dataset_id AND g.release = r.name AND g.status = 'done')";
+
 fn log(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, branch: []const u8) HandleError!Response {
     const Entry = struct {
         pub const nilo_table = .projection;
@@ -1736,10 +1744,14 @@ fn log(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, branc
         authored_at_ms: i64,
         /// The releases made at this commit, comma-separated (most have none).
         releases: ?[]const u8,
+        /// Those of them not yet written to the dataset repository.
+        git_pending: ?[]const u8,
     };
     const list = deps.db.raw(Entry, scope, "SELECT c.commit_id::text AS id, c.parent_id::text AS parent, c.message, c.author, " ++
         "(extract(epoch from c.authored_at) * 1000)::bigint AS authored_at_ms, " ++
-        "(SELECT string_agg(r.name, ', ' ORDER BY r.name) FROM refs r WHERE r.dataset_id = c.dataset_id AND r.commit_id = c.commit_id AND r.kind = 'release') AS releases " ++
+        "(SELECT string_agg(r.name, ', ' ORDER BY r.name) FROM refs r WHERE r.dataset_id = c.dataset_id AND r.commit_id = c.commit_id AND r.kind = 'release') AS releases, " ++
+        "(SELECT string_agg(r.name, ', ' ORDER BY r.name) FROM refs r WHERE r.dataset_id = c.dataset_id AND r.commit_id = c.commit_id AND r.kind = 'release' " ++
+        "  AND " ++ git_pending_sql ++ ") AS git_pending " ++
         "FROM commits c WHERE c.dataset_id = $1::uuid AND c.branch = $2 " ++
         "ORDER BY c.commit_id DESC LIMIT 200", .{ ds.id, branch }) catch return error.Db;
     return json(arena, .ok, .{ .commits = list });

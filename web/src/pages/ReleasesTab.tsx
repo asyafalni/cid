@@ -61,6 +61,14 @@ export function ReleasesTab({
               <div className="moment-line">
                 {c.release && <span className="release-tag">{c.release}</span>}
                 <span className="moment-message">{c.message}</span>
+                {c.release && c.git_pending && (
+                  <span
+                    className="quiet moment-git"
+                    title="The release is made; the server writes it to the dataset's git repository and retries until it lands."
+                  >
+                    not in git yet
+                  </span>
+                )}
               </div>
               <p className="quiet moment-meta">
                 <span className="data">{new Date(c.at_ms).toISOString().slice(0, 10)}</span>

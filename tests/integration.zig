@@ -1461,6 +1461,10 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     try std.testing.expect(v4_ref != null);
     const v4_git = (try db.rawOne([]const u8, &fscope, "SELECT status FROM git_writes w JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/gitw' AND w.release = 'v4.0.0'", .{})).?;
     try std.testing.expectEqualStrings("failed", v4_git);
+    // Readers are told: `cid log` marks it not in git yet, the others not.
+    for (try remote.log(arena, "main")) |e| if (e.releases) |r| {
+        if (std.mem.eql(u8, r, "v4.0.0")) try std.testing.expectEqualStrings("v4.0.0", e.git_pending.?) else try std.testing.expect(e.git_pending == null);
+    };
     try std.Io.Dir.rename(std.Io.Dir.cwd(), away, std.Io.Dir.cwd(), bare_url, io);
     const resynced = try cid.gitrepo.writer.processDataset(arena, io, &standalone.db, &scope, deps.git.?, "test/datasets/gitw");
     try std.testing.expectEqual(@as(u32, 1), resynced.processed);
@@ -1468,6 +1472,7 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     try std.testing.expectEqualStrings("4\n", try commitsOnMain(arena, io, bare_url));
     const tags4 = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", bare_url, "tag" } });
     try std.testing.expectEqualStrings("v1.0.0\nv2.0.0\nv3.0.0\nv4.0.0\n", tags4.stdout);
+    for (try remote.log(arena, "main")) |e| try std.testing.expect(e.git_pending == null);
 
     // Restricted: the release's files hold counts and nothing more — no
     // file names, no card, no release notes — in the repository itself.

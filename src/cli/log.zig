@@ -71,7 +71,14 @@ const remote_mod = @import("../client/remote.zig");
 fn printRemote(out: *std.Io.Writer, e: remote_mod.Remote.LogEntry) !void {
     // A commit that is a release says so, as `git log --decorate` does.
     try out.print("commit {s}", .{e.id});
-    if (e.releases) |names| try out.print(" (release: {s})", .{names});
+    if (e.releases) |names| {
+        try out.print(" (release: {s}", .{names});
+        // The server writes git after the release; until it has, say so.
+        if (e.git_pending) |pending| {
+            if (std.mem.eql(u8, pending, names)) try out.writeAll("; not in git yet") else try out.print("; not in git yet: {s}", .{pending});
+        }
+        try out.writeAll(")");
+    }
     try out.print("\nAuthor: {s}\nDate:   {s}\n\n    {s}\n\n", .{
         e.author, &fmtDate(e.authored_at_ms), firstLine(e.message),
     });
@@ -102,4 +109,18 @@ fn firstLine(msg: []const u8) []const u8 {
 
 test "date formatting" {
     try std.testing.expectEqualStrings("2013-05-24 00:00", &fmtDate(1369353600000));
+}
+
+test "a release not in git yet says so, naming it when others at the commit are" {
+    var buf: [512]u8 = undefined;
+    inline for (.{
+        .{ @as(?[]const u8, "v1.0.0"), @as(?[]const u8, null), "commit c1 (release: v1.0.0)\n" },
+        .{ @as(?[]const u8, "v1.0.0"), @as(?[]const u8, "v1.0.0"), "commit c1 (release: v1.0.0; not in git yet)\n" },
+        .{ @as(?[]const u8, "v1.0.0, v1.0.1"), @as(?[]const u8, "v1.0.1"), "commit c1 (release: v1.0.0, v1.0.1; not in git yet: v1.0.1)\n" },
+    }) |case| {
+        var w: std.Io.Writer = .fixed(&buf);
+        try printRemote(&w, .{ .id = "c1", .parent = null, .message = "m", .author = "a", .authored_at_ms = 0, .releases = case[0], .git_pending = case[1] });
+        const out = w.buffered();
+        try std.testing.expectEqualStrings(case[2], out[0 .. std.mem.indexOfScalar(u8, out, '\n').? + 1]);
+    }
 }

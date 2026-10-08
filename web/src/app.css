@@ -1001,6 +1001,11 @@
   flex-wrap: wrap;
 }
 
+/* A release the server has not written to git yet: a note, not an alarm. */
+.moment-git {
+  font-size: 0.8125rem;
+}
+
 .moment-meta {
   font-size: 0.8125rem;
   margin: 2px 0 0;

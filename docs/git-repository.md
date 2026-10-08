@@ -105,7 +105,8 @@ Not built yet: size limits on rendered files (1 MB per file, 5 MB per release).
   default 600 seconds). Without it, writes wait in the queue for
   `cid admin git <dataset> --resync`. `cid admin git <dataset>` shows each release's
   status, attempts and last error; `--resync` writes whatever is pending or failed.
-  Not built yet: a "git: pending" note in the dashboard or `cid log`.
+  Until a release is written, readers are told: `cid log` decorates its commit
+  `(release: v1.2.0; not in git yet)` and the dashboard's history marks it.
 - **History matches.** Git tags equal cid release names; git commit order equals
   release order. cid never rewrites its own earlier commits.
   Not built yet: noticing a force-push or a deleted tag and restoring it.
