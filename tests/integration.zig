@@ -1481,6 +1481,27 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
             }
         }
     }
+
+    // The repository may hold more than cid's files: someone's code and
+    // docs are theirs, and a release leaves them exactly as they are. Only
+    // the files cid writes are cid's to replace (README.md among them).
+    _ = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", clone_dir, "pull", "-q" } });
+    try check.createDirPath(io, "docs");
+    try check.writeFile(io, .{ .sub_path = "train.py", .data = "print('train on the release')\n" });
+    try check.writeFile(io, .{ .sub_path = "docs/notes.md", .data = "# How we label\n" });
+    try check.writeFile(io, .{ .sub_path = "README.md", .data = "hand-written, and cid's to replace\n" });
+    inline for (.{ &[_][]const u8{ "add", "-A" }, &[_][]const u8{ "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "code beside the dataset" }, &[_][]const u8{ "push", "-q", "origin", "main" } }) |args| {
+        const ran = try std.process.run(arena, io, .{ .argv = &(.{ "git", "-C", clone_dir } ++ args.*) });
+        try std.testing.expect(ran.term == .exited and ran.term.exited == 0);
+    }
+    try steps(arena, io, producer.dir, &pws, cache.dir, &remote, "e.txt", "v6.0.0");
+    const tree6 = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", bare_url, "ls-tree", "-r", "--name-only", "v6.0.0" } });
+    try std.testing.expect(std.mem.indexOf(u8, tree6.stdout, "train.py\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tree6.stdout, "docs/notes.md\n") != null);
+    const code = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", bare_url, "show", "v6.0.0:train.py" } });
+    try std.testing.expectEqualStrings("print('train on the release')\n", code.stdout);
+    const readme6 = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", bare_url, "show", "v6.0.0:README.md" } });
+    try std.testing.expect(std.mem.indexOf(u8, readme6.stdout, "hand-written") == null);
 }
 
 test "access: key lookup, forced command, scoped tokens enforced by routes" {

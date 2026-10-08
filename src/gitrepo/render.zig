@@ -62,6 +62,15 @@ pub const File = struct {
 /// files.txt is written only below this count (docs/git-repository.md).
 pub const files_txt_limit = 10_000;
 
+/// Every path cid ever writes in a dataset repository, and so the only
+/// ones it may remove: a file `renderAll` stops writing (files.txt once a
+/// dataset is restricted) goes, and anything else in the repository,
+/// someone's code or docs, is theirs and is never touched.
+pub const owned_paths = [_][]const u8{
+    "README.md", "CHANGELOG.md", "release.json", "stats.yaml",
+    ".cid",      "files.txt",    "classes.yaml", "policy.md",
+};
+
 pub fn renderAll(arena: std.mem.Allocator, input: Input) ![]const File {
     var out: std.ArrayList(File) = .empty;
     try out.append(arena, .{ .path = "README.md", .contents = try readme(arena, input) });
@@ -80,7 +89,13 @@ pub fn renderAll(arena: std.mem.Allocator, input: Input) ![]const File {
             try out.append(arena, .{ .path = "policy.md", .contents = md });
         }
     }
+    for (out.items) |f| std.debug.assert(owns(f.path));
     return out.items;
+}
+
+pub fn owns(path: []const u8) bool {
+    for (owned_paths) |p| if (std.mem.eql(u8, p, path)) return true;
+    return false;
 }
 
 /// index → name, the same order the yolo export numbers classes.

@@ -31,7 +31,12 @@ host and never refuses a repository for this (`src/gitrepo/protection.zig`):
 ## What cid writes, on every release
 
 One git commit (message `release: <name>`, author `cid`) and one git tag with the
-release name. Each commit's tree is exactly that release's files:
+release name. cid's files in each commit are exactly that release's, and cid writes
+nothing else: the repository may also hold code, docs or anything people commit beside
+the dataset, and a release leaves those exactly as they are. Only the paths below are
+cid's, so a hand-written `README.md` is replaced at the next release (put your own
+text in another file, or in the dataset card). A file cid stops writing (`files.txt`
+once a dataset is restricted or too large) is removed; nothing else ever is.
 
 ```
 README.md          dataset name; latest release, item count, total size and date;

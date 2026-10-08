@@ -62,9 +62,10 @@ dashboard is React + TypeScript, built to static files and embedded in the serve
 binary. The agent-first annotation platform (Go) is one of cid's users, not the only one.
 
 **Every dataset is paired with a git repository** (on GitLab.com by default, or any
-other git host). cid is the only writer: each release lands there as one small git
+other git host). cid writes its own files there: each release lands as one small git
 commit and tag (dataset card, release notes, stats, manifest summary); the data itself
-and everything heavy link to the cid dashboard. Full spec: `docs/git-repository.md`.
+and everything heavy link to the cid dashboard. Anything else in the repository,
+such as code beside the dataset, is left as it is. Full spec: `docs/git-repository.md`.
 
 ---
 
@@ -266,7 +267,7 @@ makes every change between versions visible).
 | **manifest** | The canonical listing of every item (path, item_id, hash, size, split) and annotation in a release, hashed (`manifest_hash`) and stored as `manifests/<dataset_id>/<commit_id>.manifest` |
 | **dataset path** | The dataset's full name, like a GitLab project path: `your-org/datasets/person-vehicle` |
 | **address** | Where to reach a dataset, git-style: `cid@cidhub.com:your-org/datasets/person-vehicle` (a trailing `.cid` is accepted and ignored) |
-| **dataset repository** | The git repository paired with a dataset. cid writes one git commit and tag per release; people only read it |
+| **dataset repository** | The git repository paired with a dataset. cid writes one git commit and tag per release, to its own files only; anything else there is left alone |
 | **owner** | Anyone with the Maintainer role on the dataset (tag, branch, merge, edit the card) |
 | **version** | A release or commit, as shown in a version picker |
 | **purge** | The audited, logged erasure of one content's bytes and previews — the single exception to "items are immutable"; history rows stay |
@@ -445,9 +446,10 @@ Deep dives: `docs/data-model.md` · `docs/access.md` · `docs/git-repository.md`
 20. **Restricted previews are blurred on the server until revealed**, and every reveal
     is logged. A presigned URL to clear restricted content exists only after the
     logged reveal.
-21. **Every dataset has a git repository**, and cid is its only writer: one commit and
-    tag per release, small text files only, never data, never restricted content. A git
-    failure delays the git copy; it never blocks or changes a release.
+21. **Every dataset has a git repository**, and cid is the only writer of its own files
+    there (`render.owned_paths`): one commit and tag per release, small text files only,
+    never data, never restricted content. Files cid did not write are never changed or
+    removed. A git failure delays the git copy; it never blocks or changes a release.
 22. **SSH only authenticates.** No data, no shell, no forwarding over SSH; the forced
     command hands out short-lived, single-dataset HTTPS tokens and nothing else.
 

@@ -105,13 +105,15 @@ fn writeOne(
 
     var repo = std.Io.Dir.cwd().openDir(io, repo_dir, .{}) catch return error.GitFailed;
     defer repo.close(io);
-    // The tree is exactly this release's files: whatever an earlier
-    // release wrote and this one does not (files.txt once a dataset is
-    // restricted or too large) goes.
-    const tracked = try gitOutput(arena, io, config, repo_dir, &.{ "ls-files", "-z" });
-    var old_files = std.mem.splitScalar(u8, tracked, 0);
-    while (old_files.next()) |name| {
-        if (name.len > 0) repo.deleteFile(io, name) catch return error.GitFailed;
+    // cid's files are exactly this release's: whatever an earlier release
+    // wrote and this one does not (files.txt once a dataset is restricted
+    // or too large) goes. Only cid's own paths: anything else in the
+    // repository, someone's code or docs, is left as it is.
+    for (render.owned_paths) |name| {
+        repo.deleteFile(io, name) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return error.GitFailed,
+        };
     }
     for (files) |f| {
         repo.writeFile(io, .{ .sub_path = f.path, .data = f.contents }) catch return error.GitFailed;
