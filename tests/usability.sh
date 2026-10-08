@@ -379,6 +379,8 @@ if stop_server; then say "ok: the server stops on SIGTERM"; else fails=$((fails+
 say ""
 if [ "$fails" -eq 0 ]; then
     say "usability: every command behaved and every error said what to run next."
+    # CID_KEEP_LOG=path keeps the server's log of a passing run too.
+    [ -n "${CID_KEEP_LOG:-}" ] && cp "$WORK/serve.log" "$CID_KEEP_LOG"
     exit 0
 fi
 say "usability: $fails failure(s)."
