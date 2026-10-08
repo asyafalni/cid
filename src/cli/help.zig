@@ -33,8 +33,8 @@ const owner_text =
     \\  tag <name>         make a release (never moves again)
     \\  branch <name>      a draft line of work, starting from main
     \\  merge <name>       merge a branch into main; conflicts are listed
-    \\  remote [set-url <address> [--git <git-url>]]   the folder's address;
-    \\                     set-url points it at a renamed dataset
+    \\  remote [set-url [<address>] [--git <git-url>]]   the folder's address
+    \\                     and git URL; set-url follows a renamed dataset
     \\
     \\Without SSH (scripts, CI): a token from the dashboard, in the address
     \\(every command but init, which needs SSH):

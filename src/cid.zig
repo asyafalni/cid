@@ -121,4 +121,6 @@ test {
     _ = client.sync;
     _ = cli_log;
     _ = cli_diff;
+    _ = cli_remote;
+    _ = common;
 }

@@ -32,6 +32,36 @@ pub fn warn(ctx: *const Context, comptime fmt: []const u8, args: anytype) void {
     stderr_writer.interface.flush() catch {};
 }
 
+/// The dataset's git repository is the server's to know: when a folder
+/// records another (the dataset moved, `cid admin rename --git`, and this
+/// folder never followed), say so and how to follow. Only a warning, and
+/// silent when the server cannot be asked: nothing a folder does goes to
+/// git, so the command itself is never at stake.
+pub fn warnGitDrift(ctx: *const Context, remote: *const remote_mod.Remote, folder_git_url: []const u8) void {
+    if (ctx.json) return;
+    const info = remote.info(ctx.arena) catch return;
+    if (gitUrlsMatch(info.git_url, folder_git_url)) return;
+    warn(ctx, "this folder records the dataset's git repository as {s}, but the server's is {s}. Run 'cid remote set-url --git {s}'.", .{ folder_git_url, info.git_url, info.git_url });
+}
+
+/// The same repository however it is spelled at the end: a trailing
+/// slash or `.git` makes no difference to git.
+fn gitUrlsMatch(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, trimGit(a), trimGit(b));
+}
+
+fn trimGit(url: []const u8) []const u8 {
+    var u = std.mem.trimEnd(u8, url, "/");
+    if (std.mem.endsWith(u8, u, ".git")) u = u[0 .. u.len - 4];
+    return u;
+}
+
+test "git URLs match whatever their ending" {
+    try std.testing.expect(gitUrlsMatch("git@h:org/x.git", "git@h:org/x"));
+    try std.testing.expect(gitUrlsMatch("https://h/org/x/", "https://h/org/x.git"));
+    try std.testing.expect(!gitUrlsMatch("git@h:org/x.git", "git@h:org/y.git"));
+}
+
 /// Every error ends with the command to run next.
 /// The server refused this identity or this action (exit 5). Roles come
 /// from the dataset's GitLab project: Reporter reads, Developer pushes,

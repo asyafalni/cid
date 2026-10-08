@@ -1624,9 +1624,27 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
 
     // Once is enough: again, nothing differs and nothing is pushed.
     const commits_before = try commitsOnMain(arena, io, moved_url);
-    const refreshed = try cid.gitrepo.writer.refresh(arena, io, &standalone.db, &scope, deps.git.?, "test/datasets/gitw-moved");
+    const refreshed = try cid.gitrepo.writer.refresh(arena, io, &standalone.db, &scope, deps.git.?, "test/datasets/gitw-moved", "unused");
     try std.testing.expect(refreshed == .up_to_date);
     try std.testing.expectEqualStrings(commits_before, try commitsOnMain(arena, io, moved_url));
+
+    // Only the repository moves, the dataset keeps its name: the same name
+    // with --git. The new URL is recorded and the README's clone line
+    // names it, in one commit there.
+    const moved2_url = try std.fmt.allocPrintSentinel(arena, "{s}/moved2.git", .{root_path}, 0);
+    _ = try std.process.run(arena, io, .{ .argv = &.{ "git", "clone", "-q", "--bare", moved_url, moved2_url } });
+    out = .fixed(&out_buf);
+    try std.testing.expectEqual(cid.ExitCode.usage, cid.admin.run(arena, io, &out, &env, &.{ "rename", "test/datasets/gitw-moved", "test/datasets/gitw-moved" }));
+    out = .fixed(&out_buf);
+    try std.testing.expectEqual(cid.ExitCode.ok, cid.admin.run(arena, io, &out, &env, &.{ "rename", "test/datasets/gitw-moved", "test/datasets/gitw-moved", "--git", moved2_url }));
+    try std.testing.expect(std.mem.indexOf(u8, out.buffered(), "Changed the git repository of test/datasets/gitw-moved to ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.buffered(), "run: cid remote set-url --git ") != null);
+    const subject2 = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", moved2_url, "log", "-1", "--format=%s", "main" } });
+    try std.testing.expect(std.mem.startsWith(u8, subject2.stdout, "dataset: repository now "));
+    const readme_moved2 = try std.process.run(arena, io, .{ .argv = &.{ "git", "-C", moved2_url, "show", "main:README.md" } });
+    try std.testing.expect(std.mem.indexOf(u8, readme_moved2.stdout, moved2_url) != null);
+    const git_url_now = (try db.rawOne([]const u8, &fscope, "SELECT git_url FROM datasets WHERE name = 'test/datasets/gitw-moved'", .{})).?;
+    try std.testing.expectEqualStrings(moved2_url, git_url_now);
 }
 
 test "access: key lookup, forced command, scoped tokens enforced by routes" {

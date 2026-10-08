@@ -212,7 +212,8 @@ cid admin git <dataset> --resync   # write any pending releases into the reposit
 cid admin add-key <account> <name> <public-key>   # register a key by hand
 cid admin grant <dataset> <account> <read|write|maintain>
 cid admin rename <dataset> <new-path> [--git <url>]   # after its GitLab project moved;
-                       # rewrites the repository's files to name it, with git
+                       # rewrites the repository's files to name it, with git;
+                       # the same path with --git when only the repository moved
 ```
 
 ### CI and scripts
@@ -562,9 +563,10 @@ Everyday (shown by `cid help`):
 | `cid push` | Upload local commits and their new files; resumes if interrupted |
 
 For dataset owners (`cid help --all`): `init <address> --git <url>` (both required),
-`tag`, `branch`, `merge [--continue]`, and `remote` (the folder's address; `remote
-set-url <address> [--git <url>]` after a rename, as in git: the old address stops
-answering, nothing redirects). Without SSH (scripts, CI), any address may be
+`tag`, `branch`, `merge [--continue]`, and `remote` (the folder's address and git URL;
+`remote set-url [<address>] [--git <url>]` after a rename, as in git: the old address
+stops answering, nothing redirects; server commands warn when the folder's git URL is
+not the dataset's). Without SSH (scripts, CI), any address may be
 `https://you:TOKEN@host/<dataset>` with a personal token (except for `init`: creating
 a dataset needs SSH or the server's static token). Plumbing, in no help:
 `cid hash-object <file>...` prints each file's content hash (BLAKE3), as git's does.

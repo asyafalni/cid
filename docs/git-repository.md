@@ -125,6 +125,16 @@ time, so it makes no new commit. `.cid` and `release.json` are never cut.
   (which `cid clone <git-url>` reads) and the README. No tag moves: old releases keep
   the files they were made with. If the push fails, the rename stands and
   `cid admin git <dataset> --resync` retries it; it never commits twice for one rename.
+  When only the repository moved, give the same name: `cid admin rename <dataset>
+  <dataset> --git <new-url>` checks, records and rewrites the same way, in a commit
+  `dataset: repository now <url>`.
+- **The git URL changes only through cid.** The server's record
+  (`datasets.git_url`) is the link; moving the repository on its host without
+  `cid admin rename --git` leaves cid pushing to the old URL until a host's redirect
+  stops, and releases then wait as "not in git yet". A folder records the URL too:
+  `pull`, `push`, `checkout` and `log` warn when it is not the server's, with the fix
+  (`cid remote set-url --git <url>`), and still do their job; nothing a folder does
+  goes to git.
 
 The write queue:
 

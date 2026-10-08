@@ -38,7 +38,8 @@ const admin_help =
     \\  grant <dataset> <account> <read|write|maintain>   give access by hand
     \\  rename <dataset> <new-name> [--git <git-url>]   after its GitLab project
     \\             moved; the old address stops answering, as in git, and
-    \\             its git repository's files are rewritten to name it
+    \\             its git repository's files are rewritten to name it.
+    \\             The same name with --git: only the repository moved
     \\
     \\All of them read configuration from the environment:
     \\  CID_DB     the TimescaleDB connection (setup, migrate, serve)
@@ -406,7 +407,7 @@ fn runGitAdmin(
         // And the newest one's files as the dataset is named now (after a
         // rename whose git update failed, this is the retry).
         if (outcome.failed == 0) {
-            const r = git_writer.refresh(arena, io, &standalone.db, &scope, config, dataset_name) catch {
+            const r = git_writer.refresh(arena, io, &standalone.db, &scope, config, dataset_name, "dataset: files brought up to date") catch {
                 out.flush() catch {};
                 return fail(io, .network, "could not bring the repository's files up to date (see the git error above). Fix the cause, then run 'cid admin git {s} --resync' again.", .{dataset_name});
             };
@@ -560,6 +561,10 @@ fn runRename(
     if (n != 2) return fail(io, .usage, usage, .{});
     const old = names[0];
     const new = names[1];
+    // The same name: the repository moved, the dataset did not.
+    const same = eql(old, new);
+    if (same and git_url == null)
+        return fail(io, .usage, "nothing to change: give a new name, or the new git URL. Run 'cid admin rename {s} {s} --git <git-url>'.", .{ old, old });
     if (!validDatasetPath(new))
         return fail(io, .usage, "'{s}' is not a dataset path: segments of letters, digits, '.', '_' and '-', joined by '/'. Run 'cid admin rename {s} <new-name>'.", .{ new, old });
 
@@ -570,7 +575,7 @@ fn runRename(
     defer scope.deinit();
     const taken = standalone.db.rawOne(i64, &scope, "SELECT 1::bigint FROM datasets WHERE name = $1", .{new}) catch
         return fail(io, .network, "database error: {s}", .{lastDbProblem()});
-    if (taken != null) return fail(io, .usage, "a dataset named {s} already exists. Pick another name, then run 'cid admin rename {s} <new-name>'.", .{ new, old });
+    if (taken != null and !same) return fail(io, .usage, "a dataset named {s} already exists. Pick another name, then run 'cid admin rename {s} <new-name>'.", .{ new, old });
     const exists = standalone.db.rawOne(i64, &scope, "SELECT 1::bigint FROM datasets WHERE name = $1", .{old}) catch
         return fail(io, .network, "database error: {s}", .{lastDbProblem()});
     if (exists == null) return fail(io, .usage, "no dataset named {s}. Check the name, then run 'cid admin rename <dataset> <new-name>'.", .{old});
@@ -592,13 +597,20 @@ fn runRename(
 
     _ = standalone.db.exec(&scope, "UPDATE datasets SET name = $2, git_url = coalesce($3, git_url) WHERE name = $1", .{ old, new, git_url }) catch
         return fail(io, .network, "database error: {s}", .{lastDbProblem()});
-    out.print("Renamed {s} to {s}. The old address no longer answers.\n", .{ old, new }) catch return .network;
+    if (same)
+        out.print("Changed the git repository of {s} to {s}.\n", .{ old, git_url.? }) catch return .network
+    else
+        out.print("Renamed {s} to {s}. The old address no longer answers.\n", .{ old, new }) catch return .network;
 
     // The repository's own files name the dataset (the .cid marker that
     // `cid clone <git-url>` reads, the README): rewritten now, by git.
     var code: ExitCode = .ok;
     if (writer_config) |config| {
-        if (git_writer.refresh(arena, io, &standalone.db, &scope, config, new)) |r| switch (r) {
+        const message = if (same)
+            std.fmt.allocPrint(arena, "dataset: repository now {s}", .{git_url.?}) catch return .network
+        else
+            std.fmt.allocPrint(arena, "dataset: now {s}", .{new}) catch return .network;
+        if (git_writer.refresh(arena, io, &standalone.db, &scope, config, new, message)) |r| switch (r) {
             .nothing_released => out.writeAll("Its git repository gets its files at the first release.\n") catch return .network,
             .up_to_date => out.writeAll("Its git repository already names it.\n") catch return .network,
             .committed => |sha| out.print("Its git repository now names it: commit {s} on main.\n", .{sha[0..@min(12, sha.len)]}) catch return .network,
@@ -609,7 +621,10 @@ fn runRename(
     } else {
         out.print("This machine has no git writer (CID_GIT_WORKDIR unset): run 'cid admin git {s} --resync' where it has one, to update its git repository.\n", .{new}) catch return .network;
     }
-    out.print("In each folder of it, run: cid remote set-url cid@<host>:{s}", .{new}) catch return .network;
+    if (same)
+        out.writeAll("In each folder of it, run: cid remote set-url") catch return .network
+    else
+        out.print("In each folder of it, run: cid remote set-url cid@<host>:{s}", .{new}) catch return .network;
     if (git_url) |url| out.print(" --git {s}", .{url}) catch return .network;
     out.writeAll("\n") catch return .network;
     out.flush() catch return .network;

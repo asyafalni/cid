@@ -139,6 +139,15 @@ else say "FAIL: remote does not print the address"; fails=$((fails+1)); fi
 expect_code 1 "remote set-url with a git URL in place of the address" "$CID" remote set-url git@example.invalid:x.git
 expect_code 1 "remote set-url without an address"                    "$CID" remote set-url
 expect_code 1 "remote with an unknown subcommand"                    "$CID" remote add origin x
+# A folder whose git URL is not the dataset's: every server command
+# warns, with the fix, and still does its job.
+right_git=$("$CID" remote | sed -n 's/^git      //p')
+expect_ok   "remote set-url --git alone keeps the address" "$CID" remote set-url --git git@example.invalid:elsewhere.git
+if "$CID" pull 2>&1 | grep -q "but the server's is .*Run 'cid remote set-url --git "; then say "ok: pull warns that the folder's git URL is not the dataset's"
+else say "FAIL: pull does not warn about the folder's git URL"; fails=$((fails+1)); fi
+expect_ok   "set the git URL back"                         "$CID" remote set-url --git "$right_git"
+if "$CID" pull 2>&1 | grep -q "warning"; then say "FAIL: pull still warns once the git URL matches"; fails=$((fails+1))
+else say "ok: no warning once the git URL matches"; fi
 
 echo "two" > b.txt
 expect_hint "commit -a leaves new files alone, like git" "$CID" commit -am "second"

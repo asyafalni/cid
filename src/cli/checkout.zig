@@ -26,6 +26,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         return common.fail(ctx, .integrity, ".cid/config.zon holds a broken address. Clone again, or fix it to cid@host:org/path.", .{});
     const remote = common.remoteFor(ctx, name, .read, ws.config.address) catch |err|
         return common.noRemote(ctx, err, "cid checkout");
+    common.warnGitDrift(ctx, remote, ws.config.git_url);
 
     // Resolution order: release name, then branch name, then a commit id.
     var branch: []const u8 = "";

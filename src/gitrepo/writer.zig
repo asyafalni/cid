@@ -128,7 +128,7 @@ pub const Refreshed = union(enum) {
 /// URL — the `.cid` marker most of all, which `cid clone <git-url>`
 /// reads. This renders the newest release the repository holds again,
 /// with the dataset's current name and git URL, and pushes the result to
-/// main as one commit ("dataset: now <name>"), with plain git and no
+/// main as one commit (`message`), with plain git and no
 /// help from the host. No tag moves; nothing is pushed when nothing
 /// differs, so running it twice is safe.
 pub fn refresh(
@@ -138,6 +138,7 @@ pub fn refresh(
     scope: anytype,
     config: Config,
     dataset_name: []const u8,
+    message: []const u8,
 ) Error!Refreshed {
     const ds = (db.rawOne(DatasetRow, scope, "SELECT dataset_id::text AS dataset_id, git_url, kind FROM datasets WHERE name = $1", .{dataset_name}) catch return error.Db) orelse return error.Db;
     const newest = (db.rawOne([]const u8, scope, "SELECT w.release FROM git_writes w JOIN refs r ON r.dataset_id = w.dataset_id AND r.name = w.release AND r.kind = 'release' " ++
@@ -151,7 +152,6 @@ pub fn refresh(
         error.OutOfMemory => error.OutOfMemory,
         else => error.Db,
     };
-    const message = try std.fmt.allocPrint(arena, "dataset: now {s}", .{dataset_name});
     const committed = commitRendered(arena, io, config, repo_dir, input, message) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.GitFailed,

@@ -1,7 +1,8 @@
 //! `cid remote`: the folder's address and git URL, as `git remote -v`
 //! shows a remote's; `cid remote set-url <address> [--git <url>]` points
 //! the folder elsewhere after a dataset is renamed, as `git remote
-//! set-url` does. A folder has one remote, always.
+//! set-url` does; `cid remote set-url --git <url>` alone changes only the
+//! git URL. A folder has one remote, always.
 
 const std = @import("std");
 const common = @import("common.zig");
@@ -25,8 +26,9 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
                 address = args[i];
             } else return common.fail(ctx, .usage, "one address only. Run 'cid remote set-url <address> [--git <git-url>]'.", .{});
         }
-        const new = address orelse
-            return common.fail(ctx, .usage, "name the new address. Run 'cid remote set-url <address> [--git <git-url>]'.", .{});
+        // `--git` alone keeps the address: the repository moved, the
+        // dataset did not.
+        const new = address orelse if (git_url != null) ws.config.address else return common.fail(ctx, .usage, "name the new address. Run 'cid remote set-url <address> [--git <git-url>]'.", .{});
         if (std.mem.endsWith(u8, new, ".git"))
             return common.fail(ctx, .usage, "that is a git URL; give the cid address (cid@host:<dataset>) and put the git URL after --git. Run 'cid remote set-url <address> --git {s}'.", .{new});
         workspace.setRemote(ctx.arena, ctx.io, &ws, new, git_url) catch |err| return switch (err) {
