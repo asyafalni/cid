@@ -1,7 +1,5 @@
 //! TimescaleDB access via nilo_sql (pg.zig underneath: native wire
-//! protocol, a connection pool, no C). This is replacing the libpq
-//! wrapper in pg.zig module by module; when the last caller moves,
-//! pg.zig and the libpq dependency go with it.
+//! protocol, a connection pool, no C). Every query in cid goes through it.
 //!
 //! One shape to know: a query takes a Scope — the request's `*nilo.Ctx`
 //! inside the server, a `nilo.Run` anywhere else. The pool is opened by

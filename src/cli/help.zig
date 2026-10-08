@@ -1,5 +1,5 @@
 //! `cid help` shows only everyday commands (rule 6).
-//! Owner and admin commands appear under `cid help --all` (later).
+//! Owner commands appear under `cid help --all`; admin ones under `cid admin`.
 
 const std = @import("std");
 
@@ -34,7 +34,8 @@ const owner_text =
     \\  branch <name>      a draft line of work, starting from main
     \\  merge <name>       merge a branch into main; conflicts are listed
     \\
-    \\Without SSH (scripts, CI): a token from the dashboard, in the address:
+    \\Without SSH (scripts, CI): a token from the dashboard, in the address
+    \\(every command but init, which needs SSH):
     \\  cid clone https://you:TOKEN@host/<dataset>
     \\Server administration: 'cid admin'.
     \\

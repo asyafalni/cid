@@ -107,8 +107,9 @@ and records them as its owner at once rather than at the next sync.
 
 Refused (exit 5), each with its reason: the dataset already exists; the person is not
 a Maintainer of that project (or it does not exist on GitLab yet: create it first);
-their account is not a GitLab one; or the front door has no GitLab to ask
-(`CID_GITLAB_TOKEN` unset in `/etc/cid/env`). An administrator can always create a
+their account is not a GitLab one; the front door has no GitLab to ask
+(`CID_GITLAB_TOKEN` unset in `/etc/cid/env`); or GitLab did not answer (run
+`cid init` again in a moment). An administrator can always create a
 dataset with the server's static token (`CID_SERVER`/`CID_TOKEN`).
 
 ## CI, scripts and machines

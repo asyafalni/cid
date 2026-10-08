@@ -11,8 +11,7 @@ pub fn build(b: *std.Build) void {
     options.addOption([]const u8, "version", version);
 
     // Nilo (pinned commit; CLAUDE.md, Zig conventions): the server's HTTP
-    // framework, and its native Postgres driver (.sql fetches pg.zig),
-    // which is replacing libpq module by module.
+    // framework, and its native Postgres driver (.sql fetches pg.zig).
     const nilo_dep = b.dependency("nilo", .{
         .target = target,
         .optimize = optimize,

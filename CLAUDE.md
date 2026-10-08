@@ -337,13 +337,15 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   kept in storage as well, so a restart or another server fetches it.
 
   Measured at 1M items and 1.5M boxes (`tests/bench/browse_1m.sh` and
-  `web/e2e/bench.spec.ts`, ReleaseFast), server memory never above 480 MB:
-  release 30–35 s; a new head prepared in the background in about 60 s, after which its
-  overview, items file and default export answer in 1–5 ms; browse pages 0.18–0.33 s;
-  filter change to 60 thumbnails in the browser 0.30 s; subset size 51 ms; a folder
-  26–120 ms; compare 1.9 s the first time a pair is compared and 51 ms after (the
+  `web/e2e/bench.spec.ts`, ReleaseFast, 2026-10-08), server memory never above 490 MB:
+  release 36–38 s, with its change counts (only the paths and annotations written
+  since the release before are compared); a new head prepared in the background in
+  about 65 s, after which its overview, items file and default export answer in
+  1–5 ms; browse pages 0.23–0.43 s; filter change to 60 thumbnails in the browser
+  0.30 s; subset size 60 ms; a folder 31–146 ms; compare 2.4 s the first time a pair
+  is compared and 68 ms after (the
   pair's diff is kept beside the indexes, and a release's diff with the release before
-  it is prepared in the background); `cid diff` 0.4 s, with a 19 MB client.
+  it is prepared in the background); `cid diff` 0.43 s, with a 19 MB client.
 - **The preview worker** builds thumbnails, audio waveforms, video posters and table
   statistics, sniffing each file's real type and image dimensions as it goes, by
   calling `ffmpeg` as an external program (PDF page images, which need `vips`, are not
@@ -558,7 +560,8 @@ Everyday (shown by `cid help`):
 
 For dataset owners (`cid help --all`): `init <address> --git <url>` (both required),
 `tag`, `branch`, `merge [--continue]`. Without SSH (scripts, CI), any address may be
-`https://you:TOKEN@host/<dataset>` with a personal token. Plumbing, in no help:
+`https://you:TOKEN@host/<dataset>` with a personal token (except for `init`: creating
+a dataset needs SSH or the server's static token). Plumbing, in no help:
 `cid hash-object <file>...` prints each file's content hash (BLAKE3), as git's does.
 `tag`, `branch` and `merge` act on the server and need everything pushed first; they
 say so and suggest `cid push` when there are local commits.
@@ -620,7 +623,8 @@ src/tabular/                 row diffs and table statistics for CSV, Parquet, JS
 src/export/                  bundle.zig (the streamed version), jsonl.zig, yolo.zig
 src/server/browse/           dashboard API: manifest queries, facets, cursors, compare
 src/preview/                 preview worker: calls ffmpeg, stores by item hash
-src/gitrepo/                 dataset repository: render release files, queue, push, resync
+src/gitrepo/                 dataset repository: render release files, queue, push, resync,
+                             main's protection check (protection.zig)
 src/access/                  key lookup and forced-command checks (auth.zig), tokens,
                              GitLab member and key sync; their CLI entry points are
                              src/cli/sshcmd.zig (cid ssh-keys, cid ssh-auth)
@@ -628,7 +632,7 @@ deploy/sshd/                 hardened sshd_config and setup (reverse proxy: brin
 web/                         dashboard: React + Vite + TypeScript (see docs/dashboard.md)
 web/e2e/                     Playwright tests: UX budgets, accessibility (axe), keyboard
 docs/                        data-model.md, access.md, git-repository.md, dashboard.md
-src/util/                    uuid7, progress
+src/util/                    hash (BLAKE3, the one content hash), uuid7, progress
 sql/migrations/
 tests/                       integration tests against real TimescaleDB + SeaweedFS;
                              usability.sh (the scripted CLI session); bench/ (1M browse,
@@ -747,8 +751,9 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
   routes, so the API stays HTTP-free and directly testable; handlers take
   the request's Ctx as the query Scope, admin commands and tests a Run.
   S3 goes through nilo_s3 the same way (a Bucket is a Service; presignGet
-  and presignPut for the push flow, get/put, head, delete, list, and
-  `putMultipart` for files over 64 MB), wrapped in src/store/blob.zig.
+  and presignPut for the push flow, get/put, head, delete, list,
+  `putMultipart` for files over 64 MB, and `copyObject`/`compose` to land
+  verified uploads inside the store), wrapped in src/store/blob.zig.
   nilo's ADR 059 compiles the bucket name into the type and cid ships one
   static binary, so **the bucket is always named `cid`**: deployments
   create it (docker-compose.test.yml shows how; creation is never cid's

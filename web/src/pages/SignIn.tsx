@@ -78,7 +78,7 @@ export function SignIn() {
         <p className="signin-note">
           {gitlab
             ? 'GitLab is your identity here, as it is over SSH: you see the datasets your GitLab role lets you read.'
-            : "This server has no GitLab sign-in configured; use its token, the same one the CLI's 'cid login' takes."}
+            : "This server has no GitLab sign-in configured; paste the server's token (CID_TOKEN)."}
         </p>
       </div>
     </div>

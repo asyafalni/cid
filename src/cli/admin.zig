@@ -52,7 +52,8 @@ const admin_help =
     \\  CID_GIT_WORKDIR  turns the git writer on: clones of dataset
     \\             repositories live here (serve)
     \\  CID_GITLAB_TOKEN, CID_GITLAB_URL  member and key sync (serve,
-    \\             sync-gitlab); main's protection, checked at init (serve)
+    \\             sync-gitlab); main's protection, checked at init (serve);
+    \\             who may create a dataset (ssh-auth)
     \\  CID_SYNC_INTERVAL_SECS  the background loop's period: previews,
     \\             GitLab sync, git retries (default 600) (serve)
     \\  The bucket is always named 'cid'; create it on the store first

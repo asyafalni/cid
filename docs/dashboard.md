@@ -516,7 +516,7 @@ There is no Health tab yet. Per-file table statistics already exist (in the draw
 | Browse: first 60 thumbnails visible after filter change | < 700 ms at 1M items | `web/e2e/bench.spec.ts`, opt-in (`BENCH_DATASET`, a dataset seeded by `tests/bench/browse_1m.sh`); last run 0.30 s |
 | Gallery scrolling | 60 fps, no blank tiles after 200 ms | not yet measured |
 | Item drawer open | < 300 ms | not yet measured |
-| Compare two releases, summary visible | < 2 s at 1M annotations | server side only, in `tests/bench/browse_1m.sh`: about 1.9 s the first time a pair is compared, 51 ms after; not yet measured in the browser |
+| Compare two releases, summary visible | < 2 s at 1M annotations | server side only, in `tests/bench/browse_1m.sh`: about 2.4 s the first time a pair is compared (over budget; the release before is prepared in the background, so a release and its predecessor are usually ready), 68 ms after; not yet measured in the browser |
 | JS bundle, first load | < 300 KB gzipped | `web/e2e/dashboard.spec.ts`, every e2e run |
 | Accessibility | WCAG 2.2 AA; full keyboard navigation | axe (serious and critical findings) on the main pages in `web/e2e/dashboard.spec.ts`, Daybreak only; full keyboard use not yet tested |
 

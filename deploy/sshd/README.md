@@ -84,9 +84,9 @@ cid CLI ── talks HTTPS to <url> with the token (15 minutes, one
    cid admin grant org/datasets/x gitlab:42 read
    ```
 
-   With sync on, a key added by hand to a `gitlab:<id>` account is
-   removed at the next sync unless GitLab lists it for that user.
-   Access granted by hand is kept.
+   With sync on, keys and access added by hand are kept: the sync
+   only replaces what it read from GitLab. A key GitLab lists for
+   another user moves to that user.
 
 5. Run the server with the same secret. It needs CID_DB,
    CID_S3_ENDPOINT, CID_S3_ACCESS_KEY, CID_S3_SECRET_KEY,
