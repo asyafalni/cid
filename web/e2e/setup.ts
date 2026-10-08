@@ -384,10 +384,12 @@ export default function setup() {
     );
     if (!tableReleases.includes('"v1.1.0"')) seedTablesEdited(dir);
     // Sniff, thumbnail and blur every new png. One pass takes a batch, and
-    // a migration can requeue many, so drain the queue.
+    // a migration can requeue many, so drain the queue: until a pass finds
+    // nothing at all. A pass that only skips (other suites leave jobs for
+    // files they have since deleted) is not the end of it.
     for (let i = 0; i < 40; i++) {
       const out = run(`${cid} admin previews`);
-      if (/^Previews: 0 built/.test(out)) break;
+      if (/^Previews: 0 built, 0 skipped/.test(out)) break;
     }
   } finally {
     serve.kill();
