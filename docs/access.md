@@ -13,8 +13,12 @@ cid@cidhub.com:your-org/datasets/person-vehicle
 
 A trailing `.cid` is accepted and ignored.
 
-Not built yet: rename redirects. The schema has a `dataset_names` table, but no code
-reads it; a renamed dataset is reachable only at its new path.
+**Renames work as in git.** Access follows the GitLab project at the same path, so
+when a project moves, an administrator moves its dataset to match:
+`cid admin rename <dataset> <new-path> [--git <new-git-url>]`. The old address then
+answers "not found", exactly as a moved git remote does, and nothing redirects. Each
+folder points itself at the new one with `cid remote set-url <address> [--git <url>]`,
+git's own command; its local commits, staged changes and cache stay.
 
 ---
 

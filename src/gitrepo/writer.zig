@@ -81,6 +81,9 @@ fn writeOne(
         std.Io.Dir.cwd().createDirPath(io, config.workdir) catch return error.GitFailed;
         try git(arena, io, config, null, &.{ "clone", git_url, repo_dir });
     };
+    // The dataset's git URL may have changed since this clone was made
+    // (`cid admin rename --git`); it is always the one to push to.
+    try git(arena, io, config, repo_dir, &.{ "remote", "set-url", "origin", git_url });
 
     // A release whose tag the repository already has is written: nothing
     // to do, ever. Rendering it again would put an older release's files

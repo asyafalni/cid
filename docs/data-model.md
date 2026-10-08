@@ -26,16 +26,11 @@ CREATE TABLE datasets (
   created_at      timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE dataset_names (
-  old_name    text PRIMARY KEY,
-  dataset_id  uuid NOT NULL REFERENCES datasets(dataset_id),
-  renamed_at  timestamptz NOT NULL DEFAULT now()
-);
 ```
 
-`dataset_names` is reserved for renames (an old path keeps resolving to its dataset).
-Renames are not built yet: no code reads or writes this table, and there is no rename
-route.
+A rename (`cid admin rename`) changes `name` and nothing else; everything refers to
+`dataset_id`. As in git, no record of the old name is kept: the old address simply
+stops answering.
 
 Tables that belong to a dataset reference `dataset_id`, never `name`. The revision
 tables and `activity_events` carry `dataset_id` without a foreign key (see below);

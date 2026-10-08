@@ -1118,6 +1118,82 @@ fn expectTree(arena: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, want: []con
     }
 }
 
+test "rename: as in git, the old address stops answering and a folder follows with remote set-url" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const old_remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/before", .gpa = std.testing.allocator };
+    const new_remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/team/after", .gpa = std.testing.allocator };
+
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
+    inline for (.{ "git_writes", "refs", "commits", "item_revisions", "dataset_items" }) |table| {
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name IN ('test/datasets/before', 'test/team/after'))", .{});
+    }
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name IN ('test/datasets/before', 'test/team/after')", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
+
+    var folder = std.testing.tmpDir(.{ .iterate = true });
+    defer folder.cleanup();
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    try folder.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "before the move\n" });
+    try cid.client.workspace.init(arena, io, folder.dir, "cid@test:test/datasets/before", "git@example.invalid:before.git");
+    var ws = try cid.client.workspace.open(arena, io, folder.dir);
+    _ = try cid.client.workspace.add(arena, io, &ws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &ws, "first", "user:mover");
+    _ = try cid.client.sync.push(arena, io, &ws, cache.dir, &old_remote);
+
+    // The administrator moves it, git URL too.
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("CID_DB", conninfo);
+    var out_buf: [1024]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buf);
+    try std.testing.expectEqual(cid.ExitCode.ok, cid.admin.run(arena, io, &out, &env, &.{ "rename", "test/datasets/before", "test/team/after", "--git", "git@example.invalid:after.git" }));
+    try std.testing.expect(std.mem.indexOf(u8, out.buffered(), "cid remote set-url cid@<host>:test/team/after --git git@example.invalid:after.git") != null);
+    // A taken or malformed name is refused, and nothing moves.
+    try std.testing.expectEqual(cid.ExitCode.usage, cid.admin.run(arena, io, &out, &env, &.{ "rename", "test/team/after", "test/team/after" }));
+    try std.testing.expectEqual(cid.ExitCode.usage, cid.admin.run(arena, io, &out, &env, &.{ "rename", "test/team/after", "test//x" }));
+    try std.testing.expectEqual(cid.ExitCode.usage, cid.admin.run(arena, io, &out, &env, &.{ "rename", "test/datasets/nothing-here", "test/team/x" }));
+
+    // As in git: the old address is simply not there any more.
+    try std.testing.expectError(error.NoSuchDataset, old_remote.log(arena, "main"));
+    const git_url = (try db.rawOne([]const u8, &fscope, "SELECT git_url FROM datasets WHERE name = 'test/team/after'", .{})).?;
+    try std.testing.expectEqualStrings("git@example.invalid:after.git", git_url);
+
+    // The folder follows; its next commit pushes to the new address.
+    try cid.client.workspace.setRemote(arena, io, &ws, "cid@test:test/team/after", "git@example.invalid:after.git");
+    var reopened = try cid.client.workspace.open(arena, io, folder.dir);
+    try std.testing.expectEqualStrings("cid@test:test/team/after", reopened.config.address);
+    try std.testing.expectEqualStrings("git@example.invalid:after.git", reopened.config.git_url);
+    try std.testing.expectError(error.BadAddress, cid.client.workspace.setRemote(arena, io, &reopened, "not an address", null));
+    try folder.dir.writeFile(io, .{ .sub_path = "b.txt", .data = "after the move\n" });
+    _ = try cid.client.workspace.add(arena, io, &reopened, cache.dir, &.{"b.txt"});
+    _ = try cid.client.workspace.commit(arena, io, &reopened, "second", "user:mover");
+    const pushed = try cid.client.sync.push(arena, io, &reopened, cache.dir, &new_remote);
+    try std.testing.expectEqual(@as(u32, 1), pushed.pushed_commits);
+    try std.testing.expectEqual(@as(usize, 2), (try new_remote.log(arena, "main")).len);
+}
+
 test "clone round trip: clone, checkout and pull give exactly the release's files, for every fixture type" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

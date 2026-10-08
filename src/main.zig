@@ -66,6 +66,7 @@ fn run(
         .diff => |cmd_args| cid.cli_diff.run(&ctx, cmd_args),
         .branch => |cmd_args| cid.cli_branch.run(&ctx, cmd_args),
         .merge => |cmd_args| cid.cli_merge.run(&ctx, cmd_args),
+        .remote => |cmd_args| cid.cli_remote.run(&ctx, cmd_args),
         .admin => |admin_args| cid.admin.run(arena, io, out, env, admin_args),
         .ssh_keys => |ssh_args| cid.cli_ssh.runKeys(arena, io, out, env, ssh_args),
         .ssh_auth => |ssh_args| cid.cli_ssh.runAuth(arena, io, out, env, ssh_args),

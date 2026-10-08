@@ -36,6 +36,8 @@ const admin_help =
     \\  sync-gitlab  sync members and SSH keys now
     \\  add-key <account> <name> <public-key>   register an SSH key by hand
     \\  grant <dataset> <account> <read|write|maintain>   give access by hand
+    \\  rename <dataset> <new-name> [--git <git-url>]   after its GitLab project
+    \\             moved; the old address stops answering, as in git
     \\
     \\All of them read configuration from the environment:
     \\  CID_DB     the TimescaleDB connection (setup, migrate, serve)
@@ -96,6 +98,9 @@ pub fn run(
     }
     if (eql(sub, "grant")) {
         return runGrant(arena, io, out, env, args[1..]);
+    }
+    if (eql(sub, "rename")) {
+        return runRename(arena, io, out, env, args[1..]);
     }
     if (eql(sub, "sync-gitlab")) {
         return runSyncGitlab(arena, io, out, env);
@@ -513,6 +518,77 @@ fn runGrant(
     out.print("Granted {s} on {s} to {s}.\n", .{ level, dataset, account }) catch return .network;
     out.flush() catch return .network;
     return .ok;
+}
+
+/// A dataset's new path, as GitLab's project moved (access follows the
+/// project at the same path), and its repository's new URL when that
+/// moved too. As in git, nothing answers at the old path afterwards:
+/// each folder runs `cid remote set-url`.
+fn runRename(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+    env: *const std.process.Environ.Map,
+    args: []const [:0]const u8,
+) ExitCode {
+    const usage = "run 'cid admin rename <dataset> <new-name> [--git <git-url>]'.";
+    var names: [2][]const u8 = undefined;
+    var n: usize = 0;
+    var git_url: ?[]const u8 = null;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--git")) {
+            i += 1;
+            if (i == args.len) return fail(io, .usage, usage, .{});
+            git_url = args[i];
+        } else {
+            if (n == 2) return fail(io, .usage, usage, .{});
+            names[n] = args[i];
+            n += 1;
+        }
+    }
+    if (n != 2) return fail(io, .usage, usage, .{});
+    const old = names[0];
+    const new = names[1];
+    if (!validDatasetPath(new))
+        return fail(io, .usage, "'{s}' is not a dataset path: segments of letters, digits, '.', '_' and '-', joined by '/'. Run 'cid admin rename {s} <new-name>'.", .{ new, old });
+
+    var standalone: dbx.Standalone = undefined;
+    adminPool(&standalone, arena, io, env, "cid admin rename") orelse return .network;
+    defer standalone.close();
+    var scope = dbx.Run.init(arena);
+    defer scope.deinit();
+    const taken = standalone.db.rawOne(i64, &scope, "SELECT 1::bigint FROM datasets WHERE name = $1", .{new}) catch
+        return fail(io, .network, "database error: {s}", .{lastDbProblem()});
+    if (taken != null) return fail(io, .usage, "a dataset named {s} already exists. Pick another name, then run 'cid admin rename {s} <new-name>'.", .{ new, old });
+    const renamed = standalone.db.rawOne(i64, &scope, "UPDATE datasets SET name = $2, git_url = coalesce($3, git_url) WHERE name = $1 RETURNING 1::bigint", .{ old, new, git_url }) catch
+        return fail(io, .network, "database error: {s}", .{lastDbProblem()});
+    if (renamed == null) return fail(io, .usage, "no dataset named {s}. Check the name, then run 'cid admin rename <dataset> <new-name>'.", .{old});
+    out.print("Renamed {s} to {s}. The old address no longer answers.\nIn each folder of it, run: cid remote set-url cid@<host>:{s}", .{ old, new, new }) catch return .network;
+    if (git_url) |url| out.print(" --git {s}", .{url}) catch return .network;
+    out.writeAll("\n") catch return .network;
+    out.flush() catch return .network;
+    return .ok;
+}
+
+/// A dataset path as GitLab spells project paths: `/`-joined segments of
+/// letters, digits, `.`, `_` and `-`, none empty, none `-` alone (the
+/// API's `/-/` separator), none ending in `.git` or `.cid`.
+fn validDatasetPath(path: []const u8) bool {
+    if (path.len == 0 or path.len > 255) return false;
+    var it = std.mem.splitScalar(u8, path, '/');
+    while (it.next()) |seg| {
+        if (seg.len == 0 or eql(seg, "-") or eql(seg, ".") or eql(seg, "..")) return false;
+        for (seg) |c| if (!(std.ascii.isAlphanumeric(c) or c == '.' or c == '_' or c == '-')) return false;
+    }
+    return !std.mem.endsWith(u8, path, ".git") and !std.mem.endsWith(u8, path, ".cid");
+}
+
+test "a new dataset path is checked the way GitLab spells project paths" {
+    try std.testing.expect(validDatasetPath("org/datasets/speech-id"));
+    try std.testing.expect(validDatasetPath("org/v1.2_data"));
+    for ([_][]const u8{ "", "/org/x", "org/x/", "org//x", "org/-/x", "org/x y", "org/x.git", "org/x.cid", "org/../x" }) |bad|
+        try std.testing.expect(!validDatasetPath(bad));
 }
 
 fn runSyncGitlab(

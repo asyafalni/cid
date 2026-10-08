@@ -211,6 +211,7 @@ cid admin git <dataset>            # git repository status: last release written
 cid admin git <dataset> --resync   # write any pending releases into the repository
 cid admin add-key <account> <name> <public-key>   # register a key by hand
 cid admin grant <dataset> <account> <read|write|maintain>
+cid admin rename <dataset> <new-path> [--git <url>]   # after its GitLab project moved
 ```
 
 ### CI and scripts
@@ -559,13 +560,15 @@ Everyday (shown by `cid help`):
 | `cid push` | Upload local commits and their new files; resumes if interrupted |
 
 For dataset owners (`cid help --all`): `init <address> --git <url>` (both required),
-`tag`, `branch`, `merge [--continue]`. Without SSH (scripts, CI), any address may be
+`tag`, `branch`, `merge [--continue]`, and `remote` (the folder's address; `remote
+set-url <address> [--git <url>]` after a rename, as in git: the old address stops
+answering, nothing redirects). Without SSH (scripts, CI), any address may be
 `https://you:TOKEN@host/<dataset>` with a personal token (except for `init`: creating
 a dataset needs SSH or the server's static token). Plumbing, in no help:
 `cid hash-object <file>...` prints each file's content hash (BLAKE3), as git's does.
 `tag`, `branch` and `merge` act on the server and need everything pushed first; they
 say so and suggest `cid push` when there are local commits.
-Admins: `cid admin setup|migrate|verify|gc|purge|serve|previews|sync-gitlab|git|add-key|grant`.
+Admins: `cid admin setup|migrate|verify|gc|purge|serve|previews|sync-gitlab|git|add-key|grant|rename`.
 
 Rules for every command:
 - Inside a cloned folder the dataset is implied; outside, it is the first argument.

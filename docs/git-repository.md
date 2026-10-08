@@ -117,7 +117,9 @@ time, so it makes no new commit. `.cid` and `release.json` are never cut.
 - **Links, not copies.** Anything heavy (browsing items, comparing releases) is a link
   into the cid dashboard, pinned to that release.
 - **Renames:** renaming a dataset does not move its git repository; cid keeps pushing
-  to the configured `git_url`. Not built yet: changing a dataset's `git_url`.
+  to the configured `git_url`. When the repository moved too, `cid admin rename
+  <dataset> <new-path> --git <new-url>` records the new URL, and the next write pushes
+  there.
 
 The write queue:
 

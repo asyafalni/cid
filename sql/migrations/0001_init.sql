@@ -24,12 +24,6 @@ CREATE TABLE datasets (
   created_at      timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE dataset_names (
-  old_name    text PRIMARY KEY,
-  dataset_id  uuid NOT NULL REFERENCES datasets(dataset_id),
-  renamed_at  timestamptz NOT NULL DEFAULT now()
-);
-
 CREATE TABLE dataset_cards (
   dataset_id  uuid PRIMARY KEY REFERENCES datasets(dataset_id),
   body        jsonb NOT NULL,

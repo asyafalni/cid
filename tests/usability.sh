@@ -133,6 +133,12 @@ expect_ok   "status clean"                    "$CID" status
 expect_ok   "log"     "$CID" log
 if "$CID" log | grep -q "(release: v1.0.0)"; then say "ok: log names the release at its commit"
 else say "FAIL: log does not name release v1.0.0"; fails=$((fails+1)); fi
+expect_ok   "remote shows the folder's address" "$CID" remote
+if "$CID" remote | grep -q "^address  "; then say "ok: remote prints the address, as git remote -v does"
+else say "FAIL: remote does not print the address"; fails=$((fails+1)); fi
+expect_code 1 "remote set-url with a git URL in place of the address" "$CID" remote set-url git@example.invalid:x.git
+expect_code 1 "remote set-url without an address"                    "$CID" remote set-url
+expect_code 1 "remote with an unknown subcommand"                    "$CID" remote add origin x
 
 echo "two" > b.txt
 expect_hint "commit -a leaves new files alone, like git" "$CID" commit -am "second"

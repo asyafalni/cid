@@ -220,6 +220,21 @@ pub fn withoutCredentials(arena: std.mem.Allocator, address: []const u8) error{O
     return std.fmt.allocPrint(arena, "{s}{s}/{s}", .{ h.scheme, h.host, h.path });
 }
 
+/// `cid remote set-url`: points the folder at a dataset's new address
+/// (and, when given, its git repository's new URL), as `git remote
+/// set-url` does after a rename. Everything else in the folder stays.
+pub fn setRemote(arena: std.mem.Allocator, io: std.Io, ws: *Workspace, address: []const u8, git_url: ?[]const u8) InitError!void {
+    if (datasetPathOf(address) == null) return error.BadAddress;
+    var config = ws.config;
+    config.address = withoutCredentials(arena, address) catch return error.InitFailed;
+    if (git_url) |url| config.git_url = url;
+    var aw: std.Io.Writer.Allocating = .init(arena);
+    std.zon.stringify.serialize(config, .{}, &aw.writer) catch return error.InitFailed;
+    aw.writer.writeByte('\n') catch return error.InitFailed;
+    local.writeFileAtomic(io, ws.cid_dir, "config.zon", aw.writer.buffered()) catch return error.InitFailed;
+    ws.config = config;
+}
+
 /// The dataset path inside an address: cid@host:org/datasets/name → org/datasets/name,
 /// https://host/org/datasets/name → the same. A trailing .cid is accepted and
 /// ignored (CLAUDE.md, words).
