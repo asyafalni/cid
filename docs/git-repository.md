@@ -81,8 +81,12 @@ total only), `release.json` and `.cid`. No `files.txt`, `classes.yaml` or `polic
 content of a restricted dataset beyond counts (no class names, no file names, no
 samples, no card, no release messages).
 
-Not built yet: size limits on rendered files (1 MB per file, 5 MB per release).
-`files.txt` is bounded by its item count only.
+**Size limits.** No file cid writes is over 1 MB, and one release's files together
+are at most 5 MB, so a long card or a changelog that grows with every release never
+makes the repository heavy. A file over its share is cut at a line end, the largest
+first, and ends with a note linking to the whole release on the dashboard
+(`CHANGELOG.md` is newest first, so the oldest entries go). The cut is the same every
+time, so it makes no new commit. `.cid` and `release.json` are never cut.
 
 ## Rules
 

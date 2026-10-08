@@ -104,7 +104,60 @@ pub fn renderAll(arena: std.mem.Allocator, input: Input) ![]const File {
         }
     }
     for (out.items) |f| std.debug.assert(owns(f.path));
+    try fitAll(arena, out.items, input);
     return out.items;
+}
+
+/// Limits on what a release puts in git, so a long card or a changelog
+/// that grows every release never makes the repository heavy: each file
+/// at most `file_limit` bytes, and all of them together `release_limit`.
+pub const file_limit = 1 << 20;
+pub const release_limit = 5 << 20;
+
+/// Cuts any file over its share at a line end and says so, with the
+/// link to the full release on the dashboard. The largest file is cut
+/// first when the release as a whole is over, so the outcome depends on
+/// the contents alone. `.cid` and release.json are read by programs and
+/// small by construction; they are never cut.
+fn fitAll(arena: std.mem.Allocator, files: []File, input: Input) !void {
+    const url = try std.fmt.allocPrint(arena, "{s}/d/{s}?release={s}", .{ input.server_url, input.dataset_name, input.release });
+    for (files) |*f| if (cuttable(f.path) and f.contents.len > file_limit) {
+        f.contents = try cut(arena, f.*, file_limit, url);
+    };
+    while (true) {
+        var total: usize = 0;
+        var largest: ?*File = null;
+        for (files) |*f| {
+            total += f.contents.len;
+            if (cuttable(f.path) and (largest == null or f.contents.len > largest.?.contents.len)) largest = f;
+        }
+        if (total <= release_limit) return;
+        const f = largest orelse return;
+        const keep = f.contents.len - (total - release_limit);
+        const shorter = try cut(arena, f.*, keep, url);
+        if (shorter.len >= f.contents.len) return; // nothing left to cut
+        f.contents = shorter;
+    }
+}
+
+fn cuttable(path: []const u8) bool {
+    return !std.mem.eql(u8, path, ".cid") and !std.mem.eql(u8, path, "release.json");
+}
+
+/// The file's first lines, `limit` bytes at most with the note, and the
+/// note: in Markdown a line of its own, elsewhere a `#` comment.
+fn cut(arena: std.mem.Allocator, f: File, limit: usize, url: []const u8) ![]const u8 {
+    const note = if (std.mem.endsWith(u8, f.path, ".md"))
+        try std.fmt.allocPrint(arena, "\n*cid cut this file here to keep the repository small. The whole release: {s}*\n", .{url})
+    else
+        try std.fmt.allocPrint(arena, "# cid cut this file here to keep the repository small. The whole release: {s}\n", .{url});
+    const room = if (limit > note.len) limit - note.len else 0;
+    var end = @min(room, f.contents.len);
+    // At a line end when there is one, else at a character boundary.
+    if (std.mem.lastIndexOfScalar(u8, f.contents[0..end], '\n')) |nl| {
+        end = nl + 1;
+    } else while (end > 0 and (f.contents[end] & 0xC0) == 0x80) end -= 1;
+    return std.fmt.allocPrint(arena, "{s}{s}", .{ f.contents[0..end], note });
 }
 
 pub fn owns(path: []const u8) bool {
@@ -449,4 +502,61 @@ test "a restricted release renders counts only; the card renders from its snapsh
     const zeta = std.mem.indexOf(u8, readme_text, "**zeta:** last").?;
     try std.testing.expect(purpose < license and license < zeta);
     try std.testing.expect(std.mem.indexOf(u8, readme_text, "empty") == null);
+}
+
+test "no file over 1 MB and no release over 5 MB reaches git, and a cut says where the rest is" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // A card of 3 MB, 9,000 releases whose messages are 400 bytes each,
+    // and 9,999 files with long paths.
+    const long = try arena.alloc(u8, 3 << 20);
+    @memset(long, 'x');
+    for (0..long.len / 100) |i| long[i * 100] = '\n';
+    const card = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .purpose = long }, .{})});
+    const releases = try arena.alloc(ReleaseInfo, 9000);
+    for (releases, 0..) |*r, i| r.* = .{ .name = try std.fmt.allocPrint(arena, "v{d}", .{9000 - i}), .message = "m" ** 400, .created_at_ms = 0, .items = 9999 };
+    const files = try arena.alloc(Item, 9999);
+    for (files, 0..) |*f, i| f.* = .{ .path = try std.fmt.allocPrint(arena, "{s}/{d:0>5}.wav", .{ "deep/" ** 40, i }), .hash_hex = "ab" ** 32, .size = 1 };
+    const input: Input = .{
+        .dataset_name = "org/datasets/big",
+        .git_url = "git@example.invalid:org/datasets/big.git",
+        .server_url = "https://cid.example",
+        .release = "v9000",
+        .commit_id = "01a00000-0000-7000-8000-000000000001",
+        .manifest_hash_hex = "ab" ** 32,
+        .created_at_ms = 0,
+        .items = 9999,
+        .bytes = 9999,
+        .files = files,
+        .releases = releases,
+        .card = card,
+    };
+    const out = try renderAll(arena, input);
+    var total: usize = 0;
+    for (out) |f| {
+        try std.testing.expect(f.contents.len <= file_limit);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(f.contents));
+        total += f.contents.len;
+    }
+    try std.testing.expect(total <= release_limit);
+    for (out) |f| if (std.mem.eql(u8, f.path, "README.md") or std.mem.eql(u8, f.path, "CHANGELOG.md") or std.mem.eql(u8, f.path, "files.txt")) {
+        const tail = if (std.mem.endsWith(u8, f.path, ".md")) "release=v9000*\n" else "release=v9000\n";
+        try std.testing.expect(std.mem.endsWith(u8, f.contents, tail));
+        try std.testing.expect(std.mem.indexOf(u8, f.contents, "The whole release: https://cid.example/d/org/datasets/big?") != null);
+        // The newest releases stay; the cut takes the oldest.
+        if (std.mem.eql(u8, f.path, "CHANGELOG.md")) try std.testing.expect(std.mem.startsWith(u8, f.contents, "# Changelog\n\n## v9000 "));
+    };
+    // Cut the same way every time, so a re-render makes no new commit.
+    const again = try renderAll(arena, input);
+    for (out, again) |a, b| try std.testing.expectEqualStrings(a.contents, b.contents);
+
+    // A small release is untouched.
+    var small = input;
+    small.card = null;
+    small.releases = releases[0..1];
+    small.files = files[0..2];
+    small.items = 2;
+    for (try renderAll(arena, small)) |f| try std.testing.expect(std.mem.indexOf(u8, f.contents, "cid cut this file") == null);
 }
