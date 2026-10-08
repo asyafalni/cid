@@ -167,7 +167,10 @@ allows source `deploy`, but `access` does not, and nothing creates them.
   (`export`). There is no Postgres row-level security, by decision (invariant 11):
   TimescaleDB refuses it on the compressed revision tables, and on a private
   deployment the database's only other users are its administrators.
-  Not built yet: a restricted-dataset access group on top of GitLab membership.
+  Who may read a restricted dataset at all is its GitLab project's membership, the
+  same as any dataset: a project member can clone and browse it, so keep a restricted
+  dataset's project to the people who may see its data. cid keeps no second list of
+  readers on top of that.
 
 ## Deployment
 
