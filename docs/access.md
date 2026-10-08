@@ -156,13 +156,18 @@ allows source `deploy`, but `access` does not, and nothing creates them.
   token can read; otherwise the server requests the upload even when the bytes exist,
   and discards the duplicate. This stops push access from becoming an oracle for
   "does this exact file exist in a restricted dataset?".
-- **Restricted datasets** follow the same flow. Today "restricted" is a flag on the
-  dataset, enforced by checks in the server: previews are blurred until a logged
-  reveal, clear downloads are logged, table rows and text are withheld (counts and
-  columns only), the git repository gets counts only, and the activity log is for
-  owners only.
-  Not built yet: Postgres row-level security and a separate database role
-  (invariant 11), and a restricted-dataset access group on top of GitLab membership.
+- **Restricted datasets** follow the same flow: only people whose GitLab role lets them
+  in reach one at all. "Restricted" is then a flag on the dataset, enforced by the
+  server: previews are blurred until a logged reveal, table rows and text are withheld
+  (counts and columns only), the git repository gets counts only, the activity log is
+  for owners only, and every read of the dataset's content is an activity event naming
+  who and which version: clear downloads (`download`, each batch), opening a browse
+  view (`browse`, its first page), comparing two versions (`compare`, in the dashboard
+  or for `cid diff`), and the item list or export a clone, pull or checkout reads
+  (`export`). There is no Postgres row-level security, by decision (invariant 11):
+  TimescaleDB refuses it on the compressed revision tables, and on a private
+  deployment the database's only other users are its administrators.
+  Not built yet: a restricted-dataset access group on top of GitLab membership.
 
 ## Deployment
 

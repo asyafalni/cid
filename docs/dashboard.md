@@ -381,9 +381,10 @@ There is no Health tab yet. Per-file table statistics already exist (in the draw
 ### 4.7 Activity
 - *Built:* the dataset's log, newest first, the last 200 events: when (UTC), who, what
   and which. It records push, commit (server-side, from the annotation platform), tag,
-  branch, merge, card-edit (through the API), reveal, restricted download and purge.
-  It names who revealed restricted items, so only owners can read it; anyone else is
-  told so in words.
+  branch, merge, card-edit (through the API), reveal and purge, and in a restricted
+  dataset every read of its content: download, browse (a view opened), compare and
+  export (the item list or an export a clone reads). It names who read restricted
+  content, so only owners can read it; anyone else is told so in words.
 - *Planned:* filtering.
 
 ### 4.8 Your SSH keys

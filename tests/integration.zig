@@ -419,6 +419,79 @@ test "personal tokens: made on the dashboard, act as their maker, Bearer or Basi
     _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = $1", .{name});
 }
 
+test "restricted reads are logged: a view opened, a compare, an export; scrolling on and open datasets are not" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
+
+    const secret_ds = "test/datasets/restricted-reads";
+    const open_ds = "test/datasets/open-reads";
+    inline for (.{ secret_ds, open_ds }) |name| {
+        _ = try db.exec(&fscope, "DELETE FROM activity_events WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = $1)", .{name});
+        _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = $1", .{name});
+        try std.testing.expectEqual(std.http.Status.created, cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"" ++ name ++ "\",\"git_url\":\"/srv/git/r.git\"}").status);
+    }
+    _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = $1", .{secret_ds});
+
+    const a = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+    const b = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c";
+    const reads = [_][]const u8{
+        "browse?commit=" ++ a, // a view opened
+        "browse?commit=" ++ a ++ "&after=x", // the same view, scrolled: not again
+        "browse/compare?a=" ++ a ++ "&b=" ++ b,
+        "compare/" ++ a ++ "/" ++ b, // what `cid diff` asks
+        "version/" ++ a ++ "?kind=jsonl", // what a clone reads
+        "overview", // not content
+    };
+    inline for (.{ secret_ds, open_ds }) |name| {
+        for (reads) |r| {
+            const target = try std.fmt.allocPrint(arena, "/v0/datasets/{s}/-/{s}", .{ name, r });
+            _ = cid.api.handle(arena, &deps, &scope, "GET", target, "Bearer test-token", "");
+        }
+    }
+
+    const Event = struct {
+        pub const nilo_table = .projection;
+        action: []const u8,
+        ref: []const u8,
+    };
+    const got = try db.raw(Event, &fscope, "SELECT e.action, coalesce(e.ref, '') AS ref FROM activity_events e JOIN datasets d USING (dataset_id) " ++
+        "WHERE d.name = $1 ORDER BY e.ts, e.action", .{secret_ds});
+    try std.testing.expectEqual(@as(usize, 4), got.len);
+    try std.testing.expectEqualStrings("browse", got[0].action);
+    try std.testing.expectEqualStrings(a, got[0].ref);
+    try std.testing.expectEqualStrings("compare", got[1].action);
+    try std.testing.expectEqualStrings(a ++ ".." ++ b, got[1].ref);
+    try std.testing.expectEqualStrings("compare", got[2].action);
+    try std.testing.expectEqualStrings("export", got[3].action);
+    try std.testing.expectEqualStrings(a ++ " jsonl", got[3].ref);
+    const open_events = try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM activity_events e JOIN datasets d USING (dataset_id) WHERE d.name = $1", .{open_ds});
+    try std.testing.expectEqual(@as(?i64, 0), open_events);
+
+    inline for (.{ secret_ds, open_ds }) |name| {
+        _ = try db.exec(&fscope, "DELETE FROM activity_events WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = $1)", .{name});
+        _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = $1", .{name});
+    }
+}
+
 test "seaweedfs s3 is reachable" {
     const addr = try std.Io.net.IpAddress.parse("127.0.0.1", seaweed_s3_port);
     const io = std.testing.io;

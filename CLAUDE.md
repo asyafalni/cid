@@ -82,8 +82,8 @@ and everything heavy link to the cid dashboard. Full spec: `docs/git-repository.
 - **First milestone ("cid exists") is reached:** the file-dataset round trip against a
   real server, the SSH front door, the git writer, previews and the dashboard all run.
   A GitLab Maintainer of the project at the same path creates a dataset with only
-  an SSH key (checked live with GitLab). Still open: Postgres row-level security for
-  restricted datasets (invariant 11).
+  an SSH key (checked live with GitLab). Restricted datasets are enforced by the
+  server inside per-dataset access, by decision: no row-level security (invariant 11).
 - **AI stays out of cid.** cid never calls an LLM or judgment API (TypeSafe/Jev
   included) in the CLI or server. The one permitted future exception is advisory-only
   dashboard scoring, Phase 3 at the earliest, decided then (`docs/dashboard.md`). The
@@ -403,12 +403,16 @@ Deep dives: `docs/data-model.md` · `docs/access.md` · `docs/git-repository.md`
 10. **Cleanup deletes only unreferenced items**: not in any release, not in any branch
     head, older than the retention period. Showing is the default; deleting needs
     `--apply`. Only releases and branch heads are guaranteed rebuildable forever.
-11. **Restricted datasets** (e.g. `face-id`) use Postgres row-level security and their
-    own role. cid never logs their contents or annotations, at any log level, and
-    never sends their items to any external service by default. **Not met yet:** there
-    is no RLS or separate role; restriction is a flag enforced by the server (blurred
-    previews until a logged reveal, withheld rows and text, counts-only git, owner-only
-    activity). Closing this needs a decision.
+11. **Restricted datasets** (e.g. `face-id`) are a flag the server enforces, inside the
+    same per-dataset access as every dataset: only people the GitLab role lets in reach
+    them at all. On top of that, previews are blurred until a logged reveal, table rows
+    and text are withheld, the git repository gets counts only, the activity log is for
+    owners only, and every read of their content is logged: clear bytes (downloads),
+    browse views, compares, and the item lists and exports a clone reads. cid never logs
+    their contents or annotations, at any log level, and never sends their items to any
+    external service by default. Decided 2026-10-08: no Postgres row-level security
+    (TimescaleDB refuses it on compressed history, and on a private deployment the
+    database's only other users are its administrators).
 12. **Hash existence is never an oracle.** The push dedup check confirms a hash only if
     this dataset already holds those bytes (`dataset_hashes`); anything else must be
     uploaded and verified again, so a hash learned elsewhere opens nothing.
@@ -799,7 +803,8 @@ Full dashboard budgets are in `docs/dashboard.md`.
   (`src/server/api.zig` lists every route).
 - It commits when a batch finishes a pipeline stage and tags when someone publishes a
   release in the web app.
-- Restricted datasets use their own database role and row-level security on both sides.
+- Restricted datasets go through the same roles; the server enforces restriction, and
+  the platform must not send their items to any external service either.
 
 ---
 

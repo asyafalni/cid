@@ -22,7 +22,7 @@ export function ActivityTab({ name }: { name: string }) {
     return (
       <div className="empty blueprint">
         <h2>Nothing on the record yet</h2>
-        <p className="quiet">Reveals, restricted downloads and purges appear here as they happen.</p>
+        <p className="quiet">Reveals, purges and, in a restricted dataset, every read of its content appear here as they happen.</p>
       </div>
     );
   }

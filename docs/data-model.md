@@ -44,9 +44,10 @@ the account tables have no dataset at all.
 
 **Restricted datasets** are the `restricted` flag, enforced by checks in the server:
 previews are served blurred until a logged reveal, the dataset repository gets counts
-only, and row-level diffs give counts and columns, never rows. Not built yet:
-Postgres row-level security and a separate database role for restricted datasets
-(invariant 11).
+only, row-level diffs give counts and columns, never rows, and every read of their
+content lands in `activity_events` (`docs/access.md`). There is no row-level security,
+by decision (invariant 11): TimescaleDB refuses it on a hypertable with compression,
+which both revision tables use.
 
 **Dataset card.** The human-written card fields live in one row; everything countable
 comes from the version's statistics (`commits.stats`). Each release snapshots the card

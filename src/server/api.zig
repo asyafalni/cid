@@ -226,6 +226,12 @@ fn handleInner(
     const ds = lookupDataset(arena, deps, scope, route.name) orelse
         return errorResponse(arena, .not_found, "no such dataset", "Run 'cid init' to create it, or check the address.");
 
+    // A restricted dataset's annotations and listings are its content too,
+    // like its clear bytes (which `downloads` logs): reading them is
+    // logged, before anything is served (invariants 11 and 20).
+    if (ds.restricted and eql(method, "GET")) if (try restrictedRead(arena, route)) |read|
+        try logActivity(arena, deps, scope, ds, try actorOf(arena, deps, caller), read.action, read.ref, null);
+
     if (eql(method, "GET") and eql(route.action, "text"))
         return textHead(arena, deps, scope, ds, route.queryParam("hash") orelse "");
     if (eql(method, "GET") and eql(route.action, "table"))
@@ -1349,6 +1355,28 @@ fn actorOf(arena: std.mem.Allocator, deps: *Deps, caller: Caller) HandleError![]
         if (token_mod.verify(arena, secret, h["Bearer ".len..], now)) |claims| return claims.account else |_| {}
     };
     return "server-token";
+}
+
+const RestrictedRead = struct { action: []const u8, ref: []const u8 };
+
+/// Which reads of a restricted dataset are logged, and as what: opening a
+/// browse view or a compare (their first page; scrolling on is the same
+/// look), comparing two versions for `cid diff`, and the item list or
+/// export a clone, pull or checkout reads.
+fn restrictedRead(arena: std.mem.Allocator, route: DatasetRoute) HandleError!?RestrictedRead {
+    const first_page = route.queryParam("after") == null;
+    if (eql(route.action, "browse") and first_page)
+        return .{ .action = "browse", .ref = route.queryParam("commit") orelse "head" };
+    if (eql(route.action, "browse/compare") and first_page)
+        return .{ .action = "compare", .ref = try std.fmt.allocPrint(arena, "{s}..{s}", .{ route.queryParam("a") orelse "", route.queryParam("b") orelse "" }) };
+    if (std.mem.startsWith(u8, route.action, "compare/")) {
+        const pair = route.action["compare/".len..];
+        const slash = std.mem.indexOfScalar(u8, pair, '/') orelse return null;
+        return .{ .action = "compare", .ref = try std.fmt.allocPrint(arena, "{s}..{s}", .{ pair[0..slash], pair[slash + 1 ..] }) };
+    }
+    if (std.mem.startsWith(u8, route.action, "version/"))
+        return .{ .action = "export", .ref = try std.fmt.allocPrint(arena, "{s} {s}", .{ route.action["version/".len..], route.queryParam("kind") orelse "state" }) };
+    return null;
 }
 
 /// The record of something that already happened (a push, a release):
