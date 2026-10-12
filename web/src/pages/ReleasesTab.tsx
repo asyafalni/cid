@@ -1,6 +1,8 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { getCompare, getRowDiff, getThumbs, type CompareSide, type Overview, type StateAnnotation, type TapeCommit } from '../api';
 import { AnnotationOverlay } from '../overlays';
+import { Thumb } from '../Thumb';
+import { extOf } from '../browseFilter';
 import { humanBytes } from '../format';
 
 // Releases & history: the timeline, and compare between any two
@@ -185,9 +187,9 @@ function Comparison({
               {c.size_b !== null && <span className="quiet data">{humanBytes(c.size_b)}</span>}
               {c.change === 'modified' && thumbBy.has(c.hash_a!) && thumbBy.has(c.hash_b!) && (
                 <span className="before-after">
-                  <img src={thumbBy.get(c.hash_a!)} alt={`${c.path} before`} />
+                  <Thumb src={thumbBy.get(c.hash_a!)} alt={`${c.path} before`} label={extOf(c.path)} />
                   <span aria-hidden="true">→</span>
-                  <img src={thumbBy.get(c.hash_b!)} alt={`${c.path} after`} />
+                  <Thumb src={thumbBy.get(c.hash_b!)} alt={`${c.path} after`} label={extOf(c.path)} />
                 </span>
               )}
               {c.change === 'modified' && isTable(c.path) && (
@@ -290,15 +292,16 @@ function DiffSide({
         </div>
       ) : thumb && item.width && item.height ? (
         <span className="overlay-fit" style={{ aspectRatio: `${item.width} / ${item.height}` }}>
-          <img src={thumb} alt={`${item.path} at ${label}`} />
-          <AnnotationOverlay
-            width={item.width}
-            height={item.height}
-            annotations={annotations}
-            hidden={new Set()}
-            opacity={1}
-            variant={variant}
-          />
+          <Thumb src={thumb} alt={`${item.path} at ${label}`} label={extOf(item.path)}>
+            <AnnotationOverlay
+              width={item.width}
+              height={item.height}
+              annotations={annotations}
+              hidden={new Set()}
+              opacity={1}
+              variant={variant}
+            />
+          </Thumb>
         </span>
       ) : (
         <div className="diff-side-none blueprint">

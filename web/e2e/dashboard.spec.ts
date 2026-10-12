@@ -57,6 +57,25 @@ test('browse shows thumbnails for images and honest tiles for the rest', async (
   await expect(page.getByText('200×150')).toBeVisible();
 });
 
+test('a preview missing from storage shows the item as itself, never a broken image', async ({ page }) => {
+  await signIn(page);
+  // The store answers every thumbnail with a 404, as for a purged or lost
+  // preview: each one is a "no preview" tile with its type (principle 1).
+  await page.route('**/previews/**', (route) => route.fulfill({ status: 404, body: 'gone' }));
+  await page.goto('/d/e2e/datasets/demo?view=browse');
+  await expect(page.locator('.tile .thumb-missing')).toHaveCount(2);
+  await expect(page.locator('.tile .thumb-missing').first()).toContainText('.png');
+  await expect(page.locator('.tile .thumb-missing').first()).toContainText('no preview');
+  await expect(page.getByRole('img', { name: 'img-a.png: no preview' })).toBeVisible();
+  const broken = await page.evaluate(() => [...document.images].filter((i) => i.complete && i.naturalWidth === 0).length);
+  expect(broken).toBe(0);
+  // The home page's mosaics too.
+  await page.goto('/');
+  await expect(page.getByRole('link', { name: 'e2e/datasets/demo' }).first()).toBeVisible();
+  await page.waitForLoadState('networkidle');
+  expect(await page.evaluate(() => [...document.images].filter((i) => i.complete && i.naturalWidth === 0).length)).toBe(0);
+});
+
 test('compare between the two releases reads as a sentence', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?view=releases');

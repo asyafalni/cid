@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearch } from '@tanstack/react-router';
 import { ApiError, getMe, listDatasets, setStar, type DatasetSummary } from '../api';
 import { humanBytes } from '../format';
+import { Thumb } from '../Thumb';
 import { recentDatasets } from '../recent';
 
 type HomeSearch = {
@@ -117,7 +118,7 @@ export function Home() {
         <input
           type="search"
           className="filter-q data"
-          placeholder="name, class, file type or owner…"
+          placeholder="Search datasets"
           aria-label="Search datasets"
           value={typed}
           onChange={(e) => setTyped(e.target.value)}
@@ -230,7 +231,7 @@ function Mosaic({ dataset: d }: { dataset: DatasetSummary }) {
     return (
       <span className={`mosaic mosaic--${Math.min(d.mosaic.length, 4)}`} aria-hidden="true">
         {d.mosaic.slice(0, 4).map((m) => (
-          <img key={m.hash} src={m.url} alt="" loading="lazy" />
+          <Thumb key={m.hash} src={m.url} alt="" label="" lazy />
         ))}
       </span>
     );

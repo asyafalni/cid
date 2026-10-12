@@ -21,6 +21,7 @@ import { AnnotationOverlay } from '../overlays';
 import { classColor } from '../shapes';
 import { timeline } from '../history';
 import { TableView } from '../TableView';
+import { Thumb } from '../Thumb';
 import { anyFilter, extOf, type FilterPatch, type Filters } from '../browseFilter';
 
 // A page of the gallery or table: what the server answers per request,
@@ -287,18 +288,19 @@ export function BrowseTab({
                   // ride a cover-crop.
                   <span className="tile-media">
                     <span className="overlay-fit" style={{ aspectRatio: `${item.width} / ${item.height}` }}>
-                      <img src={thumbByHash.get(item.hash)} alt={item.path} loading="lazy" />
-                      <AnnotationOverlay
-                        width={item.width}
-                        height={item.height}
-                        annotations={item.annotations}
-                        hidden={hidden}
-                        opacity={opacity}
-                      />
+                      <Thumb src={thumbByHash.get(item.hash)} alt={item.path} label={extOf(item.path)} lazy>
+                        <AnnotationOverlay
+                          width={item.width}
+                          height={item.height}
+                          annotations={item.annotations}
+                          hidden={hidden}
+                          opacity={opacity}
+                        />
+                      </Thumb>
                     </span>
                   </span>
                 ) : (
-                  <img src={thumbByHash.get(item.hash)} alt={item.path} loading="lazy" />
+                  <Thumb src={thumbByHash.get(item.hash)} alt={item.path} label={extOf(item.path)} lazy />
                 )
               ) : (
                 <span className="tile-type data">{extOf(item.path)}</span>
@@ -388,7 +390,7 @@ function ItemDrawer({
         // Audio: its waveform, and the sound itself.
         <div className="drawer-audio">
           {shownThumb ? (
-            <img className="drawer-waveform" src={shownThumb} alt={`${item.path} waveform`} />
+            <Thumb className="drawer-waveform" src={shownThumb} alt={`${item.path} waveform`} label={extOf(item.path)} />
           ) : (
             <p className="quiet">The waveform appears when the preview worker reaches this file.</p>
           )}
@@ -400,17 +402,18 @@ function ItemDrawer({
             className="drawer-media overlay-fit"
             style={{ aspectRatio: `${item.width} / ${item.height}` }}
           >
-            <img src={shownThumb} alt={item.path} />
-            <AnnotationOverlay
-              width={item.width}
-              height={item.height}
-              annotations={annotations}
-              hidden={hidden}
-              opacity={opacity}
-            />
+            <Thumb src={shownThumb} alt={item.path} label={extOf(item.path)}>
+              <AnnotationOverlay
+                width={item.width}
+                height={item.height}
+                annotations={annotations}
+                hidden={hidden}
+                opacity={opacity}
+              />
+            </Thumb>
           </span>
         ) : (
-          <img className="drawer-media" src={shownThumb} alt={item.path} />
+          <Thumb className="drawer-media" src={shownThumb} alt={item.path} label={extOf(item.path)} />
         )
       ) : isTable(item.path) ? (
         <TableView name={name} hash={item.hash} revealed={revealed?.table} />
