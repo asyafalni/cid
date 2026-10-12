@@ -353,6 +353,12 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   is compared and 51 ms after (the
   pair's diff is kept beside the indexes, and a release's diff with the release before
   it is prepared in the background); `cid diff` 0.43 s, with a 19 MB client.
+  With the history compressed first (`COMPRESS=1`, as TimescaleDB's policy leaves
+  every chunk older than 30 days; 296 MB of item and 469 MB of annotation history
+  shrink to 65 and 62 MB), nothing falls off a cliff: a release, preparation, browse,
+  compare and `cid diff` within noise of the uncompressed run, a first subset export
+  about 25% slower (it rebuilds the version's state, now from compressed chunks), and
+  the integration suite passes over compressed chunks (2026-10-12).
 - **The preview worker** builds thumbnails, audio waveforms, video posters and table
   statistics, sniffing each file's real type and image dimensions as it goes, by
   calling `ffmpeg` as an external program (PDF page images, which need `vips`, are not

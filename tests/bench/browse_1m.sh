@@ -11,6 +11,8 @@
 # a build (zig build -Doptimize=ReleaseFast for real numbers). From the repository root:
 #   tests/bench/browse_1m.sh             # seed once, then measure
 #   N=100000 tests/bench/browse_1m.sh    # a smaller run
+#   COMPRESS=1 tests/bench/browse_1m.sh  # history compressed first, as
+#                                        # TimescaleDB's policy leaves it after 30 days
 # The dataset stays for reruns (and for a browser at /d/<name>).
 set -euo pipefail
 
@@ -104,6 +106,15 @@ SQL
   curl -sf -H "$AUTH" -H 'content-type: application/json' -X POST "$API/commit" \
     -d "{\"branch\":\"main\",\"message\":\"$tag\",\"author\":\"agent:bench\"}" | sed -n 's/.*"commit":"\([^"]*\)".*/\1/p'
 }
+
+# Real deployments read mostly compressed history: the policy compresses
+# chunks older than 30 days. Compressing every chunk now measures that.
+if [ "${COMPRESS:-0}" = 1 ]; then
+  s=$(date +%s%N)
+  psql -c "SELECT compress_chunk(c, if_not_compressed => true) FROM show_chunks('item_revisions') c" >/dev/null
+  psql -c "SELECT compress_chunk(c, if_not_compressed => true) FROM show_chunks('annotation_revisions') c" >/dev/null
+  echo "History compressed in $(( ($(date +%s%N) - s) / 1000000 )) ms"
+fi
 
 RUN=$(date +%s)
 # Annotated clones get the dataset's default format: the bench trains yolo.
