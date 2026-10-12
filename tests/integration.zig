@@ -2729,9 +2729,12 @@ test "annotated: the platform writes revisions, the server commits, state compos
     try std.testing.expectEqualStrings("frames/0002.jpg", page2.items[0].path);
     // File types: one rule, in SQL, as every view spells them.
     for ([_][2][]const u8{
-        .{ "a/b/C.JPG", ".jpg" }, .{ "README", "file" },      .{ ".cidignore", "file" },
-        .{ "x.tar.gz", ".gz" },   .{ ".hidden.txt", ".txt" }, .{ "dir.d/noext", "file" },
-        .{ "trailing.", "." },
+        .{ "a/b/C.JPG", ".jpg" },       .{ "README", "file" },      .{ ".cidignore", "file" },
+        .{ "x.tar.gz", ".gz" },         .{ ".hidden.txt", ".txt" }, .{ "dir.d/noext", "file" },
+        .{ "trailing.", "." },          .{ "a/.", "file" },         .{ "a/..x", ".x" },
+        .{ "x/.a.", "." },
+        .{ "ünï/Ünï.PNG", ".png" },
+        .{ "a b/c d.T X T", ".t x t" },
     }) |case| {
         const sql_ext = (try db.rawOne([]const u8, &fscope, "SELECT " ++ comptime cid.state.extOf("$1::text"), .{case[0]})).?;
         try std.testing.expectEqualStrings(case[1], sql_ext);
