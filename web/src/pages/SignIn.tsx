@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Airship } from '../Airship';
 import { useQuery } from '@tanstack/react-query';
 import { useSearch } from '@tanstack/react-router';
 import { clearToken, getAuthConfig, getMe, setToken } from '../api';
@@ -42,6 +43,8 @@ export function SignIn() {
 
   return (
     <div className="signin sky-band">
+      <div className="home-clouds" aria-hidden="true" />
+      <Airship className="signin-airship" />
       <div className="signin-card blueprint">
         <h1 className="signin-wordmark">cid</h1>
         <p className="tagline">cid · Controlled Iterative Datasets</p>

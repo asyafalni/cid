@@ -31,19 +31,17 @@ export function ReleasesTab({
   return (
     <div className="releases">
       <section aria-label="Compare two versions" className="panel card compare-picker">
-        <h2>Compare</h2>
         <div className="compare-row">
+          <h2>Compare</h2>
           <VersionSelect
-            label="from"
+            label="Compare from"
             commits={commits}
             value={aSel}
             onChange={(v) => onPick({ a: v })}
           />
-          <span aria-hidden="true" className="quiet">
-            to
-          </span>
+          <span className="compare-with">with</span>
           <VersionSelect
-            label="to"
+            label="Compare to"
             commits={commits}
             value={bSel}
             onChange={(v) => onPick({ b: v })}
@@ -85,6 +83,11 @@ export function ReleasesTab({
   );
 }
 
+// A count in a compare's summary: a number is data; a zero steps back.
+function Count({ n }: { n: number }) {
+  return <span className={n === 0 ? 'count-n count-n--zero' : 'count-n'}>{n.toLocaleString()}</span>;
+}
+
 function VersionSelect({
   label,
   commits,
@@ -98,8 +101,7 @@ function VersionSelect({
 }) {
   return (
     <label className="compare-select">
-      <span className="quiet">{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
+      <select aria-label={label} value={value} onChange={(e) => onChange(e.target.value)}>
         {commits.map((c) => (
           <option key={c.id} value={labelOf(c)}>
             {c.release ?? `${c.id.slice(0, 13)} — ${c.message.slice(0, 32)}`}
@@ -165,16 +167,22 @@ function Comparison({
 
   return (
     <div className="comparison">
-      <p className="engraved data">
-        {s.added.toLocaleString()} added · {s.modified.toLocaleString()} modified · {s.deleted.toLocaleString()} deleted
+      <dl className="compare-stats">
+        <div>
+          <dt>Files</dt>
+          <dd>
+            <Count n={s.added} /> added, <Count n={s.modified} /> modified, <Count n={s.deleted} /> deleted
+          </dd>
+        </div>
         {overview.kind === 'annotated' && (
-          <>
-            {' '}
-            — annotations: {s.ann_added.toLocaleString()} added · {s.ann_changed.toLocaleString()} changed ·{' '}
-            {s.ann_removed.toLocaleString()} removed
-          </>
+          <div>
+            <dt>Annotations</dt>
+            <dd>
+              <Count n={s.ann_added} /> added, <Count n={s.ann_changed} /> changed, <Count n={s.ann_removed} /> removed
+            </dd>
+          </div>
         )}
-      </p>
+      </dl>
 
       {!anyItems && !anyAnns && <p className="quiet">These two versions hold exactly the same data.</p>}
 

@@ -349,10 +349,32 @@
 /* --- sign-in: the one page that is mostly sky --- */
 
 .signin {
+  position: relative;
+  overflow: hidden;
   min-height: 100%;
   display: grid;
   place-items: center;
   padding: var(--space-4);
+}
+
+/* The airship crosses the sky above the card, over the clouds. */
+.signin-airship {
+  position: absolute;
+  top: 12%;
+  left: 8%;
+  width: 14rem;
+  color: var(--on-sky);
+  opacity: 0.85;
+}
+
+.signin-card {
+  position: relative;
+}
+
+@media (max-width: 640px) {
+  .signin-airship {
+    display: none;
+  }
 }
 
 .signin-card {
@@ -1105,16 +1127,51 @@
 
 .compare-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-3);
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.compare-picker .compare-row h2 {
+  margin: 0 var(--space-1) 0 0;
+}
+
+.compare-with {
+  color: var(--text-muted);
 }
 
 .compare-select {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  font-size: 0.875rem;
+}
+
+.compare-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-8);
+  margin: 0 0 var(--space-4);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--line);
+}
+
+.compare-stats dt {
   font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.compare-stats dd {
+  margin: 0;
+}
+
+.count-n {
+  font-family: var(--font-data);
+  font-weight: 600;
+}
+
+.count-n--zero {
+  font-weight: 400;
+  color: var(--text-muted);
 }
 
 .compare-select select {
@@ -2015,7 +2072,9 @@
   margin-bottom: 0;
 }
 
-.home-layout .format {
+/* A switch between views is UI, not data: the UI face. */
+.home-layout .format,
+.format-picker--ui .format {
   font-family: var(--font-ui);
 }
 
@@ -2142,4 +2201,28 @@
   color: var(--on-sky);
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+/* --- files: name, size, then the one action --- */
+
+.files-table .num {
+  text-align: right;
+  width: 7rem;
+  white-space: nowrap;
+}
+
+.files-table th:last-child,
+.files-action {
+  width: 7rem;
+  text-align: right;
+}
+
+.file-download {
+  color: var(--aether);
+  padding: 0;
+  font-size: 0.875rem;
+}
+
+.file-download:hover {
+  text-decoration: underline;
 }

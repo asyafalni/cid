@@ -62,12 +62,14 @@ export function FilesTab({
         ))}
       </nav>
 
-      <table className="browse-table">
+      <table className="browse-table files-table">
         <thead>
           <tr>
-            <th>name</th>
-            <th>size</th>
-            <th></th>
+            <th>Name</th>
+            <th className="num">Size</th>
+            <th>
+              <span className="visually-hidden">Download</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -79,15 +81,15 @@ export function FilesTab({
                   {f.items.toLocaleString()} {f.items === 1 ? 'file' : 'files'}
                 </span>
               </td>
-              <td className="data">{humanBytes(f.bytes)}</td>
+              <td className="data num">{humanBytes(f.bytes)}</td>
               <td></td>
             </tr>
           ))}
           {files.map((item) => (
             <tr key={item.path}>
               <td className="data">{item.path.slice(prefix.length)}</td>
-              <td className="data">{humanBytes(item.size)}</td>
-              <td>
+              <td className="data num">{humanBytes(item.size)}</td>
+              <td className="files-action">
                 <DownloadLink name={name} hash={item.hash} />
               </td>
             </tr>
@@ -129,7 +131,7 @@ function DownloadLink({ name, hash }: { name: string; hash: string }) {
   }
   return (
     <button
-      className="crumb"
+      className="file-download"
       onClick={(e) => {
         e.stopPropagation();
         void getDownloads(name, [hash]).then((d) => {

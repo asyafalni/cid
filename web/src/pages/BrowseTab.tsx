@@ -145,7 +145,7 @@ export function BrowseTab({
   return (
     <div className="browse">
       <div className="browse-bar">
-        <div className="format-picker" role="radiogroup" aria-label="View">
+        <div className="format-picker format-picker--ui" role="radiogroup" aria-label="View">
           {(['gallery', 'table'] as const).map((m) => (
             <button
               key={m}
@@ -172,8 +172,8 @@ export function BrowseTab({
         <div className="filter-bar" role="search">
           <input
             type="search"
-            className="filter-q data"
-            placeholder="path contains…"
+            className="filter-q"
+            placeholder="Search paths"
             aria-label="Filter by path"
             value={typed}
             onChange={(e) => setTyped(e.target.value)}

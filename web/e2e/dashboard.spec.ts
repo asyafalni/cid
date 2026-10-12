@@ -79,7 +79,7 @@ test('a preview missing from storage shows the item as itself, never a broken im
 test('compare between the two releases reads as a sentence', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?view=releases');
-  await expect(page.getByText(/1 added · 0 modified · 0 deleted/)).toBeVisible();
+  await expect(page.getByText('1 added, 0 modified, 0 deleted')).toBeVisible();
   await expect(page.locator('.change-verb--added')).toHaveText('added');
   await expect(page.getByText('notes.txt')).toBeVisible();
 });
@@ -230,8 +230,8 @@ test('compare: a changed box shows before and after on the same image', async ({
   await signIn(page);
   await page.goto('/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0');
   // The sentence: no file changed, one annotation did.
-  await expect(page.getByText(/0 added · 0 modified · 0 deleted/)).toBeVisible();
-  await expect(page.getByText(/annotations: 0 added · 1 changed · 0 removed/)).toBeVisible();
+  await expect(page.getByText('0 added, 0 modified, 0 deleted')).toBeVisible();
+  await expect(page.getByText('0 added, 1 changed, 0 removed')).toBeVisible();
 
   // docs/dashboard.md §9: the same image twice, the box where each
   // version had it — dashed for the old, solid for the new.
