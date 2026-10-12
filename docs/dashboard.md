@@ -40,7 +40,7 @@ only).
 **Not built yet** (the spec below says so where it applies): the health badge, Health
 tab and Validator tiles; card completeness and the sample strip; most Browse filters,
 histograms and the List view; keyboard shortcuts beyond `g`/`t`; the "Show command"
-toggle; the `⌘K` palette; the 404 page; a theme switch; charts and gauges; PDF page
+toggle; the `⌘K` palette; the 404 page; charts and gauges; PDF page
 images (`vips`); viewing branches or pinning a commit; the SQL console; semantic
 search.
 
@@ -177,9 +177,9 @@ the tagline in its three places, and the reduced-motion switch. Items marked
 ### 3.2 The sky (beautiful)
 
 - **Themes:** "Night flight" (dark) and "Daybreak" (light). The theme follows the
-  system's colour-scheme preference, and is Night flight when there is none. There is
-  no switch in the UI yet (the tokens already honour a `data-theme` attribute on the
-  root).
+  system's colour-scheme preference, and is Night flight when there is none. The top
+  bar's switch (System, Night flight, Daybreak) pins one for this browser
+  (`localStorage`, applied by `index.html` before the first paint); System lets go.
 - **Sky gradients only where there is no data:** page headers, the release hero, empty
   states, the sign-in page. Never behind images, tables or charts.
 - **Glass over sky:** header panels over the sky are slightly translucent with a thin
@@ -206,14 +206,14 @@ together; keep the roles. Contrast is checked by the axe run in the e2e suite (s
 
 | Token | Night flight | Daybreak |
 |---|---|---|
-| `bg` | `#0B1020` | `#F5F2EA` |
+| `bg` | `#0B1020` | `#F4F7FB` |
 | `panel` | `#121A30` | `#FFFFFF` |
-| `panel-raised` | `#19233F` | `#FBF9F4` |
-| `line` | `#26314F` | `#D9D3C4` |
+| `panel-raised` | `#19233F` | `#F8FAFD` |
+| `line` | `#26314F` | `#D6DDE8` |
 | `text` | `#E8ECF6` | `#1A2033` |
 | `text-muted` | `#A2ACC6` | `#545B70` |
-| `aether` (interactive, focus) | `#5BD8E0` | `#0C717A` (5.1:1 on `bg`) |
-| `brass` (releases, craft) | `#D9A845` | `#875D0F` (5.2:1 on `bg`) |
+| `aether` (interactive, focus) | `#5BD8E0` | `#0C717A` (5.3:1 on `bg`) |
+| `brass` (releases, craft) | `#D9A845` | `#875D0F` (5.4:1 on `bg`) |
 | `sky-1 → sky-2 → sky-3` (gradient) | `#1B2A5A → #6B4E8C → #E08A5B` | `#BFD9F2 → #DCD2E4 → #F6E3C8` |
 | `pass` / `warn` / `fail` | `#4CC38A` / `#F2B84B` / `#FF7A66` | `#1E7F52` / `#8A5A00` / `#B3261E` |
 | `ann-1` … `ann-8` (overlay classes) | `#5BD8E0` `#FFB454` `#8BE28B` `#FF8FB2` `#B7A5FF` `#FFE066` `#7FB8FF` `#FF9D7A` | `#0C717A` `#A35B00` `#1E7F52` `#B03060` `#5F4BB6` `#8A6D00` `#205FA8` `#B34A22` |
@@ -231,10 +231,9 @@ are cid's own for now.
 - At most one decorative element per screen region.
 - Decoration never delays content: if an effect adds more than 100 ms to first paint
   or drops scrolling below 60 fps, it goes.
-- Both themes pass WCAG 2.2 AA and the axe checks. Today the axe test in
-  `web/e2e/dashboard.spec.ts` runs in Playwright's default light colour scheme, so it
-  checks Daybreak; Night flight is not yet checked automatically. There is no CI yet;
-  the e2e suite runs by hand.
+- Both themes pass WCAG 2.2 AA and the axe checks: the axe test in
+  `web/e2e/dashboard.spec.ts` runs every main page once per colour scheme. There is
+  no CI yet; the e2e suite runs by hand.
 
 ---
 
@@ -389,7 +388,7 @@ There is no Health tab yet. Per-file table statistics already exist (in the draw
 
 ### 4.8 Your SSH keys
 
-- *Built:* `/keys`, linked from the rail under your name. Your keys, one row each: the
+- *Built:* `/keys`, in the account menu under your name in the top bar. Your keys, one row each: the
   title, the type, the fingerprint as a chip that copies it whole, when it was added,
   and where it came from. A key added here has Remove; a key from GitLab says so and is
   removed in GitLab. Below, the add form: a title and the one line of a `.pub` file,
@@ -399,7 +398,7 @@ There is no Health tab yet. Per-file table statistics already exist (in the draw
 
 ### 4.9 Your tokens
 
-- *Built:* `/tokens`, under SSH keys in the rail: personal tokens for scripts and CI.
+- *Built:* `/tokens`, under SSH keys in the account menu: personal tokens for scripts and CI.
   Each row is a token's name, its first characters, when it was last used and when it
   expires (in the warning colour once expired), and Revoke. The form takes a name and
   a lifetime (30, 90, 180 or 365 days; 90 by default). A new token is shown once, in
@@ -518,7 +517,7 @@ There is no Health tab yet. Per-file table statistics already exist (in the draw
 | Item drawer open | < 300 ms | `web/e2e/bench.spec.ts`, opt-in (`BENCH_DATASET`, a dataset seeded by `tests/bench/browse_1m.sh`; `CID_BIN` for a ReleaseFast build): p75 37 ms quiet, 100 ms under load |
 | Compare two releases, summary visible | < 2 s at 1M annotations | server side only, in `tests/bench/browse_1m.sh`: about 1.0 s the first time a pair is compared, 51 ms after; not yet measured in the browser |
 | JS bundle, first load | < 300 KB gzipped | `web/e2e/dashboard.spec.ts`, every e2e run |
-| Accessibility | WCAG 2.2 AA; full keyboard navigation | axe (serious and critical findings) on the main pages in `web/e2e/dashboard.spec.ts`, Daybreak only; full keyboard use not yet tested |
+| Accessibility | WCAG 2.2 AA; full keyboard navigation | axe (serious and critical findings) on the main pages in `web/e2e/dashboard.spec.ts`, in both themes; full keyboard use not yet tested |
 
 There is no CI yet: the e2e suite and the benches run by hand (`CLAUDE.md`, "Build and
 test").
@@ -593,7 +592,7 @@ Each one is a test in `web/e2e/dashboard.spec.ts` unless marked otherwise.
 - For every action, "Show command" gives a `cid` command that does the same thing when
   run in a terminal. *Not yet automated; "Show command" is not built.*
 - With reduced motion on, no animation plays; both themes pass contrast checks. *Not
-  yet automated* (axe checks contrast in Daybreak only; no reduced-motion test).
+  yet automated* (axe checks contrast in both themes; no reduced-motion test).
 - A restricted dataset: previews blurred until revealed; the reveal appears in Activity.
 - Every page passes automated accessibility checks (axe) and full keyboard use. The
   axe part is automated for the main pages (serious and critical findings); full

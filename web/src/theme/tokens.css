@@ -32,6 +32,8 @@
   --space-4: 1rem;
   --space-6: 1.5rem;
   --space-8: 2rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
 
   /* Radius scales with hierarchy: chips < panels < the one hero surface. */
   --radius-chip: 3px;
@@ -55,14 +57,14 @@
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme='night']) {
-    --bg: #f5f2ea;
+    --bg: #f4f7fb;
     --panel: #ffffff;
-    --panel-raised: #fbf9f4;
-    --line: #d9d3c4;
+    --panel-raised: #f8fafd;
+    --line: #d6dde8;
     --text: #1a2033;
     --text-muted: #545b70;
-    --aether: #0c717a; /* 5.1:1 on the parchment bg — AA with margin */
-    --brass: #875d0f; /* 5.2:1 on parchment — AA with margin */
+    --aether: #0c717a; /* 5.3:1 on the daybreak bg — AA with margin */
+    --brass: #875d0f; /* 5.4:1 on the daybreak bg — AA with margin */
     --sky-1: #bfd9f2;
     --sky-2: #dcd2e4;
     --sky-3: #f6e3c8;
@@ -83,14 +85,14 @@
 }
 
 :root[data-theme='daybreak'] {
-  --bg: #f5f2ea;
+  --bg: #f4f7fb;
   --panel: #ffffff;
-  --panel-raised: #fbf9f4;
-  --line: #d9d3c4;
+  --panel-raised: #f8fafd;
+  --line: #d6dde8;
   --text: #1a2033;
   --text-muted: #545b70;
-  --aether: #0c717a; /* 5.1:1 on the parchment bg — AA with margin */
-  --brass: #875d0f; /* 5.2:1 on parchment — AA with margin */
+  --aether: #0c717a; /* 5.3:1 on the daybreak bg — AA with margin */
+  --brass: #875d0f; /* 5.4:1 on the daybreak bg — AA with margin */
   --sky-1: #bfd9f2;
   --sky-2: #dcd2e4;
   --sky-3: #f6e3c8;

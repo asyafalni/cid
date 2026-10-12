@@ -282,7 +282,7 @@ test('sign in with GitLab: the round trip, the cookie, and only what the role al
 
   // Through the (strict) fake GitLab and back: PKCE, state, token, user.
   await expect(page.getByRole('heading', { name: 'Datasets' })).toBeVisible();
-  await expect(page.locator('.rail-who')).toHaveText('Rhea Reviewer');
+  await expect(page.locator('.account-name')).toHaveText('Rhea Reviewer');
 
   // The session cookie, exactly as docs/dashboard.md specifies it.
   const cookie = (await context.cookies()).find((c) => c.name === '__Host-session');
@@ -302,6 +302,7 @@ test('sign in with GitLab: the round trip, the cookie, and only what the role al
 
   // Sign out ends it: the guard sends the next visit to the sign-in page.
   await page.goto('/');
+  await page.locator('.account-name').click();
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page).toHaveURL(/\/signin/);
   await page.goto('/');
@@ -381,6 +382,7 @@ test('a signed-in person adds an SSH key, sees a bad one refused, and removes th
   await page.goto('/signin');
   await page.getByRole('link', { name: 'Sign in with GitLab' }).click();
   await expect(page.getByRole('heading', { name: 'Datasets' })).toBeVisible();
+  await page.locator('.account-name').click();
   await page.getByRole('link', { name: 'SSH keys' }).click();
   await expect(page.getByRole('heading', { name: 'SSH keys' })).toBeVisible();
 
@@ -420,6 +422,7 @@ test('a personal token: made once, works as git-style credentials, and stops whe
   await page.goto('/signin');
   await page.getByRole('link', { name: 'Sign in with GitLab' }).click();
   await expect(page.getByRole('heading', { name: 'Datasets' })).toBeVisible();
+  await page.locator('.account-name').click();
   await page.getByRole('link', { name: 'Tokens' }).click();
   await expect(page.getByRole('heading', { name: 'Tokens' })).toBeVisible();
 
@@ -571,17 +574,46 @@ test('media opens as media: a sound plays with its waveform, a note reads as tex
   await expect(note.getByRole('region', { name: 'Text' })).toContainText('UTF-8 is fine');
 });
 
-test('accessibility: no serious or critical axe findings', async ({ page }) => {
+const axePages = ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/keys', '/tokens'];
+
+// Both themes: Daybreak as Playwright's default light scheme, Night flight
+// as the dark one. Each must pass on its own (docs/dashboard.md §3.4).
+for (const scheme of ['light', 'dark'] as const) {
+  test(`accessibility: no serious or critical axe findings (${scheme === 'light' ? 'Daybreak' : 'Night flight'})`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme: scheme });
+    await signIn(page);
+    for (const path of axePages) {
+      await page.goto(path);
+      await page.waitForLoadState('networkidle');
+      const results = await new AxeBuilder({ page }).analyze();
+      const bad = results.violations.filter(
+        (v) => v.impact === 'serious' || v.impact === 'critical',
+      );
+      expect(bad, `${path}: ${bad.map((v) => v.id).join(', ')}`).toEqual([]);
+    }
+  });
+}
+
+test('the theme switch pins a theme across pages and reloads, and System lets go', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'light' });
   await signIn(page);
-  for (const path of ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/keys', '/tokens']) {
-    await page.goto(path);
-    await page.waitForLoadState('networkidle');
-    const results = await new AxeBuilder({ page }).analyze();
-    const bad = results.violations.filter(
-      (v) => v.impact === 'serious' || v.impact === 'critical',
-    );
-    expect(bad, `${path}: ${bad.map((v) => v.id).join(', ')}`).toEqual([]);
-  }
+  const root = page.locator('html');
+  await expect(root).not.toHaveAttribute('data-theme', /.*/);
+  await page.getByRole('radio', { name: 'Theme: Night flight' }).click();
+  await expect(root).toHaveAttribute('data-theme', 'night');
+  await expect(page.getByRole('radio', { name: 'Theme: Night flight' })).toHaveAttribute('aria-checked', 'true');
+  const dark = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  expect(dark).toBe('rgb(11, 16, 32)');
+
+  // Pinned before the first paint of the next page.
+  await page.goto('/d/e2e/datasets/demo');
+  await expect(root).toHaveAttribute('data-theme', 'night');
+  await page.reload();
+  await expect(root).toHaveAttribute('data-theme', 'night');
+
+  await page.getByRole('radio', { name: 'Theme: follow the system' }).click();
+  await expect(root).not.toHaveAttribute('data-theme', /.*/);
+  expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(244, 247, 251)');
 });
 
 test('budget: first-load JS stays under 300 KB gzipped', () => {
