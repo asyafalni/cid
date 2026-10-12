@@ -703,8 +703,11 @@ async function thumbsFor(name: string, items: StateItem[]): Promise<{ hash: stri
   }
 }
 
-// The next page: fetched as the button scrolls into view, and a plain
-// button for keyboards and anyone who would rather click.
+// The next page: fetched while the button is still two screens below the
+// view, so a quick scroll finds the items already there instead of
+// waiting on the network at the end of them (docs/dashboard.md, gallery
+// scrolling: no blank tiles after 200 ms); and a plain button for
+// keyboards and anyone who would rather click.
 function MoreItems({
   shown,
   matched,
@@ -720,9 +723,12 @@ function MoreItems({
   useEffect(() => {
     const el = ref.current;
     if (!el || loading || typeof IntersectionObserver === 'undefined') return;
-    const watch = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) onMore();
-    });
+    const watch = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) onMore();
+      },
+      { rootMargin: '0px 0px 200% 0px' },
+    );
     watch.observe(el);
     return () => watch.disconnect();
   }, [loading, onMore]);

@@ -512,10 +512,10 @@ There is no Health tab yet. Per-file table statistics already exist (in the draw
 
 | Measure | Budget | Measured by |
 |---|---|---|
-| Overview page, first meaningful paint (p75, office network) | < 1.0 s | not yet measured |
-| Browse: first 60 thumbnails visible after filter change | < 700 ms at 1M items | `web/e2e/bench.spec.ts`, opt-in (`BENCH_DATASET`, a dataset seeded by `tests/bench/browse_1m.sh`); last run 0.30 s |
-| Gallery scrolling | 60 fps, no blank tiles after 200 ms | not yet measured |
-| Item drawer open | < 300 ms | not yet measured |
+| Overview page, first meaningful paint (p75, office network) | < 1.0 s | `web/e2e/bench.spec.ts`, opt-in (`BENCH_DATASET`, a dataset seeded by `tests/bench/browse_1m.sh`; `CID_BIN` for a ReleaseFast build): fresh load to the card, p75 42 ms quiet, 78 ms under load (local network) |
+| Browse: first 60 thumbnails visible after filter change | < 700 ms at 1M items | `web/e2e/bench.spec.ts`, opt-in (`BENCH_DATASET`, a dataset seeded by `tests/bench/browse_1m.sh`; `CID_BIN` for a ReleaseFast build): 0.30 s quiet; about 0.84 s with the machine under load (over budget; the server's page answer is most of it) |
+| Gallery scrolling | 60 fps, no blank tiles after 200 ms | `web/e2e/bench.spec.ts`, opt-in (`BENCH_DATASET`, a dataset seeded by `tests/bench/browse_1m.sh`; `CID_BIN` for a ReleaseFast build): 60 fps; quiet, no blank step (the next page is fetched two screens ahead); under load the end of the loaded items is reached before the next page arrives (over budget) |
+| Item drawer open | < 300 ms | `web/e2e/bench.spec.ts`, opt-in (`BENCH_DATASET`, a dataset seeded by `tests/bench/browse_1m.sh`; `CID_BIN` for a ReleaseFast build): p75 37 ms quiet, 100 ms under load |
 | Compare two releases, summary visible | < 2 s at 1M annotations | server side only, in `tests/bench/browse_1m.sh`: about 1.0 s the first time a pair is compared, 51 ms after; not yet measured in the browser |
 | JS bundle, first load | < 300 KB gzipped | `web/e2e/dashboard.spec.ts`, every e2e run |
 | Accessibility | WCAG 2.2 AA; full keyboard navigation | axe (serious and critical findings) on the main pages in `web/e2e/dashboard.spec.ts`, Daybreak only; full keyboard use not yet tested |

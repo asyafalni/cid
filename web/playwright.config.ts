@@ -23,7 +23,8 @@ export default defineConfig({
       reuseExistingServer: true,
     },
     {
-      command: `../zig-out/bin/cid admin serve --port ${port}`,
+      // CID_BIN picks another build (benchmarks run a ReleaseFast one).
+      command: `${process.env.CID_BIN ?? '../zig-out/bin/cid'} admin serve --port ${port}`,
       url: `http://127.0.0.1:${port}/v0/ping`,
       reuseExistingServer: true,
       env: {
