@@ -10,6 +10,7 @@ import { Home } from './pages/Home';
 import { DatasetOverview } from './pages/DatasetOverview';
 import { Keys } from './pages/Keys';
 import { Tokens } from './pages/Tokens';
+import { NotFound } from './pages/NotFound';
 import { getMe } from './api';
 
 // Signed in means the server says so: a GitLab session cookie or a pasted
@@ -125,7 +126,8 @@ const tokensRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([signInRoute, homeRoute, datasetRoute, keysRoute, tokensRoute]);
 
-export const router = createRouter({ routeTree });
+// Any other address: lost in the clouds, inside the shell.
+export const router = createRouter({ routeTree, defaultNotFoundComponent: () => <NotFound /> });
 
 declare module '@tanstack/react-router' {
   interface Register {

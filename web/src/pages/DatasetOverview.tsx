@@ -10,6 +10,7 @@ import { ReleasesTab } from './ReleasesTab';
 import { FilesTab } from './FilesTab';
 import { ActivityTab } from './ActivityTab';
 import { noteVisit } from '../recent';
+import { NotFound } from './NotFound';
 
 // The dataset page: the sky header (name, facts, the release tape), then
 // the tabs.
@@ -44,6 +45,9 @@ export function DatasetOverview() {
   if (query.isPending) return <p className="quiet">Reading {name}…</p>;
   if (query.isError) {
     const err = query.error;
+    if (err instanceof ApiError && err.status === 404) {
+      return <NotFound what={`No dataset is named ${name}, or it is not open to you.`} next={err.next} />;
+    }
     return (
       <div className="panel notice" role="alert">
         <p>{err instanceof ApiError ? err.message : 'The server did not answer.'}</p>

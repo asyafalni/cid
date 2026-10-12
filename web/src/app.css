@@ -312,12 +312,25 @@
 
 /* A release wears brass: border and text together, never color alone. */
 .release-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-family: var(--font-data);
   font-size: 0.8125rem;
   color: var(--brass);
   border: 1px solid color-mix(in srgb, var(--brass) 55%, var(--line));
   border-radius: var(--radius-chip);
   padding: 0 var(--space-2);
+}
+
+/* The release's pixel gem: 6 × 4 pixels drawn at 2 px each, crisp. */
+.release-tag::before {
+  content: '';
+  width: 12px;
+  height: 8px;
+  background: currentColor;
+  mask: url('/gem.svg') center / 12px 8px no-repeat;
+  image-rendering: pixelated;
 }
 
 .empty {
@@ -2055,4 +2068,78 @@
 .dataset > .tabs {
   margin-top: var(--space-2);
   overflow-x: auto;
+}
+
+/* --- lost in the clouds (404) --- */
+
+.lost {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: var(--space-12) var(--space-6);
+  border-radius: var(--radius-hero);
+  color: var(--on-sky);
+}
+
+.lost-airship {
+  width: 14rem;
+  margin-bottom: var(--space-6);
+  animation: lost-bob 6s ease-in-out infinite;
+}
+
+@keyframes lost-bob {
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+.lost h1 {
+  font-size: 2.5rem;
+  line-height: 1.1;
+  color: var(--on-sky);
+}
+
+.lost-what {
+  margin: var(--space-3) 0 0;
+  max-width: 36rem;
+  color: var(--on-sky);
+}
+
+.lost-next {
+  margin: var(--space-1) 0 0;
+  max-width: 36rem;
+  color: var(--on-sky-muted);
+  font-size: 0.875rem;
+}
+
+.lost-search {
+  display: flex;
+  gap: var(--space-2);
+  width: min(100%, 28rem);
+  margin-top: var(--space-6);
+}
+
+.lost-search input {
+  flex: 1;
+  min-width: 0;
+  height: 2.5rem;
+  padding: 0 var(--space-3);
+  font: inherit;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  border: 1px solid color-mix(in srgb, var(--on-sky) 25%, transparent);
+  border-radius: var(--radius-chip);
+}
+
+.lost-search .action {
+  margin-top: 0;
+  height: 2.5rem;
+}
+
+.lost-home {
+  margin-top: var(--space-4);
+  color: var(--on-sky);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }

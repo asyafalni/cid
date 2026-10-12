@@ -40,7 +40,7 @@ only).
 **Not built yet** (the spec below says so where it applies): the health badge, Health
 tab and Validator tiles; card completeness; most Browse filters,
 histograms and the List view; keyboard shortcuts beyond `g`/`t`; the "Show command"
-toggle; the `⌘K` palette; the 404 page; charts and gauges; PDF page
+toggle; the `⌘K` palette; charts and gauges; PDF page
 images (`vips`); viewing branches or pinning a commit; the SQL console; semantic
 search.
 
@@ -166,8 +166,11 @@ the tagline in its three places, and the reduced-motion switch. Items marked
 - **Ship's log.** The Activity page reads like telemetry: monospace timestamps, one
   event per line. *Planned:* filtering.
 - **Two small easter eggs, no more:** `cid --version` prints a small original ASCII
-  airship (built); *planned:* the 404 page is "Lost in the clouds" with an original
-  illustration and a search box (today an unknown address has no page of its own).
+  airship, and the 404 page is "Lost in the clouds": cid's airship over the sky, what
+  went wrong in plain words, a search box and the way home. An unknown address and a
+  dataset the server does not know (or will not show) both land there.
+- **Pixel touches, small and few:** the favicon is a pixel airship, and each release
+  badge carries a 6 × 4 pixel gem in brass. Nowhere else.
 - **Tagline.** In the product UI, "cid · Controlled Iterative Datasets" appears in
   exactly three places: the sign-in page under the wordmark, the footer (next to the
   version), and the line under the ASCII airship in `cid --version`. (The README and

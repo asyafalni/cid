@@ -121,6 +121,22 @@ test('the overview opens with a look inside: real items, their annotations, each
   await expect(page.getByText('1 commit, no releases yet.')).toBeVisible();
 });
 
+test('lost in the clouds: an unknown address or dataset says so and offers the way back', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/no/such/page');
+  await expect(page.getByRole('heading', { name: 'Lost in the clouds' })).toBeVisible();
+  await expect(page.getByText('There is no page at this address.')).toBeVisible();
+
+  await page.goto('/d/e2e/datasets/nope');
+  await expect(page.getByRole('heading', { name: 'Lost in the clouds' })).toBeVisible();
+  await expect(page.getByText(/No dataset is named e2e\/datasets\/nope/)).toBeVisible();
+  // The search on the page leads home, already searching.
+  await page.getByRole('main').getByLabel('Search datasets').fill('boxes');
+  await page.getByRole('main').getByRole('button', { name: 'Search' }).click();
+  await expect(page).toHaveURL(/\/\?q=boxes/);
+  await expect(page.getByRole('link', { name: 'e2e/datasets/boxes', exact: true })).toBeVisible();
+});
+
 test('keyboard: the tape is reachable and Enter pins', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo');
@@ -604,7 +620,7 @@ test('media opens as media: a sound plays with its waveform, a note reads as tex
   await expect(note.getByRole('region', { name: 'Text' })).toContainText('UTF-8 is fine');
 });
 
-const axePages = ['/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/keys', '/tokens'];
+const axePages = ['/no/such/page', '/d/e2e/datasets/nope', '/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/keys', '/tokens'];
 
 // Both themes: Daybreak as Playwright's default light scheme, Night flight
 // as the dark one. Each must pass on its own (docs/dashboard.md §3.4).
