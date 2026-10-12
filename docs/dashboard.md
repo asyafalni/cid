@@ -192,8 +192,8 @@ the tagline in its three places, and the reduced-motion switch. Items marked
   text stays quiet.
 - **Motion, airship-smooth:** 180–240 ms ease-out for transitions; focus glow fades in.
   With `prefers-reduced-motion`, all of it is off (built: a global switch that stops
-  every animation and transition). *Planned:* a very slow cloud drift on the release
-  hero. A "launch" animation for publishing a release waits on the parked decision to
+  every animation and transition). The home's cloud bank drifts very slowly; a slow
+  drift on the release hero is planned. A "launch" animation for publishing a release waits on the parked decision to
   make releases from the dashboard.
 - **Illustrations** (airships, gears, clouds, blueprints) are original, made in-house or
   commissioned.
@@ -242,8 +242,11 @@ are cid's own for now.
 ### 4.1 Datasets (home)
 - Cards: thumbnail mosaic (or a type tile for non-visual data), name, kind (file or
   annotated), file types, item and class counts, size, owners, restricted badge, star,
-  latest release, date of the last push. Built as rows rather than a grid (a manifest reads downward), each row the
-  card.
+  latest release, date of the last push. A grid of cards, each led by its mosaic edge
+  to edge; **List** (`?layout=list`) shows the same as compact rows.
+- The page opens on the sky: "Datasets" in Fraunces, the count, the search as the one
+  glass panel, cid's own airship line drawing, and a cloud bank that drifts one tile
+  in three minutes (still with reduced motion).
   The counts come from the head commit's `stats`: one SQL aggregate (items, bytes,
   types, splits, classes, newest policy), computed once per commit and kept on it, so
   the page costs one query however many people open it, at any dataset size. The

@@ -244,13 +244,22 @@ test('the command copied from "Use this dataset" works as pasted, subset and all
   expect(readFileSync(resolve(dir, 'boxes/labels/frames/street.txt'), 'utf8').trim().split('\n')).toHaveLength(1);
 });
 
-test('home: each dataset row is a card, and search reaches classes and types', async ({ page }) => {
+test('home: a card per dataset, the same as rows in List, and search reaches classes and types', async ({ page }) => {
   await signIn(page);
-  const demo = page.locator('.manifest-row', { has: page.getByRole('link', { name: 'e2e/datasets/demo', exact: true }) });
+  const demo = page.locator('.ds-card', { has: page.getByRole('link', { name: 'e2e/datasets/demo', exact: true }) });
   // The mosaic is the dataset's own finished previews; the facts line
   // agrees with the dataset card.
   await expect(demo.locator('.mosaic img')).toHaveCount(2);
   await expect(demo.getByText(/4 items · 5\.8 KB · /)).toBeVisible();
+
+  // List: the same facts as compact rows, and the layout is a link.
+  await page.getByRole('radio', { name: 'list' }).click();
+  await expect(page).toHaveURL(/layout=list/);
+  const row = page.locator('.manifest-row', { has: page.getByRole('link', { name: 'e2e/datasets/demo', exact: true }) });
+  await expect(row.locator('.mosaic img')).toHaveCount(2);
+  await expect(row.getByText(/4 items · 5\.8 KB · /)).toBeVisible();
+  await page.getByRole('radio', { name: 'cards' }).click();
+  await expect(page).not.toHaveURL(/layout=/);
 
   // A class name finds the dataset whose name never says it.
   await page.getByLabel('Search datasets').fill('person');
@@ -315,7 +324,7 @@ test('a signed-in person stars a dataset, finds it under Starred, and finds owne
   await expect(page.getByRole('heading', { name: 'Datasets' })).toBeVisible();
 
   // Owners are searchable by name: Olu maintains boxes.
-  const row = page.locator('.manifest-row', { has: page.getByRole('link', { name: 'e2e/datasets/boxes', exact: true }) });
+  const row = page.locator('.ds-card', { has: page.getByRole('link', { name: 'e2e/datasets/boxes', exact: true }) });
   await expect(row.getByText('owned by Olu Owner')).toBeVisible();
 
   const star = page.getByRole('button', { name: 'Star e2e/datasets/boxes' });
@@ -340,7 +349,7 @@ test('the server token cannot star: a star belongs to a person', async ({ page }
 test('restricted: blurred until a logged reveal, and the log is for owners', async ({ page }) => {
   await signIn(page); // the server token: an owner of everything
   // The home's card shows the blur, never the clear thumbnail.
-  const card = page.locator('.manifest-row', { has: page.getByRole('link', { name: 'e2e/datasets/faces', exact: true }) });
+  const card = page.locator('.ds-card', { has: page.getByRole('link', { name: 'e2e/datasets/faces', exact: true }) });
   await expect(card.locator('.mosaic img')).toHaveAttribute('src', /blur\.webp/);
 
   await page.goto('/d/e2e/datasets/faces?view=browse');

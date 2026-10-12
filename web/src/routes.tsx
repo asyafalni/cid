@@ -40,7 +40,16 @@ const homeRoute = createRoute({
   // The home's search and filters are a link too.
   validateSearch: (
     search: Record<string, unknown>,
-  ): { q?: string; kind?: 'files' | 'annotated'; type?: string; released?: 'yes' | 'no'; restricted?: 'yes' | 'no' } => ({
+  ): {
+    q?: string;
+    kind?: 'files' | 'annotated';
+    type?: string;
+    released?: 'yes' | 'no';
+    restricted?: 'yes' | 'no';
+    layout?: 'list';
+  } => ({
+    // Cards are the default, so only the list is spelled.
+    layout: search.layout === 'list' ? 'list' : undefined,
     q: typeof search.q === 'string' && search.q !== '' ? search.q : undefined,
     kind: search.kind === 'files' || search.kind === 'annotated' ? search.kind : undefined,
     type: typeof search.type === 'string' ? search.type : undefined,

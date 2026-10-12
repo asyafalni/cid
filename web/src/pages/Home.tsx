@@ -4,6 +4,7 @@ import { Link, useNavigate, useSearch } from '@tanstack/react-router';
 import { ApiError, getMe, listDatasets, setStar, type DatasetSummary } from '../api';
 import { humanBytes } from '../format';
 import { Thumb } from '../Thumb';
+import { Airship } from '../Airship';
 import { recentDatasets } from '../recent';
 
 type HomeSearch = {
@@ -12,13 +13,14 @@ type HomeSearch = {
   type?: string;
   released?: 'yes' | 'no';
   restricted?: 'yes' | 'no';
+  layout?: 'list';
 };
 
-// Datasets home (docs/dashboard.md §4.1): the fleet, one row per dataset.
-// Rows, not a card grid — a manifest reads downward — but each row is the
-// card: a mosaic of real previews (or type tiles for data that is not
-// visual), the kind, the file types, the size, the newest release and the
-// last activity. Search and filters live in the URL, like Browse's.
+// Datasets home (docs/dashboard.md §4.1): the fleet. A sky with the search
+// in it, then a card per dataset, led by a mosaic of real previews (or type
+// tiles for data that is not visual), with the kind, file types, size,
+// newest release and last activity; or the same as compact rows (List).
+// Search, filters and the layout live in the URL, like Browse's.
 export function Home() {
   const search = useSearch({ strict: false }) as HomeSearch;
   const navigate = useNavigate();
@@ -66,8 +68,9 @@ export function Home() {
   if (datasets.length === 0) {
     return (
       <div className="empty blueprint">
+        <Airship className="empty-airship" />
         <h2>No datasets yet</h2>
-        <p>Create the first one from a folder of files:</p>
+        <p>The hangar is empty. Create the first dataset from a folder of files:</p>
         <code className="chip">cid init cid@host:org/datasets/name --git &lt;git-url&gt;</code>
       </div>
     );
@@ -80,49 +83,70 @@ export function Home() {
   const byName = new Map(datasets.map((d) => [d.name, d]));
   const recent = recentDatasets().filter((n) => byName.has(n));
   const starred = datasets.filter((d) => d.starred);
+  const list = search.layout === 'list';
+
+  const star = (d: DatasetSummary) =>
+    person && (
+      <button
+        className={d.starred ? 'star star--on' : 'star'}
+        aria-pressed={d.starred}
+        aria-label={d.starred ? `Unstar ${d.name}` : `Star ${d.name}`}
+        onClick={() => toggleStar.mutate({ name: d.name, on: !d.starred })}
+      >
+        {d.starred ? '★' : '☆'}
+      </button>
+    );
 
   return (
-    <>
-      <header className="deck-head">
-        <h1>Datasets</h1>
-        <p className="quiet" aria-live="polite">
-          {filtered
-            ? `${shown.length} of ${datasets.length} datasets`
-            : `${datasets.length} ${datasets.length === 1 ? 'dataset' : 'datasets'} on this server`}
-        </p>
+    <div className="home">
+      <header className="home-hero sky-band">
+        <div className="home-clouds" aria-hidden="true" />
+        <Airship className="home-airship" />
+        <div className="home-hero-inner">
+          <h1>Datasets</h1>
+          <p className="home-count" aria-live="polite">
+            {filtered
+              ? `${shown.length} of ${datasets.length} datasets`
+              : `${datasets.length} ${datasets.length === 1 ? 'dataset' : 'datasets'} on this server`}
+          </p>
+          <input
+            type="search"
+            className="home-search"
+            placeholder="Search datasets"
+            aria-label="Search datasets"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+          />
+          <p className="home-hint">Names, classes, file types and owners.</p>
+        </div>
       </header>
 
-      {!filtered && starred.length > 0 && (
-        <nav className="recent" aria-label="Starred">
-          <span className="quiet">Starred</span>
-          {starred.map((d) => (
-            <Link key={d.name} to="/d/$" params={{ _splat: d.name }} className="chip data">
-              {d.name}
-            </Link>
-          ))}
-        </nav>
+      {!filtered && (starred.length > 0 || recent.length > 0) && (
+        <div className="home-shortcuts">
+          {starred.length > 0 && (
+            <nav className="recent" aria-label="Starred">
+              <span className="quiet">Starred</span>
+              {starred.map((d) => (
+                <Link key={d.name} to="/d/$" params={{ _splat: d.name }} className="chip data">
+                  {d.name}
+                </Link>
+              ))}
+            </nav>
+          )}
+          {recent.length > 0 && (
+            <nav className="recent" aria-label="Recently viewed">
+              <span className="quiet">Recently viewed</span>
+              {recent.map((n) => (
+                <Link key={n} to="/d/$" params={{ _splat: n }} className="chip data">
+                  {n}
+                </Link>
+              ))}
+            </nav>
+          )}
+        </div>
       )}
 
-      {!filtered && recent.length > 0 && (
-        <nav className="recent" aria-label="Recently viewed">
-          <span className="quiet">Recently viewed</span>
-          {recent.map((n) => (
-            <Link key={n} to="/d/$" params={{ _splat: n }} className="chip data">
-              {n}
-            </Link>
-          ))}
-        </nav>
-      )}
-
-      <div className="filter-bar" role="search">
-        <input
-          type="search"
-          className="filter-q data"
-          placeholder="Search datasets"
-          aria-label="Search datasets"
-          value={typed}
-          onChange={(e) => setTyped(e.target.value)}
-        />
+      <div className="filter-bar home-filters" role="search" aria-label="Filter datasets">
         <Picker
           label="kind"
           value={search.kind}
@@ -168,14 +192,27 @@ export function Home() {
             Clear filters
           </button>
         )}
+        <div className="format-picker home-layout" role="radiogroup" aria-label="Layout">
+          {(['cards', 'list'] as const).map((m) => (
+            <button
+              key={m}
+              role="radio"
+              aria-checked={(m === 'list') === list}
+              className={(m === 'list') === list ? 'format on' : 'format'}
+              onClick={() => setSearch({ layout: m === 'list' ? 'list' : undefined })}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
       </div>
 
       {shown.length === 0 ? (
         <div className="empty blueprint">
           <h2>No dataset matches</h2>
-          <p className="quiet">Search looks at names, classes and file types. Clear the filters to see every dataset.</p>
+          <p className="quiet">Search looks at names, classes, file types and owners. Clear the filters to see every dataset.</p>
         </div>
-      ) : (
+      ) : list ? (
         <ul className="manifest">
           {shown.map((d) => (
             <li key={d.name} className="manifest-row panel">
@@ -186,39 +223,72 @@ export function Home() {
                 </Link>
                 <span className="manifest-kind">{d.kind === 'annotated' ? 'annotated' : 'files'}</span>
                 {d.restricted && <span className="chip restricted-badge">restricted</span>}
-                {d.owners.length > 0 && (
-                  <span className="quiet manifest-owners">owned by {d.owners.join(', ')}</span>
-                )}
+                {d.owners.length > 0 && <span className="quiet manifest-owners">owned by {d.owners.join(', ')}</span>}
                 <p className="manifest-facts quiet data">
-                  {d.items.toLocaleString()} {d.items === 1 ? 'item' : 'items'} · {humanBytes(d.bytes)}
-                  {d.types.length > 0 && <> · {d.types.slice(0, 4).map((t) => t.ext).join(' ')}</>}
-                  {d.classes.length > 0 && (
-                    <> · {d.classes.length} {d.classes.length === 1 ? 'class' : 'classes'}</>
-                  )}
+                  <Facts d={d} />
                 </p>
               </div>
               <div className="manifest-side">
-                {person && (
-                  <button
-                    className={d.starred ? 'star star--on' : 'star'}
-                    aria-pressed={d.starred}
-                    aria-label={d.starred ? `Unstar ${d.name}` : `Star ${d.name}`}
-                    onClick={() => toggleStar.mutate({ name: d.name, on: !d.starred })}
-                  >
-                    {d.starred ? '★' : '☆'}
-                  </button>
-                )}
-                {d.latest_release ? (
-                  <span className="release-tag">{d.latest_release}</span>
-                ) : (
-                  <span className="quiet">no releases yet</span>
-                )}
-                {d.last_push && <span className="quiet data">{d.last_push.slice(0, 10)}</span>}
+                {star(d)}
+                <Release d={d} />
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <ul className="ds-cards">
+          {shown.map((d) => (
+            <li key={d.name} className="ds-card panel">
+              <Mosaic dataset={d} />
+              <div className="ds-card-body">
+                <div className="ds-card-title">
+                  {/* The whole card is the link's target area (::after). */}
+                  <Link to="/d/$" params={{ _splat: d.name }} className="ds-card-link data">
+                    {d.name}
+                  </Link>
+                  {star(d)}
+                </div>
+                <p className="ds-card-kind">
+                  {d.kind === 'annotated' ? 'annotated' : 'files'}
+                  {d.restricted && <span className="chip restricted-badge">restricted</span>}
+                  {d.owners.length > 0 && <span className="quiet"> · owned by {d.owners.join(', ')}</span>}
+                </p>
+                <p className="ds-card-facts data">
+                  <Facts d={d} />
+                </p>
+                <div className="ds-card-foot">
+                  <Release d={d} />
+                </div>
               </div>
             </li>
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+function Facts({ d }: { d: DatasetSummary }) {
+  return (
+    <>
+      {d.items.toLocaleString()} {d.items === 1 ? 'item' : 'items'} · {humanBytes(d.bytes)}
+      {d.types.length > 0 && <> · {d.types.slice(0, 4).map((t) => t.ext).join(' ')}</>}
+      {d.classes.length > 0 && (
+        <> · {d.classes.length} {d.classes.length === 1 ? 'class' : 'classes'}</>
+      )}
+    </>
+  );
+}
+
+function Release({ d }: { d: DatasetSummary }) {
+  return (
+    <>
+      {d.latest_release ? (
+        <span className="release-tag">{d.latest_release}</span>
+      ) : (
+        <span className="quiet">no releases yet</span>
+      )}
+      {d.last_push && <span className="quiet data">{d.last_push.slice(0, 10)}</span>}
     </>
   );
 }

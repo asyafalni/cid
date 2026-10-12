@@ -158,9 +158,11 @@
 }
 
 /* Content keeps the measure, centred; a dataset's sky band runs edge to edge. */
-.deck > :not(.dataset),
+.deck > :not(.dataset, .home),
 .dataset > :not(.dataset-head),
-.dataset-head-inner {
+.dataset-head-inner,
+.home > :not(.home-hero),
+.home-hero-inner {
   width: min(100% - 2 * var(--gutter), var(--measure));
   margin-left: max(var(--gutter), calc((100% - var(--measure)) / 2));
 }
@@ -1683,4 +1685,256 @@
 
 .token-expired {
   color: var(--warn);
+}
+
+/* --- home: the sky with the search in it, then the fleet --- */
+
+.home-hero {
+  position: relative;
+  overflow: hidden;
+  margin-top: calc(-1 * var(--space-8));
+  margin-bottom: var(--space-6);
+  padding: var(--space-12) 0;
+  color: var(--on-sky);
+}
+
+.home-hero-inner {
+  position: relative;
+}
+
+.home-hero h1 {
+  font-size: 2.75rem;
+  line-height: 1.1;
+  font-weight: 600;
+  color: var(--on-sky);
+}
+
+.home-count {
+  margin: var(--space-2) 0 var(--space-6);
+  color: var(--on-sky-muted);
+}
+
+/* Glass over sky: the one translucent panel, with a luminous top edge. */
+.home-search {
+  display: block;
+  width: min(100%, 36rem);
+  height: 3rem;
+  padding: 0 var(--space-4);
+  font: inherit;
+  font-size: 1rem;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--on-sky) 25%, transparent);
+  border-top-color: color-mix(in srgb, var(--aether) 55%, transparent);
+  border-radius: var(--radius-panel);
+  backdrop-filter: blur(6px);
+}
+
+.home-search::placeholder {
+  color: var(--text-muted);
+}
+
+.home-search:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.home-hint {
+  margin: var(--space-2) 0 0;
+  font-size: 0.8125rem;
+  color: var(--on-sky-muted);
+}
+
+.home-airship {
+  position: absolute;
+  right: max(var(--gutter), calc((100% - var(--measure)) / 2));
+  top: 50%;
+  width: 18rem;
+  transform: translateY(-50%);
+  color: var(--on-sky);
+  opacity: 0.9;
+}
+
+/* A cloud bank at a fixed size, repeated across the sky; it drifts one
+   tile's width in three minutes, so the loop never shows a seam. */
+.home-clouds {
+  position: absolute;
+  inset: auto 0 0;
+  height: 10rem;
+  background: var(--on-sky);
+  opacity: 0.14;
+  mask: url('/clouds.svg') repeat-x 0 100% / 45rem 10rem;
+  animation: cloud-drift 180s linear infinite;
+}
+
+@keyframes cloud-drift {
+  to {
+    mask-position: -45rem 100%;
+  }
+}
+
+.home-shortcuts {
+  margin-bottom: var(--space-2);
+}
+
+.home-filters {
+  margin-bottom: var(--space-6);
+}
+
+.home-layout {
+  margin-left: auto;
+}
+
+.ds-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+  gap: var(--space-4);
+}
+
+.ds-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ds-card:hover {
+  border-color: color-mix(in srgb, var(--aether) 45%, var(--line));
+}
+
+.ds-card:focus-within {
+  box-shadow: var(--focus-ring);
+}
+
+/* The card's mosaic: a real window onto the data, edge to edge. */
+.ds-card .mosaic {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 10;
+  border-radius: 0;
+}
+
+.ds-card .mosaic-type {
+  font-size: 0.875rem;
+}
+
+.ds-card-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+
+.ds-card-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.ds-card-link {
+  font-size: 0.9375rem;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.ds-card-link:hover {
+  text-decoration: none;
+}
+
+.ds-card-link:focus-visible {
+  box-shadow: none;
+}
+
+.ds-card-link::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+
+/* Above the link's target area, so it stays its own button. */
+.ds-card .star {
+  position: relative;
+  z-index: 1;
+}
+
+.ds-card-kind {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.ds-card-kind .restricted-badge {
+  margin-left: var(--space-2);
+}
+
+.ds-card-facts {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.ds-card-foot {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin-top: auto;
+  padding-top: var(--space-3);
+  font-size: 0.8125rem;
+}
+
+.empty-airship {
+  width: 10rem;
+  color: var(--text-muted);
+  margin-bottom: var(--space-4);
+}
+
+@media (max-width: 640px) {
+  .home-hero {
+    padding: var(--space-8) 0;
+  }
+
+  .home-hero h1 {
+    font-size: 2rem;
+  }
+
+  .home-airship {
+    display: none;
+  }
+
+  .ds-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .home-filters {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .home-filters .facet {
+    display: grid;
+    gap: var(--space-1);
+  }
+
+  .home-filters .facet select {
+    width: 100%;
+  }
+
+  .home-layout {
+    grid-column: 1 / -1;
+    margin-left: 0;
+    justify-self: start;
+  }
+}
+
+.home-layout {
+  margin-bottom: 0;
+}
+
+.home-layout .format {
+  font-family: var(--font-ui);
 }

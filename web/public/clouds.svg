@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="160" viewBox="0 0 720 160">
+  <!-- cid's cloud bank: a mask tile for the home's sky (app.css .home-clouds). Shapes stay inside the edges, so it repeats without a seam. -->
+  <path d="M20 160c0-22 18-38 40-36 8-26 34-42 62-36 16-22 52-26 74-6 26-6 50 12 52 38 18 2 30 18 28 40z" />
+  <path d="M330 160c2-16 16-26 32-24 6-18 26-28 46-22 12-14 36-14 48 2 20-2 34 14 32 32 12 2 20 8 20 12z" opacity="0.7" />
+  <path d="M520 160c0-20 16-34 36-32 10-30 46-44 76-30 22-12 50 2 54 26 16 4 26 20 24 36z" />
+</svg>
