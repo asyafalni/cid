@@ -34,6 +34,34 @@ token from the dashboard, in an https address: `cid clone https://ci:TOKEN@host/
 If you know git, you already know cid: `add`, `commit`, `push`, `pull`, `checkout`,
 `status`, `log`, `diff` — same verbs, same meaning.
 
+## The dashboard
+
+The cid server also serves a web dashboard for browsing, comparing and downloading
+datasets. It shows media as media and every change between two versions, and every view
+is a link. It changes no data. Design: [`docs/dashboard.md`](docs/dashboard.md).
+
+**Compare two releases of an annotated dataset:** the moved box, old (dashed) beside new.
+
+![Comparing two releases: a person box moved between v1.0.0 and v1.1.0](docs/screenshots/compare-annotations.png)
+
+**Compare a table:** rows added and removed, computed on the server.
+
+![Comparing two releases of a CSV file: 2 rows added, 2 removed](docs/screenshots/compare-table-rows.png)
+
+**Browse a release**, with an item open: its size, dimensions, hash, history and download.
+
+| Night flight | Daybreak |
+|---|---|
+| ![Browsing a file dataset in the dark theme](docs/screenshots/browse-night.png) | ![Browsing a file dataset in the light theme](docs/screenshots/browse-daybreak.png) |
+
+**Overview:** what the dataset holds, and the exact `cid clone` command for any format or subset.
+
+![A dataset's overview: its card and the clone command](docs/screenshots/overview.png)
+
+**Sign-in:** with GitLab, or with the server's token when GitLab sign-in is not set up.
+
+![The sign-in page](docs/screenshots/signin.png)
+
 ## Status
 
 **Pre-release.** The schema and protocols still change freely; the repo goes public at
