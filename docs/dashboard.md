@@ -446,7 +446,11 @@ There is no Health tab yet. Per-file table statistics already exist (in the draw
 - **Browse API** (in `cid admin serve`, `GET …/-/browse?commit=…`): one page of a
   version — items with their annotations, total and matched counts, the
   split/class/type facets (each counted against the other filters), the class counts,
-  a cursor, and the open item. The server answers with DuckDB from the version's
+  a cursor, and the open item. `facets=0` leaves out the counts and facets, about
+  half the work at 1M items: the dashboard asks for them with a filter's first page
+  only, not for its next pages, "A look inside" or an item opened from a link. The
+  server runs these queries one at a time, the rest waiting their turn in order, so
+  people browsing at once wait rather than fail. The server answers with DuckDB from the version's
   browse index, two Parquet files (items in path order; annotations by item, never
   nested into item rows). A release's index is written in the same pass as its
   manifest. A new branch head or release is prepared ahead of its first visitor by
@@ -523,8 +527,8 @@ There is no Health tab yet. Per-file table statistics already exist (in the draw
 | Measure | Budget | Measured by |
 |---|---|---|
 | Overview page, first meaningful paint (p75, office network) | < 1.0 s | `web/e2e/bench.spec.ts`, opt-in (`BENCH_DATASET`, a dataset seeded by `tests/bench/browse_1m.sh`; `CID_BIN` for a ReleaseFast build): fresh load to the card, p75 42 ms quiet, 78 ms under load (local network) |
-| Browse: first 60 thumbnails visible after filter change | < 700 ms at 1M items | `web/e2e/bench.spec.ts`, opt-in (`BENCH_DATASET`, a dataset seeded by `tests/bench/browse_1m.sh`; `CID_BIN` for a ReleaseFast build): 0.30 s quiet; about 0.84 s with the machine under load (over budget; the server's page answer is most of it) |
-| Gallery scrolling | 60 fps, no blank tiles after 200 ms | `web/e2e/bench.spec.ts`, opt-in (`BENCH_DATASET`, a dataset seeded by `tests/bench/browse_1m.sh`; `CID_BIN` for a ReleaseFast build): 60 fps; quiet, no blank step (the next page is fetched two screens ahead); under load the end of the loaded items is reached before the next page arrives (over budget) |
+| Browse: first 60 thumbnails visible after filter change | < 700 ms at 1M items | `web/e2e/bench.spec.ts`, opt-in (`BENCH_DATASET`, a dataset seeded by `tests/bench/browse_1m.sh`; `CID_BIN` for a ReleaseFast build): timed in the page, frame by frame, four changes back to back: 0.39–0.59 s with the machine under load (2026-10-12). Earlier figures of about 0.84 s were partly Playwright's own polling (it looks at 0, 20, 70, 170, 270 ms and then every 500 ms) |
+| Gallery scrolling | 60 fps, no blank tiles after 200 ms | `web/e2e/bench.spec.ts`, opt-in (`BENCH_DATASET`, a dataset seeded by `tests/bench/browse_1m.sh`; `CID_BIN` for a ReleaseFast build): 60 fps, no blank step, under load as well since a next page leaves out the counts (2026-10-12; the next page is fetched two screens ahead) |
 | Item drawer open | < 300 ms | `web/e2e/bench.spec.ts`, opt-in (`BENCH_DATASET`, a dataset seeded by `tests/bench/browse_1m.sh`; `CID_BIN` for a ReleaseFast build): p75 37 ms quiet, 100 ms under load |
 | Compare two releases, summary visible | < 2 s at 1M annotations | server side only, in `tests/bench/browse_1m.sh`: about 1.0 s the first time a pair is compared, 51 ms after; not yet measured in the browser |
 | JS bundle, first load | < 300 KB gzipped | `web/e2e/dashboard.spec.ts`, every e2e run |

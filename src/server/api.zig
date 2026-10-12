@@ -66,6 +66,9 @@ pub const Deps = struct {
     /// Index builds and row diffs, one at a time each, use a one-thread
     /// database of their own. Null in tests and admin commands.
     duck: ?*duck.Db = null,
+    /// Lets `browse.at_once` queries into `duck` at a time (browseQuery);
+    /// set with it by `cid admin serve`, null where queries run in place.
+    browse_gate: ?*nilo.Gate = null,
     /// Files in flight: a release's manifest on its way to storage, the two
     /// tables a row diff compares (DuckDB is confined to it then).
     work_dir: []const u8 = "/tmp/cid-work",
@@ -100,6 +103,17 @@ pub const Deps = struct {
 fn duckFor(arena: std.mem.Allocator, deps: *Deps, dir: []const u8) HandleError!duck.Db {
     if (deps.duck) |shared| return shared.connect() catch error.Storage;
     return duck.Db.open(arena, .{ .allowed_dir = dir, .threads = browse_mod.query_threads }) catch error.Storage;
+}
+
+/// A query on the server's shared browse database, `browse.at_once` at a
+/// time: the rest wait their turn, in order. A query at 1M items takes a
+/// good part of the database's one memory ceiling, so four at once ran out
+/// of it and answered 500; each already has both of DuckDB's threads, so
+/// running them together is never faster.
+fn browseQuery(deps: *Deps, comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) HandleError!@typeInfo(@typeInfo(@TypeOf(func)).@"fn".return_type.?).error_union.payload {
+    if (deps.browse_gate) |gate| gate.enter() catch return error.Storage; // the request went away
+    defer if (deps.browse_gate) |gate| gate.leave();
+    return offload(deps, func, args) catch |err| duckErr(err);
 }
 
 /// Runs `func` on the server's blocking pool when serving, in place
@@ -752,13 +766,14 @@ fn browse(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, ro
         .after = try param(arena, route, "after"),
         .item = try param(arena, route, "item"),
         .limit = try limitOf(route, browse_mod.default_limit),
+        .facets = !std.mem.eql(u8, (try param(arena, route, "facets")) orelse "1", "0"),
     };
     if (q.q) |text| if (text.len == 0) {
         q.q = null;
     };
     var db = try duckFor(arena, deps, index.dir);
     defer db.close();
-    const answer = offload(deps, browse_mod.queryIndex, .{ arena, &db, index.files, q }) catch |err| return duckErr(err);
+    const answer = try browseQuery(deps, browse_mod.queryIndex, .{ arena, &db, index.files, q });
     return json(arena, .ok, try withMedia(arena, deps, scope, answer));
 }
 
@@ -773,7 +788,7 @@ fn browseSize(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset
     const classes = try paramAll(arena, route, "class");
     var db = try duckFor(arena, deps, index.dir);
     defer db.close();
-    const size = offload(deps, browse_mod.subsetSize, .{ arena, &db, index.files, splits, classes }) catch |err| return duckErr(err);
+    const size = try browseQuery(deps, browse_mod.subsetSize, .{ arena, &db, index.files, splits, classes });
     return json(arena, .ok, size);
 }
 
@@ -788,7 +803,7 @@ fn browseDir(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset,
     if (prefix.len > 0 and prefix[prefix.len - 1] != '/') return error.BadRequest;
     var db = try duckFor(arena, deps, index.dir);
     defer db.close();
-    const listing = offload(deps, browse_mod.listDir, .{ arena, &db, index.files, prefix, try param(arena, route, "after"), try limitOf(route, browse_mod.max_limit) }) catch |err| return duckErr(err);
+    const listing = try browseQuery(deps, browse_mod.listDir, .{ arena, &db, index.files, prefix, try param(arena, route, "after"), try limitOf(route, browse_mod.max_limit) });
     return json(arena, .ok, listing);
 }
 
@@ -807,7 +822,7 @@ fn browseCompare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Data
         return errorResponse(arena, .service_unavailable, "the server is indexing another version", "Reload in a moment.");
     var db = try duckFor(arena, deps, a.dir);
     defer db.close();
-    var page = offload(deps, browse_mod.comparePage, .{ arena, &db, a.files, b.files, pair, try param(arena, route, "after"), try limitOf(route, browse_mod.max_limit) }) catch |err| return duckErr(err);
+    var page = try browseQuery(deps, browse_mod.comparePage, .{ arena, &db, a.files, b.files, pair, try param(arena, route, "after"), try limitOf(route, browse_mod.max_limit) });
     // Dimensions, as everywhere: read now, never frozen into an index.
     var hashes: std.ArrayList([]const u8) = .empty;
     for (page.visual) |v| {
@@ -2168,7 +2183,7 @@ fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, p
     const summary = blk: {
         var db = try duckFor(arena, deps, ia.dir);
         defer db.close();
-        break :blk offload(deps, browse_mod.compareLines, .{ arena, &db, d, lines }) catch |err| return duckErr(err);
+        break :blk try browseQuery(deps, browse_mod.compareLines, .{ arena, &db, d, lines });
     };
     const path = try std.fmt.allocPrint(arena, "{s}/{s}-{s}.diff.gz", .{ deps.work_dir, a, b });
     const gz = try GzFile.open(arena, deps, path);

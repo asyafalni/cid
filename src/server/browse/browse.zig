@@ -4,7 +4,8 @@
 //! over them:
 //!
 //!   page        one page of items with their annotations, the counts, the
-//!               facets (each counted against every *other* filter), a cursor
+//!               facets (each counted against every *other* filter; left
+//!               out on request), a cursor
 //!   size        how many items and bytes a subset (splits × classes) holds
 //!   dir         one folder's subfolders (counted) and files (paged)
 //!   compare     what changed between two versions: items and annotations,
@@ -35,6 +36,11 @@ pub const Query = struct {
     /// The open item's path, answered beside the page (it may be on no
     /// page loaded yet: a shared link opens straight onto it).
     item: ?[]const u8 = null,
+    /// The counts and facets, over every item. False (`facets=0`) for a
+    /// caller that already has them, or does not show them: a next page,
+    /// a sample of items, an item opened from a link. The answer then
+    /// carries zeros and empty lists, at half the cost at 1M items.
+    facets: bool = true,
 };
 
 pub const Ann = struct {
@@ -82,6 +88,11 @@ pub const Error = error{ OutOfMemory, QueryFailed, OpenFailed, WriteFailed };
 /// DuckDB threads for one browse query: two halve an unfiltered page at
 /// 1M items (0.48 s to 0.27 s); index builds keep to one.
 pub const query_threads = 2;
+/// How many browse queries run at once in the server's shared database
+/// (api.browseQuery). One, with both its threads: at 1M items four at once
+/// ran out of its memory ceiling, and two together took the server from
+/// about 330 to 500 MB for no more pages a second.
+pub const at_once = 1;
 
 /// What one place in the dashboard calls "the answer": facets ordered,
 /// active filters kept listed.
@@ -198,6 +209,23 @@ fn quote(arena: std.mem.Allocator, path: []const u8) Error![]const u8 {
     return out.items;
 }
 
+/// A page's counts and facets, over every item of the version (`{0s}` is
+/// its items file): most of a page's cost at 1M items.
+const counts_sql =
+    \\'total', (SELECT count(*) FROM m),
+    \\  'matched', (SELECT count(*) FROM sel),
+    \\  'split', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
+    \\      FROM (SELECT coalesce(split, '') AS v, count(*) AS n FROM m WHERE fq AND fc AND ft GROUP BY 1)),
+    \\  'class', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
+    \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(class_set) AS v FROM m WHERE fq AND fs AND ft) GROUP BY 1)),
+    \\  'type', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
+    \\      FROM (SELECT ext AS v, count(*) AS n FROM m WHERE fq AND fs AND fc GROUP BY 1)),
+    \\  'classes', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
+    \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(classes) AS v FROM read_parquet('{0s}')) GROUP BY 1))
+;
+/// The same fields, left out (Query.facets false).
+const no_counts_sql = "'total', 0, 'matched', 0, 'split', '[]'::JSON, 'class', '[]'::JSON, 'type', '[]'::JSON, 'classes', '[]'::JSON";
+
 /// The contract, answered from the index (inside the folder `db` is
 /// confined to). Every request value is a bound parameter.
 pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query) Error!Answer {
@@ -225,25 +253,15 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         \\      'geometry', geometry, 'attrs', attrs, 'author', author, 'policy_ver', policy_ver) ORDER BY id)) AS j
         \\  FROM read_parquet('{1s}')
         \\  WHERE item_id IN (SELECT item_id FROM whole UNION ALL SELECT item_id FROM opened) GROUP BY item_id)
-        \\SELECT json_object(
-        \\  'total', (SELECT count(*) FROM m),
-        \\  'matched', (SELECT count(*) FROM sel),
+        \\SELECT json_object({2s},
         \\  'items', (SELECT coalesce(to_json(list(json_object('path', w.path, 'hash', w.hash, 'size', w.size, 'split', w.split,
         \\      'item_id', w.item_id, 'annotations', coalesce(b.j, '[]'::JSON)) ORDER BY w.path)), '[]'::JSON)
         \\      FROM whole w LEFT JOIN boxes b USING (item_id)),
         \\  'next', (SELECT CASE WHEN n = $6 AND EXISTS (SELECT 1 FROM sel WHERE sel.path > last.p) THEN p END FROM last),
         \\  'open', (SELECT json_object('path', o.path, 'hash', o.hash, 'size', o.size, 'split', o.split,
-        \\      'item_id', o.item_id, 'annotations', coalesce(b.j, '[]'::JSON)) FROM opened o LEFT JOIN boxes b USING (item_id)),
-        \\  'split', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
-        \\      FROM (SELECT coalesce(split, '') AS v, count(*) AS n FROM m WHERE fq AND fc AND ft GROUP BY 1)),
-        \\  'class', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
-        \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(class_set) AS v FROM m WHERE fq AND fs AND ft) GROUP BY 1)),
-        \\  'type', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
-        \\      FROM (SELECT ext AS v, count(*) AS n FROM m WHERE fq AND fs AND fc GROUP BY 1)),
-        \\  'classes', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
-        \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(classes) AS v FROM read_parquet('{0s}')) GROUP BY 1))
+        \\      'item_id', o.item_id, 'annotations', coalesce(b.j, '[]'::JSON)) FROM opened o LEFT JOIN boxes b USING (item_id))
         \\)::VARCHAR
-    , .{ items, anns });
+    , .{ items, anns, if (q.facets) try std.fmt.allocPrint(arena, counts_sql, .{items}) else no_counts_sql });
 
     const text = (try db.scalarTextArgs(arena, sql, &.{
         .{ .text = q.q },
@@ -575,6 +593,16 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
         after = page.next orelse break;
     }
     try std.testing.expectEqual(@as(usize, 4), seen);
+    // Without facets: the same page, items, cursor and open item, but no
+    // counts (a next page, a sample, an item opened from a link).
+    const lean = try queryIndex(arena, &db, v1, .{ .limit = 3, .item = "README", .facets = false });
+    try std.testing.expectEqual(@as(usize, 3), lean.items.len);
+    try std.testing.expectEqualStrings(all.items[0].path, lean.items[0].path);
+    try std.testing.expectEqual(all.items[0].annotations.len, lean.items[0].annotations.len);
+    try std.testing.expect(lean.next != null);
+    try std.testing.expectEqualStrings("README", lean.open.?.path);
+    try std.testing.expectEqual(@as(u64, 0), lean.total);
+    try std.testing.expectEqual(@as(usize, 0), lean.facets.split.len + lean.facets.class.len + lean.facets.type.len + lean.classes.len);
     // The open item comes with any page, whatever the filters.
     const open = try queryIndex(arena, &db, v1, .{ .split = "val", .item = "README" });
     try std.testing.expectEqualStrings("README", open.open.?.path);

@@ -35,7 +35,9 @@ test('filter change to the first 60 thumbnails, at the bench dataset', async ({ 
   await signIn(page);
 
   await page.goto(`/d/${dataset}?view=browse&release=v1`);
-  const tiles = page.locator('.tile img');
+  // A tile's picture, or its "no preview" when the picture fails (the
+  // seeded items have no previews in storage): either is the tile drawn.
+  const tiles = page.locator('.tile :is(img, .thumb-missing)');
   await expect(tiles.nth(59)).toBeAttached({ timeout: 60_000 });
 
   // Each filter change, timed from the choice to the 60th thumbnail in the
@@ -47,12 +49,27 @@ test('filter change to the first 60 thumbnails, at the bench dataset', async ({ 
     ['Filter by split', 'test'],
     ['Filter by class', 'car'],
   ] as const) {
-    const before = await page.locator('.browse-bar [aria-live]').textContent();
-    const start = Date.now();
+    // Timed in the page, checked every frame: Playwright's own waiting
+    // looks at 0, 20, 70, 170 and 270 ms, then every 500 ms, so a tile
+    // drawn at 280 ms used to be counted at about 800. A filter change
+    // empties the gallery first, so the 60 counted are the new results.
+    const drawn = page.evaluate(
+      () =>
+        new Promise<number>((resolve) => {
+          const count = () => document.querySelectorAll('.tile :is(img, .thumb-missing)').length;
+          const start = performance.now();
+          let emptied = false;
+          const check = () => {
+            if (!emptied) emptied = count() === 0;
+            if (emptied && count() >= 60) resolve(performance.now() - start);
+            else requestAnimationFrame(check);
+          };
+          requestAnimationFrame(check);
+        }),
+    );
     await page.getByLabel(label).selectOption(value);
-    await expect(page.locator('.browse-bar [aria-live]')).not.toHaveText(before ?? '');
-    await expect(tiles.nth(59)).toBeAttached();
-    timings[`${label} = ${value}`] = Date.now() - start;
+    const ms = Math.round(await drawn);
+    timings[`${label} = ${value}`] = ms;
   }
   console.log('browse filter → 60 thumbnails (ms):', JSON.stringify(timings));
   for (const [what, ms] of Object.entries(timings)) {

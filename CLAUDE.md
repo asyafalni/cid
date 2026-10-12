@@ -322,8 +322,10 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   libduckdb is a pinned dependency, linked dynamically and installed beside the binary.
   `cid admin serve` opens **one** database for browse queries, confined to its browse
   folder (`CID_BROWSE_DIR`) with a locked configuration, two threads and one memory
-  ceiling; every query takes a connection to it, so their memory is bounded however
-  many run at once. Index builds and row diffs run one at a time each, in a one-thread
+  ceiling. Its queries run one at a time, each with both threads, the rest waiting
+  their turn in order (a `nilo.Gate`, `api.browseQuery`): at 1M items four at once
+  ran out of the ceiling and answered 500, and two at once took the server from
+  about 330 to 500 MB for no more pages a second. Index builds and row diffs run one at a time each, in a one-thread
   database of their own (one thread keeps a 1M-item conversion near 250 MB, two near
   600 MB), in `CID_WORK_DIR` / the browse folder. Long calls go to nilo's blocking
   pool (`nilo.blocking`, its ADR 013) so no request thread waits on them. The preview
@@ -348,8 +350,11 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   release 33 s, with its change counts (only the paths and annotations written
   since the release before are compared); a new head prepared in the background in
   about 60 s, after which its overview, items file and default export answer in
-  1–5 ms; browse pages 0.20–0.37 s; filter change to 60 thumbnails in the browser
-  0.30 s; subset size 53 ms; a folder 27–129 ms; compare 1.0 s the first time a pair
+  1–5 ms; browse pages 0.20–0.37 s (0.19–0.27 s on 2026-10-12, with each item's
+  distinct classes in the index; a next page, which leaves out the counts and
+  facets, about half that); eight pages asked at once all answered, the last in
+  1.1–2.0 s, server memory under 340 MB (2026-10-12); filter change to 60 thumbnails in
+  the browser 0.30 s, 0.39–0.59 s four back to back under load; subset size 53 ms; a folder 27–129 ms; compare 1.0 s the first time a pair
   is compared and 51 ms after (the
   pair's diff is kept beside the indexes, and a release's diff with the release before
   it is prepared in the background); `cid diff` 0.43 s, with a 19 MB client.

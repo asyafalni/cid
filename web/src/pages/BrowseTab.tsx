@@ -94,7 +94,8 @@ export function BrowseTab({
   const pages = useInfiniteQuery({
     queryKey: ['browse', name, commit, query],
     queryFn: async ({ pageParam }) => {
-      const page = await getBrowse(name, commit!, { ...query, after: pageParam, limit: pageSize });
+      // Counts and facets come with the first page only.
+      const page = await getBrowse(name, commit!, { ...query, after: pageParam, limit: pageSize, facets: pageParam === undefined });
       return { ...page, thumbs: await thumbsFor(name, page.items) };
     },
     initialPageParam: undefined as string | undefined,
@@ -107,7 +108,7 @@ export function BrowseTab({
   const openFetched = useQuery({
     queryKey: ['browse-open', name, commit, openItem],
     queryFn: async () => {
-      const page = await getBrowse(name, commit!, { item: openItem, limit: 1 });
+      const page = await getBrowse(name, commit!, { item: openItem, limit: 1, facets: false });
       return page.open ? { item: page.open, thumbs: await thumbsFor(name, [page.open]) } : null;
     },
     enabled: commit !== null && openItem !== undefined && openLoaded === undefined && pages.isSuccess,

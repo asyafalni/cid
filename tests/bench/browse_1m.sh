@@ -153,6 +153,11 @@ timed "class=truck" "$B&class=truck"
 timed "path contains cam7/ + train + car" "$B&q=cam7%2F&split=train&class=car"
 timed "deep page (after cam42/00500000.jpg)" "$B&after=cam42%2F00500000.jpg"
 timed "open item + unfiltered page" "$B&item=cam7%2F00000007.jpg"
+# Eight people opening a page at the same moment: every one answered (the
+# server lets two queries into DuckDB at a time; the rest wait in line).
+START=$(date +%s%N)
+CODES=$(for i in $(seq 8); do curl -s -o /dev/null -w '%{http_code}\n' -H "$AUTH" "$B&split=val&after=cam$i%2F" & done; wait)
+printf "  %-46s %6d ms  answered: %s\n" "8 pages at once (the last answer)" $((($(date +%s%N) - START) / 1000000)) "$(echo "$CODES" | sort | uniq -c | awk '{ printf "%s×%s ", $1, $2 }')"
 HASHES=$(curl -sf -H "$AUTH" "$B" | grep -o '"hash":"[0-9a-f]*"' | head -120 | sed 's/"hash"://' | paste -sd,)
 timed "thumbs for the page (120 presigns)" -X POST -H 'content-type: application/json' "$API/thumbs" -d "{\"hashes\":[$HASHES]}"
 timed "subset size: --split train --class car" "$API/browse/size?commit=$V1&split=train&class=car"

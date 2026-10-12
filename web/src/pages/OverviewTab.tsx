@@ -78,7 +78,7 @@ function LookInside({ overview: o, commit, release }: { overview: Overview; comm
   const sample = useQuery({
     queryKey: ['look-inside', o.name, commit],
     queryFn: async () => {
-      const page = await getBrowse(o.name, commit, { limit: 8 });
+      const page = await getBrowse(o.name, commit, { limit: 8, facets: false });
       const thumbs = await thumbsFor(o.name, page.items);
       return { items: page.items, thumbs: new Map(thumbs.map((t) => [t.hash, t.url])) };
     },

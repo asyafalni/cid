@@ -8,6 +8,7 @@ const std = @import("std");
 const nilo = @import("nilo_http");
 const api = @import("api.zig");
 const duck = @import("../store/duck.zig");
+const browse = @import("browse/browse.zig");
 const fetch = @import("nilo_fetch");
 const signin = @import("signin.zig");
 const blob = @import("../store/blob.zig");
@@ -39,6 +40,7 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
     var duck_arena = std.heap.ArenaAllocator.init(gpa);
     defer duck_arena.deinit();
     var shared: duck.Db = undefined;
+    var browse_gate = nilo.Gate.open(browse.at_once);
     {
         const io = deps.io;
         const cwd = std.Io.Dir.cwd();
@@ -47,11 +49,13 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
         cwd.createDirPath(io, deps.work_dir) catch return error.WorkDirUnusable;
         deps.browse_dir = cwd.realPathFileAlloc(io, deps.browse_dir, da) catch return error.BrowseDirUnusable;
         deps.work_dir = cwd.realPathFileAlloc(io, deps.work_dir, da) catch return error.WorkDirUnusable;
-        shared = try duck.Db.open(da, .{ .allowed_dir = deps.browse_dir, .threads = 2 });
+        shared = try duck.Db.open(da, .{ .allowed_dir = deps.browse_dir, .threads = browse.query_threads });
         deps.duck = &shared;
+        deps.browse_gate = &browse_gate;
     }
     defer {
         deps.duck = null;
+        deps.browse_gate = null;
         shared.close();
     }
 

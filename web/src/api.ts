@@ -152,6 +152,10 @@ export type BrowseQuery = {
   after?: string;
   item?: string;
   limit?: number;
+  /** False: leave out the counts and facets (a next page has them from
+   * the first; a sample or an opened item does not show them). Half the
+   * server's work at 1M items. */
+  facets?: boolean;
 };
 
 /** One page of a version, filtered on the server (docs/dashboard.md,
@@ -166,6 +170,7 @@ export function getBrowse(name: string, commit: string, query: BrowseQuery): Pro
   if (query.after !== undefined) params.set('after', query.after);
   if (query.item !== undefined) params.set('item', query.item);
   if (query.limit !== undefined) params.set('limit', String(query.limit));
+  if (query.facets === false) params.set('facets', '0');
   // The server decodes %XX only: spaces must not travel as '+'.
   return request(`/v0/datasets/${name}/-/browse?${params.toString().replace(/\+/g, '%20')}`);
 }
