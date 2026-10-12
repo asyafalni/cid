@@ -100,7 +100,7 @@ export function Home() {
   return (
     <div className="home">
       <header className="home-hero sky-band">
-        <div className="home-clouds" aria-hidden="true" />
+        <div className="sky-clouds" aria-hidden="true" />
         <Airship className="home-airship" />
         <div className="home-hero-inner">
           <h1>Datasets</h1>

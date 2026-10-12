@@ -1727,10 +1727,17 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) 
     else
         .{};
 
+    // Owners are Maintainers (CLAUDE.md, words), by display name, as the
+    // listing names them.
+    const owners = (deps.db.rawOne([]const u8, scope, "SELECT coalesce(string_agg(ac.display_name, '\n' ORDER BY ac.display_name), '') " ++
+        "FROM access o JOIN accounts ac ON ac.account_id = o.account_id " ++
+        "WHERE o.dataset_id = $1::uuid AND o.level = 'maintain'", .{ds.id}) catch return error.Db) orelse "";
+
     return json(arena, .ok, .{
         .name = ds.name,
         .kind = ds.kind,
         .restricted = ds.restricted,
+        .owners = try splitLines(arena, owners),
         .git_url = info.git_url,
         .default_format = info.default_format,
         .commits = tape,

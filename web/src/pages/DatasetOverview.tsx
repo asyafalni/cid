@@ -78,6 +78,7 @@ export function DatasetOverview() {
   return (
     <article className="dataset">
       <header className="dataset-head sky-band">
+        <div className="sky-clouds" aria-hidden="true" />
         <div className="dataset-head-inner">
           <div className="dataset-title">
             <h1 className="dataset-name">
@@ -85,14 +86,19 @@ export function DatasetOverview() {
               <span className="dataset-leaf">{leaf}</span>
             </h1>
             <p className="dataset-meta">
-              {o.kind === 'annotated' ? 'Annotated dataset' : 'File dataset'}
-              {o.restricted && <span className="chip restricted-badge">restricted</span>}
-              <span className="dataset-meta-sep" aria-hidden="true" />
-              {o.items.toLocaleString()} {o.items === 1 ? 'item' : 'items'}, {humanBytes(o.bytes)}
-              <span className="dataset-meta-sep" aria-hidden="true" />
-              <a href={gitWebUrl(o.git_url)} target="_blank" rel="noreferrer">
-                View in git
-              </a>
+              <span className="dataset-fact">
+                {o.kind === 'annotated' ? 'Annotated dataset' : 'File dataset'}
+                {o.restricted && <span className="chip restricted-badge">restricted</span>}
+              </span>
+              <span className="dataset-fact">
+                {o.items.toLocaleString()} {o.items === 1 ? 'item' : 'items'}, {humanBytes(o.bytes)}
+              </span>
+              {o.owners.length > 0 && <span className="dataset-fact">owned by {o.owners.join(', ')}</span>}
+              <span className="dataset-fact">
+                <a href={gitWebUrl(o.git_url)} target="_blank" rel="noreferrer">
+                  View in git
+                </a>
+              </span>
             </p>
           </div>
           <ReleaseTape commits={o.commits} pinned={pinned} onPick={(r) => setSearch({ release: r })} />

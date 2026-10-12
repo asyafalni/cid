@@ -375,6 +375,10 @@ test('a signed-in person stars a dataset, finds it under Starred, and finds owne
 
   await page.getByLabel('Search datasets').fill('olu');
   await expect(page.getByRole('link', { name: 'e2e/datasets/boxes', exact: true })).toBeVisible();
+
+  // The dataset's header names its owners too.
+  await page.goto('/d/e2e/datasets/boxes');
+  await expect(page.locator('.dataset-meta').getByText('owned by Olu Owner')).toBeVisible();
 });
 
 test('the server token cannot star: a star belongs to a person', async ({ page }) => {

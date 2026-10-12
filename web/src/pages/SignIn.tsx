@@ -43,7 +43,7 @@ export function SignIn() {
 
   return (
     <div className="signin sky-band">
-      <div className="home-clouds" aria-hidden="true" />
+      <div className="sky-clouds" aria-hidden="true" />
       <Airship className="signin-airship" />
       <div className="signin-card blueprint">
         <h1 className="signin-wordmark">cid</h1>

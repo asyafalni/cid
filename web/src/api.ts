@@ -85,6 +85,8 @@ export type Overview = {
   name: string;
   kind: 'files' | 'annotated';
   restricted: boolean;
+  /** Display names of the dataset's owners (Maintainers). */
+  owners: string[];
   git_url: string;
   default_format: string;
   commits: TapeCommit[]; // newest first

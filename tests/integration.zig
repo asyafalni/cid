@@ -2056,6 +2056,9 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
     _ = try db.exec(&fscope, "UPDATE access SET level = 'maintain' WHERE account_id = 'gitlab:7002'", .{});
     const owned = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/datasets", rhea, "");
     try std.testing.expect(std.mem.indexOf(u8, owned.body, "\"owners\":[\"Writer Wade\"]") != null);
+    const owned_overview = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/access/-/overview", rhea, "");
+    try std.testing.expectEqual(std.http.Status.ok, owned_overview.status);
+    try std.testing.expect(std.mem.indexOf(u8, owned_overview.body, "\"owners\":[\"Writer Wade\"]") != null);
     const who = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/me", rhea, "");
     try std.testing.expect(std.mem.indexOf(u8, who.body, "Reader Rhea") != null);
     // Nobody signed in: no listing, and /v0/me says so.

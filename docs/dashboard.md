@@ -195,8 +195,8 @@ the tagline in its three places, and the reduced-motion switch. Items marked
   text stays quiet.
 - **Motion, airship-smooth:** 180–240 ms ease-out for transitions; focus glow fades in.
   With `prefers-reduced-motion`, all of it is off (built: a global switch that stops
-  every animation and transition). The home's cloud bank drifts very slowly; a slow
-  drift on the release hero is planned. A "launch" animation for publishing a release waits on the parked decision to
+  every animation and transition). The home's cloud bank drifts very slowly, and
+  fainter and lower behind a dataset's release tape. A "launch" animation for publishing a release waits on the parked decision to
   make releases from the dashboard.
 - **Illustrations** (airships, gears, clouds, blueprints) are original, made in-house or
   commissioned.
@@ -270,10 +270,11 @@ Every dataset page (all five tabs) shares one header and the release tape.
 
 - **Header** (built): the sky band, with the path's owner part in monospace above the
   name in Fraunces (the heading reads the full path), then the kind, the restricted
-  badge, the item count and size, and a plain **"View in git"** link to the dataset
-  repository; the release tape rides the bottom of the sky. The `cid clone` command
-  lives in "Use this dataset"; owners show on the home card. *Planned:* owners in the
-  header, and the repository's git status (up to date or pending).
+  badge, the item count and size, the owners (Maintainers, by name, as on the home
+  card) and a plain **"View in git"** link to the dataset repository; the release tape
+  rides the bottom of the sky, over a faint drifting cloud bank. The `cid clone`
+  command lives in "Use this dataset". *Planned:* the repository's git status (up to
+  date or pending).
 - **Release tape** (built): the history of `main`, newest 100 commits, oldest on the
   left. Each release is a button that pins the page to it (`?release=` in the URL);
   with none chosen, the newest release is pinned. Commits are ticks that show their

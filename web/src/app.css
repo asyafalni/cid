@@ -469,8 +469,28 @@
 /* --- dataset overview --- */
 
 .dataset-head {
+  position: relative;
+  overflow: hidden;
   margin-top: calc(-1 * var(--space-8));
   padding: var(--space-8) 0 0;
+}
+
+.dataset-head-inner {
+  position: relative;
+}
+
+/* Behind the tape the bank stays faint and low, so the tags read first. */
+.dataset-head .sky-clouds {
+  height: 6rem;
+  opacity: 0.08;
+  mask-size: 27rem 6rem;
+  animation-name: cloud-drift-low;
+}
+
+@keyframes cloud-drift-low {
+  to {
+    mask-position: -27rem 100%;
+  }
 }
 
 .dataset-name {
@@ -494,21 +514,26 @@
   overflow-wrap: anywhere;
 }
 
+/* Facts with a rule before each; the meta line starts one rule to the
+   left and clips it, so a wrapped line never begins or ends on a rule. */
 .dataset-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2) var(--space-3);
-  margin: var(--space-3) 0 0;
+  row-gap: var(--space-2);
+  margin: var(--space-3) 0 0 calc(-1 * var(--space-3) - 1px);
+  clip-path: inset(-0.25rem -0.25rem -0.25rem calc(var(--space-3) + 1px));
   color: var(--on-sky-muted);
   font-size: 0.875rem;
 }
 
-.dataset-meta-sep {
-  width: 1px;
-  height: 0.875rem;
-  background: currentColor;
-  opacity: 0.5;
+.dataset-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  border-left: 1px solid color-mix(in srgb, currentColor 50%, transparent);
+  line-height: 1;
 }
 
 .dataset-meta a {
@@ -1893,8 +1918,9 @@
 }
 
 /* A cloud bank at a fixed size, repeated across the sky; it drifts one
-   tile's width in three minutes, so the loop never shows a seam. */
-.home-clouds {
+   tile's width in three minutes, so the loop never shows a seam. The home,
+   sign-in and a dataset's header share it. */
+.sky-clouds {
   position: absolute;
   inset: auto 0 0;
   height: 10rem;
