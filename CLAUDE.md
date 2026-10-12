@@ -483,8 +483,9 @@ If a change would weaken any of these, stop and ask.
                                               verified then stored, or cleaned by gc
   previews/<aa>/<hex>/thumb.webp, blur.webp   thumbnails/waveforms, blurred renditions
   manifests/<dataset_id>/<commit_id>.manifest the release's hashed canonical manifest
-  manifests/<dataset_id>/<commit_id>.items.parquet, .anns.parquet
-                                              a version's browse index (any version built)
+  manifests/<dataset_id>/<commit_id>.v2.items.parquet, .v2.anns.parquet
+                                              a version's browse index (any version built;
+                                              v2 is its format, browse.index_format)
   states/<dataset_id>/<commit>-<subset>-<hash>.jsonl.gz        a version's items, as the CLI downloads them
   exports/<dataset_id>/<commit>/<format>-<subset>-<hash>.jsonl.gz  an export, as a bundle of files
   diffs/<dataset_id>/<a>-<b>-<hash>.jsonl.gz        what changed between two versions

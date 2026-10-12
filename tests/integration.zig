@@ -832,7 +832,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
         try std.testing.expectEqualStrings("done", head_job.status);
         try std.testing.expect((try db.rawOne([]const u8, &fscope, "SELECT stats::text FROM commits WHERE commit_id = $1::uuid AND stats IS NOT NULL", .{@as([]const u8, &id2)})) != null);
         try std.testing.expect((try db.rawOne(i64, &fscope, "SELECT 1::bigint FROM version_files WHERE commit_id = $1::uuid AND kind = 'state'", .{@as([]const u8, &id2)})) != null);
-        const index = try std.fmt.allocPrint(arena, "{s}.items.parquet", .{&id2});
+        const index = try std.fmt.allocPrint(arena, "{s}.v2.items.parquet", .{&id2});
         _ = try prep_tmp.dir.statFile(io, index, .{});
         deps.browse_dir = "/tmp/cid-browse";
     }
@@ -2764,8 +2764,8 @@ test "annotated: the platform writes revisions, the server commits, state compos
         // cache fetches it rather than rebuilding.
         const tagged = try remote.tag(arena, "v-browse");
         const keys = [_][]const u8{
-            try std.fmt.allocPrint(arena, "manifests/{s}/{s}.items.parquet", .{ ds_id, tagged.commit }),
-            try std.fmt.allocPrint(arena, "manifests/{s}/{s}.anns.parquet", .{ ds_id, tagged.commit }),
+            try std.fmt.allocPrint(arena, "manifests/{s}/{s}.v2.items.parquet", .{ ds_id, tagged.commit }),
+            try std.fmt.allocPrint(arena, "manifests/{s}/{s}.v2.anns.parquet", .{ ds_id, tagged.commit }),
         };
         for (keys) |key| try std.testing.expect((try s3c.headObject(&scope, key)) != null);
         var empty_cache = std.testing.tmpDir(.{});

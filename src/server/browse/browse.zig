@@ -117,6 +117,11 @@ fn byValue(_: void, a: Facet, b: Facet) bool {
 // The DuckDB engine: a Parquet index per version, one query per request.
 // ---------------------------------------------------------------------------
 
+/// The browse index's format, in its file names (locally and in storage):
+/// changing the columns changes it, so an index in an older format is
+/// never read, only rebuilt. v2 added `class_set`.
+pub const index_format = "v2";
+
 /// A version's browse index: its items in path order, and its annotations
 /// by item, as two Parquet files — and the JSON lines they are made from.
 /// Annotations are never nested into item rows: building that nesting
@@ -131,8 +136,8 @@ pub const Files = struct {
         return .{
             .items_lines = try std.fmt.allocPrint(arena, "{s}/{s}.items.jsonl", .{ dir, name }),
             .ann_lines = try std.fmt.allocPrint(arena, "{s}/{s}.anns.jsonl", .{ dir, name }),
-            .items = try std.fmt.allocPrint(arena, "{s}/{s}.items.parquet", .{ dir, name }),
-            .anns = try std.fmt.allocPrint(arena, "{s}/{s}.anns.parquet", .{ dir, name }),
+            .items = try std.fmt.allocPrint(arena, "{s}/{s}." ++ index_format ++ ".items.parquet", .{ dir, name }),
+            .anns = try std.fmt.allocPrint(arena, "{s}/{s}." ++ index_format ++ ".anns.parquet", .{ dir, name }),
         };
     }
 
@@ -175,7 +180,10 @@ pub fn convertIndex(arena: std.mem.Allocator, io: std.Io, db: *duck.Db, files: F
         defer cwd.deleteFile(io, tmp) catch {};
         // Annotations carry their digest, so a compare joins two versions
         // on (id, digest) alone and reads whole rows only for what changed.
-        const extra = if (i == 0) ", " ++ ann_digest ++ " AS digest" else "";
+        // Items carry their distinct classes, sorted: the class filter and
+        // facet read that short list, not one class per annotation
+        // (de-duplicating per page cost a 1M-item page about 100 ms).
+        const extra = if (i == 0) ", " ++ ann_digest ++ " AS digest" else ", list_sort(list_distinct(classes)) AS class_set";
         _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT *{s} FROM read_json('{s}', format = 'newline_delimited', columns = {{{s}}})) TO '{s}' (FORMAT parquet)", .{ extra, step.lines, step.columns, tmp }));
         std.Io.Dir.rename(cwd, tmp, cwd, step.out, io) catch return error.WriteFailed;
     }
@@ -202,10 +210,10 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
     // annotations. Shared CTEs are materialized, so carrying heavy
     // columns through them would cost seconds at 1M items.
     const sql = try std.fmt.allocPrint(arena,
-        \\WITH m AS (SELECT path, split, ext, classes,
+        \\WITH m AS (SELECT path, split, ext, class_set,
         \\    ($1::VARCHAR IS NULL OR contains(lower(path), lower($1::VARCHAR))) AS fq,
         \\    ($2::VARCHAR IS NULL OR coalesce(split, '') = $2::VARCHAR) AS fs,
-        \\    ($3::VARCHAR IS NULL OR list_contains(classes, $3::VARCHAR)) AS fc,
+        \\    ($3::VARCHAR IS NULL OR list_contains(class_set, $3::VARCHAR)) AS fc,
         \\    ($4::VARCHAR IS NULL OR ext = $4::VARCHAR) AS ft
         \\  FROM read_parquet('{0s}')),
         \\sel AS (SELECT path FROM m WHERE fq AND fs AND fc AND ft),
@@ -229,11 +237,11 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         \\  'split', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
         \\      FROM (SELECT coalesce(split, '') AS v, count(*) AS n FROM m WHERE fq AND fc AND ft GROUP BY 1)),
         \\  'class', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
-        \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(list_distinct(classes)) AS v FROM m WHERE fq AND fs AND ft) GROUP BY 1)),
+        \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(class_set) AS v FROM m WHERE fq AND fs AND ft) GROUP BY 1)),
         \\  'type', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
         \\      FROM (SELECT ext AS v, count(*) AS n FROM m WHERE fq AND fs AND fc GROUP BY 1)),
         \\  'classes', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
-        \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(classes) AS v FROM m) GROUP BY 1))
+        \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(classes) AS v FROM read_parquet('{0s}')) GROUP BY 1))
         \\)::VARCHAR
     , .{ items, anns });
 
@@ -285,7 +293,7 @@ pub fn subsetSize(arena: std.mem.Allocator, db: *duck.Db, files: Files, splits: 
         \\SELECT json_object('items', count(*) FILTER (WHERE kept), 'bytes', coalesce(sum(size) FILTER (WHERE kept), 0), 'total', count(*))::VARCHAR
         \\FROM (SELECT size,
         \\  (len(from_json($1::VARCHAR, '["VARCHAR"]')) = 0 OR (split IS NOT NULL AND list_contains(from_json($1::VARCHAR, '["VARCHAR"]'), split)))
-        \\  AND (len(from_json($2::VARCHAR, '["VARCHAR"]')) = 0 OR list_has_any(classes, from_json($2::VARCHAR, '["VARCHAR"]'))) AS kept
+        \\  AND (len(from_json($2::VARCHAR, '["VARCHAR"]')) = 0 OR list_has_any(class_set, from_json($2::VARCHAR, '["VARCHAR"]'))) AS kept
         \\  FROM read_parquet('{s}'))
     , .{try quote(arena, files.items)});
     const text = (try db.scalarTextArgs(arena, sql, &.{

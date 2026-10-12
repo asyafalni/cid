@@ -1040,13 +1040,13 @@ fn downloadTo(deps: *Deps, scope: anytype, key: []const u8, path: []const u8) Ha
     return ok;
 }
 
-/// manifests/<dataset_id>/<commit_id>.{items,anns}.parquet, beside the
+/// manifests/<dataset_id>/<commit_id>.<format>.{items,anns}.parquet, beside the
 /// release's canonical manifest (CLAUDE.md, storage layout). Derived and
 /// rebuildable: the release's hash is over the canonical stream.
 fn browseKeys(arena: std.mem.Allocator, dataset_id: []const u8, commit: []const u8) HandleError!struct { items: []const u8, anns: []const u8 } {
     return .{
-        .items = try std.fmt.allocPrint(arena, "manifests/{s}/{s}.items.parquet", .{ dataset_id, commit }),
-        .anns = try std.fmt.allocPrint(arena, "manifests/{s}/{s}.anns.parquet", .{ dataset_id, commit }),
+        .items = try std.fmt.allocPrint(arena, "manifests/{s}/{s}." ++ browse_mod.index_format ++ ".items.parquet", .{ dataset_id, commit }),
+        .anns = try std.fmt.allocPrint(arena, "manifests/{s}/{s}." ++ browse_mod.index_format ++ ".anns.parquet", .{ dataset_id, commit }),
     };
 }
 
