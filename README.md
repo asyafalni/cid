@@ -47,10 +47,10 @@ or the switch in the top bar. Design: [`docs/dashboard.md`](docs/dashboard.md).
 |---|---|
 | ![The datasets home in the dark theme: a sky with the search, then dataset cards](docs/screenshots/home-night.png) | ![The datasets home in the light theme](docs/screenshots/home-daybreak.png) |
 
-**A dataset:** its releases in the header, a look inside, and the exact `cid clone`
+**A dataset:** its owners and releases in the header, a look inside, and the exact `cid clone`
 command for any format or subset.
 
-![A dataset's overview: the release tape, sample items with their boxes, the card and the clone command](docs/screenshots/overview.png)
+![A dataset's overview: its owners, the release tape, sample items with their boxes, the card and the clone command](docs/screenshots/overview.png)
 
 **Compare two releases of an annotated dataset:** the moved box, old (dashed) beside new.
 
