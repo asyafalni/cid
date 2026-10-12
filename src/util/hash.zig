@@ -4,6 +4,7 @@
 //! S3 signing, OpenSSH fingerprints and HMAC tokens stay SHA-256.)
 
 const std = @import("std");
+const repeat = @import("repeat.zig").repeat;
 
 pub const Hasher = std.crypto.hash.Blake3;
 
@@ -46,7 +47,7 @@ test "BLAKE3 of the empty input and of a short one, as the reference gives them"
 }
 
 test "item key" {
-    const key = try itemKey(std.testing.allocator, "abcd" ++ "0" ** 60);
+    const key = try itemKey(std.testing.allocator, "abcd" ++ repeat("0", 60));
     defer std.testing.allocator.free(key);
-    try std.testing.expectEqualStrings("items/blake3/ab/cd/abcd" ++ "0" ** 60, key);
+    try std.testing.expectEqualStrings("items/blake3/ab/cd/abcd" ++ repeat("0", 60), key);
 }

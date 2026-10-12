@@ -162,7 +162,7 @@ fn dispatch(deps: *api.Deps, s: signin.Session, c: *nilo.Ctx) !void {
     else
         null;
     const response = api.handleAs(arena, deps, c, @tagName(c.method), target, .{ .header = auth, .account = account }, body);
-    try c.send(@intFromEnum(response.status), "application/json", response.body);
+    try c.send(@backingInt(response.status), "application/json", response.body);
 }
 
 /// The background worker: every couple of seconds, prepares whatever

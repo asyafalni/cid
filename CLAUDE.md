@@ -683,9 +683,14 @@ run them one at a time (the integration suite resets the schema).
 Dashboard changes must pass `pnpm --dir web lint`, `pnpm --dir web typecheck` and the
 e2e suite, and meet the budgets and acceptance tests in `docs/dashboard.md`.
 
-Known toolchain quirk (Zig 0.16.0): `zig build integration` sometimes fails or
-stalls with no failing test named, right after a recompile. Run the printed
-test binary directly to see the truth; re-check when a 0.16.x patch lands.
+Toolchain: Zig 0.17.0 with nilo v0.8.0 (they move together: nilo 0.8 needs 0.17,
+every earlier nilo tag 0.16). Zig 0.17 keeps a build's configuration while nothing
+it read changed, so `build.zig` declares each folder it lists while configuring
+(`sql/migrations`, every folder of `web/dist`) with `dependOnDirectoryContents`;
+a new folder read at configure time needs the same line. On Zig 0.16.0,
+`zig build integration` sometimes failed or stalled with no failing test named,
+right after a recompile; it has not been seen on 0.17.0. If it returns, run the
+printed test binary directly to see the truth.
 
 Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
 `zig-pkg/` holds unpacked dependencies), `zig build test`, and

@@ -76,7 +76,7 @@ pub fn fail(ctx: *const Context, code: ExitCode, comptime fmt: []const u8, args:
     const err = &stderr_writer.interface;
     if (ctx.json) {
         const text = std.fmt.allocPrint(ctx.arena, fmt, args) catch "out of memory";
-        err.print("{f}\n", .{std.json.fmt(.{ .@"error" = text, .exit = @intFromEnum(code) }, .{})}) catch {};
+        err.print("{f}\n", .{std.json.fmt(.{ .@"error" = text, .exit = @backingInt(code) }, .{})}) catch {};
     } else {
         err.print("cid: " ++ fmt ++ "\n", args) catch {};
     }
@@ -224,7 +224,7 @@ fn sshToken(
         // The forced command exits 5 when it refuses this key the dataset
         // or the level; sshd's own "Permission denied" is a key it does
         // not know. Both are access, not a missing server.
-        if (result.term == .exited and result.term.exited == @intFromEnum(ExitCode.access)) return error.AccessDenied;
+        if (result.term == .exited and result.term.exited == @backingInt(ExitCode.access)) return error.AccessDenied;
         if (std.mem.indexOf(u8, result.stderr, "Permission denied") != null) return error.AccessDenied;
         return error.ServerUnreachable;
     }

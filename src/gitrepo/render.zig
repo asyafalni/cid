@@ -5,6 +5,7 @@
 //! git commit.
 
 const std = @import("std");
+const repeat = @import("../util/repeat.zig").repeat;
 
 pub const ReleaseInfo = struct {
     name: []const u8,
@@ -377,14 +378,14 @@ test "rendering is deterministic and complete" {
         .server_url = "https://cid.example",
         .release = "v1.0.0",
         .commit_id = "01a00000-0000-7000-8000-000000000001",
-        .manifest_hash_hex = "ab" ** 32,
+        .manifest_hash_hex = repeat("ab", 32),
         .created_at_ms = 1769904000000, // 2026-02-01
         .items = 2,
         .bytes = 2058,
         .types = &.{ .{ .name = ".wav", .count = 1 }, .{ .name = ".txt", .count = 1 } },
         .files = &.{
-            .{ .path = "audio/a.wav", .hash_hex = "cd" ** 32, .size = 2048 },
-            .{ .path = "notes.txt", .hash_hex = "ef" ** 32, .size = 10 },
+            .{ .path = "audio/a.wav", .hash_hex = repeat("cd", 32), .size = 2048 },
+            .{ .path = "notes.txt", .hash_hex = repeat("ef", 32), .size = 10 },
         },
         .releases = &.{.{ .name = "v1.0.0", .message = "first", .created_at_ms = 1769904000000, .items = 2 }},
     };
@@ -428,7 +429,7 @@ test "the changelog says what changed since the release before, in counts" {
         .server_url = "https://cid.example",
         .release = "v2",
         .commit_id = "01a00000-0000-7000-8000-000000000002",
-        .manifest_hash_hex = "ab" ** 32,
+        .manifest_hash_hex = repeat("ab", 32),
         .created_at_ms = 1769904000000,
         .items = 3,
         .bytes = 10,
@@ -471,14 +472,14 @@ test "a restricted release renders counts only; the card renders from its snapsh
         .server_url = "https://cid.example",
         .release = "v1",
         .commit_id = "01a00000-0000-7000-8000-000000000001",
-        .manifest_hash_hex = "ab" ** 32,
+        .manifest_hash_hex = repeat("ab", 32),
         .created_at_ms = 1769904000000,
         .items = 1,
         .bytes = 10,
         .classes = &.{.{ .name = "alice-smith", .count = 3 }},
         .splits = &.{.{ .name = "secret-split", .count = 1 }},
         .policy = .{ .version = "p1", .body_json = "{\"rule\":\"label alice-smith\"}" },
-        .files = &.{.{ .path = "people/alice-smith.jpg", .hash_hex = "cd" ** 32, .size = 10 }},
+        .files = &.{.{ .path = "people/alice-smith.jpg", .hash_hex = repeat("cd", 32), .size = 10 }},
         .releases = &.{.{ .name = "v1", .message = "added alice-smith", .created_at_ms = 1769904000000, .items = 1 }},
         .card = "{\"purpose\":\"face matching for alice-smith\",\"license\":\"internal\"}",
         .restricted = true,
@@ -516,16 +517,16 @@ test "no file over 1 MB and no release over 5 MB reaches git, and a cut says whe
     for (0..long.len / 100) |i| long[i * 100] = '\n';
     const card = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .purpose = long }, .{})});
     const releases = try arena.alloc(ReleaseInfo, 9000);
-    for (releases, 0..) |*r, i| r.* = .{ .name = try std.fmt.allocPrint(arena, "v{d}", .{9000 - i}), .message = "m" ** 400, .created_at_ms = 0, .items = 9999 };
+    for (releases, 0..) |*r, i| r.* = .{ .name = try std.fmt.allocPrint(arena, "v{d}", .{9000 - i}), .message = repeat("m", 400), .created_at_ms = 0, .items = 9999 };
     const files = try arena.alloc(Item, 9999);
-    for (files, 0..) |*f, i| f.* = .{ .path = try std.fmt.allocPrint(arena, "{s}/{d:0>5}.wav", .{ "deep/" ** 40, i }), .hash_hex = "ab" ** 32, .size = 1 };
+    for (files, 0..) |*f, i| f.* = .{ .path = try std.fmt.allocPrint(arena, "{s}/{d:0>5}.wav", .{ repeat("deep/", 40), i }), .hash_hex = repeat("ab", 32), .size = 1 };
     const input: Input = .{
         .dataset_name = "org/datasets/big",
         .git_url = "git@example.invalid:org/datasets/big.git",
         .server_url = "https://cid.example",
         .release = "v9000",
         .commit_id = "01a00000-0000-7000-8000-000000000001",
-        .manifest_hash_hex = "ab" ** 32,
+        .manifest_hash_hex = repeat("ab", 32),
         .created_at_ms = 0,
         .items = 9999,
         .bytes = 9999,

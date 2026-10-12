@@ -104,7 +104,8 @@ pub fn open(arena: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) OpenError!Wor
     const cid_dir = dir.openDir(io, ".cid", .{}) catch return error.NotADataset;
     const config_text = cid_dir.readFileAllocOptions(io, "config.zon", arena, .limited(64 * 1024), .of(u8), 0) catch
         return error.CorruptLocalState;
-    const config = std.zon.parse.fromSliceAlloc(Config, arena, config_text, null, .{}) catch
+    var diagnostics: std.zon.parse.Diagnostics = .{ .errors = &.{} };
+    const config = std.zon.parse.fromSlice(Config, .{ .gpa = arena, .arena = arena, .source = config_text, .diagnostics = &diagnostics }) catch
         return error.CorruptLocalState;
     return .{ .work_dir = dir, .cid_dir = cid_dir, .config = config };
 }

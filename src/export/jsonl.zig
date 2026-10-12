@@ -4,6 +4,7 @@
 //! (bundle.zig): items in path order, annotations in id order.
 
 const std = @import("std");
+const repeat = @import("../util/repeat.zig").repeat;
 const bundle = @import("bundle.zig");
 
 pub const file = "annotations.jsonl";
@@ -51,10 +52,10 @@ test "one line per item, annotations inline, empties included" {
     var buf: std.Io.Writer.Allocating = .init(arena);
     const out: bundle.Bundle = .{ .w = &buf.writer };
 
-    try writeItem(out, arena, .{ .path = "a.jpg", .hash = "ab" ** 32, .size = 10, .split = "train", .item_id = "i1", .width = 640, .height = 480 }, &.{
+    try writeItem(out, arena, .{ .path = "a.jpg", .hash = repeat("ab", 32), .size = 10, .split = "train", .item_id = "i1", .width = 640, .height = 480 }, &.{
         .{ .id = "ann-1", .kind = "box", .class = "person", .geometry = "{\"x\": 1, \"y\": 2}", .attrs = null },
     });
-    try writeItem(out, arena, .{ .path = "b.jpg", .hash = "cd" ** 32, .size = 5, .split = null, .item_id = null, .width = null, .height = null }, &.{});
+    try writeItem(out, arena, .{ .path = "b.jpg", .hash = repeat("cd", 32), .size = 5, .split = null, .item_id = null, .width = null, .height = null }, &.{});
 
     var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, buf.written(), "\n"), '\n');
     const Line = struct { path: []const u8, text: []const u8 };

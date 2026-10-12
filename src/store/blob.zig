@@ -49,7 +49,7 @@ pub const Signer = struct {
     items: Items,
 
     /// nilo's Limits, as the Store's own start hook takes them.
-    const Limits = @typeInfo(@TypeOf(s3.Store.nilo_start)).@"fn".params[2].type.?;
+    const Limits = @typeInfo(@TypeOf(s3.Store.nilo_start)).@"fn".param_types[2].?;
 
     pub fn nilo_start(self: *Signer, io: std.Io, limits: Limits) !void {
         try self.store.nilo_start(io, limits);

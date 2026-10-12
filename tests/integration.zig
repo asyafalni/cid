@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const cid = @import("cid");
+const repeat = cid.repeat;
 
 const conninfo: [:0]const u8 =
     "host=127.0.0.1 port=5433 user=cid password=cid-test dbname=cid_test";
@@ -1545,7 +1546,7 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
 
     // Verify: green, and repeatable.
     const ds_id: [:0]const u8 = blk: {
-        break :blk try arena.dupeZ(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/rel'", .{})).?);
+        break :blk try arena.dupeSentinel(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/rel'", .{})).?, 0);
     };
     const v1 = try cid.release.verify(arena, std.testing.allocator, &standalone.db, &scope, &s3c, ds_id, "v1.0.0");
     try std.testing.expect(v1.ok);
@@ -2355,7 +2356,7 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     cid.hash.Hasher.hash(sensitive, &dg, .{});
     const sensitive_hash = std.fmt.bytesToHex(dg, .lower);
     {
-        const hz = try arena.dupeZ(u8, &sensitive_hash);
+        const hz = try arena.dupeSentinel(u8, &sensitive_hash, 0);
         _ = db.exec(&fscope, "DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
     }
 
@@ -2373,7 +2374,7 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     _ = try remote.tag(arena, "v1.0.0");
 
     const ds_id: [:0]const u8 = blk: {
-        break :blk try arena.dupeZ(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/purge'", .{})).?);
+        break :blk try arena.dupeSentinel(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/purge'", .{})).?, 0);
     };
 
     // Its previews exist (as the worker would have made them).
@@ -2446,7 +2447,7 @@ test "annotated: the platform writes revisions, the server commits, state compos
     const created = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/ann\",\"kind\":\"annotated\",\"git_url\":\"g@h:ann.git\"}");
     try std.testing.expectEqual(std.http.Status.created, created.status);
     const ds_id: [:0]const u8 = blk: {
-        break :blk try arena.dupeZ(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/ann'", .{})).?);
+        break :blk try arena.dupeSentinel(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/ann'", .{})).?, 0);
     };
 
     // Bytes go up through check-hashes presigns, then register-items
@@ -2461,7 +2462,7 @@ test "annotated: the platform writes revisions, the server commits, state compos
     try s3c.deleteObject(&scope, try cid.api.itemKey(arena, &h1));
     try s3c.deleteObject(&scope, try cid.api.itemKey(arena, &h2));
     {
-        const hz = try arena.dupeZ(u8, &h1);
+        const hz = try arena.dupeSentinel(u8, &h1, 0);
         _ = db.exec(&fscope, "DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
     }
 
@@ -2698,7 +2699,7 @@ test "annotated: the platform writes revisions, the server commits, state compos
             const target = try std.fmt.allocPrint(al, "/v0/datasets/test/datasets/ann/-/browse?commit={s}{s}", .{ commit, query });
             const res = cid.api.handle(al, d, sc, "GET", target, "Bearer test-token", "");
             if (res.status != .ok) {
-                std.debug.print("browse answered {d}: {s}\n", .{ @intFromEnum(res.status), res.body });
+                std.debug.print("browse answered {d}: {s}\n", .{ @backingInt(res.status), res.body });
                 return error.BrowseRefused;
             }
             return std.json.parseFromSliceLeaky(Browsed, al, res.body, .{ .ignore_unknown_fields = true });
@@ -3126,7 +3127,7 @@ test "annotated releases: v2 manifest with JCS rows, verify catches smuggled box
 
     _ = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/annrel\",\"kind\":\"annotated\",\"git_url\":\"g@h:ar.git\"}");
     const ds_id: [:0]const u8 = blk: {
-        break :blk try arena.dupeZ(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/annrel'", .{})).?);
+        break :blk try arena.dupeSentinel(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/annrel'", .{})).?, 0);
     };
 
     // One image with one box, platform-style (bytes + register + revisions).
@@ -3229,7 +3230,7 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
 
     _ = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/fmt\",\"kind\":\"annotated\",\"git_url\":\"g@h:f.git\"}");
     const ds_id: [:0]const u8 = blk: {
-        break :blk try arena.dupeZ(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/fmt'", .{})).?);
+        break :blk try arena.dupeSentinel(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/fmt'", .{})).?, 0);
     };
 
     // One 640x480 image with one person box, platform-style.
@@ -3244,7 +3245,7 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     // re-registering (or any number of viewers later) adds nothing.
     try remote.registerItems(arena, &.{.{ .hash = &hh, .size = pix.len, .media_type = "image/jpeg", .width = 640, .height = 480 }});
     {
-        const hz = try arena.dupeZ(u8, &hh);
+        const hz = try arena.dupeSentinel(u8, &hh, 0);
         const Queue = struct {
             pub const nilo_table = .projection;
             n: i64,
@@ -3414,7 +3415,7 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
     const create_body = try std.fmt.allocPrint(arena, "{{\"name\":\"test/datasets/anngit\",\"kind\":\"annotated\",\"git_url\":\"{s}\"}}", .{bare_url});
     _ = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", create_body);
     const ds_id: [:0]const u8 = blk: {
-        break :blk try arena.dupeZ(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/anngit'", .{})).?);
+        break :blk try arena.dupeSentinel(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/anngit'", .{})).?, 0);
     };
 
     // The policy, then one image with a person and a vehicle box.
@@ -3509,7 +3510,7 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
 
     // Reset queue rows and objects from earlier runs.
     inline for (.{ &png_hash, &text_hash }) |h| {
-        const hz = try arena.dupeZ(u8, h);
+        const hz = try arena.dupeSentinel(u8, h, 0);
         _ = db.exec(&fscope, "DELETE FROM previews WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
         _ = db.exec(&fscope, "DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
     }
@@ -3541,7 +3542,7 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     try std.testing.expect(thumb.len > 100); // a real webp came out
 
     {
-        const hz = try arena.dupeZ(u8, &text_hash);
+        const hz = try arena.dupeSentinel(u8, &text_hash, 0);
         const Prev = struct {
             pub const nilo_table = .projection;
             status: []const u8,
@@ -3597,7 +3598,7 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
 
     _ = try db.exec(&fscope, "UPDATE previews SET status = 'skipped', reason = 'test reset' WHERE status = 'pending'", .{});
     {
-        const hz = try arena.dupeZ(u8, &hh);
+        const hz = try arena.dupeSentinel(u8, &hh, 0);
         _ = db.exec(&fscope, "DELETE FROM previews WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
         _ = db.exec(&fscope, "DELETE FROM items WHERE item_hash = decode($1, 'hex') AND NOT EXISTS (SELECT 1 FROM item_revisions ir WHERE ir.item_hash = decode($1, 'hex'))", .{hz}) catch {};
     }
@@ -3643,7 +3644,7 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
 
     // Before the worker: an honest octet-stream.
     {
-        const hz = try arena.dupeZ(u8, &hh);
+        const hz = try arena.dupeSentinel(u8, &hh, 0);
         const mt = (try db.rawOne([]const u8, &fscope, "SELECT media_type FROM items WHERE item_hash = decode($1, 'hex')", .{hz})).?;
         try std.testing.expectEqualStrings("application/octet-stream", mt);
     }
@@ -3652,7 +3653,7 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     const pass = try cid.preview.processPending(arena, io, &standalone.db, &scope, &s3c, .{});
     try std.testing.expect(pass.built >= 1);
     {
-        const hz = try arena.dupeZ(u8, &hh);
+        const hz = try arena.dupeSentinel(u8, &hh, 0);
         const Sniffed = struct {
             pub const nilo_table = .projection;
             media_type: []const u8,
@@ -3759,7 +3760,7 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     try std.testing.expectEqual(before + 1, after);
 
     // A hash from elsewhere is not revealed through this dataset.
-    const stranger = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/sniff/-/reveal", "Bearer test-token", "{\"hash\":\"" ++ ("ab" ** 32) ++ "\"}");
+    const stranger = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/sniff/-/reveal", "Bearer test-token", "{\"hash\":\"" ++ (repeat("ab", 32)) ++ "\"}");
     try std.testing.expectEqual(std.http.Status.not_found, stranger.status);
 
     // Raw downloads are logged too: no clear URL leaves unrecorded.
@@ -3996,7 +3997,7 @@ test "row diffs: rows added and removed between versions, cached, withheld when 
 
     // Another dataset's content is not an oracle (invariant 12), and a
     // file that is not a table is said so in words.
-    const foreign = try std.fmt.allocPrint(arena, "{{\"a\":\"{s}\",\"b\":\"{s}\",\"path_a\":\"people.csv\",\"path_b\":\"people.csv\"}}", .{ "ab" ** 32, &hashes[1] });
+    const foreign = try std.fmt.allocPrint(arena, "{{\"a\":\"{s}\",\"b\":\"{s}\",\"path_a\":\"people.csv\",\"path_b\":\"people.csv\"}}", .{ repeat("ab", 32), &hashes[1] });
     const refused = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/rowdiff/-/rowdiff", "Bearer test-token", foreign);
     try std.testing.expectEqual(std.http.Status.not_found, refused.status);
     const text = try remote.rowDiff(arena, &hashes[0], "notes.txt", &hashes[1], "notes.txt");
@@ -4195,7 +4196,7 @@ test "state at commit: random changes on main and a branch match an in-memory mo
             branched = true;
         }
         const line: Line = if (branched and rand.boolean()) .branch else .main;
-        const l = @intFromEnum(line);
+        const l = @backingInt(line);
         const commit = try commitOn(arena, &remote, io, line, &heads[l], &states[l], &hashes, rand, step == 0);
         try snapshots.append(arena, .{ .commit = commit, .state = states[l] });
     }
@@ -4460,7 +4461,7 @@ test "gc: never deletes what a release or branch head holds; collected bytes can
     const ds_id = (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/gc'", .{})).?;
 
     // An upload staged and never pushed.
-    const junk_key = try cid.api.stagedKey(arena, ds_id, "00" ** 32);
+    const junk_key = try cid.api.stagedKey(arena, ds_id, repeat("00", 32));
     try s3c.putObject(&scope, junk_key, "abandoned");
     try std.Io.sleep(io, .fromSeconds(1), .awake); // storage stamps whole seconds
 

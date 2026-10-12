@@ -51,6 +51,7 @@ pub const gitrepo = struct {
 pub const uuid7 = @import("util/uuid7.zig");
 pub const progress = @import("util/progress.zig");
 pub const hash = @import("util/hash.zig");
+pub const repeat = @import("util/repeat.zig").repeat;
 pub const access = struct {
     pub const token = @import("access/token.zig");
     pub const auth = @import("access/auth.zig");
@@ -110,6 +111,7 @@ test {
     _ = uuid7;
     _ = progress;
     _ = hash;
+    _ = @import("util/repeat.zig");
     _ = client.index;
     _ = client.local;
     _ = client.cache;

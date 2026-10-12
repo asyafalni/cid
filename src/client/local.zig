@@ -15,6 +15,7 @@
 //!                               D\t<path>
 
 const std = @import("std");
+const repeat = @import("../util/repeat.zig").repeat;
 const Uuid = @import("../util/uuid7.zig").Uuid;
 const index_mod = @import("index.zig");
 
@@ -261,7 +262,7 @@ test "commit serialization round trip, including multi-line messages" {
     });
     try out.appendSlice(a, commit.message);
     try out.print(a, "\nchanges {d}\n", .{commit.changes.len});
-    try out.appendSlice(a, "A\ta/b.wav\t" ++ ("b" ** 64) ++ "\t123\nD\told.txt\n");
+    try out.appendSlice(a, "A\ta/b.wav\t" ++ (repeat("b", 64)) ++ "\t123\nD\told.txt\n");
 
     const parsed = try parseCommit(arena, out.items);
     try std.testing.expectEqualSlices(u8, &commit.id.bytes, &parsed.id.bytes);

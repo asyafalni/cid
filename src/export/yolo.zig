@@ -12,6 +12,7 @@
 //! worse than no export.
 
 const std = @import("std");
+const repeat = @import("../util/repeat.zig").repeat;
 const bundle = @import("bundle.zig");
 
 pub const split_names = [_][]const u8{ "train", "val", "test" };
@@ -104,7 +105,7 @@ test "normalized boxes, sorted classes, the yaml, named failures" {
     const writer: Writer = .{ .classes = &.{ "person", "vehicle" } };
 
     try writer.begin(out, arena);
-    const a: bundle.Item = .{ .path = "img/a.jpg", .hash = "ab" ** 32, .size = 1, .split = "train", .item_id = "i1", .width = 640, .height = 480 };
+    const a: bundle.Item = .{ .path = "img/a.jpg", .hash = repeat("ab", 32), .size = 1, .split = "train", .item_id = "i1", .width = 640, .height = 480 };
     try std.testing.expect((try writer.writeItem(out, arena, a, &.{
         .{ .id = "1", .kind = "box", .class = "vehicle", .geometry = "{\"x\": 32, \"y\": 48, \"w\": 64, \"h\": 96}", .attrs = null },
         .{ .id = "2", .kind = "box", .class = "person", .geometry = "{\"x\": 0, \"y\": 0, \"w\": 320, \"h\": 240}", .attrs = null },
@@ -130,7 +131,7 @@ test "normalized boxes, sorted classes, the yaml, named failures" {
     try std.testing.expect(std.mem.indexOf(u8, yaml, "0: person") != null);
 
     // Missing dimensions name the offender instead of guessing.
-    const nodims: bundle.Item = .{ .path = "img/nodims.jpg", .hash = "ef" ** 32, .size = 1, .split = null, .item_id = "i2", .width = null, .height = null };
+    const nodims: bundle.Item = .{ .path = "img/nodims.jpg", .hash = repeat("ef", 32), .size = 1, .split = null, .item_id = "i2", .width = null, .height = null };
     const failed = (try writer.writeItem(out, arena, nodims, &.{.{ .id = "1", .kind = "box", .class = "person", .geometry = "{\"x\":1,\"y\":1,\"w\":1,\"h\":1}", .attrs = null }})).?;
     try std.testing.expectEqualStrings("img/nodims.jpg", failed.path);
 }

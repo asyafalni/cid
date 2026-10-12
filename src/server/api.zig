@@ -22,6 +22,7 @@
 //! Run in tests and admin commands).
 
 const std = @import("std");
+const repeat = @import("../util/repeat.zig").repeat;
 const dbx = @import("../store/db.zig");
 const blob = @import("../store/blob.zig");
 const release_mod = @import("../core/release.zig");
@@ -2961,7 +2962,7 @@ test "token comparison is exact" {
 test "hash and key helpers" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    const h = "ab" ++ ("cd" ** 31);
+    const h = "ab" ++ (repeat("cd", 31));
     try std.testing.expect(validHashHex(h));
     try std.testing.expect(!validHashHex("xyz"));
     try std.testing.expectEqualStrings(

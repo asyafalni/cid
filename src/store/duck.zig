@@ -32,7 +32,7 @@ pub const Db = struct {
         defer c.duckdb_destroy_config(&config);
 
         const threads = std.fmt.allocPrintSentinel(arena, "{d}", .{limits.threads}, 0) catch return error.OutOfMemory;
-        const memory = arena.dupeZ(u8, limits.memory_limit) catch return error.OutOfMemory;
+        const memory = arena.dupeSentinel(u8, limits.memory_limit, 0) catch return error.OutOfMemory;
         const settings = [_][2][*:0]const u8{
             .{ "threads", threads },
             .{ "memory_limit", memory },
@@ -96,7 +96,7 @@ pub const Db = struct {
     /// query answered no rows or a SQL NULL. A failed query logs DuckDB's
     /// own words (never the data) and answers QueryFailed.
     pub fn scalarText(self: *Db, arena: std.mem.Allocator, sql: []const u8) Error!?[]const u8 {
-        const sql_z = arena.dupeZ(u8, sql) catch return error.OutOfMemory;
+        const sql_z = arena.dupeSentinel(u8, sql, 0) catch return error.OutOfMemory;
         var result: c.duckdb_result = undefined;
         defer c.duckdb_destroy_result(&result);
         if (c.duckdb_query(self.conn, sql_z, &result) != c.DuckDBSuccess) {
@@ -114,7 +114,7 @@ pub const Db = struct {
 
     /// scalarText for a query with `$1…$n` bound to `args`, in order.
     pub fn scalarTextArgs(self: *Db, arena: std.mem.Allocator, sql: []const u8, args: []const Arg) Error!?[]const u8 {
-        const sql_z = arena.dupeZ(u8, sql) catch return error.OutOfMemory;
+        const sql_z = arena.dupeSentinel(u8, sql, 0) catch return error.OutOfMemory;
         var stmt: c.duckdb_prepared_statement = null;
         defer c.duckdb_destroy_prepare(&stmt);
         if (c.duckdb_prepare(self.conn, sql_z, &stmt) != c.DuckDBSuccess) {

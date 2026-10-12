@@ -20,7 +20,7 @@ pub const Level = enum {
     maintain,
 
     pub fn covers(self: Level, needed: Level) bool {
-        return @intFromEnum(self) >= @intFromEnum(needed);
+        return @backingInt(self) >= @backingInt(needed);
     }
 };
 

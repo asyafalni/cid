@@ -35,7 +35,7 @@ fn run(
     var json = false;
     var rest: std.ArrayList([:0]const u8) = .empty;
     for (args) |a| {
-        if (std.mem.eql(u8, a, "--json")) json = true else rest.append(arena, a) catch return @intFromEnum(cid.ExitCode.network);
+        if (std.mem.eql(u8, a, "--json")) json = true else rest.append(arena, a) catch return @backingInt(cid.ExitCode.network);
     }
     const ctx: cid.common.Context = .{ .arena = arena, .gpa = gpa, .io = io, .out = out, .env = env, .json = json };
     const code: cid.ExitCode = switch (cid.command.parse(rest.items)) {
@@ -75,12 +75,12 @@ fn run(
             var ew = std.Io.File.stderr().writer(io, &ebuf);
             ew.interface.print("cid: '{s}' is not built yet in this early version. Run 'cid help' for what works today.\n", .{name}) catch {};
             ew.interface.flush() catch {};
-            return @intFromEnum(cid.ExitCode.usage);
+            return @backingInt(cid.ExitCode.usage);
         },
         .unknown => |name| return fail(io, .usage, name, "cid help"),
     };
-    out.flush() catch return @intFromEnum(cid.ExitCode.network);
-    return @intFromEnum(code);
+    out.flush() catch return @backingInt(cid.ExitCode.network);
+    return @backingInt(code);
 }
 
 /// Every error ends with the command to run next.
@@ -93,5 +93,5 @@ fn fail(io: std.Io, code: cid.ExitCode, what: []const u8, next: []const u8) u8 {
         else => err.print("cid: {s}. Run '{s}'.\n", .{ what, next }) catch {},
     }
     err.flush() catch {};
-    return @intFromEnum(code);
+    return @backingInt(code);
 }

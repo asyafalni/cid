@@ -5,6 +5,7 @@
 //! Unknown stays unknown — application/octet-stream is an honest answer.
 
 const std = @import("std");
+const repeat = @import("../util/repeat.zig").repeat;
 
 pub const Sniffed = struct {
     media_type: []const u8,
@@ -138,7 +139,7 @@ test "sniffs the usual suspects, with dimensions where headers carry them" {
     try std.testing.expectEqual(@as(?u32, 100), j.width);
     try std.testing.expectEqual(@as(?u32, 200), j.height);
 
-    const gif = "GIF89a" ++ "\x40\x01" ++ "\xf0\x00" ++ ("\x00" ** 8);
+    const gif = "GIF89a" ++ "\x40\x01" ++ "\xf0\x00" ++ (repeat("\x00", 8));
     const g = sniff(gif).?;
     try std.testing.expectEqualStrings("image/gif", g.media_type);
     try std.testing.expectEqual(@as(?u32, 320), g.width);

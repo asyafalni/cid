@@ -220,7 +220,7 @@ pub fn fetchOne(
         .response_writer = &aw.writer,
         .extra_headers = &.{.{ .name = "PRIVATE-TOKEN", .value = config.token }},
     }) catch return error.GitLabUnreachable;
-    return .{ .status = @intFromEnum(res.status), .body = aw.writer.buffered() };
+    return .{ .status = @backingInt(res.status), .body = aw.writer.buffered() };
 }
 
 /// Everything, for every dataset: members of the project its git URL

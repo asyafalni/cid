@@ -182,7 +182,7 @@ fn runServe(
     if (token.len == 0 and token_secret == null)
         return fail(io, .usage, "set CID_TOKEN_SECRET (SSH-issued tokens) or CID_TOKEN (one static token), then run 'cid admin serve' again.", .{});
 
-    const conninfo = arena.dupeZ(u8, conninfo_raw) catch return .network;
+    const conninfo = arena.dupeSentinel(u8, conninfo_raw, 0) catch return .network;
     // The server's Db is a nilo Service: init records the URL, and
     // serve()'s listen() opens the pool on the server's own loop.
     const db_url = dbx.urlFrom(arena, conninfo) catch return .network;

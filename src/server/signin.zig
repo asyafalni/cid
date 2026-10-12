@@ -97,7 +97,7 @@ pub fn callback(c: *nilo.Ctx, s: Session, cfg: *const Config, client: *fetch.Cli
         .headers = &.{.{ .name = "content-type", .value = "application/x-www-form-urlencoded" }},
     }) catch return fail(c, "gitlab");
     if (!token_res.ok()) {
-        std.log.warn("gitlab sign-in: the token exchange answered {d}", .{@intFromEnum(token_res.status)});
+        std.log.warn("gitlab sign-in: the token exchange answered {d}", .{@backingInt(token_res.status)});
         return fail(c, "gitlab");
     }
     const Token = struct { access_token: []const u8 };

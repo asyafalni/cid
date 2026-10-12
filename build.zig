@@ -77,7 +77,7 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run cid");
     const run_cmd = b.addRunArtifact(exe);
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs(); // what follows `--` on the command line
     run_step.dependOn(&run_cmd.step);
 
     // Unit tests: no services needed.
@@ -109,7 +109,10 @@ fn buildMigrationsModule(
     const io = b.graph.io;
 
     var names: std.ArrayList([]const u8) = .empty;
-    var dir = b.build_root.handle.openDir(io, "sql/migrations", .{ .iterate = true }) catch
+    // Zig 0.17 keeps a build's configuration while nothing it read
+    // changed: a migration added or renamed must count.
+    b.dependOnDirectoryContents(b.path("sql/migrations"));
+    var dir = b.root.openDir(io, "sql/migrations", .{ .iterate = true }) catch
         @panic("sql/migrations/ is missing");
     defer dir.close(io);
     var it = dir.iterate();
@@ -167,6 +170,11 @@ fn buildAssetsModule(
         \\
     ) catch @panic("OOM");
 
+    // A dashboard build replaces its hashed file names: the list is read
+    // again when any folder under web/dist changes (each folder declared
+    // as it is read, since the dependency is not recursive), or when
+    // web/dist itself appears.
+    b.dependOnDirectoryContents(b.path("web"));
     collectAssets(b, wf, &src, io, "web/dist", "") catch {};
 
     src.appendSlice(b.allocator, "};\n") catch @panic("OOM");
@@ -187,7 +195,8 @@ fn collectAssets(
     rel: []const u8,
 ) !void {
     const full = if (rel.len == 0) fs_dir else b.fmt("{s}/{s}", .{ fs_dir, rel });
-    var dir = try b.build_root.handle.openDir(io, full, .{ .iterate = true });
+    var dir = try b.root.openDir(io, full, .{ .iterate = true });
+    b.dependOnDirectoryContents(b.path(full));
     defer dir.close(io);
     var it = dir.iterate();
     while (try it.next(io)) |entry| {

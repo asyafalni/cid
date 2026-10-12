@@ -16,6 +16,7 @@
 //! `-` stands for null.
 
 const std = @import("std");
+const repeat = @import("../util/repeat.zig").repeat;
 const hash = @import("../util/hash.zig");
 
 pub const header = "cid-manifest 1\n";
@@ -106,14 +107,14 @@ test "the canonical stream is frozen: golden hash, files only" {
     const arena = arena_state.allocator();
 
     const rows = [_]ItemRow{
-        .{ .path = "a.txt", .item_id = id_a, .hash_hex = "ab" ** 32, .size = 7, .split = null },
-        .{ .path = "img/b.png", .item_id = id_b, .hash_hex = "cd" ** 32, .size = 1024, .split = "train" },
+        .{ .path = "a.txt", .item_id = id_a, .hash_hex = repeat("ab", 32), .size = 7, .split = null },
+        .{ .path = "img/b.png", .item_id = id_b, .hash_hex = repeat("cd", 32), .size = 1024, .split = "train" },
     };
     const rendered = try render(arena, &rows, &.{});
     try std.testing.expectEqualStrings(
         "cid-manifest 1\n" ++
-            "item\ta.txt\t" ++ id_a ++ "\t" ++ ("ab" ** 32) ++ "\t7\t-\n" ++
-            "item\timg/b.png\t" ++ id_b ++ "\t" ++ ("cd" ** 32) ++ "\t1024\ttrain\n",
+            "item\ta.txt\t" ++ id_a ++ "\t" ++ (repeat("ab", 32)) ++ "\t7\t-\n" ++
+            "item\timg/b.png\t" ++ id_b ++ "\t" ++ (repeat("cd", 32)) ++ "\t1024\ttrain\n",
         rendered.bytes,
     );
     // The golden hash: once released manifests exist, a change here
@@ -131,7 +132,7 @@ test "the canonical stream is frozen: golden hash, with annotations" {
     const arena = arena_state.allocator();
 
     const items = [_]ItemRow{
-        .{ .path = "img/a.jpg", .item_id = id_a, .hash_hex = "ab" ** 32, .size = 7, .split = "val" },
+        .{ .path = "img/a.jpg", .item_id = id_a, .hash_hex = repeat("ab", 32), .size = 7, .split = "val" },
     };
     const anns = [_]AnnRow{
         .{ .item_id = id_a, .annotation_id = id_b, .kind = "box", .class = "person", .geometry_jcs = "{\"h\":4,\"w\":3,\"x\":1,\"y\":2}", .attrs_jcs = null, .author = "agent:x", .policy_ver = "p1" },
@@ -139,7 +140,7 @@ test "the canonical stream is frozen: golden hash, with annotations" {
     const rendered = try render(arena, &items, &anns);
     try std.testing.expectEqualStrings(
         "cid-manifest 1\n" ++
-            "item\timg/a.jpg\t" ++ id_a ++ "\t" ++ ("ab" ** 32) ++ "\t7\tval\n" ++
+            "item\timg/a.jpg\t" ++ id_a ++ "\t" ++ (repeat("ab", 32)) ++ "\t7\tval\n" ++
             "ann\t" ++ id_a ++ "\t" ++ id_b ++ "\tbox\tperson\t{\"h\":4,\"w\":3,\"x\":1,\"y\":2}\t-\tagent:x\tp1\n",
         rendered.bytes,
     );
