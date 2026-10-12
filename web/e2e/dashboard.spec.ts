@@ -100,6 +100,27 @@ test('the files tab walks the committed tree', async ({ page }) => {
   await expect(page.getByText('img-a.png')).toBeVisible();
 });
 
+test('the overview opens with a look inside: real items, their annotations, each a way into Browse', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/boxes');
+  const strip = page.getByRole('region', { name: 'A look inside' });
+  const tile = strip.getByRole('link', { name: /frames\/street\.png/ });
+  await expect(tile.locator('img')).toBeVisible();
+  // Annotations drawn as in Browse.
+  await expect(tile.locator('svg rect, svg polygon').first()).toBeVisible();
+  await tile.click();
+  await expect(page).toHaveURL(/view=browse/);
+  await expect(page.getByRole('complementary', { name: 'frames/street.png' })).toBeVisible();
+
+  // Text and sound show as themselves, never a blank square.
+  await page.goto('/d/e2e/datasets/media');
+  const media = page.getByRole('region', { name: 'A look inside' });
+  await expect(media.getByRole('link', { name: /notes\.txt/ }).getByText('.txt', { exact: true })).toBeVisible();
+  await expect(media.getByRole('link', { name: /tone\.wav/ }).locator('img')).toBeVisible();
+  // No release yet: the facts, not an empty tape.
+  await expect(page.getByText('1 commit, no releases yet.')).toBeVisible();
+});
+
 test('keyboard: the tape is reachable and Enter pins', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo');

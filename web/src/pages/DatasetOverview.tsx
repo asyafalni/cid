@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { ApiError, getOverview } from '../api';
 import { ReleaseTape } from '../ReleaseTape';
-import { gitWebUrl } from '../format';
+import { gitWebUrl, humanBytes } from '../format';
 import { OverviewTab } from './OverviewTab';
 import { BrowseTab } from './BrowseTab';
 import { ReleasesTab } from './ReleasesTab';
@@ -11,7 +11,8 @@ import { FilesTab } from './FilesTab';
 import { ActivityTab } from './ActivityTab';
 import { noteVisit } from '../recent';
 
-// The dataset page: sky-band header, the release tape, then the tabs.
+// The dataset page: the sky header (name, facts, the release tape), then
+// the tabs.
 // The tab, the pinned release and the open item all live in the URL, so
 // pasting a link shows exactly the same thing.
 export function DatasetOverview() {
@@ -57,6 +58,10 @@ export function DatasetOverview() {
   const pinnedCommit =
     o.commits.find((c) => c.release === pinned)?.id ?? o.commits[0]?.id ?? null;
   const view = search.view ?? 'overview';
+  // The path's last part is the dataset's name; the rest says whose it is.
+  const cut = o.name.lastIndexOf('/');
+  const owner = cut >= 0 ? o.name.slice(0, cut + 1) : '';
+  const leaf = o.name.slice(cut + 1);
 
   function setSearch(patch: Record<string, string | undefined>) {
     void navigate({
@@ -70,22 +75,25 @@ export function DatasetOverview() {
     <article className="dataset">
       <header className="dataset-head sky-band">
         <div className="dataset-head-inner">
-          <h1 className="data dataset-name">{o.name}</h1>
-          <p className="dataset-meta">
-            {o.kind === 'annotated' ? 'annotated dataset' : 'file dataset'}
-            {' — '}
-            <a href={gitWebUrl(o.git_url)} target="_blank" rel="noreferrer">
-              view in git
-            </a>
-          </p>
+          <div className="dataset-title">
+            <h1 className="dataset-name">
+              {owner && <span className="dataset-owner data">{owner}</span>}
+              <span className="dataset-leaf">{leaf}</span>
+            </h1>
+            <p className="dataset-meta">
+              {o.kind === 'annotated' ? 'Annotated dataset' : 'File dataset'}
+              {o.restricted && <span className="chip restricted-badge">restricted</span>}
+              <span className="dataset-meta-sep" aria-hidden="true" />
+              {o.items.toLocaleString()} {o.items === 1 ? 'item' : 'items'}, {humanBytes(o.bytes)}
+              <span className="dataset-meta-sep" aria-hidden="true" />
+              <a href={gitWebUrl(o.git_url)} target="_blank" rel="noreferrer">
+                View in git
+              </a>
+            </p>
+          </div>
+          <ReleaseTape commits={o.commits} pinned={pinned} onPick={(r) => setSearch({ release: r })} />
         </div>
       </header>
-
-      <ReleaseTape
-        commits={o.commits}
-        pinned={pinned}
-        onPick={(r) => setSearch({ release: r })}
-      />
 
       <nav className="tabs" aria-label="Dataset views">
         <Link
@@ -136,7 +144,7 @@ export function DatasetOverview() {
       </nav>
 
       {view === 'overview' ? (
-        <OverviewTab overview={o} pinned={pinned} />
+        <OverviewTab overview={o} pinned={pinned} commit={pinnedCommit} release={search.release} />
       ) : view === 'browse' ? (
         <BrowseTab
           name={name}

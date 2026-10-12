@@ -1,15 +1,33 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { getSubsetSize, type Overview } from '../api';
+import { Link } from '@tanstack/react-router';
+import { getBrowse, getSubsetSize, type Overview } from '../api';
+import { extOf } from '../browseFilter';
 import { humanBytes } from '../format';
+import { AnnotationOverlay } from '../overlays';
+import { Thumb } from '../Thumb';
+import { thumbsFor } from '../thumbs';
 
-export function OverviewTab({ overview: o, pinned }: { overview: Overview; pinned: string | null }) {
+export function OverviewTab({
+  overview: o,
+  pinned,
+  commit,
+  release,
+}: {
+  overview: Overview;
+  pinned: string | null;
+  commit: string | null;
+  /** The release in the URL, kept on links into Browse. */
+  release: string | undefined;
+}) {
   return (
-    <div className="dataset-columns">
+    <>
+      {commit && o.items > 0 && <LookInside overview={o} commit={commit} release={release} />}
+      <div className="dataset-columns">
       <section className="panel card" aria-label="Dataset card">
         <h2>Dataset card</h2>
         <p className="engraved data">
-          {o.items.toLocaleString()} items · {humanBytes(o.bytes)}
+          {o.items.toLocaleString()} {o.items === 1 ? 'item' : 'items'} · {humanBytes(o.bytes)}
           {o.classes.length > 0 && <> · {o.classes.length} classes</>}
         </p>
         {o.classes.length > 0 && (
@@ -46,7 +64,71 @@ export function OverviewTab({ overview: o, pinned }: { overview: Overview; pinne
       </section>
 
       <UseThisDataset overview={o} pinned={pinned} />
-    </div>
+      </div>
+    </>
+  );
+}
+
+const noneHidden: ReadonlySet<string> = new Set();
+
+// A look inside: the version's first items, as Browse shows them (real
+// previews with their annotations drawn, or type tiles), each opening in
+// Browse. One page request and one thumbnail request, never a scan.
+function LookInside({ overview: o, commit, release }: { overview: Overview; commit: string; release: string | undefined }) {
+  const sample = useQuery({
+    queryKey: ['look-inside', o.name, commit],
+    queryFn: async () => {
+      const page = await getBrowse(o.name, commit, { limit: 8 });
+      const thumbs = await thumbsFor(o.name, page.items);
+      return { items: page.items, thumbs: new Map(thumbs.map((t) => [t.hash, t.url])) };
+    },
+  });
+  if (!sample.data || sample.data.items.length === 0) return null;
+  const { items, thumbs } = sample.data;
+  return (
+    <section className="look-inside" aria-label="A look inside">
+      <div className="look-inside-head">
+        <h2>A look inside</h2>
+        <Link to="/d/$" params={{ _splat: o.name }} search={{ view: 'browse', release }}>
+          Browse all {o.items.toLocaleString()} {o.items === 1 ? 'item' : 'items'}
+        </Link>
+      </div>
+      <ul className="look-inside-strip">
+        {items.map((item) => (
+          <li key={item.path}>
+            <Link
+              to="/d/$"
+              params={{ _splat: o.name }}
+              search={{ view: 'browse', release, item: item.path }}
+              className="tile look-tile"
+            >
+              {thumbs.has(item.hash) ? (
+                item.item_id && item.width && item.height ? (
+                  <span className="tile-media">
+                    <span className="overlay-fit" style={{ aspectRatio: `${item.width} / ${item.height}` }}>
+                      <Thumb src={thumbs.get(item.hash)} alt={item.path} label={extOf(item.path)} lazy>
+                        <AnnotationOverlay
+                          width={item.width}
+                          height={item.height}
+                          annotations={item.annotations}
+                          hidden={noneHidden}
+                          opacity={1}
+                        />
+                      </Thumb>
+                    </span>
+                  </span>
+                ) : (
+                  <Thumb src={thumbs.get(item.hash)} alt={item.path} label={extOf(item.path)} lazy />
+                )
+              ) : (
+                <span className="tile-type data">{extOf(item.path)}</span>
+              )}
+              <span className="tile-path data">{item.path}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -139,7 +221,7 @@ function UseThisDataset({ overview: o, pinned }: { overview: Overview; pinned: s
             ? 'No item matches this subset. Pick fewer splits or classes.'
             : splits.size + classes.size > 0
               ? `${kept.items.toLocaleString()} of ${kept.total.toLocaleString()} items · ${humanBytes(kept.bytes)}`
-              : `${kept.items.toLocaleString()} items · ${humanBytes(kept.bytes)}`}
+              : `${kept.items.toLocaleString()} ${kept.items === 1 ? 'item' : 'items'} · ${humanBytes(kept.bytes)}`}
       </p>
       <p className="quiet">
         Works as pasted: your SSH key is the login.{' '}

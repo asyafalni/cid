@@ -435,25 +435,87 @@
 
 .dataset-head {
   margin-top: calc(-1 * var(--space-8));
-  padding: var(--space-8) 0 var(--space-6);
+  padding: var(--space-8) 0 0;
 }
 
 .dataset-name {
-  font-family: var(--font-data);
-  font-size: 1.35rem;
-  font-weight: 500;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
   color: var(--on-sky);
 }
 
+.dataset-owner {
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: var(--on-sky-muted);
+}
+
+.dataset-leaf {
+  font-family: var(--font-display);
+  font-size: 2.5rem;
+  line-height: 1.1;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
 .dataset-meta {
-  margin: var(--space-1) 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin: var(--space-3) 0 0;
   color: var(--on-sky-muted);
   font-size: 0.875rem;
 }
 
+.dataset-meta-sep {
+  width: 1px;
+  height: 0.875rem;
+  background: currentColor;
+  opacity: 0.5;
+}
+
 .dataset-meta a {
-  color: inherit;
+  color: var(--on-sky);
   text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.dataset-meta .restricted-badge {
+  margin-left: 0;
+}
+
+/* The tape rides the bottom of the sky: glass tags on a brass rail. */
+.dataset-head .tape {
+  border-bottom: none;
+  margin: var(--space-6) 0 0;
+  padding: 0;
+}
+
+.dataset-head .tape-run {
+  padding-top: 0;
+  border-bottom-color: color-mix(in srgb, var(--on-sky) 45%, transparent);
+}
+
+.dataset-head .tick-mark {
+  background: color-mix(in srgb, var(--on-sky) 60%, transparent);
+}
+
+.dataset-head .tape-legend {
+  color: var(--on-sky-muted);
+  margin: 0;
+  padding: var(--space-2) 0 var(--space-3);
+}
+
+.dataset-head .tape--empty {
+  border-color: color-mix(in srgb, var(--on-sky) 30%, transparent);
+  background: none;
+  margin-bottom: var(--space-6);
+}
+
+.dataset-head .tape--empty .quiet {
+  color: var(--on-sky-muted);
 }
 
 /* --- the release tape: the one bold element --- */
@@ -538,6 +600,11 @@
   grid-template-columns: 1fr 1fr;
   gap: var(--space-4);
   align-items: start;
+}
+
+/* A long clone command scrolls inside its box, never widens the column. */
+.dataset-columns > * {
+  min-width: 0;
 }
 
 .card {
@@ -1937,4 +2004,55 @@
 
 .home-layout .format {
   font-family: var(--font-ui);
+}
+
+/* --- overview: a look inside --- */
+
+.look-inside {
+  margin-bottom: var(--space-6);
+}
+
+.look-inside-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+}
+
+.look-inside-head h2 {
+  font-size: 1.25rem;
+}
+
+.look-inside-head a {
+  font-size: 0.875rem;
+}
+
+.look-inside-strip {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: var(--space-3);
+}
+
+.look-tile:hover {
+  text-decoration: none;
+  border-color: color-mix(in srgb, var(--aether) 45%, var(--line));
+}
+
+@media (max-width: 640px) {
+  .dataset-leaf {
+    font-size: 2rem;
+  }
+
+  .look-inside-strip {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.dataset > .tabs {
+  margin-top: var(--space-2);
+  overflow-x: auto;
 }

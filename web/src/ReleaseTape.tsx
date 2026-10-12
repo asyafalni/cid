@@ -24,6 +24,17 @@ export function ReleaseTape({
 
   // Oldest on the left, like a tape that has been running.
   const run = [...commits].reverse();
+  const releases = commits.filter((c) => c.release !== null).length;
+  const commitCount = commits.length === 1 ? '1 commit' : `${commits.length} commits`;
+
+  // Commits but no release: nothing to pin yet, so no tape, just the facts.
+  if (releases === 0) {
+    return (
+      <nav className="tape tape--unreleased" aria-label="Releases and commits">
+        <p className="tape-legend quiet">{commitCount}, no releases yet. The page shows the newest commit.</p>
+      </nav>
+    );
+  }
 
   return (
     <nav className="tape" aria-label="Releases and commits">
@@ -49,14 +60,9 @@ export function ReleaseTape({
         ))}
       </ol>
       <p className="tape-legend quiet">
-        {commits.length === 1 ? '1 commit' : `${commits.length} commits`} ·{' '}
-        {countReleases(commits)} — each tag pins the page to that release
+        {commitCount}, {releases === 1 ? '1 release' : `${releases} releases`}. Pick a release to pin
+        the page to it.
       </p>
     </nav>
   );
-}
-
-function countReleases(commits: TapeCommit[]): string {
-  const n = commits.filter((c) => c.release !== null).length;
-  return n === 1 ? '1 release' : `${n} releases`;
 }

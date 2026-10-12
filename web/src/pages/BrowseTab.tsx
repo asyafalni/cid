@@ -7,7 +7,6 @@ import {
   getDownloads,
   getHistory,
   getText,
-  getThumbs,
   reveal,
   type BrowseItem,
   type Revealed,
@@ -22,6 +21,7 @@ import { classColor } from '../shapes';
 import { timeline } from '../history';
 import { TableView } from '../TableView';
 import { Thumb } from '../Thumb';
+import { thumbsFor } from '../thumbs';
 import { anyFilter, extOf, type FilterPatch, type Filters } from '../browseFilter';
 
 // A page of the gallery or table: what the server answers per request,
@@ -694,18 +694,6 @@ function VirtualTable({
   );
 }
 
-/** Thumbnails for a page's visual items. Previews are optional: when they
- * cannot be had, the items show as type tiles, never as an error. */
-async function thumbsFor(name: string, items: StateItem[]): Promise<{ hash: string; url: string }[]> {
-  const hashes = items.filter((i) => looksVisual(i.path)).map((i) => i.hash);
-  if (hashes.length === 0) return [];
-  try {
-    return (await getThumbs(name, hashes)).thumbs;
-  } catch {
-    return [];
-  }
-}
-
 // The next page: fetched while the button is still two screens below the
 // view, so a quick scroll finds the items already there instead of
 // waiting on the network at the end of them (docs/dashboard.md, gallery
@@ -746,11 +734,6 @@ function MoreItems({
 
 function isTable(path: string): boolean {
   return /\.(csv|parquet|jsonl|ndjson)$/i.test(path);
-}
-
-// Items that get a thumbnail: pictures, video posters, audio waveforms.
-function looksVisual(path: string): boolean {
-  return /\.(png|jpe?g|gif|webp|bmp|mp4|mov|mkv|webm|avi|wav|mp3|flac|ogg|oga|m4a)$/i.test(path);
 }
 
 function isVideo(path: string): boolean {

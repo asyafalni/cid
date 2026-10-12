@@ -38,7 +38,7 @@ blur and logged reveal; your SSH keys and personal tokens; the preview worker (f
 only).
 
 **Not built yet** (the spec below says so where it applies): the health badge, Health
-tab and Validator tiles; card completeness and the sample strip; most Browse filters,
+tab and Validator tiles; card completeness; most Browse filters,
 histograms and the List view; keyboard shortcuts beyond `g`/`t`; the "Show command"
 toggle; the `⌘K` palette; the 404 page; charts and gauges; PDF page
 images (`vips`); viewing branches or pinning a commit; the SQL console; semantic
@@ -265,15 +265,17 @@ are cid's own for now.
 
 Every dataset page (all five tabs) shares one header and the release tape.
 
-- **Header** (built): name, kind (file or annotated), and a plain **"view in git"** link
-  to the dataset repository. The `cid clone` command lives in "Use this dataset";
-  owners show on the home row; the restricted badge shows in Browse. *Planned:* owners
-  and the restricted badge in the header, and the repository's git status (up to date
-  or pending).
+- **Header** (built): the sky band, with the path's owner part in monospace above the
+  name in Fraunces (the heading reads the full path), then the kind, the restricted
+  badge, the item count and size, and a plain **"View in git"** link to the dataset
+  repository; the release tape rides the bottom of the sky. The `cid clone` command
+  lives in "Use this dataset"; owners show on the home card. *Planned:* owners in the
+  header, and the repository's git status (up to date or pending).
 - **Release tape** (built): the history of `main`, newest 100 commits, oldest on the
   left. Each release is a button that pins the page to it (`?release=` in the URL);
   with none chosen, the newest release is pinned. Commits are ticks that show their
-  message and author on hover but cannot be picked. *Not built yet:* pinning a commit,
+  message and author on hover but cannot be picked. With commits but no release, the
+  tape is only its facts ("1 commit, no releases yet"). *Not built yet:* pinning a commit,
   and viewing branches (the tape shows `main` only).
 - The auto card here and the dataset repository's `README.md` are separate renderers
   that read the same commit statistics (`stats`), so their numbers agree. Every link
@@ -287,8 +289,10 @@ Every dataset page (all five tabs) shares one header and the release tape.
 - *Planned:* **Card completeness** (owner-only): a checklist like Kaggle's usability
   score: purpose, collection method, license, provenance, known gaps, cover image,
   column descriptions. Depends on card editing.
-- *Planned:* **Sample strip:** a random but stable sample of items, rendered
-  media-native.
+- **A look inside** (built): the pinned version's first eight items in path order,
+  as Browse shows them (previews with annotations drawn, type tiles for the rest),
+  each opening in Browse; one page request and one thumbnail request. *Planned:* a
+  random but stable sample instead of the first items.
 - **Use this dataset** (built): format picker (`files`, `jsonl`, `yolo` for annotated
   datasets, `files` only for file datasets; `coco` and `voc` exports do not exist
   yet), split/class subset picker (the same
