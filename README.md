@@ -38,7 +38,19 @@ If you know git, you already know cid: `add`, `commit`, `push`, `pull`, `checkou
 
 The cid server also serves a web dashboard for browsing, comparing and downloading
 datasets. It shows media as media and every change between two versions, and every view
-is a link. It changes no data. Design: [`docs/dashboard.md`](docs/dashboard.md).
+is a link. It changes no data. Two themes, Night flight and Daybreak, follow the system
+or the switch in the top bar. Design: [`docs/dashboard.md`](docs/dashboard.md).
+
+**Every dataset on the server**, led by its own previews (type tiles for data that is not visual).
+
+| Night flight | Daybreak |
+|---|---|
+| ![The datasets home in the dark theme: a sky with the search, then dataset cards](docs/screenshots/home-night.png) | ![The datasets home in the light theme](docs/screenshots/home-daybreak.png) |
+
+**A dataset:** its releases in the header, a look inside, and the exact `cid clone`
+command for any format or subset.
+
+![A dataset's overview: the release tape, sample items with their boxes, the card and the clone command](docs/screenshots/overview.png)
 
 **Compare two releases of an annotated dataset:** the moved box, old (dashed) beside new.
 
@@ -54,13 +66,12 @@ is a link. It changes no data. Design: [`docs/dashboard.md`](docs/dashboard.md).
 |---|---|
 | ![Browsing a file dataset in the dark theme](docs/screenshots/browse-night.png) | ![Browsing a file dataset in the light theme](docs/screenshots/browse-daybreak.png) |
 
-**Overview:** what the dataset holds, and the exact `cid clone` command for any format or subset.
+**Sign-in** with GitLab, or with the server's token when GitLab sign-in is not set up;
+and where an unknown address lands.
 
-![A dataset's overview: its card and the clone command](docs/screenshots/overview.png)
-
-**Sign-in:** with GitLab, or with the server's token when GitLab sign-in is not set up.
-
-![The sign-in page](docs/screenshots/signin.png)
+| Sign-in | Lost in the clouds |
+|---|---|
+| ![The sign-in page](docs/screenshots/signin.png) | ![The 404 page: Lost in the clouds](docs/screenshots/lost-in-the-clouds.png) |
 
 ## Status
 
