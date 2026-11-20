@@ -1,8 +1,10 @@
 # Roadmap
 
-What is left, in the order to take it: cheapest first, an experience tier that runs
-beside everything else (making the dashboard better than Hugging Face's pages, and
-checking that it is), then the direction work (a Hugging Face door, models, lineage).
+What is left and what is done. Section 0 is the short answer: where the work stands
+and what to take next. The tiers below keep the detail: small dashboard pieces (A),
+the experience tier that makes the dashboard better than Hugging Face's pages and
+checks that it is (U), one-server-change pieces (B), and the direction work (C: a
+Hugging Face door, models, lineage).
 Arranged 2026-11-20. `CLAUDE.md` is still the law; where this file and `CLAUDE.md`
 disagree about scope, section 1 below records the newer decision and `CLAUDE.md` is
 updated in the change that builds it.
@@ -12,11 +14,25 @@ same change.
 
 ## 0. Where the work stands
 
-- `main` holds the first round of dashboard leftovers (merged 2026-11-20): the
-  overview counts the pinned release; file types in the card; per-release counts in
-  the history; type and open-in-Browse in the Files tab; reduced-motion and
-  malformed-CSV tests; git status in the header and activity filters.
-- Models (C2) and the Hugging Face door (C1) are on `main` (2026-11-20).
+Everything is on `main`; no branch or pull request is open (2026-11-20).
+
+- **Done:** all of Tier A; Tier B except the rest of B6; the Hugging Face door (C1),
+  models (C2) and lineage (C3); the first half of U1. The toolchain is Zig 0.17.1
+  with nilo v0.8.0.
+- **What is left, in the order to take it:**
+  1. U1's missing sets (dark theme, 1024 and 390 px, the measured report), then U2:
+     the twelve defects listed there, worst first.
+  2. U3 and U4 (no blank waits; the first minute).
+  3. The rest of B6 (attribute and identity filters, histograms, the List view).
+  4. U5 to U8 and U10, one between each larger piece.
+  5. C1's two loose ends: the real-client check as an automated test (needs Python
+     and the Hugging Face libraries agreed as a test-only dependency), and an
+     annotated split's file at 1M items (first request not measured, not prepared
+     ahead).
+  6. Small gaps left by finished items: comparing a branch with `main` (B7); actions
+     in the `⌘K` palette (B9); per-class change counts in `cid diff` (B5).
+  7. U11 (watch three engineers use it), once U1 to U4 are in.
+  8. Tier D, each with its own design first.
 - Running the e2e suite needs Playwright's browser:
   `pnpm --dir web exec playwright install chromium`.
 - The e2e database is seeded once and kept. A fixture change must be its own
@@ -94,11 +110,13 @@ Where cid stands against Hugging Face today:
 | A link to one row of a table | Yes | **Behind:** a link to a file, not a row |
 | SQL over a version | Yes, in the browser | **Behind:** not built |
 | Embedding the viewer elsewhere | Yes (iframe) | **Behind:** not built |
-| One line of code to load | `load_dataset(...)` | **Behind** until C1 |
+| One line of code to load | `load_dataset(...)` | **Level** since C1: the same line, with `HF_ENDPOINT` set |
 
 Close the "behind" rows without giving up an "ahead" one.
 
-- **U1. Look at every page, and write down what is off.** A Playwright script that
+- **U1. Look at every page, and write down what is off.** *Half done (2026-11-20):
+  the script is `web/e2e/screens.spec.ts`, and the light theme at 1440 px has been
+  read; see U2 for what is still to take.* A Playwright script that
   takes a screenshot of every page in the e2e fixtures, in both themes, at 1440, 1024
   and 390 pixels wide, into one folder. Read them all against the design language
   (`docs/dashboard.md`, section 3) and its rules (3.4): spacing, alignment, type
@@ -182,8 +200,8 @@ Close the "behind" rows without giving up an "ahead" one.
 - **U8. Search inside text.** Text files and string columns, per version. Needs an
   index decision first (DuckDB full-text search over the browse index, or not at
   all); write that decision up before building.
-- **U9. Keyboard everywhere, and "Show command"** (A2, B9): the two things an
-  engineer notices first.
+- ~~**U9. Keyboard everywhere, and "Show command"**~~ (done 2026-11-20 with A2 and
+  B9: Browse's keys, the command for the view on screen, the `⌘K` palette).
 - **U10. Embedding.** A chrome-less view of Browse and of one item (`embed=1`), for
   wikis and merge requests, under the same access rules. Never for a restricted
   dataset.
@@ -235,8 +253,9 @@ none, or one `train` when there are no splits. Checked with the real clients:
 streaming. A split's file is built on its first request and kept; at 1M items that
 first request waits for the build (not measured yet; the background worker does not
 prepare it ahead).
-**Still to do:** models once C2 lands (`/api/models/…` routes are answered; the root
-`/{ns}/{name}/resolve/…` route is not registered yet).
+**Models: done with C2 (2026-11-20),** on `/api/models/…` and at the root.
+**Still to do:** the real-client check as an automated test, and an annotated
+split's file at 1M items (section 0, item 5).
 
 Facts read from `huggingface_hub` 2.4.0, `datasets` 5.2.0 and `transformers` 5.23.0
 on 2026-11-20. Check them against the versions current when building.
@@ -258,8 +277,8 @@ Rules the client imposes:
   breaks `load_dataset`, which probes for files that are not there. Send
   `X-Repo-Commit` on that 404 too.
 - **Commit ids should look like git's.** A UUIDv7 works but is treated as a branch
-  name, so every file is checked again on every run. Give each commit a 40-hex alias
-  that maps back without a table: its 32 hex digits, then `00000000`.
+  name, so every file is checked again on every run. Each commit has a 40-hex alias
+  that maps back without a table: its 32 hex digits, then `00000000` (built).
 - **A revision is a release, a branch, or a commit id** (either form), resolved on the
   server in all three routes.
 - **Never send an `X-Xet-*` header.** Without one the client downloads over plain
@@ -270,15 +289,16 @@ Rules the client imposes:
   `https://` endpoints.
 
 What each kind serves: a file dataset or a model, its files as committed; an annotated
-dataset, its `jsonl` export, one file per split (`train.jsonl`, …), which
-`load_dataset` reads with no README. A restricted dataset is served under the same
+dataset, its items at their paths plus `_annotations/<split>.jsonl.gz` and a generated
+`README.md` naming those as the splits. A restricted dataset is served under the same
 rules as a clone, each read logged as a download.
 
-Done when a test drives the real Python clients against `cid admin serve`:
+Fully done when a test drives the real Python clients against `cid admin serve`:
 `snapshot_download`, `load_dataset` (a file dataset of Parquet or JSONL, and an
 annotated one) and `from_pretrained` (a tiny model), each at a release, with a second
-run that downloads nothing. That test needs Python and those libraries on the test
-machine: a new test-only dependency, to be agreed first.
+run that downloads nothing. All of these were checked by hand; the automated test
+needs Python and those libraries on the test machine: a new test-only dependency, to
+be agreed first.
 
 Known and accepted: `hf cache verify` compares SHA-256 and git SHA-1 and will report
 mismatches against BLAKE3 names.
