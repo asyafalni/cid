@@ -1,5 +1,6 @@
-//! `cid init <address> --git <git-url>`: create a dataset from the current
-//! folder, paired with its git repository (both addresses required, rule 3).
+//! `cid init <address> --git <git-url> [--model]`: create a dataset from the
+//! current folder, paired with its git repository (both addresses required,
+//! rule 3). `--model` creates a model: the same thing, called what it is.
 
 const std = @import("std");
 const common = @import("common.zig");
@@ -9,17 +10,21 @@ const Remote = @import("../client/remote.zig").Remote;
 const usage_hint =
     "run 'cid init <address> --git <git-url>', e.g.\n" ++
     "  cid init cid@cidhub.com:your-org/datasets/my-data \\\n" ++
-    "    --git git@gitlab.com:your-org/datasets/my-data.git";
+    "    --git git@gitlab.com:your-org/datasets/my-data.git\n" ++
+    "(add --model when the folder holds a model's files)";
 
 pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCode {
     var address: ?[]const u8 = null;
     var git_url: ?[]const u8 = null;
+    var kind: []const u8 = "files";
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--git")) {
             i += 1;
             if (i >= args.len) return common.fail(ctx, .usage, "--git needs a value; {s}", .{usage_hint});
             git_url = args[i];
+        } else if (std.mem.eql(u8, args[i], "--model")) {
+            kind = "model";
         } else if (address == null) {
             address = args[i];
         } else {
@@ -45,7 +50,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     var registered = false;
     var made: Remote.Made = .{};
     if (common.remoteFor(ctx, path, .create, addr)) |remote| {
-        const created = remote.create(ctx.arena, git) catch |err| switch (err) {
+        const created = remote.create(ctx.arena, git, kind) catch |err| switch (err) {
             error.AccessDenied => return common.denied(ctx, "cid init"),
             error.ServerUnreachable => return common.fail(ctx, .network, "cannot reach the server to create the dataset. Check the connection, then run 'cid init' again.", .{}),
             else => return common.fail(ctx, .network, "the server could not create the dataset. Run 'cid init' again; if it persists, tell the administrator.", .{}),
@@ -68,16 +73,16 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         else => {},
     }
 
-    workspace.init(ctx.arena, ctx.io, work_dir, addr, git) catch |err| switch (err) {
+    workspace.initFull(ctx.arena, ctx.io, work_dir, addr, git, kind, "files", .{}) catch |err| switch (err) {
         error.BadAddress => return common.fail(ctx, .usage, "'{s}' is not a cid address (expected cid@host:org/path); {s}", .{ workspace.redacted(ctx.arena, addr) catch "that address", usage_hint }),
         error.AlreadyADataset => return common.fail(ctx, .usage, "this folder is already a cid dataset. Run 'cid status'.", .{}),
         else => return common.fail(ctx, .network, "could not write .cid/ here. Check folder permissions, then run 'cid init' again.", .{}),
     };
 
-    if (common.emitJson(ctx, .{ .dataset = path, .address = workspace.withoutCredentials(ctx.arena, addr) catch addr, .git = git, .on_server = registered })) return .ok;
+    if (common.emitJson(ctx, .{ .dataset = path, .kind = kind, .address = workspace.withoutCredentials(ctx.arena, addr) catch addr, .git = git, .on_server = registered })) return .ok;
     ctx.out.print(
-        "Initialized {s} from this folder{s}.\nNext: 'cid add .' to stage files, then 'cid commit -m \"First import\"'.\n",
-        .{ path, if (!registered) "" else if (made.git_checked) " (created on the server; its git repository is writable)" else " (created on the server)" },
+        "Initialized {s}{s} from this folder{s}.\nNext: 'cid add .' to stage files, then 'cid commit -m \"First import\"'.\n",
+        .{ path, if (std.mem.eql(u8, kind, "model")) ", a model," else "", if (!registered) "" else if (made.git_checked) " (created on the server; its git repository is writable)" else " (created on the server)" },
     ) catch return .network;
     return .ok;
 }

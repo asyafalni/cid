@@ -405,7 +405,7 @@ fn authorized(
 const Dataset = struct {
     id: []const u8, // uuid text
     name: []const u8,
-    kind: []const u8, // 'files' | 'annotated'
+    kind: []const u8, // 'files' | 'annotated' | 'model'
     /// Previews blurred until a logged reveal; every clear URL logged.
     restricted: bool = false,
 };
@@ -1676,7 +1676,8 @@ fn createDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, auth_hea
     if (req.name.len == 0 or req.git_url.len == 0) return error.BadRequest;
     if (!authorized(arena, deps, scope, .{ .header = auth_header }, req.name, .write))
         return errorResponse(arena, .unauthorized, "missing, wrong or expired token for this dataset", "Run the command again; cid fetches a fresh token over SSH. CI: check CID_TOKEN.");
-    if (!eql(req.kind, "files") and !eql(req.kind, "annotated")) return error.BadRequest;
+    // A model is a file dataset by another name: only its label differs.
+    if (!eql(req.kind, "files") and !eql(req.kind, "annotated") and !eql(req.kind, "model")) return error.BadRequest;
 
     if (lookupDataset(arena, deps, scope, req.name) != null)
         return errorResponse(arena, .conflict, "the dataset already exists", "Run 'cid clone' to work with it.");

@@ -13,7 +13,7 @@ const Uuid = @import("../util/uuid7.zig").Uuid;
 pub const Config = struct {
     address: []const u8,
     git_url: []const u8,
-    /// 'files' | 'annotated'; folders made by older builds default to files.
+    /// 'files' | 'annotated' | 'model'; folders made by older builds default to files.
     kind: []const u8 = "files",
     /// The export format this folder was cloned with ('files' = plain tree).
     format: []const u8 = "files",
