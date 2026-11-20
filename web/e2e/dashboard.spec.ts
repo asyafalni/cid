@@ -41,7 +41,7 @@ test('the overview carries the tape, the card and the paste-ready command', asyn
   // What kind of data it is, counted: never assumed to be images.
   const types = card.getByRole('table', { name: 'Items by type' });
   await expect(types.getByRole('row', { name: /\.png items 2/ })).toBeVisible();
-  await expect(types.getByRole('row', { name: /\.txt items 2/ })).toBeVisible();
+  await expect(types.getByRole('row', { name: /\.txt items 2 33 B/ })).toBeVisible();
   await expect(page.getByText(/cid clone cid@.*e2e\/datasets\/demo --release v1\.1\.0/)).toBeVisible();
   // Picking the older release repins and lands in the URL (every view is a link).
   await page.getByRole('button', { name: 'v1.0.0' }).click();
@@ -50,7 +50,7 @@ test('the overview carries the tape, the card and the paste-ready command', asyn
   // The card and the header count the pinned release, not main's head.
   await expect(page.getByRole('region', { name: 'Dataset card' }).getByText(/3 items ·/)).toBeVisible();
   await expect(page.locator('.dataset-meta').getByText(/3 items,/)).toBeVisible();
-  await expect(types.getByRole('row', { name: /\.txt items 1/ })).toBeVisible();
+  await expect(types.getByRole('row', { name: /\.txt items 1 16 B/ })).toBeVisible();
   // A type is a way into Browse, filtered, at the same release.
   await types.getByRole('link', { name: 'Browse the .txt items' }).click();
   await expect(page).toHaveURL(/view=browse/);

@@ -284,12 +284,12 @@ Every dataset page (all five tabs) shares one header and the release tape.
   that read the same commit statistics (`stats`), so their numbers agree. Every link
   in the git README lands on the dashboard pinned to that release.
 - **Auto dataset card.** *Built:* item count and size, class count, the class table
-  (with index), split sizes, and items by file type (the eight commonest, each a link
-  into Browse filtered to it), all of the pinned release, as the header's count and
+  (with index), split sizes, and items by file type with their size (the eight
+  commonest, each a link into Browse filtered to it), all of the pinned release, as the header's count and
   size are (`overview?release=`; a release is found by name, so one older than the
   tape's 100 commits pins too). An annotated dataset's card also names the newest
   labelling policy its annotations were made under (not for a restricted one, as in
-  git). *Planned:* sizes per type, last release notes, and the owners' own words
+  git). *Planned:* last release notes, and the owners' own words
   (purpose, collection method, known gaps), which wait on card editing, a parked
   decision.
 - *Planned:* **Card completeness** (owner-only): a checklist like Kaggle's usability

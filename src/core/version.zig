@@ -280,13 +280,15 @@ pub fn pass(
 // ---------------------------------------------------------------------------
 
 pub const Count = struct { name: []const u8, count: u64 };
+/// Items of one file type, and their size together.
+pub const TypeCount = struct { name: []const u8, count: u64, bytes: u64 = 0 };
 
 pub const Stats = struct {
     v: u32 = stats_version,
     items: u64 = 0,
     bytes: u64 = 0,
-    /// Every file type by count, most first (at most 200).
-    types: []const Count = &.{},
+    /// Every file type by count, most first (at most 200), with its bytes.
+    types: []const TypeCount = &.{},
     splits: []const Count = &.{},
     /// Up to four visual items, the first by path: a stable sample.
     visual: []const []const u8 = &.{},
@@ -297,7 +299,9 @@ pub const Stats = struct {
     policy: ?[]const u8 = null,
 };
 
-pub const stats_version: u32 = 2;
+/// 3: each type carries its bytes. Statistics kept under an older version
+/// are aggregated again the first time they are read, and kept anew.
+pub const stats_version: u32 = 3;
 
 const visual_types = "('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.mp4', '.mov', '.webm', '.mkv')";
 
@@ -309,8 +313,8 @@ fn statsOver(comptime live: []const u8, comptime alive: []const u8) []const u8 {
         "SELECT json_build_object('v', " ++ std.fmt.comptimePrint("{d}", .{stats_version}) ++ ", " ++
         "'items', (SELECT count(*) FROM t), " ++
         "'bytes', (SELECT coalesce(sum(size_bytes), 0) FROM t), " ++
-        "'types', (SELECT coalesce(json_agg(json_build_object('name', ext, 'count', n) ORDER BY n DESC, ext COLLATE \"C\"), '[]') " ++
-        "   FROM (SELECT ext, count(*) AS n FROM t GROUP BY ext ORDER BY n DESC, ext COLLATE \"C\" LIMIT 200) x), " ++
+        "'types', (SELECT coalesce(json_agg(json_build_object('name', ext, 'count', n, 'bytes', b) ORDER BY n DESC, ext COLLATE \"C\"), '[]') " ++
+        "   FROM (SELECT ext, count(*) AS n, coalesce(sum(size_bytes), 0) AS b FROM t GROUP BY ext ORDER BY n DESC, ext COLLATE \"C\" LIMIT 200) x), " ++
         "'splits', (SELECT coalesce(json_agg(json_build_object('name', split, 'count', n) ORDER BY split COLLATE \"C\"), '[]') " ++
         "   FROM (SELECT split, count(*) AS n FROM t WHERE split IS NOT NULL GROUP BY split) x), " ++
         "'visual', (SELECT coalesce(json_agg(h ORDER BY p COLLATE \"C\"), '[]') " ++

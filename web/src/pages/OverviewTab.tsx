@@ -52,6 +52,7 @@ export function OverviewTab({
                     </Link>
                   </td>
                   <td className="data count">{t.count.toLocaleString()}</td>
+                  <td className="data count">{humanBytes(t.bytes)}</td>
                 </tr>
               ))}
               {o.types.length > shownTypes && (
@@ -62,6 +63,9 @@ export function OverviewTab({
                       .slice(shownTypes)
                       .reduce((sum, t) => sum + t.count, 0)
                       .toLocaleString()}
+                  </td>
+                  <td className="data count">
+                    {humanBytes(o.types.slice(shownTypes).reduce((sum, t) => sum + t.bytes, 0))}
                   </td>
                 </tr>
               )}

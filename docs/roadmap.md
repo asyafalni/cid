@@ -145,8 +145,7 @@ both themes, and works with reduced motion. Beauty never costs a budget.
   put each file there. One query per page over `item_revisions`; measure it at 1M
   items over compressed history (`tests/bench/browse_1m.sh`, `COMPRESS=1`) before
   keeping it.
-- **B2. Size per file type** in the card. Needs `stats_version` 3 in
-  `src/core/version.zig`; every kept statistic is then recomputed on first read.
+- ~~**B2. Size per file type** in the card~~ (done 2026-11-20; statistics format 3).
 - **B3. Purge notice** on a release in the history: "intact except N purged items",
   with the paths (invariant 19).
 - **B4. A stable random sample** for "A look inside" instead of the first eight items.

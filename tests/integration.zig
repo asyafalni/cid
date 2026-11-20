@@ -1606,6 +1606,17 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     try std.testing.expect(std.mem.indexOf(u8, newest.body, "\"items\":3,") != null);
     const unknown = cid.api.handle(arena, &deps, &scope, "GET", overview_url ++ "?release=v9.9.9", "Bearer test-token", "");
     try std.testing.expect(std.mem.indexOf(u8, unknown.body, "\"items\":4,") != null);
+
+    // Each file type with its size: two 17-byte files at v1.0.0.
+    const two_txt = "\"types\":[{\"name\":\".txt\",\"count\":2,\"bytes\":34}]";
+    try std.testing.expect(std.mem.indexOf(u8, first.body, two_txt) != null);
+    // Statistics kept by an older build (no sizes) are aggregated again
+    // when read, and kept under the current version.
+    _ = try db.exec(&fscope, "UPDATE commits SET stats = jsonb_set(stats, '{v}', '2') #- '{types,0,bytes}' WHERE commit_id = $1::uuid", .{commit_for_release});
+    const again = cid.api.handle(arena, &deps, &scope, "GET", overview_url ++ "?release=v1.0.0", "Bearer test-token", "");
+    try std.testing.expect(std.mem.indexOf(u8, again.body, two_txt) != null);
+    const kept_v = (try db.rawOne(i64, &fscope, "SELECT (stats->>'v')::bigint FROM commits WHERE commit_id = $1::uuid", .{commit_for_release})).?;
+    try std.testing.expectEqual(@as(i64, cid.state.stats_version), kept_v);
 }
 
 test "git writer: one commit and tag per release, idempotent, resumable" {
