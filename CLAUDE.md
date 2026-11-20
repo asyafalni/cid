@@ -714,7 +714,7 @@ run them one at a time (the integration suite resets the schema).
 Dashboard changes must pass `pnpm --dir web lint`, `pnpm --dir web typecheck` and the
 e2e suite, and meet the budgets and acceptance tests in `docs/dashboard.md`.
 
-Toolchain: Zig 0.17.0 with nilo v0.8.0 (they move together: nilo 0.8 needs 0.17,
+Toolchain: Zig 0.17.1 with nilo v0.8.0 (they move together: nilo 0.8 needs 0.17,
 every earlier nilo tag 0.16). Zig 0.17 keeps a build's configuration while nothing
 it read changed, so `build.zig` declares each folder it lists while configuring
 (`sql/migrations`, every folder of `web/dist`) with `dependOnDirectoryContents`;
