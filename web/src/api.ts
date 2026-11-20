@@ -79,6 +79,16 @@ export type TapeCommit = {
   release: string | null;
   /** The release is not in the dataset's git repository yet. */
   git_pending?: boolean;
+  /** A release's item count. */
+  items: number | null;
+  /** The release before this one, which the counts below are since; null for the first. */
+  changes_from: string | null;
+  added: number | null;
+  modified: number | null;
+  deleted: number | null;
+  ann_added: number | null;
+  ann_changed: number | null;
+  ann_removed: number | null;
 };
 
 export type Overview = {

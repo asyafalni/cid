@@ -98,13 +98,32 @@ test('compare between the two releases reads as a sentence', async ({ page }) =>
   await expect(page.getByText('notes.txt')).toBeVisible();
 });
 
+test('the history says what each release holds and changed, and links to the comparison', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/demo?view=releases&a=v1.1.0&b=v1.0.0');
+  const history = page.getByRole('region', { name: 'History' });
+  await expect(history.locator('.moment--release').filter({ hasText: 'first frames' })).toContainText(
+    '3 items · the first release',
+  );
+  const newest = history.locator('.moment--release').filter({ hasText: 'notes' });
+  await expect(newest).toContainText('4 items');
+  await newest.getByRole('link', { name: 'since v1.0.0: 1 file added, 0 modified, 0 deleted' }).click();
+  await expect(page).toHaveURL(/a=v1\.0\.0&b=v1\.1\.0/);
+  // An annotated dataset counts its annotations too.
+  await page.goto('/d/e2e/datasets/boxes?view=releases');
+  await expect(page.getByRole('region', { name: 'History' }).getByRole('link', { name: /since v1\.0\.0: .* annotations? added/ })).toBeVisible();
+});
+
 test('the history marks a release the dataset repository does not have yet', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?view=releases');
   const history = page.getByRole('region', { name: 'History' });
   const waiting = history.locator('.moment').filter({ hasText: 'v1.1.0' });
   await expect(waiting.getByText('not in git yet')).toBeVisible();
-  await expect(history.locator('.moment').filter({ hasText: 'v1.0.0' }).getByText('not in git yet')).toHaveCount(0);
+  // By its tag: the newer release's line names v1.0.0 too ("since v1.0.0").
+  const written = history.locator('.moment').filter({ has: page.locator('.release-tag', { hasText: 'v1.0.0' }) });
+  await expect(written).toHaveCount(1);
+  await expect(written.getByText('not in git yet')).toHaveCount(0);
 });
 
 test('the files tab walks the committed tree', async ({ page }) => {

@@ -343,8 +343,10 @@ Every dataset page (all five tabs) shares one header and the release tape.
 
 ### 4.4 Dataset › Releases & history
 - **Timeline.** *Built:* the same `main` commits as the tape, newest first, each with
-  its release tag (if any), message, date, author and commit id. *Planned:* release
-  notes, counts and quality numbers per release, each release's git commit link and
+  its release tag (if any), message, date, author and commit id; a release also says
+  how many items it holds and what it changed since the release before (the counts
+  kept when it was made, as in its git release notes), linking to that comparison.
+  *Planned:* release notes and quality numbers per release, each release's git commit link and
   git status, and, for a release touched by `cid admin purge`, "intact except N purged
   items" with the affected paths.
 - **Compare** any two versions on `main` (releases or commits, picked as A and B; the
@@ -548,8 +550,9 @@ shareable URLs · restricted blur and reveal log · preview worker for images an
 *Status:* built, except: the auto card is partial (counts, file types, class table and
 split sizes only); Browse filters are path,
 split, class and type only; the Releases timeline is partial (message, date, author,
-id, and "not in git yet" on a release the server has not written to the dataset
-repository; no release notes, counts, quality, git link or purge notice) and covers `main`
+id, each release's item count and changes since the one before, and "not in git
+yet" on a release the server has not written to the dataset repository; no release
+notes, quality, git link or purge notice) and covers `main`
 only, and commits cannot be pinned; the Files tab has no types, last change or
 preview panel.
 

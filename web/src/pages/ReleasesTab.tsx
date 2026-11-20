@@ -1,4 +1,5 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { Link } from '@tanstack/react-router';
 import { getCompare, getRowDiff, getThumbs, type CompareSide, type Overview, type StateAnnotation, type TapeCommit } from '../api';
 import { AnnotationOverlay } from '../overlays';
 import { Thumb } from '../Thumb';
@@ -75,12 +76,54 @@ export function ReleasesTab({
                 {' — '}
                 {c.author} · <span className="data">{c.id.slice(0, 13)}</span>
               </p>
+              {c.release && <ReleaseCounts name={name} kind={overview.kind} release={c} />}
             </li>
           ))}
         </ol>
       </section>
     </div>
   );
+}
+
+// What a release holds and what it changed, counted when it was made: the
+// same sentence its git repository's release notes carry, and a way into
+// the comparison itself.
+function ReleaseCounts({ name, kind, release: c }: { name: string; kind: Overview['kind']; release: TapeCommit }) {
+  if (c.items === null && c.changes_from === null) return null;
+  const files =
+    (c.added ?? 0) + (c.modified ?? 0) + (c.deleted ?? 0) === 0
+      ? 'no files changed'
+      : `${n(c.added)} ${c.added === 1 ? 'file' : 'files'} added, ${n(c.modified)} modified, ${n(c.deleted)} deleted`;
+  const annotations =
+    kind === 'annotated'
+      ? `; ${n(c.ann_added)} ${c.ann_added === 1 ? 'annotation' : 'annotations'} added, ${n(c.ann_changed)} changed, ${n(c.ann_removed)} removed`
+      : '';
+  return (
+    <p className="quiet moment-meta moment-counts">
+      {c.items !== null && (
+        <span className="data">
+          {c.items.toLocaleString()} {c.items === 1 ? 'item' : 'items'}
+        </span>
+      )}
+      {c.items !== null && ' · '}
+      {c.changes_from === null ? (
+        'the first release'
+      ) : (
+        <Link
+          to="/d/$"
+          params={{ _splat: name }}
+          search={{ view: 'releases', a: c.changes_from, b: c.release ?? undefined }}
+        >
+          since {c.changes_from}: {files}
+          {annotations}
+        </Link>
+      )}
+    </p>
+  );
+}
+
+function n(count: number | null): string {
+  return (count ?? 0).toLocaleString();
 }
 
 // A count in a compare's summary: a number is data; a zero steps back.

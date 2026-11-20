@@ -1726,11 +1726,26 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, 
         release: ?[]const u8,
         /// The release is not in the dataset repository yet.
         git_pending: bool,
+        /// A release's item count, from the statistics kept on its commit.
+        items: ?i64,
+        /// What a release changed since the one before it (`refs.changes`,
+        /// counted when it was made); all null for a first release.
+        changes_from: ?[]const u8,
+        added: ?i64,
+        modified: ?i64,
+        deleted: ?i64,
+        ann_added: ?i64,
+        ann_changed: ?i64,
+        ann_removed: ?i64,
     };
     const tape = deps.db.raw(TapeEntry, scope, "SELECT c.commit_id::text AS id, c.message, c.author, " ++
-        "(extract(epoch from c.recorded_at) * 1000)::bigint AS at_ms, rel.name AS release, coalesce(rel.pending, false) AS git_pending " ++
+        "(extract(epoch from c.recorded_at) * 1000)::bigint AS at_ms, rel.name AS release, coalesce(rel.pending, false) AS git_pending, " ++
+        "CASE WHEN rel.name IS NOT NULL THEN (c.stats->>'items')::bigint END AS items, rel.changes_from, " ++
+        "(rel.changes->>'added')::bigint AS added, (rel.changes->>'modified')::bigint AS modified, " ++
+        "(rel.changes->>'deleted')::bigint AS deleted, (rel.changes->>'ann_added')::bigint AS ann_added, " ++
+        "(rel.changes->>'ann_changed')::bigint AS ann_changed, (rel.changes->>'ann_removed')::bigint AS ann_removed " ++
         "FROM commits c LEFT JOIN LATERAL (" ++
-        "  SELECT name, " ++ git_pending_sql ++ " AS pending FROM refs r WHERE r.dataset_id = c.dataset_id " ++
+        "  SELECT name, changes_from, changes, " ++ git_pending_sql ++ " AS pending FROM refs r WHERE r.dataset_id = c.dataset_id " ++
         "  AND r.commit_id = c.commit_id AND r.kind = 'release' ORDER BY name LIMIT 1) rel ON true " ++
         "WHERE c.dataset_id = $1::uuid AND c.branch = 'main' " ++
         "ORDER BY c.commit_id DESC LIMIT 100", .{ds.id}) catch return error.Db;
