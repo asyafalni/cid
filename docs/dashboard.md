@@ -383,10 +383,10 @@ There is no Health tab yet. Per-file table statistics already exist (in the draw
 ### 4.6 Dataset › Files
 - *Built:* shown for every dataset, file or annotated. The folder tree exactly as
   committed, one folder at a time: subfolders with their counts, then the folder's
-  files a page at a time, each with its size and a download link. The open folder is
-  part of the URL.
-- *Planned:* file types and last change per file, and a preview panel per file type
-  (today, previews open in Browse's drawer).
+  files a page at a time, each with its type, its size and a download link; a file's
+  name opens it in Browse's drawer (its preview, facts and history) at the same
+  release. The open folder is part of the URL.
+- *Planned:* last change per file, and a preview panel inside the tab.
 
 ### 4.7 Activity
 - *Built:* the dataset's log, newest first, the last 200 events: when (UTC), who, what
@@ -553,8 +553,8 @@ split, class and type only; the Releases timeline is partial (message, date, aut
 id, each release's item count and changes since the one before, and "not in git
 yet" on a release the server has not written to the dataset repository; no release
 notes, quality, git link or purge notice) and covers `main`
-only, and commits cannot be pinned; the Files tab has no types, last change or
-preview panel.
+only, and commits cannot be pinned; the Files tab has no last change or preview
+panel of its own (a file opens in Browse's drawer).
 
 *Delivered ahead of Phase 2:* table statistics. A CSV, Parquet or JSONL item opens as a
 table in the drawer: rows, per-column type, range, distinct count and nulls, and its

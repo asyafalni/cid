@@ -130,7 +130,13 @@ test('the files tab walks the committed tree', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?view=files');
   await expect(page.getByText('README.txt')).toBeVisible();
-  await expect(page.getByText('img-a.png')).toBeVisible();
+  // Each file says its type, and its name opens it in Browse at the same release.
+  const picture = page.getByRole('row', { name: /img-a\.png/ });
+  await expect(picture.getByRole('cell', { name: '.png', exact: true })).toBeVisible();
+  await picture.getByRole('link', { name: 'img-a.png' }).click();
+  await expect(page).toHaveURL(/view=browse/);
+  await expect(page).toHaveURL(/item=img-a\.png/);
+  await expect(page.getByText('200×150')).toBeVisible();
 });
 
 test('the overview opens with a look inside: real items, their annotations, each a way into Browse', async ({ page }) => {

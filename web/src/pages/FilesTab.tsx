@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
+import { Link } from '@tanstack/react-router';
 import { getDir, getDownloads } from '../api';
+import { extOf } from '../browseFilter';
 import { humanBytes } from '../format';
 
 // Files: the folder tree exactly as committed, sizes and types, a
@@ -10,11 +12,14 @@ import { humanBytes } from '../format';
 export function FilesTab({
   name,
   commit,
+  release,
   openDir,
   onOpenDir,
 }: {
   name: string;
   commit: string | null;
+  /** The release in the URL, kept on links into Browse. */
+  release: string | undefined;
   openDir: string | undefined;
   onOpenDir: (dir: string | undefined) => void;
 }) {
@@ -66,6 +71,7 @@ export function FilesTab({
         <thead>
           <tr>
             <th>Name</th>
+            <th>Type</th>
             <th className="num">Size</th>
             <th>
               <span className="visually-hidden">Download</span>
@@ -81,13 +87,20 @@ export function FilesTab({
                   {f.items.toLocaleString()} {f.items === 1 ? 'file' : 'files'}
                 </span>
               </td>
+              <td className="quiet">folder</td>
               <td className="data num">{humanBytes(f.bytes)}</td>
               <td></td>
             </tr>
           ))}
           {files.map((item) => (
             <tr key={item.path}>
-              <td className="data">{item.path.slice(prefix.length)}</td>
+              <td className="data">
+                {/* The file as itself: its preview, facts and history, in Browse's drawer. */}
+                <Link to="/d/$" params={{ _splat: name }} search={{ view: 'browse', release, item: item.path }}>
+                  {item.path.slice(prefix.length)}
+                </Link>
+              </td>
+              <td className="data">{extOf(item.path)}</td>
               <td className="data num">{humanBytes(item.size)}</td>
               <td className="files-action">
                 <DownloadLink name={name} hash={item.hash} />

@@ -187,6 +187,7 @@ export function DatasetOverview() {
         <FilesTab
           name={name}
           commit={pinnedCommit}
+          release={search.release}
           openDir={search.dir}
           onOpenDir={(dir) => setSearch({ dir })}
         />
