@@ -85,8 +85,8 @@ export function FilesTab({
         <thead>
           <tr>
             <th>Name</th>
-            <th>Type</th>
-            <th>Last change</th>
+            <th className="col-wide">Type</th>
+            <th className="col-wide">Last change</th>
             <th className="num">Size</th>
             <th>
               <span className="visually-hidden">Download</span>
@@ -102,8 +102,8 @@ export function FilesTab({
                   {f.items.toLocaleString()} {f.items === 1 ? 'file' : 'files'}
                 </span>
               </td>
-              <td className="quiet">folder</td>
-              <td></td>
+              <td className="quiet col-wide">folder</td>
+              <td className="col-wide"></td>
               <td className="data num">{humanBytes(f.bytes)}</td>
               <td></td>
             </tr>
@@ -116,8 +116,8 @@ export function FilesTab({
                   {item.path.slice(prefix.length)}
                 </Link>
               </td>
-              <td className="data">{extOf(item.path)}</td>
-              <td className="quiet files-changed">
+              <td className="data col-wide">{extOf(item.path)}</td>
+              <td className="quiet files-changed col-wide">
                 {changed.has(item.path) && (
                   <>
                     <span className="data">{new Date(changed.get(item.path)!.at_ms).toISOString().slice(0, 10)}</span>

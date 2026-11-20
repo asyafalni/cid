@@ -69,7 +69,7 @@ export function SignIn() {
             placeholder="paste a server token"
             autoComplete="off"
           />
-          <button type="submit" className={gitlab ? 'action action--quiet' : 'action'} disabled={checking || value.trim() === ''}>
+          <button type="submit" className={gitlab ? 'action action--outline' : 'action'} disabled={checking || value.trim() === ''}>
             {checking ? 'Checking…' : 'Open the dashboard'}
           </button>
         </form>

@@ -105,10 +105,12 @@ Close the "behind" rows without giving up an "ahead" one.
   scale, empty states, loading states, long names, narrow screens. The output is a
   list of defects in this file under U2, each with its screenshot; fix nothing in the
   same change.
-- **U2. Fix what U1 found**, worst first. The first pass (2026-11-20) read every
-  page in the light theme at 1440 px; the list is below. **Still to look at:** the
-  dark theme, 1024 and 390 px, and the measured overflow report, none of which were
-  taken (the test database was re-created mid-run). Run
+- ~~**U2. Fix what U1 found**~~ (done 2026-11-20: all twelve below, and what the dark
+  theme, 1024 and 390 px added: the Files tab overflowing a phone, "Show command" cut
+  off at the end of the tabs, Browse's count adrift mid-toolbar. The measured
+  overflow report is empty in both themes at every width; rerun it after any layout
+  change.) The first pass read every page in the light theme at 1440 px; the list is
+  below. Run
   `SCREENS=<folder> pnpm --dir web exec playwright test screens` with nothing else
   using the test database, read the pictures, and add to this list. The page names
   are the picture names in `web/e2e/screens.spec.ts`.

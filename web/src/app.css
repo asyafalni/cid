@@ -2566,3 +2566,76 @@ button.tick-mark:hover {
   background: transparent;
   border: 1px dashed var(--line);
 }
+
+/* --- U2: sign-in --- */
+
+/* The airship flies above the card it belongs to, not alone in a corner;
+   both centred as one figure. */
+.signin {
+  align-content: center;
+  gap: var(--space-4);
+}
+
+.signin-airship {
+  position: relative;
+  top: auto;
+  left: auto;
+  width: 9rem;
+}
+
+@media (max-width: 640px) {
+  .signin-airship {
+    display: block;
+    width: 6rem;
+  }
+}
+
+/* The second way in: the same size as the first, outlined rather than
+   filled, so it reads as a button of the same kind; disabled, only fainter. */
+.action--outline {
+  width: 100%;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+  padding: var(--space-2) var(--space-4);
+  font-size: inherit;
+}
+
+.signin form .action {
+  width: 100%;
+}
+
+/* Small text set over the drifting clouds keeps a soft halo in the sky's
+   own top colour (which the sky's text colour is chosen against, in both
+   themes), so a cloud passing behind it never thins it out. */
+.home-hint,
+.dataset-head .tape-legend,
+.dataset-head .dataset-meta {
+  text-shadow:
+    0 0 3px var(--sky-1),
+    0 0 8px var(--sky-1);
+}
+
+/* --- U2: narrow screens and the toolbar --- */
+
+/* Browse's count stays beside the view toggle; the ? button ends the row. */
+.browse-bar > p {
+  margin-right: auto;
+}
+
+@media (max-width: 640px) {
+  /* The Files tab keeps name, size and download on a phone. */
+  .files-table .col-wide {
+    display: none;
+  }
+
+  /* "Show command" takes a line of its own under the tabs, never cut off. */
+  .tabs {
+    flex-wrap: wrap;
+    row-gap: var(--space-2);
+  }
+
+  .show-command {
+    margin-left: 0;
+  }
+}
