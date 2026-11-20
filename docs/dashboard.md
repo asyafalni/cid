@@ -39,7 +39,7 @@ only).
 
 **Not built yet** (the spec below says so where it applies): the health badge, Health
 tab and Validator tiles; card completeness; most Browse filters,
-histograms and the List view; keyboard shortcuts outside Browse; the `⌘K` palette;
+histograms and the List view; keyboard shortcuts outside Browse (besides `⌘K`);
 charts and gauges; PDF page
 images (`vips`); the SQL console; semantic
 search.
@@ -163,8 +163,11 @@ the tagline in its three places, and the reduced-motion switch. Items marked
   compare as `cid diff A B`, an open folder as `ls`. What has no command says so (the
   path search, the activity log). It teaches the CLI and makes the dashboard
   scriptable.
-- *Planned:* **Command palette** (`⌘K` / `Ctrl-K`): jump to any dataset, release, item
-  or action by typing.
+- **Command palette** (built; `⌘K` / `Ctrl-K` anywhere): jump by typing to a dataset
+  or model, and on a dataset page to one of its releases, its tabs (at the version on
+  screen) or an item by path (opened in Browse); and to the home, SSH keys and Tokens
+  pages. Arrows move, Enter goes, Escape closes; an accessible combobox in a dialog.
+  *Planned:* actions (pin, compare, copy a command) beside places.
 - **Ship's log.** The Activity page reads like telemetry: monospace timestamps, one
   event per line, narrowed by action or person.
 - **Two small easter eggs, no more:** `cid --version` prints a small original ASCII

@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
 import { clearToken, getMe } from './api';
 import { applyTheme, storedTheme, type Theme } from './theme';
+import { Palette } from './Palette';
 
 // The shell: a top bar (wordmark, search, theme, account), the deck, and
 // a footer carrying the tagline. The sign-in page gets the whole viewport
@@ -54,6 +55,7 @@ export function Shell() {
       <main className="deck">
         <Outlet />
       </main>
+      <Palette />
       <footer className="footer">cid · Controlled Iterative Datasets</footer>
     </div>
   );

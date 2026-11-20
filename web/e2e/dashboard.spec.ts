@@ -531,6 +531,48 @@ test('"Show command" gives the cid command for the view on screen, and it does t
   await expect(page.getByRole('region', { name: 'Command' })).toContainText('no command shows it');
 });
 
+test('Ctrl-K jumps to a dataset, a release, a tab or an item by typing', async ({ page }) => {
+  await signIn(page);
+  const palette = page.getByRole('dialog', { name: 'Jump to' });
+  const field = palette.getByRole('combobox');
+  await page.keyboard.press('Control+k');
+  await expect(palette).toBeVisible();
+  const axe = await new AxeBuilder({ page }).include('.palette').analyze();
+  expect(axe.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical')).toEqual([]);
+  // A dataset by part of its name.
+  await field.fill('boxes');
+  await expect(palette.getByRole('option', { name: /e2e\/datasets\/boxes/ })).toBeVisible();
+  await field.press('Enter');
+  await expect(page).toHaveURL(/\/d\/e2e\/datasets\/boxes$/);
+  await expect(palette).toHaveCount(0);
+  // On a dataset: its releases…
+  await page.keyboard.press('Control+k');
+  await field.fill('v1.0');
+  await expect(palette.getByRole('option', { name: /v1\.0\.0 release/ })).toHaveAttribute('aria-selected', 'true');
+  await field.press('Enter');
+  await expect(page).toHaveURL(/release=v1\.0\.0/);
+  // …its tabs, at the same release…
+  await page.keyboard.press('Control+k');
+  await field.fill('files');
+  await expect(palette.getByRole('option', { name: 'files tab' })).toHaveAttribute('aria-selected', 'true');
+  await field.press('Enter');
+  await expect(page).toHaveURL(/view=files/);
+  await expect(page).toHaveURL(/release=v1\.0\.0/);
+  // …and its items by path, opened in Browse; arrows move between results.
+  await page.keyboard.press('Control+k');
+  await field.fill('street');
+  const item = palette.getByRole('option', { name: /frames\/street\.png item/ });
+  await expect(item).toBeVisible();
+  await field.press('ArrowDown');
+  await field.press('ArrowUp');
+  await field.press('Enter');
+  await expect(page).toHaveURL(/item=frames(%2F|\/)street\.png/);
+  // Escape puts it away without going anywhere.
+  await page.keyboard.press('Control+k');
+  await field.press('Escape');
+  await expect(palette).toHaveCount(0);
+});
+
 test('home: a card per dataset, the same as rows in List, and search reaches classes and types', async ({ page }) => {
   await signIn(page);
   const demo = page.locator('.ds-card', { has: page.getByRole('link', { name: 'e2e/datasets/demo', exact: true }) });

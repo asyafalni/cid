@@ -210,7 +210,8 @@ both themes, and works with reduced motion. Beauty never costs a budget.
   compare pickers list the shown branch's commits.
 - ~~**B8. `coco` and `voc` exports**~~ (done 2026-11-20; checked with pycocotools:
   loads, `annToMask` matches every area; migration 0005).
-- **B9.** ~~"Show command"~~ (done 2026-11-20), then the `⌘K` palette.
+- ~~**B9. "Show command" and the `⌘K` palette**~~ (done 2026-11-20; the palette
+  jumps to places; actions in it are not built).
 
 ## 5. Tier C: the direction (in this order)
 

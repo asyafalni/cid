@@ -2394,3 +2394,60 @@ button.tick-mark:hover {
 .command-bar {
   margin-bottom: var(--space-4);
 }
+
+/* --- the command palette (⌘K / Ctrl-K) --- */
+
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  z-index: 50;
+}
+
+.palette {
+  width: min(36rem, 92vw);
+  padding: var(--space-2);
+}
+
+.palette input {
+  width: 100%;
+  font: inherit;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.palette-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.palette-item {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-chip);
+  cursor: pointer;
+}
+
+.palette-item.on {
+  background: color-mix(in srgb, var(--aether) 18%, transparent);
+}
+
+.palette-kind {
+  font-size: 0.8125rem;
+}
+
+.palette-none {
+  padding: var(--space-2) var(--space-3);
+}
