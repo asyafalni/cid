@@ -39,8 +39,8 @@ only).
 
 **Not built yet** (the spec below says so where it applies): the health badge, Health
 tab and Validator tiles; card completeness; most Browse filters,
-histograms and the List view; keyboard shortcuts outside Browse; the "Show command"
-toggle; the `⌘K` palette; charts and gauges; PDF page
+histograms and the List view; keyboard shortcuts outside Browse; the `⌘K` palette;
+charts and gauges; PDF page
 images (`vips`); the SQL console; semantic
 search.
 
@@ -156,10 +156,13 @@ the tagline in its three places, and the reduced-motion switch. Items marked
 - *Planned:* **Gauges for quality.** Accuracy as an arc gauge, missed objects as a
   meter with a target line. The number is always printed; the gauge only supports it.
   Arrives with the Health tab.
-- *Planned:* **Every action shows its command.** A "Show command" toggle on every
-  action and page reveals the exact `cid` command that does the same thing, ready to
-  copy. It teaches the CLI and makes the dashboard scriptable. Today only "Use this
-  dataset" shows a command (its `cid clone` line).
+- **Every view shows its command** (built). "Show command", at the end of the tab
+  bar, reveals the `cid` command that reaches the view on screen, ready to copy: the
+  clone at the pinned version (a release, or a commit or branch with its
+  `cid checkout`), Browse's split and class filters as `--split`/`--class`, a
+  compare as `cid diff A B`, an open folder as `ls`. What has no command says so (the
+  path search, the activity log). It teaches the CLI and makes the dashboard
+  scriptable.
 - *Planned:* **Command palette** (`⌘K` / `Ctrl-K`): jump to any dataset, release, item
   or action by typing.
 - **Ship's log.** The Activity page reads like telemetry: monospace timestamps, one
@@ -629,7 +632,8 @@ Each one is a test in `web/e2e/dashboard.spec.ts` unless marked otherwise.
 - Compare two releases: a changed box shows before and after on the same image.
 - The `cid clone` command copied from "Use this dataset" works as pasted.
 - For every action, "Show command" gives a `cid` command that does the same thing when
-  run in a terminal. *Not yet automated; "Show command" is not built.*
+  run in a terminal. (Automated: a filtered Browse, a compare and a pinned commit,
+  each command run and its folder or output checked.)
 - With reduced motion on, no animation or transition runs on any page; both themes
   pass contrast checks (axe, in both themes).
 - A restricted dataset: previews blurred until revealed; the reveal appears in Activity.

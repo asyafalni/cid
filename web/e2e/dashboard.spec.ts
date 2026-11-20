@@ -485,6 +485,52 @@ test('the command copied from "Use this dataset" works as pasted, subset and all
   expect(readFileSync(resolve(dir, 'boxes/labels/frames/street.txt'), 'utf8').trim().split('\n')).toHaveLength(1);
 });
 
+test('"Show command" gives the cid command for the view on screen, and it does the same thing when run', async ({ page }) => {
+  await signIn(page);
+  const here = dirname(fileURLToPath(import.meta.url));
+  const cidBin = resolve(here, '../../zig-out/bin/cid');
+  const runShown = (command: string) => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'cid-shown-'));
+    const out = execSync(command.replace(/(^|&& )cid /g, `$1${cidBin} `), {
+      cwd: dir,
+      env: { ...process.env, CID_SERVER: 'http://127.0.0.1:7177', CID_TOKEN: token },
+      stdio: 'pipe',
+      shell: '/bin/sh',
+    }).toString();
+    return { dir, out };
+  };
+  const shown = async () => (await page.getByRole('region', { name: 'Command' }).locator('code.command').textContent())!.trim();
+
+  // Browse, filtered: the clone of that subset.
+  await page.goto('/d/e2e/datasets/boxes?view=browse&split=train&class=person');
+  await page.getByRole('button', { name: 'Show command' }).click();
+  const subset = await shown();
+  expect(subset).toBe('cid clone cid@127.0.0.1:e2e/datasets/boxes --release v1.1.0 --split train --class person');
+  const cloned = runShown(subset);
+  expect(readFileSync(resolve(cloned.dir, 'boxes/.cid/config.zon'), 'utf8')).toContain('"train"');
+
+  // The toggle stays on from tab to tab; a compare is a diff in the folder.
+  await page.getByRole('link', { name: 'Releases', exact: true }).click();
+  const diff = await shown();
+  expect(diff).toBe('cid clone cid@127.0.0.1:e2e/datasets/boxes --release v1.1.0 && cd boxes && cid diff v1.0.0 v1.1.0');
+  expect(runShown(diff).out).toContain('person');
+
+  // A commit that is no release: the clone, then its checkout.
+  await page.goto('/d/e2e/datasets/many?view=releases');
+  await page.getByRole('region', { name: 'History' }).locator('.moment').filter({ hasText: 'one more row' }).getByRole('link', { name: /View this version/ }).click();
+  await page.getByRole('button', { name: 'Show command' }).click();
+  const atCommit = await shown();
+  expect(atCommit).toMatch(/^cid clone cid@127\.0\.0\.1:e2e\/datasets\/many && cd many && cid checkout [0-9a-f-]{36}$/);
+  expect(readFileSync(resolve(runShown(atCommit).dir, 'many/rows/0131.txt'), 'utf8')).toBe('row 131\n');
+
+  // What has no command says so.
+  await page.goto('/d/e2e/datasets/demo?view=browse&q=img');
+  await page.getByRole('button', { name: 'Show command' }).click();
+  await expect(page.getByRole('region', { name: 'Command' })).toContainText('The path search and the type filter have no clone flag');
+  await page.getByRole('link', { name: 'Activity', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Command' })).toContainText('no command shows it');
+});
+
 test('home: a card per dataset, the same as rows in List, and search reaches classes and types', async ({ page }) => {
   await signIn(page);
   const demo = page.locator('.ds-card', { has: page.getByRole('link', { name: 'e2e/datasets/demo', exact: true }) });

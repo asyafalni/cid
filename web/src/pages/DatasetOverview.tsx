@@ -1,8 +1,9 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { ApiError, getOverview, type Pin } from '../api';
 import { ReleaseTape } from '../ReleaseTape';
+import { commandFor, type Shown } from '../command';
 import { gitWebUrl, humanBytes } from '../format';
 import { OverviewTab } from './OverviewTab';
 import { BrowseTab } from './BrowseTab';
@@ -36,6 +37,8 @@ export function DatasetOverview() {
     who?: string;
   };
   const navigate = useNavigate();
+  // A view affordance, not a view: kept while moving between tabs, not in the URL.
+  const [showCommand, setShowCommand] = useState(false);
   const query = useQuery({
     queryKey: ['overview', name, search.release ?? null, search.commit ?? null, search.branch ?? null],
     queryFn: () => getOverview(name, search.release, search.commit, search.branch),
@@ -223,7 +226,36 @@ export function DatasetOverview() {
         >
           Activity
         </Link>
+        <button
+          className="show-command"
+          aria-pressed={showCommand}
+          onClick={() => setShowCommand((v) => !v)}
+          title="The cid command that reaches this view from a terminal"
+        >
+          Show command
+        </button>
       </nav>
+      {showCommand && (
+        <CommandBar
+          shown={commandFor(
+            o,
+            {
+              view,
+              pinned,
+              commit: pinnedCommit,
+              pin,
+              split: search.split,
+              cls: search.class,
+              q: search.q,
+              type: search.type,
+              a: search.a,
+              b: search.b,
+              dir: search.dir,
+            },
+            location.hostname,
+          )}
+        />
+      )}
 
       {view === 'overview' ? (
         <OverviewTab overview={o} pinned={pinned} commit={pinnedCommit} pin={pin} />
@@ -265,3 +297,35 @@ export function DatasetOverview() {
   );
 }
 
+
+// The command for the view on screen, ready to paste (docs/dashboard.md:
+// every action shows its command).
+function CommandBar({ shown }: { shown: Shown | null }) {
+  const [copied, setCopied] = useState(false);
+  if (!shown) {
+    return (
+      <section className="command-bar" aria-label="Command">
+        <p className="quiet">The activity log is the server's own record; no command shows it.</p>
+      </section>
+    );
+  }
+  return (
+    <section className="command-bar" aria-label="Command">
+      <div className="command-row">
+        <code className="command data">{shown.command}</code>
+        <button
+          className="action"
+          onClick={() =>
+            void navigator.clipboard.writeText(shown.command).then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1600);
+            })
+          }
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      {shown.note && <p className="quiet">{shown.note}</p>}
+    </section>
+  );
+}

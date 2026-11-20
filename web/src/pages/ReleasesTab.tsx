@@ -1,5 +1,6 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
+import { comparePair } from '../command';
 import { getCompare, getRowDiff, getThumbs, type CompareSide, type Overview, type StateAnnotation, type TapeCommit } from '../api';
 import { AnnotationOverlay } from '../overlays';
 import { Thumb } from '../Thumb';
@@ -22,12 +23,11 @@ export function ReleasesTab({
   onPick: (patch: { a?: string; b?: string }) => void;
 }) {
   const commits = overview.commits; // newest first
-  const releases = commits.filter((c) => c.release !== null);
 
   // Default comparison: the two newest releases, else newest two commits.
-  const pool = releases.length >= 2 ? releases : commits;
-  const bSel = b ?? labelOf(pool[0]);
-  const aSel = a ?? labelOf(pool[1] ?? pool[0]);
+  const pair = comparePair(commits, a, b);
+  const aSel = pair.a ?? '';
+  const bSel = pair.b ?? '';
 
   return (
     <div className="releases">

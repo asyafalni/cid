@@ -2372,3 +2372,25 @@ button.tick-mark:hover {
   color: var(--on-sky-muted);
   font-size: 0.8125rem;
 }
+
+/* "Show command": the toggle ends the tab bar; the bar under it holds the
+   command for the view on screen. */
+.show-command {
+  margin-left: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  padding: 0 var(--space-2);
+  cursor: pointer;
+}
+
+.show-command[aria-pressed='true'] {
+  color: var(--text);
+  border-color: var(--brass);
+}
+
+.command-bar {
+  margin-bottom: var(--space-4);
+}
