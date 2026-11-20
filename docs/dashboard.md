@@ -350,9 +350,11 @@ Every dataset page (all five tabs) shares one header and the release tape.
   its release tag (if any), message, date, author and commit id; a release also says
   how many items it holds and what it changed since the release before (the counts
   kept when it was made, as in its git release notes), linking to that comparison.
-  *Planned:* release notes and quality numbers per release, each release's git commit link and
-  git status, and, for a release touched by `cid admin purge`, "intact except N purged
-  items" with the affected paths.
+  A release in the dataset repository links to its tag there, where the host's URL
+  form is known (GitLab, GitHub); one not there yet says "not in git yet".
+  *Planned:* release notes and quality numbers per release, and, for a release
+  touched by `cid admin purge`, "intact except N purged items" with the affected
+  paths.
 - **Compare** any two versions on `main` (releases or commits, picked as A and B; the
   pair is in the URL; by default the two newest releases):
   - Summary (built): items added/modified/deleted and, for annotated datasets,
@@ -552,12 +554,12 @@ tables (gallery + table, overlays for box/polygon/points/mask, filters, item dra
 with history) · Releases timeline and compare (summary + visual diff) · Files tab ·
 shareable URLs · restricted blur and reveal log · preview worker for images and tables.
 
-*Status:* built, except: the auto card is partial (counts, file types, class table and
-split sizes only); Browse filters are path,
+*Status:* built, except: the auto card is partial (counts, file types, class table,
+split sizes and labelling policy only); Browse filters are path,
 split, class and type only; the Releases timeline is partial (message, date, author,
 id, each release's item count and changes since the one before, and "not in git
-yet" on a release the server has not written to the dataset repository; no release
-notes, quality, git link or purge notice) and covers `main`
+yet" on a release the server has not written to the dataset repository, else a
+link to its tag on GitLab or GitHub; no release notes, quality or purge notice) and covers `main`
 only, and commits cannot be pinned; the Files tab has no last change or preview
 panel of its own (a file opens in Browse's drawer).
 

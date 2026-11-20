@@ -66,8 +66,8 @@ same change.
 - ~~**A1. Policy version in the card**~~ (done 2026-11-20).
 - ~~**A2. Keyboard in Browse**~~ (done 2026-11-20; it also fixed the virtual gallery
   and table measuring their place on the page from the wrong origin).
-- **A3. A release's git link in the history.** Only where the URL form is known from
-  the host; otherwise no link. GitLab first (`/-/tags/<name>`).
+- ~~**A3. A release's git link in the history**~~ (done 2026-11-20: GitLab and
+  GitHub; other hosts get no link).
 - **A4. Words for a model** in the dashboard, once C2 lands: the header label, "Use
   this model", the kind filter on the home page.
 

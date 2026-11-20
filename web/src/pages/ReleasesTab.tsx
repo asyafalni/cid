@@ -4,7 +4,7 @@ import { getCompare, getRowDiff, getThumbs, type CompareSide, type Overview, typ
 import { AnnotationOverlay } from '../overlays';
 import { Thumb } from '../Thumb';
 import { extOf } from '../browseFilter';
-import { humanBytes } from '../format';
+import { gitTagUrl, humanBytes } from '../format';
 
 // Releases & history: the timeline, and compare between any two
 // versions. A and B live in the URL, so a comparison is a link.
@@ -69,6 +69,17 @@ export function ReleasesTab({
                   >
                     not in git yet
                   </span>
+                )}
+                {c.release && !c.git_pending && gitTagUrl(overview.git_url, c.release) && (
+                  <a
+                    className="moment-git"
+                    href={gitTagUrl(overview.git_url, c.release)!}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`${c.release} in the git repository`}
+                  >
+                    in git
+                  </a>
                 )}
               </div>
               <p className="quiet moment-meta">

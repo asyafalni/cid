@@ -128,6 +128,35 @@ test('the history marks a release the dataset repository does not have yet', asy
   await expect(written.getByText('not in git yet')).toHaveCount(0);
 });
 
+test('a release written to a GitLab or GitHub repository links to its tag there', async ({ page }) => {
+  await signIn(page);
+  // The fixtures' repositories are on no real host; answer as if on GitLab, then GitHub.
+  let gitUrl = 'git@gitlab.com:your-org/datasets/demo.git';
+  await page.route('**/v0/datasets/e2e/datasets/demo/-/overview*', async (route) => {
+    const res = await route.fetch();
+    await route.fulfill({ response: res, json: { ...(await res.json()), git_url: gitUrl } });
+  });
+  await page.goto('/d/e2e/datasets/demo?view=releases');
+  const history = page.getByRole('region', { name: 'History' });
+  // v1.0.0 is in git: linked. v1.1.0 is not there yet: no link to a missing tag.
+  await expect(history.getByRole('link', { name: 'v1.0.0 in the git repository' })).toHaveAttribute(
+    'href',
+    'https://gitlab.com/your-org/datasets/demo/-/tags/v1.0.0',
+  );
+  await expect(history.getByRole('link', { name: 'v1.1.0 in the git repository' })).toHaveCount(0);
+  gitUrl = 'https://ci:secret@github.com/your-org/demo.git';
+  await page.reload();
+  await expect(history.getByRole('link', { name: 'v1.0.0 in the git repository' })).toHaveAttribute(
+    'href',
+    'https://github.com/your-org/demo/tree/v1.0.0',
+  );
+  // A host whose URL form is unknown gets no link, rather than a guess.
+  gitUrl = 'git@git.example.org:your-org/demo.git';
+  await page.reload();
+  await expect(history.locator('.release-tag', { hasText: 'v1.0.0' })).toBeVisible();
+  await expect(history.getByRole('link', { name: /in the git repository/ })).toHaveCount(0);
+});
+
 test('the files tab walks the committed tree', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?view=files');
