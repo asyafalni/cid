@@ -7,6 +7,12 @@
 //! no `X-Xet-*` header is ever sent, so the client downloads over plain
 //! HTTP with no configuration.
 //!
+//! An annotated dataset is served as its item files, at their paths, plus
+//! its annotations: one gzip JSON-lines file per split under
+//! `_annotations/` (the jsonl export's lines, built once per version and
+//! kept), and a generated `README.md` whose `configs:` name them as the
+//! splits, so `load_dataset` reads them with no guessing.
+//!
 //! Like api.zig it is HTTP-free: `handle` takes a method and a target and
 //! answers a status, headers, a body and, for a file, the redirect to it.
 //!
@@ -21,6 +27,7 @@ const std = @import("std");
 const api = @import("api.zig");
 const browse = @import("browse/browse.zig");
 const versions = @import("../core/version.zig");
+const content_hash = @import("../util/hash.zig");
 const Uuid = @import("../util/uuid7.zig").Uuid;
 
 pub const Header = struct { name: []const u8, value: []const u8 };
@@ -212,8 +219,6 @@ fn start(arena: std.mem.Allocator, deps: *api.Deps, scope: anytype, given: api.C
         .none => return .{ .refused = repoNotFound(arena, kind, ns, name, given) },
         .several => |forms| return .{ .refused = fail(arena, .not_found, "RepoNotFound", try std.fmt.allocPrint(arena, "'{s}/{s}' names {d} repositories", .{ ns, name, forms.len }), try std.fmt.allocPrint(arena, "Name one in full: {s}.", .{try std.mem.join(arena, ", ", forms)}), null) },
     };
-    if (std.mem.eql(u8, ds.kind, "annotated"))
-        return .{ .refused = fail(arena, .not_implemented, null, "an annotated dataset is not served through the Hugging Face door yet", try std.fmt.allocPrint(arena, "Run 'cid clone' for it today: the door serves file datasets first.", .{}), null) };
     const v = (try version(arena, deps, scope, ds, rev)) orelse
         return .{ .refused = fail(arena, .not_found, "RevisionNotFound", try std.fmt.allocPrint(arena, "{s} has no release, branch or commit '{s}'", .{ ds.name, rev }), "Pass a release name as revision= (see the dataset's history on the dashboard), or leave it out for main.", null) };
     return .{ .ok = .{ .caller = caller, .ds = ds, .v = v, .sha = try commitAlias(arena, v.commit) } };
@@ -224,6 +229,112 @@ fn repoNotFound(arena: std.mem.Allocator, kind: Kind, ns: []const u8, name: []co
     // A 401 when no token came: the client then tells its user to log in.
     const status: std.http.Status = if (given.header == null and given.account == null) .unauthorized else .not_found;
     return fail(arena, status, "RepoNotFound", std.fmt.allocPrint(arena, "no {s} is named {s}/{s}, or your token cannot read it", .{ what, ns, name }) catch "repository not found", "Set HF_TOKEN to a cid personal token (the dashboard's Tokens page) of someone who can read it, and check the name: org/datasets__name names the dataset org/datasets/name.", null);
+}
+
+// ---------------------------------------------------------------------------
+// An annotated dataset's annotations, and its README
+// ---------------------------------------------------------------------------
+
+pub const annotations_dir = "_annotations";
+
+/// One split's annotations file: its path, the split name `datasets` reads
+/// (letters, digits and `_` only), and the cid splits it holds (`""` for
+/// items with none; empty for every item).
+const Split = struct { path: []const u8, name: []const u8, splits: []const []const u8 };
+
+fn isAnnotated(ds: api.Dataset) bool {
+    return std.mem.eql(u8, ds.kind, "annotated");
+}
+
+/// The version's splits as files: one per split, `unsplit` for the items
+/// with none; one `train` holding everything when there are no splits.
+fn splitsOf(arena: std.mem.Allocator, deps: *api.Deps, scope: anytype, ds: api.Dataset, commit: []const u8) api.HandleError![]const Split {
+    const st = versions.stats(arena, deps.db, scope, ds.id, commit) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.Db,
+    };
+    var out: std.ArrayList(Split) = .empty;
+    if (st.splits.len == 0) {
+        try out.append(arena, .{ .path = annotations_dir ++ "/train.jsonl.gz", .name = "train", .splits = &.{} });
+        return out.items;
+    }
+    var in_splits: u64 = 0;
+    for (st.splits) |sp| {
+        in_splits += sp.count;
+        const name = try splitName(arena, sp.name);
+        try out.append(arena, .{
+            .path = try std.fmt.allocPrint(arena, "{s}/{s}.jsonl.gz", .{ annotations_dir, name }),
+            .name = name,
+            .splits = try arena.dupe([]const u8, &.{sp.name}),
+        });
+    }
+    if (st.items > in_splits)
+        try out.append(arena, .{ .path = annotations_dir ++ "/unsplit.jsonl.gz", .name = "unsplit", .splits = try arena.dupe([]const u8, &.{""}) });
+    return out.items;
+}
+
+/// A split name as `datasets` accepts one (`\w+`): anything else becomes `_`.
+fn splitName(arena: std.mem.Allocator, raw: []const u8) error{OutOfMemory}![]const u8 {
+    if (raw.len == 0) return "unsplit";
+    const out = try arena.dupe(u8, raw);
+    for (out) |*c| if (!(std.ascii.isAlphanumeric(c.*) or c.* == '_')) {
+        c.* = '_';
+    };
+    return out;
+}
+
+fn readme(arena: std.mem.Allocator, ds: api.Dataset, splits: []const Split) error{OutOfMemory}![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(arena, "---\nconfigs:\n- config_name: default\n  data_files:\n");
+    for (splits) |sp| try out.print(arena, "  - split: {s}\n    path: {s}\n", .{ sp.name, sp.path });
+    try out.print(arena,
+        \\---
+        \\
+        \\# {s}
+        \\
+        \\An annotated dataset versioned with cid · Controlled Iterative Datasets, served
+        \\read-only to Hugging Face clients. Each split is a JSON-lines file under
+        \\`{s}/`: one line per item, with its `path`, `hash` (BLAKE3), `size`,
+        \\`split`, `width`, `height` and `annotations`. The items themselves are at
+        \\their paths in this repository. `cid clone` gives the same release as a
+        \\ready-to-train folder (`--format yolo` or `jsonl`).
+        \\
+    , .{ ds.name, annotations_dir });
+    return out.items;
+}
+
+/// A split's file, built the first time anyone asks and kept (an export
+/// of kind `hf`), with its size in storage.
+const Built = struct { key: []const u8, hash: []const u8, size: u64 };
+
+fn built(arena: std.mem.Allocator, deps: *api.Deps, scope: anytype, ds: api.Dataset, commit: []const u8, sp: Split) api.HandleError!Built {
+    const file = switch (try api.ensureVersionFile(arena, deps, scope, ds, commit, .hf, .{ .splits = sp.splits })) {
+        .ready => |f| f,
+        .failed => return error.Storage, // the jsonl lines never fail
+    };
+    const size = (deps.s3.headObject(scope, file.key) catch return error.Storage) orelse return error.Storage;
+    return .{ .key = file.key, .hash = file.file_hash, .size = size };
+}
+
+fn findSplit(splits: []const Split, path: []const u8) ?Split {
+    for (splits) |sp| if (std.mem.eql(u8, sp.path, path)) return sp;
+    return null;
+}
+
+/// The README and the split files, as tree entries (sizes real: a
+/// streaming reader trusts them), under `prefix` ("" or the folder's).
+fn annotatedEntries(arena: std.mem.Allocator, deps: *api.Deps, scope: anytype, ds: api.Dataset, commit: []const u8, prefix: []const u8, recursive: bool, out: *std.ArrayList(Entry)) api.HandleError!void {
+    const splits = try splitsOf(arena, deps, scope, ds, commit);
+    if (prefix.len == 0) {
+        const text = try readme(arena, ds, splits);
+        try out.append(arena, fileEntry("README.md", text.len, try arena.dupe(u8, &content_hash.hex(text))));
+        try out.append(arena, folderEntry(annotations_dir));
+        if (!recursive) return;
+    } else if (!std.mem.eql(u8, prefix, annotations_dir ++ "/")) return;
+    for (splits) |sp| {
+        const b = try built(arena, deps, scope, ds, commit, sp);
+        try out.append(arena, fileEntry(sp.path, b.size, b.hash));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +449,11 @@ fn tree(
 
     var entries: std.ArrayList(Entry) = .empty;
     var next: ?[]const u8 = null;
+    // An annotated dataset's README and annotation files, on the first page.
+    if (isAnnotated(s.ds) and cursor == null) {
+        try annotatedEntries(arena, deps, scope, s.ds, s.v.commit, prefix, recursive, &entries);
+        if (std.mem.eql(u8, prefix, annotations_dir ++ "/")) return jsonAnswer(arena, entries.items, &.{});
+    }
     var db = try api.duckFor(arena, deps, index.dir);
     defer db.close();
     if (recursive) {
@@ -397,11 +513,31 @@ fn pathsInfo(arena: std.mem.Allocator, deps: *api.Deps, scope: anytype, given: a
     var db = try api.duckFor(arena, deps, index.dir);
     defer db.close();
     var entries: std.ArrayList(Entry) = .empty;
-    for (paths.items) |p| switch (try api.browseQuery(deps, browse.pathInfo, .{ arena, &db, index.files, p })) {
-        .file => |f| try entries.append(arena, fileEntry(p, f.size, f.hash)),
-        .folder => try entries.append(arena, folderEntry(p)),
-        .none => {},
-    };
+    const splits: []const Split = if (isAnnotated(s.ds)) try splitsOf(arena, deps, scope, s.ds, s.v.commit) else &.{};
+    for (paths.items) |p| {
+        // An annotated dataset's README and annotation files first.
+        if (isAnnotated(s.ds)) {
+            if (std.mem.eql(u8, p, "README.md")) {
+                const text = try readme(arena, s.ds, splits);
+                try entries.append(arena, fileEntry(p, text.len, try arena.dupe(u8, &content_hash.hex(text))));
+                continue;
+            }
+            if (std.mem.eql(u8, p, annotations_dir)) {
+                try entries.append(arena, folderEntry(p));
+                continue;
+            }
+            if (findSplit(splits, p)) |sp| {
+                const b = try built(arena, deps, scope, s.ds, s.v.commit, sp);
+                try entries.append(arena, fileEntry(p, b.size, b.hash));
+                continue;
+            }
+        }
+        switch (try api.browseQuery(deps, browse.pathInfo, .{ arena, &db, index.files, p })) {
+            .file => |f| try entries.append(arena, fileEntry(p, f.size, f.hash)),
+            .folder => try entries.append(arena, folderEntry(p)),
+            .none => {},
+        }
+    }
     return jsonAnswer(arena, entries.items, &.{});
 }
 
@@ -413,6 +549,28 @@ fn resolveFile(arena: std.mem.Allocator, deps: *api.Deps, scope: anytype, given:
         .refused => |a| return a,
     };
     if (file.len == 0) return notFound(arena);
+    if (isAnnotated(s.ds)) {
+        const splits = try splitsOf(arena, deps, scope, s.ds, s.v.commit);
+        if (std.mem.eql(u8, file, "README.md")) {
+            const text = try readme(arena, s.ds, splits);
+            return .{
+                .status = .ok,
+                .body = text,
+                .content_type = "text/markdown; charset=utf-8",
+                .headers = try arena.dupe(Header, &.{
+                    .{ .name = "X-Repo-Commit", .value = s.sha },
+                    .{ .name = "ETag", .value = try std.fmt.allocPrint(arena, "\"{s}\"", .{&content_hash.hex(text)}) },
+                }),
+            };
+        }
+        if (findSplit(splits, file)) |sp| {
+            // Annotations are a restricted dataset's content too.
+            if (s.ds.restricted)
+                try api.logActivity(arena, deps, scope, s.ds, try api.actorOf(arena, deps, s.caller), "export", try std.fmt.allocPrint(arena, "{s} hf {s}", .{ s.v.commit, sp.name }), null);
+            const b = try built(arena, deps, scope, s.ds, s.v.commit, sp);
+            return redirect(arena, deps, scope, b.key, b.hash, b.size, s.sha);
+        }
+    }
     const where = versions.at(deps.db, scope, s.ds.id, s.v.commit) catch return error.Db;
     const Row = struct {
         pub const nilo_table = .projection;
@@ -437,17 +595,22 @@ fn resolveFile(arena: std.mem.Allocator, deps: *api.Deps, scope: anytype, given:
     if (s.ds.restricted)
         try api.logActivity(arena, deps, scope, s.ds, try api.actorOf(arena, deps, s.caller), "download", null, .{ .items = 1 });
     const key = api.itemKey(arena, found.hash) catch return error.OutOfMemory;
+    return redirect(arena, deps, scope, key, found.hash, @intCast(found.size), s.sha);
+}
+
+/// The answer for a file in storage: a redirect to a presigned URL, with
+/// the metadata the client reads from the redirect itself.
+fn redirect(arena: std.mem.Allocator, deps: *api.Deps, scope: anytype, key: []const u8, hash: []const u8, size: u64, sha: []const u8) api.HandleError!Answer {
     const url = deps.s3.presignGet(scope, key, api.presign_secs) catch return error.Storage;
-    const etag = try std.fmt.allocPrint(arena, "\"{s}\"", .{found.hash});
-    const size = try std.fmt.allocPrint(arena, "{d}", .{found.size});
+    const etag = try std.fmt.allocPrint(arena, "\"{s}\"", .{hash});
     return .{
         .status = .found,
         .location = url,
         .headers = try arena.dupe(Header, &.{
-            .{ .name = "X-Repo-Commit", .value = s.sha },
+            .{ .name = "X-Repo-Commit", .value = sha },
             .{ .name = "ETag", .value = etag },
             .{ .name = "X-Linked-Etag", .value = etag },
-            .{ .name = "X-Linked-Size", .value = size },
+            .{ .name = "X-Linked-Size", .value = try std.fmt.allocPrint(arena, "{d}", .{size}) },
         }),
     };
 }

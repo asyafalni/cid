@@ -25,7 +25,9 @@ const version = @import("../core/version.zig");
 const jsonl = @import("jsonl.zig");
 const yolo = @import("yolo.zig");
 
-pub const Kind = enum { state, jsonl, yolo };
+/// `hf`: the jsonl export's lines alone, no bundle framing or header: a
+/// plain JSON-lines file, as the Hugging Face door serves it.
+pub const Kind = enum { state, jsonl, yolo, hf };
 
 pub const Subset = struct {
     splits: []const []const u8 = &.{},
@@ -65,8 +67,11 @@ pub const Outcome = union(enum) {
 /// Writes the files of an export as bundle lines.
 pub const Bundle = struct {
     w: *std.Io.Writer,
+    /// The text alone, unframed (an export of one file, `hf`).
+    raw: bool = false,
 
     pub fn put(self: Bundle, path: []const u8, text: []const u8) !void {
+        if (self.raw) return self.w.writeAll(text);
         try self.w.print("{{\"path\":{f},\"text\":{f}}}\n", .{ std.json.fmt(path, .{}), std.json.fmt(text, .{}) });
     }
 };
@@ -135,7 +140,7 @@ pub fn build(
         "CREATE TEMP TABLE x_anns (path text, annotation_id uuid, kind text, class text, geometry jsonb, attrs jsonb) ON COMMIT DROP",
     }) |ddl| _ = tx.exec(scope, ddl, .{}) catch return error.Db;
     _ = tx.exec(scope, "INSERT INTO x_items SELECT l.* FROM x_live l " ++
-        "WHERE (jsonb_array_length($1::jsonb) = 0 OR l.split IN (SELECT jsonb_array_elements_text($1::jsonb))) " ++
+        "WHERE (jsonb_array_length($1::jsonb) = 0 OR coalesce(l.split, '') IN (SELECT jsonb_array_elements_text($1::jsonb))) " ++
         "AND (jsonb_array_length($2::jsonb) = 0 OR EXISTS (SELECT 1 FROM x_alive a WHERE a.item_id = l.item_id " ++
         "  AND coalesce(a.class, '') IN (SELECT jsonb_array_elements_text($2::jsonb))))", .{ splits, classes }) catch return error.Db;
     if (kind != .state) {
@@ -152,7 +157,7 @@ pub fn build(
 
     const media_pending = (tx.rawOne(i64, scope, "SELECT 1::bigint FROM x_items l JOIN previews p USING (item_hash) " ++
         "WHERE p.status IN ('pending', 'building') LIMIT 1", .{}) catch return error.Db) != null;
-    const bundle: Bundle = .{ .w = out };
+    const bundle: Bundle = .{ .w = out, .raw = kind == .hf };
 
     _ = tx.exec(scope, "DECLARE x_ic NO SCROLL CURSOR FOR SELECT path, encode(item_hash, 'hex') AS hash, size_bytes, split, " ++
         "item_id::text AS item_id, width, height FROM x_items ORDER BY path COLLATE \"C\"", .{}) catch return error.Db;
@@ -172,8 +177,8 @@ pub fn build(
                 if (rows.len < version.batch_rows) break;
             }
         },
-        .jsonl, .yolo => {
-            bundleHeader(out, kind, commit_id) catch return error.WriteFailed;
+        .jsonl, .yolo, .hf => {
+            if (kind != .hf) bundleHeader(out, kind, commit_id) catch return error.WriteFailed;
             var renderer: union(enum) { jsonl, yolo: yolo.Writer } = .jsonl;
             if (kind == .yolo) {
                 const nameless = tx.rawOne([]const u8, scope, "SELECT path FROM x_anns WHERE kind = 'box' AND class IS NULL " ++

@@ -4627,7 +4627,8 @@ test "the Hugging Face door: a file dataset's releases, files and trees, as hugg
     const bearer = "Bearer test-token";
 
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
-    inline for (.{ "activity_events", "refs", "commits", "item_revisions", "dataset_items", "access" }) |table| {
+    _ = try db.exec(&fscope, "DELETE FROM version_files WHERE commit_id IN (SELECT c.commit_id FROM commits c JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/hfann')", .{});
+    inline for (.{ "activity_events", "refs", "commits", "item_revisions", "annotation_revisions", "dataset_items", "access", "policy_versions" }) |table| {
         _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name IN ('test/datasets/hfdoor', 'test/other/hfdoor', 'test/datasets/hfann'))", .{});
     }
     _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name IN ('test/datasets/hfdoor', 'test/other/hfdoor', 'test/datasets/hfann')", .{});
@@ -4757,12 +4758,72 @@ test "the Hugging Face door: a file dataset's releases, files and trees, as hugg
     const dashed = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", bearer, "{\"name\":\"test/datasets/speech__id\",\"git_url\":\"g@h:s.git\"}");
     try std.testing.expectEqual(std.http.Status.unprocessable_entity, dashed.status);
 
-    // An annotated dataset says it is not served here yet, and what to do.
+    // An annotated dataset: its items at their paths, and its annotations
+    // as one JSON-lines file per split, named as splits by a README.
     const ann = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", bearer, "{\"name\":\"test/datasets/hfann\",\"kind\":\"annotated\",\"git_url\":\"g@h:a.git\"}");
     try std.testing.expectEqual(std.http.Status.created, ann.status);
-    const ann_info = hfCall(arena, &deps, &scope, "GET", "/api/datasets/test/datasets__hfann", bearer, "");
-    try std.testing.expectEqual(std.http.Status.not_implemented, ann_info.status);
-    try std.testing.expect(std.mem.indexOf(u8, ann_info.body, "cid clone") != null);
+    const ann_remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/hfann", .gpa = std.testing.allocator };
+    const ann_id = (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/hfann'", .{})).?;
+    const pixels = "hfann pixels";
+    var pd: [32]u8 = undefined;
+    cid.hash.Hasher.hash(pixels, &pd, .{});
+    const ph = std.fmt.bytesToHex(pd, .lower);
+    try s3c.putObject(&scope, try cid.api.stagedKey(arena, ann_id, &ph), pixels);
+    try ann_remote.registerItems(arena, &.{.{ .hash = &ph, .size = pixels.len, .width = 64, .height = 48 }});
+    {
+        var ptx = try db.begin(&fscope, .{});
+        defer ptx.deinit();
+        try platformWrite(&ptx, &fscope, ann_id);
+        inline for (.{ .{ "img/a.jpg", "'train'" }, .{ "img/b.jpg", "'val'" }, .{ "img/c.jpg", "NULL" } }) |it| {
+            const item = cid.uuid7.Uuid.now(io).toString();
+            const sql = try std.fmt.allocPrintSentinel(arena, "INSERT INTO item_revisions (dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
+                "VALUES ('{s}', 'main', '" ++ it[0] ++ "', 'add', '{s}', decode('{s}', 'hex'), " ++ it[1] ++ ", 'agent:a')", .{ ann_id, &item, &ph }, 0);
+            _ = try ptx.exec(&fscope, sql, .{});
+            const box = try std.fmt.allocPrintSentinel(arena, "INSERT INTO annotation_revisions (dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver) " ++
+                "VALUES ('{s}', 'main', gen_random_uuid(), '{s}', 'create', 'box', 'person', '{{\"x\":1,\"y\":2,\"w\":3,\"h\":4}}'::jsonb, 'agent:a', 'p1')", .{ ann_id, &item }, 0);
+            _ = try ptx.exec(&fscope, box, .{});
+        }
+        try ptx.commit();
+    }
+    _ = try ann_remote.commitServer(arena, "main", "labelled", "agent:a");
+    _ = try ann_remote.tag(arena, "v1.0.0");
+
+    const ann_readme = hfCall(arena, &deps, &scope, "GET", "/datasets/test/datasets__hfann/resolve/v1.0.0/README.md", bearer, "");
+    try std.testing.expectEqual(std.http.Status.ok, ann_readme.status);
+    try std.testing.expect(hfHeader(ann_readme, "X-Repo-Commit") != null);
+    for ([_][]const u8{ "  - split: train\n    path: _annotations/train.jsonl.gz\n", "  - split: val\n    path: _annotations/val.jsonl.gz\n", "  - split: unsplit\n    path: _annotations/unsplit.jsonl.gz\n" }) |want|
+        try std.testing.expect(std.mem.indexOf(u8, ann_readme.body, want) != null);
+    // The tree: the README, the annotations folder and its files (real
+    // sizes), and the items.
+    const ann_tree = hfCall(arena, &deps, &scope, "GET", "/api/datasets/test/datasets__hfann/tree/v1.0.0?recursive=true", bearer, "");
+    try std.testing.expectEqual(std.http.Status.ok, ann_tree.status);
+    const ann_entries = try std.json.parseFromSliceLeaky([]const Entry, arena, ann_tree.body, .{});
+    var listed: std.StringHashMapUnmanaged(u64) = .empty;
+    for (ann_entries) |e| try listed.put(arena, e.path, e.size);
+    for ([_][]const u8{ "README.md", "_annotations", "_annotations/train.jsonl.gz", "_annotations/val.jsonl.gz", "_annotations/unsplit.jsonl.gz", "img/a.jpg", "img/c.jpg" }) |want|
+        try std.testing.expect(listed.contains(want));
+    try std.testing.expect(listed.get("_annotations/train.jsonl.gz").? > 0);
+    // The val split's file holds the val item alone, with its box.
+    const val = hfCall(arena, &deps, &scope, "HEAD", "/datasets/test/datasets__hfann/resolve/v1.0.0/_annotations/val.jsonl.gz", bearer, "");
+    try std.testing.expectEqual(std.http.Status.found, val.status);
+    try std.testing.expectEqualStrings(try std.fmt.allocPrint(arena, "{d}", .{listed.get("_annotations/val.jsonl.gz").?}), hfHeader(val, "X-Linked-Size").?);
+    const val_key = val.location.?[std.mem.indexOf(u8, val.location.?, "exports/").?..std.mem.indexOfScalar(u8, val.location.?, '?').?];
+    const gz_bytes = try s3c.getObjectAlloc(&scope, val_key);
+    var gz_reader: std.Io.Reader = .fixed(gz_bytes);
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var gz: std.compress.flate.Decompress = .init(&gz_reader, .gzip, &window);
+    const lines = try gz.reader.allocRemaining(arena, .limited(1 << 20));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, lines, "\n"));
+    try std.testing.expect(std.mem.startsWith(u8, lines, "{\"path\":\"img/b.jpg\""));
+    try std.testing.expect(std.mem.indexOf(u8, lines, "\"split\":\"val\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, lines, "\"class\":\"person\"") != null);
+    // The items are files as ever.
+    try std.testing.expectEqual(std.http.Status.found, hfCall(arena, &deps, &scope, "GET", "/datasets/test/datasets__hfann/resolve/v1.0.0/img/c.jpg", bearer, "").status);
+    // paths-info knows the README and the split files.
+    const ann_info = hfCall(arena, &deps, &scope, "POST", "/api/datasets/test/datasets__hfann/paths-info/v1.0.0", bearer, "paths=README.md&paths=_annotations%2Funsplit.jsonl.gz&paths=img%2Fa.jpg");
+    try std.testing.expectEqual(@as(usize, 3), (try std.json.parseFromSliceLeaky([]const Entry, arena, ann_info.body, .{})).len);
+    // A clone cannot ask for the door's export.
+    try std.testing.expectEqual(std.http.Status.bad_request, cid.api.handle(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/hfann/-/version/{s}?kind=hf", .{(try db.rawOne([]const u8, &fscope, "SELECT r.commit_id::text FROM refs r WHERE r.dataset_id = $1::uuid AND r.name = 'v1.0.0'", .{ann_id})).?}), bearer, "").status);
 
     // A restricted dataset's file is a logged download.
     _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = 'test/datasets/hfdoor'", .{});

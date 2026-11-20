@@ -222,8 +222,16 @@ nothing), `list_repo_refs`, `load_dataset` (train and test splits found with no
 configuration, and streaming), the short form, and each error as the client's own
 exception. The integration suite covers the routes (`the Hugging Face door: …`); the
 real-client check is not automated (it needs Python: still a dependency to agree).
-**Still to do:** annotated datasets (they answer 501 with "run 'cid clone'"), and
-models once C2 lands (`/api/models/…` routes are answered; the root
+**Annotated datasets: done (2026-11-20).** Their items are served at their paths,
+and their annotations as one gzip JSON-lines file per split under `_annotations/`
+(the jsonl export's lines: export kind `hf`, migration 0003), named as splits by a
+generated `README.md` (`configs:`): `train`, `val`, …, `unsplit` for items with
+none, or one `train` when there are no splits. Checked with the real clients:
+`snapshot_download`, `load_dataset` (each split, rows with their boxes) and
+streaming. A split's file is built on its first request and kept; at 1M items that
+first request waits for the build (not measured yet; the background worker does not
+prepare it ahead).
+**Still to do:** models once C2 lands (`/api/models/…` routes are answered; the root
 `/{ns}/{name}/resolve/…` route is not registered yet).
 
 Facts read from `huggingface_hub` 2.4.0, `datasets` 5.2.0 and `transformers` 5.23.0

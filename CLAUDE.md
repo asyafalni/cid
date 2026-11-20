@@ -248,7 +248,10 @@ A repo id holds one `/`, so a dataset path's inner slashes are written `__`
 (`your-org/datasets__speech-id` is `your-org/datasets/speech-id`); the short
 `your-org/speech-id` works while one readable dataset in `your-org` ends that way.
 A revision is a release, a branch or a commit; `main` is the branch. Read only:
-uploads stay `cid push`. File datasets today; annotated datasets and models next.
+uploads stay `cid push`. A file dataset is its files; an annotated dataset is its
+items plus `_annotations/<split>.jsonl.gz` (one line per item with its annotations)
+and a generated `README.md` naming those as the splits. Models come with the model
+kind.
 
 ---
 
