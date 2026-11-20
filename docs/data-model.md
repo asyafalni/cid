@@ -19,7 +19,7 @@ Datasets are identified by a stable surrogate id, never by their path. The path
 CREATE TABLE datasets (
   dataset_id      uuid PRIMARY KEY,                -- UUIDv7, stable forever
   name            text NOT NULL UNIQUE,            -- dataset path: 'your-org/datasets/person-vehicle'
-  kind            text NOT NULL CHECK (kind IN ('files','annotated')),
+  kind            text NOT NULL CHECK (kind IN ('files','annotated','model')),  -- a model is a file dataset by another name
   restricted      boolean NOT NULL DEFAULT false,
   default_format  text NOT NULL DEFAULT 'files',   -- 'files' | 'yolo' | 'coco' | 'jsonl' …
   git_url         text NOT NULL,                   -- the dataset repository

@@ -43,7 +43,7 @@ const homeRoute = createRoute({
     search: Record<string, unknown>,
   ): {
     q?: string;
-    kind?: 'files' | 'annotated';
+    kind?: 'files' | 'annotated' | 'model';
     type?: string;
     released?: 'yes' | 'no';
     restricted?: 'yes' | 'no';
@@ -52,7 +52,7 @@ const homeRoute = createRoute({
     // Cards are the default, so only the list is spelled.
     layout: search.layout === 'list' ? 'list' : undefined,
     q: typeof search.q === 'string' && search.q !== '' ? search.q : undefined,
-    kind: search.kind === 'files' || search.kind === 'annotated' ? search.kind : undefined,
+    kind: search.kind === 'files' || search.kind === 'annotated' || search.kind === 'model' ? search.kind : undefined,
     type: typeof search.type === 'string' ? search.type : undefined,
     released: search.released === 'yes' || search.released === 'no' ? search.released : undefined,
     restricted: search.restricted === 'yes' || search.restricted === 'no' ? search.restricted : undefined,

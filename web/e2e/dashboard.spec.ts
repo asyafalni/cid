@@ -174,6 +174,18 @@ test('a release touched by a purge says it is intact except its purged items', a
   await expect(newer).not.toContainText('purged');
 });
 
+test('a model is named a model: on its card, in its header, and in the home filter', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/?kind=model');
+  await expect(page.getByLabel('Filter by kind')).toHaveValue('model');
+  await expect(page.getByRole('link', { name: 'e2e/models/tiny-bert' }).first()).toBeVisible();
+  await expect(page.getByRole('link', { name: 'e2e/datasets/demo' })).toHaveCount(0);
+  await page.goto('/d/e2e/models/tiny-bert');
+  await expect(page.locator('.dataset-meta')).toContainText('Model');
+  await expect(page.getByRole('region', { name: 'Use this model' })).toContainText('cid clone');
+  await expect(page.getByRole('region', { name: 'Model card' })).toContainText('1 item');
+});
+
 test('the files tab walks the committed tree', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?view=files');

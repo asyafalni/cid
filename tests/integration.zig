@@ -4832,3 +4832,88 @@ test "the Hugging Face door: a file dataset's releases, files and trees, as hugg
     const logged = (try db.rawOne(i64, &fscope, "SELECT count(*) FROM activity_events e JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/hfdoor' AND e.action = 'download'", .{})).?;
     try std.testing.expectEqual(@as(i64, 1), logged);
 }
+
+test "models: a third kind, versioned exactly like a file dataset, and served to Hugging Face model clients" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var browse_tmp = std.testing.tmpDir(.{});
+    defer browse_tmp.cleanup();
+    const browse_dir = try browse_tmp.dir.realPathFileAlloc(io, ".", arena);
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token", .browse_dir = browse_dir, .work_dir = browse_dir };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/models/detector", .gpa = std.testing.allocator };
+    const bearer = "Bearer test-token";
+
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
+    inline for (.{ "activity_events", "refs", "commits", "item_revisions", "dataset_items", "access" }) |table| {
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/models/detector')", .{});
+    }
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/models/detector'", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
+
+    // `cid init --model`: created on the server as a model, the folder
+    // knows it, and everything else is a file dataset's.
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    try producer.dir.writeFile(io, .{ .sub_path = "config.json", .data = "{\"model_type\":\"tiny\"}\n" });
+    try producer.dir.createDirPath(io, "weights");
+    try producer.dir.writeFile(io, .{ .sub_path = "weights/model.safetensors", .data = "\x08\x00\x00\x00\x00\x00\x00\x00{}      " });
+    switch (try remote.create(arena, "g@h:detector.git", "model")) {
+        .created => {},
+        else => return error.TestModelNotCreated,
+    }
+    try cid.client.workspace.initFull(arena, io, producer.dir, "cid@test:test/models/detector", "g@h:detector.git", "model", "files", .{});
+    var pws = try cid.client.workspace.open(arena, io, producer.dir);
+    try std.testing.expectEqualStrings("model", pws.config.kind);
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "first weights", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    const t1 = try remote.tag(arena, "v1.0.0");
+    try std.testing.expectEqual(@as(u64, 2), t1.items);
+    try std.testing.expectEqualStrings("model", (try remote.info(arena)).kind);
+
+    // The release rebuilds exactly, and a clone is the same tree.
+    const ds_id = try arena.dupeSentinel(u8, (try db.rawOne([]const u8, &fscope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/models/detector'", .{})).?, 0);
+    try std.testing.expect((try cid.release.verify(arena, std.testing.allocator, &standalone.db, &scope, &s3c, ds_id, "v1.0.0")).ok);
+    var reader = std.testing.tmpDir(.{ .iterate = true });
+    defer reader.cleanup();
+    var rcache = std.testing.tmpDir(.{});
+    defer rcache.cleanup();
+    _ = try cid.client.sync.clone(arena, io, reader.dir, rcache.dir, &remote, "cid@test:test/models/detector", null, null, .{});
+    const got = try reader.dir.readFileAlloc(io, "weights/model.safetensors", arena, .limited(1024));
+    try std.testing.expectEqualStrings("\x08\x00\x00\x00\x00\x00\x00\x00{}      ", got);
+
+    // The Hugging Face door answers it on the model routes, at the root as
+    // on the Hub, and not on the dataset routes.
+    const info = cid.hf.handle(arena, &deps, &scope, "GET", "/api/models/test/models__detector/revision/v1.0.0", .{ .header = bearer }, "", "http://cid.test");
+    try std.testing.expectEqual(std.http.Status.ok, info.status);
+    const short = cid.hf.handle(arena, &deps, &scope, "GET", "/api/models/test/detector", .{ .header = bearer }, "", "http://cid.test");
+    try std.testing.expectEqual(std.http.Status.ok, short.status);
+    const weights = cid.hf.handle(arena, &deps, &scope, "HEAD", "/test/models__detector/resolve/v1.0.0/weights/model.safetensors", .{ .header = bearer }, "", "http://cid.test");
+    try std.testing.expectEqual(std.http.Status.found, weights.status);
+    try std.testing.expect(cid.hf.isModelFile("/test/models__detector/resolve/v1.0.0/weights/model.safetensors"));
+    try std.testing.expectEqual(std.http.Status.not_found, cid.hf.handle(arena, &deps, &scope, "GET", "/api/datasets/test/models__detector", .{ .header = bearer }, "", "http://cid.test").status);
+    try std.testing.expectEqual(std.http.Status.not_found, cid.hf.handle(arena, &deps, &scope, "HEAD", "/datasets/test/models__detector/resolve/v1.0.0/config.json", .{ .header = bearer }, "", "http://cid.test").status);
+}

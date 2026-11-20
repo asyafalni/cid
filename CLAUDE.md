@@ -139,6 +139,13 @@ Both kinds share the same history model, releases, storage and commands. Annotat
 a file dataset are just files (e.g. `labels.jsonl`); structured annotations exist only in
 annotated datasets.
 
+**Models** (`cid init <address> --git <url> --model`) are a file dataset by another
+name: the files a training run produced (weights, configuration, tokenizer), with the
+same history, releases, storage, commands and dashboard. Only the label differs (and
+the Hugging Face door serves them on its model routes). Their bytes are cid's, in
+SeaweedFS, never a git host's model registry. No stages, approvals, serving or
+metrics (decided 2026-11-20, `docs/roadmap.md`).
+
 ---
 
 ## How people use it
@@ -279,7 +286,7 @@ makes every change between versions visible).
 
 | Word | Meaning |
 |---|---|
-| **dataset** | A versioned collection: a **file dataset** or an **annotated dataset**. Identified internally by a stable `dataset_id`; its path can be renamed |
+| **dataset** | A versioned collection: a **file dataset** or an **annotated dataset** (or a **model**, a file dataset holding a training run's files). Identified internally by a stable `dataset_id`; its path can be renamed |
 | **item** | One item of a dataset, identified by `item_id`, which **survives re-encoding**; its current content is a file stored once by its BLAKE3 hash (`item_hash`) |
 | **path** | Where an item sits in the dataset's folder tree, e.g. `audio/2026-03/call-0012.wav` |
 | **annotation** | Structured information on an item, in annotated datasets: box, polygon, points, mask, transcript, time segment, text span, class, identity, value. Attached to `item_id`, not to the bytes |
@@ -600,7 +607,8 @@ Everyday (shown by `cid help`):
 | `cid commit -m <msg> [-a]` | Save staged changes as a local commit; `-a` first stages every change to tracked files (new files need `add`, as in git) |
 | `cid push` | Upload local commits and their new files; resumes if interrupted |
 
-For dataset owners (`cid help --all`): `init <address> --git <url>` (both required),
+For dataset owners (`cid help --all`): `init <address> --git <url> [--model]` (both
+addresses required; `--model` when the folder holds a model's files),
 `tag`, `branch`, `merge [--continue]`, and `remote` (the folder's address and git URL;
 `remote set-url [<address>] [--git <url>]` after a rename, as in git: the old address
 stops answering, nothing redirects; server commands warn when the folder's git URL is

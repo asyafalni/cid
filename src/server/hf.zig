@@ -94,6 +94,10 @@ fn handleInner(
     // /datasets/{ns}/{name}/resolve/{rev}/{path…}
     if (is_get and parts.len >= 6 and std.mem.eql(u8, parts[0], "datasets") and std.mem.eql(u8, parts[3], "resolve"))
         return resolveFile(arena, deps, scope, given, .datasets, try decode(arena, parts[1]), try decode(arena, parts[2]), try decode(arena, parts[4]), try joinDecoded(arena, parts[5..]));
+    // /{ns}/{name}/resolve/{rev}/{path…}: a model's file, at the root as
+    // on the Hub (never a dashboard page: those all start /d/).
+    if (is_get and parts.len >= 5 and std.mem.eql(u8, parts[2], "resolve") and isModelRoot(parts[0]))
+        return resolveFile(arena, deps, scope, given, .models, try decode(arena, parts[0]), try decode(arena, parts[1]), try decode(arena, parts[3]), try joinDecoded(arena, parts[4..]));
     // /api/{datasets|models}/{ns}/{name}[/{action}/{rev}[/{path…}]]
     if (parts.len >= 4 and std.mem.eql(u8, parts[0], "api")) {
         const kind: Kind = if (std.mem.eql(u8, parts[1], "datasets")) .datasets else if (std.mem.eql(u8, parts[1], "models")) .models else return notFound(arena);
@@ -110,6 +114,26 @@ fn handleInner(
             return pathsInfo(arena, deps, scope, given, kind, ns, name, rev, body);
     }
     return notFound(arena);
+}
+
+/// Whether `/{first}/…/resolve/…` can be a model's file: not one of the
+/// server's own prefixes.
+pub fn isModelRoot(first: []const u8) bool {
+    for ([_][]const u8{ "api", "datasets", "d", "v0", "auth", "assets", "fonts" }) |own| if (std.mem.eql(u8, first, own)) return false;
+    return first.len > 0;
+}
+
+/// Whether a path the dashboard's catch-all received is a model's file
+/// (`/{ns}/{name}/resolve/{rev}/{path…}`), for the door to answer.
+pub fn isModelFile(path: []const u8) bool {
+    var it = std.mem.splitScalar(u8, path, '/');
+    _ = it.next();
+    const first = it.next() orelse return false;
+    _ = it.next() orelse return false;
+    const third = it.next() orelse return false;
+    _ = it.next() orelse return false; // the revision
+    const rest = it.next() orelse return false;
+    return isModelRoot(first) and std.mem.eql(u8, third, "resolve") and rest.len > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -693,6 +717,13 @@ fn escapeComponent(arena: std.mem.Allocator, raw: []const u8) error{OutOfMemory}
             try out.print(arena, "%{X:0>2}", .{c});
     }
     return out.items;
+}
+
+test "a model's file path is told from the dashboard's pages" {
+    try std.testing.expect(isModelFile("/org/detector/resolve/v1/config.json"));
+    try std.testing.expect(isModelFile("/org/detector/resolve/main/weights/model.safetensors"));
+    for ([_][]const u8{ "/d/org/resolve/v1/x", "/datasets/org/x/resolve/v1/y", "/api/models/org/x", "/org/detector/resolve/v1", "/org/detector/tree/v1/x", "/", "/keys" }) |p|
+        try std.testing.expect(!isModelFile(p));
 }
 
 test "repo ids and commit aliases map both ways" {

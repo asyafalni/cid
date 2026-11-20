@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearch } from '@tanstack/react-router';
-import { ApiError, getMe, listDatasets, setStar, type DatasetSummary } from '../api';
+import { ApiError, getMe, kindLabel, listDatasets, setStar, type DatasetSummary } from '../api';
 import { humanBytes } from '../format';
 import { Thumb } from '../Thumb';
 import { Airship } from '../Airship';
@@ -9,7 +9,7 @@ import { recentDatasets } from '../recent';
 
 type HomeSearch = {
   q?: string;
-  kind?: 'files' | 'annotated';
+  kind?: 'files' | 'annotated' | 'model';
   type?: string;
   released?: 'yes' | 'no';
   restricted?: 'yes' | 'no';
@@ -153,6 +153,7 @@ export function Home() {
           options={[
             ['files', 'files'],
             ['annotated', 'annotated'],
+            ['model', 'model'],
           ]}
           onChange={(v) => setSearch({ kind: v as HomeSearch['kind'] })}
         />
@@ -221,7 +222,7 @@ export function Home() {
                 <Link to="/d/$" params={{ _splat: d.name }} className="data manifest-name">
                   {d.name}
                 </Link>
-                <span className="manifest-kind">{d.kind === 'annotated' ? 'annotated' : 'files'}</span>
+                <span className="manifest-kind">{kindLabel(d.kind)}</span>
                 {d.restricted && <span className="chip restricted-badge">restricted</span>}
                 {d.owners.length > 0 && <span className="quiet manifest-owners">owned by {d.owners.join(', ')}</span>}
                 <p className="manifest-facts quiet data">
@@ -249,7 +250,7 @@ export function Home() {
                   {star(d)}
                 </div>
                 <p className="ds-card-kind">
-                  {d.kind === 'annotated' ? 'annotated' : 'files'}
+                  {kindLabel(d.kind)}
                   {d.restricted && <span className="chip restricted-badge">restricted</span>}
                   {d.owners.length > 0 && <span className="quiet"> · owned by {d.owners.join(', ')}</span>}
                 </p>

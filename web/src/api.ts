@@ -4,7 +4,7 @@
 
 export type DatasetSummary = {
   name: string;
-  kind: 'files' | 'annotated';
+  kind: DatasetKind;
   restricted: boolean;
   default_format: string;
   latest_release: string | null;
@@ -91,9 +91,17 @@ export type TapeCommit = {
   ann_removed: number | null;
 };
 
+/** A model is a file dataset by another name: only its label differs. */
+export type DatasetKind = 'files' | 'annotated' | 'model';
+
+/** How a kind is named on a card or in a filter. */
+export function kindLabel(kind: DatasetKind): string {
+  return kind === 'annotated' ? 'annotated' : kind === 'model' ? 'model' : 'files';
+}
+
 export type Overview = {
   name: string;
-  kind: 'files' | 'annotated';
+  kind: DatasetKind;
   restricted: boolean;
   /** Display names of the dataset's owners (Maintainers). */
   owners: string[];

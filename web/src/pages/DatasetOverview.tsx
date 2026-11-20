@@ -98,7 +98,7 @@ export function DatasetOverview() {
             </h1>
             <p className="dataset-meta">
               <span className="dataset-fact">
-                {o.kind === 'annotated' ? 'Annotated dataset' : 'File dataset'}
+                {o.kind === 'annotated' ? 'Annotated dataset' : o.kind === 'model' ? 'Model' : 'File dataset'}
                 {o.restricted && <span className="chip restricted-badge">restricted</span>}
               </span>
               <span className="dataset-fact">

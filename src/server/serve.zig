@@ -124,8 +124,11 @@ fn serveIndex(c: *nilo.Ctx) !void {
     try sendAsset(c, "index.html");
 }
 
-fn serveAsset(c: *nilo.Ctx) !void {
+fn serveAsset(deps: *api.Deps, c: *nilo.Ctx) !void {
     const path = c.path().view();
+    // A model's file (`/{ns}/{name}/resolve/…`) is the Hugging Face
+    // door's, at the root as on the Hub; dashboard pages start /d/.
+    if (hf.isModelFile(path)) return hfDispatch(deps, c);
     const rel = if (path.len > 0 and path[0] == '/') path[1..] else path;
     inline for (assets.files) |f| {
         if (std.mem.eql(u8, f.path, rel)) {

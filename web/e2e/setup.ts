@@ -332,6 +332,18 @@ function seedMediaBroken(dir: string) {
   run(`${cid} push`, folder);
 }
 
+// A model: a file dataset by another name, made with `cid init --model`.
+function seedModel(dir: string) {
+  const model = join(dir, 'model');
+  execSync(`mkdir -p ${model}`);
+  writeFileSync(join(model, 'config.json'), '{"model_type":"bert","hidden_size":8,"num_hidden_layers":1}\n');
+  run(`${cid} init cid@127.0.0.1:e2e/models/tiny-bert --git g@h:tiny-bert.git --model`, model);
+  run(`${cid} add .`, model);
+  run(`${cid} commit -m "tiny bert"`, model);
+  run(`${cid} push`, model);
+  run(`${cid} tag v1.0.0`, model);
+}
+
 // A restricted dataset: previews blurred until a logged reveal.
 function seedFaces(dir: string) {
   const faces = join(dir, 'faces');
@@ -397,6 +409,7 @@ export default function setup() {
       `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/media/-/log -H "Authorization: Bearer ${token}"`,
     );
     if (!mediaLog.includes('one broken table')) seedMediaBroken(dir);
+    if (!already.includes('e2e/models/tiny-bert')) seedModel(dir);
     const tableReleases = run(
       `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/tables/-/releases -H "Authorization: Bearer ${token}"`,
     );

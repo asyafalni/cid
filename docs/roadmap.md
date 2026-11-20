@@ -16,8 +16,7 @@ same change.
   overview counts the pinned release; file types in the card; per-release counts in
   the history; type and open-in-Browse in the Files tab; reduced-motion and
   malformed-CSV tests; git status in the header and activity filters.
-- `model-kind`, a local branch that is not pushed: one WIP commit, the start of item
-  C2. It builds; nothing in it is tested. Rebase it onto `main` before continuing.
+- Models (C2) and the Hugging Face door (C1) are on `main` (2026-11-20).
 - Running the e2e suite needs Playwright's browser:
   `pnpm --dir web exec playwright install chromium`.
 - The e2e database is seeded once and kept. A fixture change must be its own
@@ -70,8 +69,8 @@ same change.
   and table measuring their place on the page from the wrong origin).
 - ~~**A3. A release's git link in the history**~~ (done 2026-11-20: GitLab and
   GitHub; other hosts get no link).
-- **A4. Words for a model** in the dashboard, once C2 lands: the header label, "Use
-  this model", the kind filter on the home page.
+- ~~**A4. Words for a model**~~ (done 2026-11-20 with C2: header, card, "Use this
+  model", the home page's kind filter).
 
 ## 3. Tier U: the experience, better than Hugging Face
 
@@ -279,14 +278,16 @@ machine: a new test-only dependency, to be agreed first.
 Known and accepted: `hf cache verify` compares SHA-256 and git SHA-1 and will report
 mismatches against BLAKE3 names.
 
-### C2. Models (branch `model-kind`)
+### C2. Models
 
-Done there, untested: migration `0002_model_kind.sql`, the server accepts the kind,
-`cid init <address> --git <url> --model`, the help line, the git README's wording.
-
-Still to do: integration test (init, push, release, verify, clone: identical tree);
-a line in `tests/usability.sh`; the dashboard's words (A4); `CLAUDE.md` (the kinds
-table, Words, the scope section); `docs/data-model.md`; `docs/git-repository.md`.
+**Done (2026-11-20).** Migration `0002_model_kind.sql`; `cid init <address> --git
+<url> --model`; the git README calls it a model; the dashboard names it (A4); the
+Hugging Face door serves it on `/api/models/…` and at the root
+(`/{ns}/{name}/resolve/…`), never on the dataset routes. Integration test: created
+as a model, pushed, released, verified, cloned back identical, served to model
+clients. Checked with the real clients: `model_info`, `snapshot_download` and
+`transformers`' `AutoConfig.from_pretrained` (a BERT config; weights need PyTorch,
+not installed for the check). Not done: a line in `tests/usability.sh`.
 
 ### C3. Lineage
 

@@ -24,8 +24,8 @@ export function OverviewTab({
     <>
       {commit && o.items > 0 && <LookInside overview={o} commit={commit} release={release} />}
       <div className="dataset-columns">
-      <section className="panel card" aria-label="Dataset card">
-        <h2>Dataset card</h2>
+      <section className="panel card" aria-label={o.kind === 'model' ? 'Model card' : 'Dataset card'}>
+        <h2>{o.kind === 'model' ? 'Model card' : 'Dataset card'}</h2>
         <p className="engraved data">
           {o.items.toLocaleString()} {o.items === 1 ? 'item' : 'items'} · {humanBytes(o.bytes)}
           {o.classes.length > 0 && <> · {o.classes.length} classes</>}
@@ -226,8 +226,8 @@ function UseThisDataset({
   }
 
   return (
-    <section className="panel panel--release card" aria-label="Use this dataset">
-      <h2>Use this dataset</h2>
+    <section className="panel panel--release card" aria-label={o.kind === 'model' ? 'Use this model' : 'Use this dataset'}>
+      <h2>{o.kind === 'model' ? 'Use this model' : 'Use this dataset'}</h2>
       {formats.length > 1 && (
         <div className="format-picker" role="radiogroup" aria-label="Export format">
           {formats.map((f) => (
