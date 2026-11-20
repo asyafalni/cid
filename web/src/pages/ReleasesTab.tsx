@@ -94,7 +94,15 @@ export function ReleasesTab({
               <p className="quiet moment-meta">
                 <span className="data">{new Date(c.at_ms).toISOString().slice(0, 10)}</span>
                 {' — '}
-                {c.author} · <span className="data">{c.id.slice(0, 13)}</span>
+                {c.author} · <span className="data">{c.id.slice(0, 13)}</span> ·{' '}
+                <Link
+                  to="/d/$"
+                  params={{ _splat: name }}
+                  search={c.release ? { release: c.release } : { commit: c.id }}
+                  aria-label={`View this version: ${c.release ?? c.id.slice(0, 13)}`}
+                >
+                  view
+                </Link>
               </p>
               {c.release && <ReleaseCounts name={name} kind={overview.kind} release={c} />}
             </li>

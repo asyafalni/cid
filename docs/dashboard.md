@@ -41,7 +41,7 @@ only).
 tab and Validator tiles; card completeness; most Browse filters,
 histograms and the List view; keyboard shortcuts outside Browse; the "Show command"
 toggle; the `⌘K` palette; charts and gauges; PDF page
-images (`vips`); viewing branches or pinning a commit; the SQL console; semantic
+images (`vips`); viewing branches; the SQL console; semantic
 search.
 
 **Parked, needs a decision first:** editing the card and making releases from the
@@ -277,9 +277,12 @@ Every dataset page (all five tabs) shares one header and the release tape.
 - **Release tape** (built): the history of `main`, newest 100 commits, oldest on the
   left. Each release is a button that pins the page to it (`?release=` in the URL);
   with none chosen, the newest release is pinned. Commits are ticks that show their
-  message and author on hover but cannot be picked. With commits but no release, the
-  tape is only its facts ("1 commit, no releases yet"). *Not built yet:* pinning a commit,
-  and viewing branches (the tape shows `main` only).
+  message and author on hover, and a tick pins the page to that commit (`?commit=`,
+  which every tab, link and command then follows: "Use this dataset" adds
+  `cid checkout <commit>`, the Hugging Face snippet its 40-digit id). By keyboard,
+  the history's "view" link per entry does the same, so the tape is no hundred tab
+  stops. With commits but no release, the tape is only its facts ("1 commit, no
+  releases yet"). *Not built yet:* viewing branches (the tape shows `main` only).
 - The auto card here and the dataset repository's `README.md` are separate renderers
   that read the same commit statistics (`stats`), so their numbers agree. Every link
   in the git README lands on the dashboard pinned to that release.
@@ -569,7 +572,7 @@ id, each release's item count and changes since the one before, and "not in git
 yet" on a release the server has not written to the dataset repository, else a
 link to its tag on GitLab or GitHub, and a purged-items count; no release notes or
 quality) and covers `main`
-only, and commits cannot be pinned; the Files tab has no preview panel of its
+only (any commit on it can be pinned); the Files tab has no preview panel of its
 own (a file opens in Browse's drawer).
 
 *Delivered ahead of Phase 2:* table statistics. A CSV, Parquet or JSONL item opens as a

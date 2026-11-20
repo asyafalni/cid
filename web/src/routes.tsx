@@ -71,6 +71,7 @@ const datasetRoute = createRoute({
   ): {
     view?: 'overview' | 'browse' | 'releases' | 'files' | 'activity';
     release?: string;
+    commit?: string;
     item?: string;
     a?: string;
     b?: string;
@@ -93,7 +94,8 @@ const datasetRoute = createRoute({
             : search.view === 'activity'
               ? 'activity'
               : undefined,
-    release: typeof search.release === 'string' ? search.release : undefined,
+    release: typeof search.release === 'string' && typeof search.commit !== 'string' ? search.release : undefined,
+    commit: typeof search.commit === 'string' ? search.commit : undefined,
     item: typeof search.item === 'string' ? search.item : undefined,
     a: typeof search.a === 'string' ? search.a : undefined,
     b: typeof search.b === 'string' ? search.b : undefined,

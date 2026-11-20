@@ -1606,6 +1606,16 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     try std.testing.expect(std.mem.indexOf(u8, newest.body, "\"items\":3,") != null);
     const unknown = cid.api.handle(arena, &deps, &scope, "GET", overview_url ++ "?release=v9.9.9", "Bearer test-token", "");
     try std.testing.expect(std.mem.indexOf(u8, unknown.body, "\"items\":4,") != null);
+    // A commit pins it too, and names the release made there, if any.
+    const at_commit = cid.api.handle(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, overview_url ++ "?commit={s}", .{commit_for_release}), "Bearer test-token", "");
+    try std.testing.expect(std.mem.indexOf(u8, at_commit.body, "\"items\":2,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, at_commit.body, "\"pinned_release\":\"v1.0.0\"") != null);
+    const head_id = (try db.rawOne([]const u8, &fscope, "SELECT r.commit_id::text FROM refs r JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/rel' AND r.name = 'main' AND r.kind = 'branch'", .{})).?;
+    const at_head = cid.api.handle(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, overview_url ++ "?commit={s}", .{head_id}), "Bearer test-token", "");
+    try std.testing.expect(std.mem.indexOf(u8, at_head.body, "\"items\":4,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, at_head.body, "\"pinned_release\":null") != null);
+    try std.testing.expectEqual(std.http.Status.bad_request, cid.api.handle(arena, &deps, &scope, "GET", overview_url ++ "?commit=nope", "Bearer test-token", "").status);
+    try std.testing.expectEqual(std.http.Status.not_found, cid.api.handle(arena, &deps, &scope, "GET", overview_url ++ "?commit=01890000-0000-7000-8000-000000000000", "Bearer test-token", "").status);
 
     // When each file last changed at a version, and by whom; a path the
     // version does not hold is absent.

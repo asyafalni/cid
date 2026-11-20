@@ -4,15 +4,22 @@ import type { TapeCommit } from './api';
 // altimeter-style strip of the dataset's history — a brass tick per
 // commit, an engraved tag per release, the aether needle on the pinned
 // position. It earns its decoration by being navigation: every tag is a
-// button that pins the page to that release.
+// button that pins the page to that release, and every tick pins it to
+// that commit (by pointer; from the keyboard, the history lists every
+// commit with a link, so the tape is not a hundred tab stops).
 export function ReleaseTape({
   commits,
   pinned,
+  pinnedCommit,
   onPick,
+  onPickCommit,
 }: {
   commits: TapeCommit[]; // newest first
   pinned: string | null;
+  /** A commit pinned by `?commit=` (null when a release is). */
+  pinnedCommit: string | null;
   onPick: (release: string) => void;
+  onPickCommit: (id: string) => void;
 }) {
   if (commits.length === 0) {
     return (
@@ -42,7 +49,9 @@ export function ReleaseTape({
         {run.map((c) => (
           <li
             key={c.id}
-            className={c.release ? 'tick tick--release' : 'tick'}
+            className={[c.release ? 'tick tick--release' : 'tick', pinnedCommit === c.id && !c.release ? 'tick--pinned' : '']
+              .join(' ')
+              .trim()}
             title={`${c.message} — ${c.author}`}
           >
             {c.release ? (
@@ -54,14 +63,20 @@ export function ReleaseTape({
                 {c.release}
               </button>
             ) : (
-              <span className="tick-mark" aria-hidden="true" />
+              <button
+                className="tick-mark"
+                tabIndex={-1}
+                aria-label={`Commit ${c.id.slice(0, 13)}: ${c.message}`}
+                aria-pressed={pinnedCommit === c.id}
+                onClick={() => onPickCommit(c.id)}
+              />
             )}
           </li>
         ))}
       </ol>
       <p className="tape-legend quiet">
-        {commitCount}, {releases === 1 ? '1 release' : `${releases} releases`}. Pick a release to pin
-        the page to it.
+        {commitCount}, {releases === 1 ? '1 release' : `${releases} releases`}. Pick a release, or
+        a commit's tick, to pin the page to it.
       </p>
     </nav>
   );

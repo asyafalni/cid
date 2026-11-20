@@ -116,8 +116,10 @@ export type Overview = {
   lineage_unseen: number;
   /** Releases on the tape some of whose items had their bytes purged, and how many. */
   purged: { release: string; items: number }[];
-  /** The version the counts below are of: the release asked for, else the newest. */
+  /** The version the counts below are of: the commit or release asked for, else the newest release. */
   pinned_commit: string | null;
+  /** The release made at that version, if any. */
+  pinned_release: string | null;
   items: number;
   bytes: number;
   /** The labelling policy version the annotations were made under (the newest);
@@ -130,9 +132,22 @@ export type Overview = {
 };
 
 /** A dataset's overview, its counts those of `release` (the newest when not given). */
-export function getOverview(name: string, release?: string): Promise<Overview> {
-  const q = release ? `?release=${encodeURIComponent(release)}` : '';
+/** A dataset's overview at a version: a commit (`commit`), else a release, else the newest release. */
+export function getOverview(name: string, release?: string, commit?: string): Promise<Overview> {
+  const q = commit
+    ? `?commit=${encodeURIComponent(commit)}`
+    : release
+      ? `?release=${encodeURIComponent(release)}`
+      : '';
   return request(`/v0/datasets/${name}/-/overview${q}`);
+}
+
+/** What a page is pinned to, as it rides on links: a release, or a commit (never both). */
+export type Pin = { release?: string; commit?: string };
+
+/** A commit's id as the Hugging Face door spells it: 40 hex digits. */
+export function commitAlias(id: string): string {
+  return `${id.replaceAll('-', '')}00000000`;
 }
 
 export function listDatasets(): Promise<{ datasets: DatasetSummary[] }> {

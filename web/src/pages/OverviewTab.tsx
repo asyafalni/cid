@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { getBrowse, getSubsetSize, type Overview } from '../api';
+import { commitAlias, getBrowse, getSubsetSize, type Overview, type Pin } from '../api';
 import { extOf } from '../browseFilter';
 import { hfRepoId, humanBytes } from '../format';
 import { AnnotationOverlay } from '../overlays';
@@ -12,17 +12,17 @@ export function OverviewTab({
   overview: o,
   pinned,
   commit,
-  release,
+  pin,
 }: {
   overview: Overview;
   pinned: string | null;
   commit: string | null;
-  /** The release in the URL, kept on links into Browse. */
-  release: string | undefined;
+  /** What the page is pinned to, kept on links into Browse. */
+  pin: Pin;
 }) {
   return (
     <>
-      {commit && o.items > 0 && <LookInside overview={o} commit={commit} release={release} />}
+      {commit && o.items > 0 && <LookInside overview={o} commit={commit} pin={pin} />}
       <div className="dataset-columns">
       <section className="panel card" aria-label={o.kind === 'model' ? 'Model card' : 'Dataset card'}>
         <h2>{o.kind === 'model' ? 'Model card' : 'Dataset card'}</h2>
@@ -45,7 +45,7 @@ export function OverviewTab({
                     <Link
                       to="/d/$"
                       params={{ _splat: o.name }}
-                      search={{ view: 'browse', release, type: t.name }}
+                      search={{ view: 'browse', ...pin, type: t.name }}
                       aria-label={`Browse the ${t.name} items`}
                     >
                       {t.name}
@@ -106,7 +106,7 @@ export function OverviewTab({
         </p>
       </section>
 
-      <UseThisDataset overview={o} pinned={pinned} commit={commit} />
+      <UseThisDataset overview={o} pinned={pinned} commit={commit} pin={pin} />
       </div>
     </>
   );
@@ -153,7 +153,7 @@ const noneHidden: ReadonlySet<string> = new Set();
 // time (chosen by a hash of their paths), as Browse shows them (real
 // previews with their annotations drawn, or type tiles), each opening in
 // Browse. One request for the sample and one for its thumbnails.
-function LookInside({ overview: o, commit, release }: { overview: Overview; commit: string; release: string | undefined }) {
+function LookInside({ overview: o, commit, pin }: { overview: Overview; commit: string; pin: Pin }) {
   const sample = useQuery({
     queryKey: ['look-inside', o.name, commit],
     queryFn: async () => {
@@ -168,7 +168,7 @@ function LookInside({ overview: o, commit, release }: { overview: Overview; comm
     <section className="look-inside" aria-label="A look inside">
       <div className="look-inside-head">
         <h2>A look inside</h2>
-        <Link to="/d/$" params={{ _splat: o.name }} search={{ view: 'browse', release }}>
+        <Link to="/d/$" params={{ _splat: o.name }} search={{ view: 'browse', ...pin }}>
           Browse all {o.items.toLocaleString()} {o.items === 1 ? 'item' : 'items'}
         </Link>
       </div>
@@ -178,7 +178,7 @@ function LookInside({ overview: o, commit, release }: { overview: Overview; comm
             <Link
               to="/d/$"
               params={{ _splat: o.name }}
-              search={{ view: 'browse', release, item: item.path }}
+              search={{ view: 'browse', ...pin, item: item.path }}
               className="tile look-tile"
             >
               {thumbs.has(item.hash) ? (
@@ -215,11 +215,15 @@ function UseThisDataset({
   overview: o,
   pinned,
   commit,
+  pin,
 }: {
   overview: Overview;
   pinned: string | null;
   commit: string | null;
+  pin: Pin;
 }) {
+  // A commit pinned with no release on it: the clone, then a checkout of it.
+  const atCommit = pinned === null && pin.commit !== undefined && commit !== null ? commit : null;
   const formats =
     o.kind === 'annotated' ? (['files', 'jsonl', 'yolo', 'coco', 'voc'] as const) : (['files'] as const);
   const defaultFormat = o.kind === 'annotated' ? o.default_format : 'files';
@@ -248,9 +252,10 @@ function UseThisDataset({
     ...[...classes].sort().map((v) => `--class ${v}`),
   ]
     .filter(Boolean)
-    .join(' ');
+    .join(' ')
+    .concat(atCommit ? ` && cd ${folder} && cid checkout ${atCommit}` : '');
   const snippet = pythonFor(format, folder);
-  const hf = hfSnippet(o, pinned);
+  const hf = hfSnippet(o, pinned ?? (atCommit ? commitAlias(atCommit) : null));
 
   function copy(what: 'command' | 'snippet' | 'hf', text: string) {
     void navigator.clipboard.writeText(text).then(() => {
@@ -312,7 +317,11 @@ function UseThisDataset({
       </p>
       <p className="quiet">
         Works as pasted: your SSH key is the login.{' '}
-        {pinned ? `Pinned to ${pinned}.` : 'No releases yet, so this clones the newest commit.'}
+        {pinned
+          ? `Pinned to ${pinned}.`
+          : atCommit
+            ? `Pinned to commit ${atCommit.slice(0, 13)}, which is not a release.`
+            : 'No releases yet, so this clones the newest commit.'}
       </p>
 
       <div className="snippet">

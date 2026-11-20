@@ -217,6 +217,36 @@ test('lineage: a model release names what it was trained on, and the dataset nam
   await expect(page.getByRole('region', { name: 'Models trained on this release' })).toHaveCount(0);
 });
 
+test('a commit can be pinned: from the history or the tape, and every view and command follows it', async ({ page }) => {
+  await signIn(page);
+  // The newest commit is not a release: the page shows the release until asked.
+  await page.goto('/d/e2e/datasets/many');
+  await expect(page.locator('.dataset-meta')).toContainText('130 items');
+  await page.goto('/d/e2e/datasets/many?view=releases');
+  const unreleased = page.getByRole('region', { name: 'History' }).locator('.moment').filter({ hasText: 'one more row' });
+  await unreleased.getByRole('link', { name: /View this version/ }).click();
+  await expect(page).toHaveURL(/commit=[0-9a-f-]{36}/);
+  const commit = new URL(page.url()).searchParams.get('commit')!;
+  await expect(page.locator('.dataset-meta')).toContainText('131 items');
+  // Its tick is the needle; no release is pressed.
+  await expect(page.getByRole('button', { name: /^Commit .*one more row/ })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'v1.0.0' })).toHaveAttribute('aria-pressed', 'false');
+  // The commands reach the same version.
+  const use = page.getByRole('region', { name: 'Use this dataset' });
+  await expect(use).toContainText(`&& cd many && cid checkout ${commit}`);
+  await expect(page.getByRole('region', { name: 'With Hugging Face libraries' })).toContainText(
+    `revision="${commit.replaceAll('-', '')}00000000"`,
+  );
+  // Another tab keeps it pinned.
+  await page.getByRole('link', { name: 'Browse', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`commit=${commit}`));
+  await expect(page.getByText('131 items')).toBeVisible();
+  // A release's tag pins the release again, and the commit lets go.
+  await page.getByRole('button', { name: 'v1.0.0' }).click();
+  await expect(page).not.toHaveURL(/commit=/);
+  await expect(page.getByText('130 items')).toBeVisible();
+});
+
 test('the files tab walks the committed tree', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?view=files');

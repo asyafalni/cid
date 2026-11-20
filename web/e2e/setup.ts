@@ -306,6 +306,17 @@ function seedMany(dir: string) {
   run(`${cid} tag v1.0.0`, many);
 }
 
+// A commit after many's release, never released: a version only a pinned
+// commit reaches.
+function seedManyUnreleased(dir: string) {
+  run(`${cid} clone cid@127.0.0.1:e2e/datasets/many many-more`, dir);
+  const folder = join(dir, 'many-more');
+  writeFileSync(join(folder, 'rows', '0131.txt'), 'row 131\n');
+  run(`${cid} add rows/0131.txt`, folder);
+  run(`${cid} commit -m "one more row"`, folder);
+  run(`${cid} push`, folder);
+}
+
 // Sound and words: a tone (its waveform the thumbnail) and a note.
 function seedMedia(dir: string) {
   const media = join(dir, 'media');
@@ -415,6 +426,8 @@ export default function setup() {
     if (!already.includes('e2e/datasets/masks')) seedMasks(dir);
     if (!already.includes('e2e/datasets/tables')) seedTables(dir);
     if (!already.includes('e2e/datasets/many')) seedMany(dir);
+    const manyLog = run(`curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/many/-/log -H "Authorization: Bearer ${token}"`);
+    if (!manyLog.includes('one more row')) seedManyUnreleased(dir);
     if (!already.includes('e2e/datasets/media')) seedMedia(dir);
     const mediaLog = run(
       `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/media/-/log -H "Authorization: Bearer ${token}"`,

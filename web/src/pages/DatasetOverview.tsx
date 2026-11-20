@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
-import { ApiError, getOverview } from '../api';
+import { ApiError, getOverview, type Pin } from '../api';
 import { ReleaseTape } from '../ReleaseTape';
 import { gitWebUrl, humanBytes } from '../format';
 import { OverviewTab } from './OverviewTab';
@@ -21,6 +21,7 @@ export function DatasetOverview() {
   const search = useSearch({ strict: false }) as {
     view?: 'overview' | 'browse' | 'releases' | 'files' | 'activity';
     release?: string;
+    commit?: string;
     item?: string;
     a?: string;
     b?: string;
@@ -35,8 +36,8 @@ export function DatasetOverview() {
   };
   const navigate = useNavigate();
   const query = useQuery({
-    queryKey: ['overview', name, search.release ?? null],
-    queryFn: () => getOverview(name, search.release),
+    queryKey: ['overview', name, search.release ?? null, search.commit ?? null],
+    queryFn: () => getOverview(name, search.release, search.commit),
     // Pinning another release keeps the page up while its counts arrive.
     placeholderData: (previous, previousQuery) =>
       previousQuery?.queryKey[1] === name ? previous : undefined,
@@ -64,11 +65,16 @@ export function DatasetOverview() {
   const o = query.data;
   const releases = o.commits.filter((c) => c.release !== null);
   const waitingForGit = releases.filter((c) => c.git_pending);
-  const pinned = search.release ?? releases[0]?.release ?? null;
+  // The release pinned: the one asked for, the one at the pinned commit, or
+  // with neither asked for, the newest.
+  const pinned = search.commit ? (query.isPlaceholderData ? null : o.pinned_release) : (search.release ?? releases[0]?.release ?? null);
+  // What rides on every link of the page, so a pinned commit stays pinned.
+  const pin: Pin = search.commit ? { commit: search.commit } : search.release ? { release: search.release } : {};
   // The server names the pinned version (a release older than the tape
   // still pins); while another release's answer is on its way, the tape does.
   const pinnedCommit =
     (query.isPlaceholderData ? null : o.pinned_commit) ??
+    search.commit ??
     o.commits.find((c) => c.release === pinned)?.id ??
     o.commits[0]?.id ??
     null;
@@ -126,7 +132,13 @@ export function DatasetOverview() {
               </span>
             </p>
           </div>
-          <ReleaseTape commits={o.commits} pinned={pinned} onPick={(r) => setSearch({ release: r })} />
+          <ReleaseTape
+            commits={o.commits}
+            pinned={pinned}
+            pinnedCommit={search.commit ? pinnedCommit : null}
+            onPick={(r) => setSearch({ release: r, commit: undefined })}
+            onPickCommit={(id) => setSearch({ commit: id, release: undefined })}
+          />
         </div>
       </header>
 
@@ -134,7 +146,7 @@ export function DatasetOverview() {
         <Link
           to="/d/$"
           params={{ _splat: name }}
-          search={{ view: 'overview', release: search.release }}
+          search={{ view: 'overview', ...pin }}
           className={view === 'overview' ? 'tab on' : 'tab'}
           aria-current={view === 'overview' ? 'page' : undefined}
         >
@@ -143,7 +155,7 @@ export function DatasetOverview() {
         <Link
           to="/d/$"
           params={{ _splat: name }}
-          search={{ view: 'browse', release: search.release }}
+          search={{ view: 'browse', ...pin }}
           className={view === 'browse' ? 'tab on' : 'tab'}
           aria-current={view === 'browse' ? 'page' : undefined}
         >
@@ -152,7 +164,7 @@ export function DatasetOverview() {
         <Link
           to="/d/$"
           params={{ _splat: name }}
-          search={{ view: 'releases', release: search.release }}
+          search={{ view: 'releases', ...pin }}
           className={view === 'releases' ? 'tab on' : 'tab'}
           aria-current={view === 'releases' ? 'page' : undefined}
         >
@@ -161,7 +173,7 @@ export function DatasetOverview() {
         <Link
           to="/d/$"
           params={{ _splat: name }}
-          search={{ view: 'files', release: search.release }}
+          search={{ view: 'files', ...pin }}
           className={view === 'files' ? 'tab on' : 'tab'}
           aria-current={view === 'files' ? 'page' : undefined}
         >
@@ -170,7 +182,7 @@ export function DatasetOverview() {
         <Link
           to="/d/$"
           params={{ _splat: name }}
-          search={{ view: 'activity', release: search.release }}
+          search={{ view: 'activity', ...pin }}
           className={view === 'activity' ? 'tab on' : 'tab'}
           aria-current={view === 'activity' ? 'page' : undefined}
         >
@@ -179,7 +191,7 @@ export function DatasetOverview() {
       </nav>
 
       {view === 'overview' ? (
-        <OverviewTab overview={o} pinned={pinned} commit={pinnedCommit} release={search.release} />
+        <OverviewTab overview={o} pinned={pinned} commit={pinnedCommit} pin={pin} />
       ) : view === 'browse' ? (
         <BrowseTab
           name={name}
@@ -209,7 +221,7 @@ export function DatasetOverview() {
         <FilesTab
           name={name}
           commit={pinnedCommit}
-          release={search.release}
+          pin={pin}
           openDir={search.dir}
           onOpenDir={(dir) => setSearch({ dir })}
         />

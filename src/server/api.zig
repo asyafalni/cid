@@ -274,7 +274,7 @@ fn handleInner(
     if (eql(method, "GET") and eql(route.action, "info"))
         return datasetInfo(arena, deps, scope, ds);
     if (eql(method, "GET") and eql(route.action, "overview"))
-        return overview(arena, deps, scope, caller, ds, try param(arena, route, "release"));
+        return overview(arena, deps, scope, caller, ds, try param(arena, route, "release"), try param(arena, route, "commit"));
     if (eql(method, "GET") and eql(route.action, "head"))
         return head(arena, deps, scope, ds, route.queryParam("branch") orelse "main");
     if (eql(method, "GET") and eql(route.action, "log"))
@@ -1775,7 +1775,7 @@ fn datasetInfo(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
 /// version the page is pinned to: the release asked for, else the newest
 /// release on the tape, else main's head (also when no release has the
 /// name asked for). The tape is main's; branch views arrive later.
-fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, release: ?[]const u8) HandleError!Response {
+fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, release: ?[]const u8, asked_commit: ?[]const u8) HandleError!Response {
     const info = (deps.db.rawOne(InfoRow, scope, "SELECT kind, git_url, default_format FROM datasets WHERE dataset_id = $1::uuid", .{ds.id}) catch return error.Db) orelse return error.Db;
 
     const TapeEntry = struct {
@@ -1815,7 +1815,21 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Calle
     // 100 commits, and a release older than that still pins.
     var pinned: ?[]const u8 = null;
     var pinned_release: ?[]const u8 = null;
-    if (release) |name| {
+    if (asked_commit) |id| {
+        // A commit pins the page too (principle 3: a release or a commit),
+        // with the release made at it, if any, named.
+        if (Uuid.parse(id) == error.InvalidUuid) return errorResponse(arena, .bad_request, "that is not a commit id", "Pick a version from the tape or the history.");
+        const Row = struct {
+            pub const nilo_table = .projection;
+            id: []const u8,
+            release: ?[]const u8,
+        };
+        const row = (deps.db.rawOne(Row, scope, "SELECT c.commit_id::text AS id, (SELECT min(r.name) FROM refs r WHERE r.commit_id = c.commit_id AND r.kind = 'release') AS release " ++
+            "FROM commits c WHERE c.commit_id = $1::uuid AND c.dataset_id = $2::uuid", .{ id, ds.id }) catch return error.Db) orelse
+            return errorResponse(arena, .not_found, "no such commit in this dataset", "Pick a version from the tape or the history.");
+        pinned = row.id;
+        pinned_release = row.release;
+    } else if (release) |name| {
         pinned = deps.db.rawOne([]const u8, scope, "SELECT commit_id::text FROM refs " ++
             "WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'release'", .{ ds.id, name }) catch return error.Db;
         if (pinned != null) pinned_release = name;
@@ -1894,6 +1908,7 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Calle
         .commits = tape,
         .purged = purged.items,
         .pinned_commit = pinned,
+        .pinned_release = pinned_release,
         .trained_on = trained_on.items,
         .trained_models = trained_models.items,
         .lineage_unseen = unseen,

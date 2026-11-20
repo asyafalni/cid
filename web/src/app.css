@@ -2336,6 +2336,29 @@
 
 /* A link inside a line of quiet text is underlined: colour alone does
    not tell it from the words around it (axe, link-in-text-block). */
-.snippet p a {
+.snippet p a,
+.moment-meta a {
   text-decoration: underline;
+}
+
+/* A commit's tick is a button: a wider hit area around the same 2px line
+   (padding, painted only in the content box), and the needle's colour when
+   the page is pinned to it. */
+button.tick-mark {
+  box-sizing: content-box;
+  padding: 0 3px;
+  border: 0;
+  background-clip: content-box;
+  cursor: pointer;
+}
+
+button.tick-mark:hover {
+  background-color: var(--aether);
+}
+
+.tick--pinned .tick-mark,
+.dataset-head .tick--pinned .tick-mark {
+  background-color: var(--aether);
+  height: 1.25rem;
+  width: 3px;
 }

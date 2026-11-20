@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useInfiniteQuery, useQueries } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { getDir, getDownloads, getLastChange, type LastChange } from '../api';
+import { getDir, getDownloads, getLastChange, type LastChange, type Pin } from '../api';
 import { extOf } from '../browseFilter';
 import { humanBytes } from '../format';
 
@@ -12,14 +12,14 @@ import { humanBytes } from '../format';
 export function FilesTab({
   name,
   commit,
-  release,
+  pin,
   openDir,
   onOpenDir,
 }: {
   name: string;
   commit: string | null;
-  /** The release in the URL, kept on links into Browse. */
-  release: string | undefined;
+  /** What the page is pinned to, kept on links into Browse. */
+  pin: Pin;
   openDir: string | undefined;
   onOpenDir: (dir: string | undefined) => void;
 }) {
@@ -112,7 +112,7 @@ export function FilesTab({
             <tr key={item.path}>
               <td className="data">
                 {/* The file as itself: its preview, facts and history, in Browse's drawer. */}
-                <Link to="/d/$" params={{ _splat: name }} search={{ view: 'browse', release, item: item.path }}>
+                <Link to="/d/$" params={{ _splat: name }} search={{ view: 'browse', ...pin, item: item.path }}>
                   {item.path.slice(prefix.length)}
                 </Link>
               </td>
