@@ -158,6 +158,22 @@ expect_hint "tag with unpushed commits"       "$CID" tag v1.1.0
 expect_ok   "push again" "$CID" push
 expect_ok   "tag v1.1.0" "$CID" tag v1.1.0
 
+# --- a model, trained on that dataset's release ------------------------------
+MODEL="usability/models/detector-$(date +%s)-$$"
+git init -q --bare "$WORK/model.git"
+mkdir -p "$WORK/model" && cd "$WORK/model"
+echo '{"model_type":"tiny"}' > config.json
+expect_ok   "init a model"                    "$CID" init "cid@127.0.0.1:$MODEL" --git "$WORK/model.git" --model
+expect_ok   "add the weights"                 "$CID" add .
+expect_ok   "commit the model"                "$CID" commit -m "first weights"
+expect_ok   "push the model"                  "$CID" push
+expect_hint "--trained-on without a release"  "$CID" tag v1.0.0 --trained-on "$DS"
+expect_hint "--trained-on a release that does not exist" "$CID" tag v1.0.0 --trained-on "$DS@v9.9.9"
+expect_ok   "tag the model, trained on the dataset's release" "$CID" tag v1.0.0 --trained-on "$DS@v1.0.0"
+if "$CID" log 2>/dev/null | grep -q "v1.0.0"; then say "ok: the model's release is in its log"; else say "FAIL: the model's log misses v1.0.0"; fails=$((fails+1)); fi
+cd "$WORK/producer"
+expect_hint "--trained-on on a dataset, not a model" "$CID" tag v1.2.0 --trained-on "$DS@v1.0.0"
+
 # --- reading elsewhere -------------------------------------------------------
 cd "$WORK"
 # The git URL works as an address: its .cid marker names the dataset.

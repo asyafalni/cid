@@ -18,11 +18,11 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--trained-on")) {
             i += 1;
-            if (i >= args.len) return common.fail(ctx, .usage, "--trained-on needs a dataset release, e.g. --trained-on your-org/datasets/person-vehicle@v4.2.0", .{});
+            if (i >= args.len) return common.fail(ctx, .usage, "--trained-on needs a dataset release. Run 'cid tag <name> --trained-on <dataset>@<release>', e.g. --trained-on your-org/datasets/person-vehicle@v4.2.0", .{});
             const at = std.mem.lastIndexOfScalar(u8, args[i], '@') orelse
-                return common.fail(ctx, .usage, "'{s}' names no release: write <dataset>@<release>, e.g. your-org/datasets/person-vehicle@v4.2.0", .{args[i]});
+                return common.fail(ctx, .usage, "'{s}' names no release. Run 'cid tag <name> --trained-on <dataset>@<release>', e.g. your-org/datasets/person-vehicle@v4.2.0", .{args[i]});
             if (at == 0 or at + 1 == args[i].len)
-                return common.fail(ctx, .usage, "'{s}' names no release: write <dataset>@<release>, e.g. your-org/datasets/person-vehicle@v4.2.0", .{args[i]});
+                return common.fail(ctx, .usage, "'{s}' names no release. Run 'cid tag <name> --trained-on <dataset>@<release>', e.g. your-org/datasets/person-vehicle@v4.2.0", .{args[i]});
             sources.append(ctx.arena, .{ .dataset = args[i][0..at], .release = args[i][at + 1 ..] }) catch return .network;
         } else if (given == null) {
             given = args[i];

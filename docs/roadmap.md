@@ -289,7 +289,8 @@ Hugging Face door serves it on `/api/models/…` and at the root
 as a model, pushed, released, verified, cloned back identical, served to model
 clients. Checked with the real clients: `model_info`, `snapshot_download` and
 `transformers`' `AutoConfig.from_pretrained` (a BERT config; weights need PyTorch,
-not installed for the check). Not done: a line in `tests/usability.sh`.
+not installed for the check). `tests/usability.sh` makes a model, tags it
+`--trained-on`, and checks each refusal's hint.
 
 ### C3. Lineage
 

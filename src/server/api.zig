@@ -2433,7 +2433,7 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
     // dataset one cannot read.
     var sources: std.ArrayList(SourceRow) = .empty;
     if (req.trained_on.len > 0 and !eql(ds.kind, "model"))
-        return refusedSources(arena, "only a model's release records what it was trained on", "Leave out --trained-on, or tag the model (one made with 'cid init --model').");
+        return refusedSources(arena, "only a model's release records what it was trained on", "Run 'cid tag <name>' without --trained-on here; a model (made with 'cid init --model') takes it.");
     if (req.trained_on.len > 50) return error.BadRequest;
     for (req.trained_on) |src| {
         const Row = struct {
@@ -2452,7 +2452,7 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
             try std.fmt.allocPrint(arena, "no release '{s}' of a dataset '{s}' that you can read", .{ src.release, src.dataset }),
             "Check the dataset's path and release name (its history on the dashboard), then run 'cid tag' again.",
         );
-        if (eql(row.dataset_id, ds.id)) return refusedSources(arena, "a model cannot be trained on itself", "Name the dataset releases it was trained on.");
+        if (eql(row.dataset_id, ds.id)) return refusedSources(arena, "a model cannot be trained on itself", "Name the dataset releases it was trained on, then run 'cid tag' again.");
         try sources.append(arena, .{ .dataset_id = row.dataset_id, .name = src.dataset, .release = src.release, .commit_id = row.commit_id, .manifest_hex = row.manifest_hex });
     }
 
