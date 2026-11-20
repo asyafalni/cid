@@ -318,6 +318,20 @@ function seedMedia(dir: string) {
   run(`${cid} push`, media);
 }
 
+// One file that is not what its name says, pushed the way a person would:
+// a .csv no table reader can parse, beside the media (invariant 18).
+function seedMediaBroken(dir: string) {
+  run(`${cid} clone cid@127.0.0.1:e2e/datasets/media media-broken`, dir);
+  const folder = join(dir, 'media-broken');
+  writeFileSync(
+    join(folder, 'broken.csv'),
+    Buffer.concat([Buffer.from('id,name\n1,"never closed\n2,'), Buffer.from([0xff, 0xfe, 0x00, 0xc3, 0x28]), Buffer.from('\n')]),
+  );
+  run(`${cid} add broken.csv`, folder);
+  run(`${cid} commit -m "one broken table"`, folder);
+  run(`${cid} push`, folder);
+}
+
 // A restricted dataset: previews blurred until a logged reveal.
 function seedFaces(dir: string) {
   const faces = join(dir, 'faces');
@@ -379,6 +393,10 @@ export default function setup() {
     if (!already.includes('e2e/datasets/tables')) seedTables(dir);
     if (!already.includes('e2e/datasets/many')) seedMany(dir);
     if (!already.includes('e2e/datasets/media')) seedMedia(dir);
+    const mediaLog = run(
+      `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/media/-/log -H "Authorization: Bearer ${token}"`,
+    );
+    if (!mediaLog.includes('one broken table')) seedMediaBroken(dir);
     const tableReleases = run(
       `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/tables/-/releases -H "Authorization: Bearer ${token}"`,
     );

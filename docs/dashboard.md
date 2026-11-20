@@ -599,16 +599,17 @@ AI service (see non-goals in `CLAUDE.md`).
 
 Each one is a test in `web/e2e/dashboard.spec.ts` unless marked otherwise.
 
-- A 50 GB dataset with one malformed CSV: browse works; the bad file shows its own
-  error; nothing else is affected. *Not yet automated.*
+- A dataset with one malformed CSV: browse works; the bad file shows its own error,
+  in words, and can still be downloaded; nothing else is affected. (Automated on a
+  small dataset; the 50 GB size is not.)
 - A detection dataset: boxes are drawn on images in the gallery and drawer.
 - Any view's URL, opened in a new browser, shows the same release, filters and item.
 - Compare two releases: a changed box shows before and after on the same image.
 - The `cid clone` command copied from "Use this dataset" works as pasted.
 - For every action, "Show command" gives a `cid` command that does the same thing when
   run in a terminal. *Not yet automated; "Show command" is not built.*
-- With reduced motion on, no animation plays; both themes pass contrast checks. *Not
-  yet automated* (axe checks contrast in both themes; no reduced-motion test).
+- With reduced motion on, no animation or transition runs on any page; both themes
+  pass contrast checks (axe, in both themes).
 - A restricted dataset: previews blurred until revealed; the reveal appears in Activity.
 - Every page passes automated accessibility checks (axe) and full keyboard use. The
   axe part is automated for the main pages (serious and critical findings); full

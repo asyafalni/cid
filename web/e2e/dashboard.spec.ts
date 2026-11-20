@@ -157,7 +157,7 @@ test('the overview opens with a look inside: real items, their annotations, each
   await expect(media.getByRole('link', { name: /notes\.txt/ }).getByText('.txt', { exact: true })).toBeVisible();
   await expect(media.getByRole('link', { name: /tone\.wav/ }).locator('img')).toBeVisible();
   // No release yet: the facts, not an empty tape.
-  await expect(page.getByText('1 commit, no releases yet.')).toBeVisible();
+  await expect(page.getByText('2 commits, no releases yet.')).toBeVisible();
 });
 
 test('lost in the clouds: an unknown address or dataset says so and offers the way back', async ({ page }) => {
@@ -663,6 +663,25 @@ test('media opens as media: a sound plays with its waveform, a note reads as tex
   await expect(note.getByRole('region', { name: 'Text' })).toContainText('UTF-8 is fine');
 });
 
+// Invariant 18: one bad file never breaks a view.
+test('a malformed CSV shows its own error, in words, and the rest of the dataset stays browsable', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/media?view=browse');
+  // Its neighbours are all there, as themselves.
+  await expect(page.locator('.tile img[alt="tone.wav"]')).toBeVisible();
+  await expect(page.getByRole('button', { name: /notes\.txt/ })).toBeVisible();
+  // The bad file opens too, and says what is wrong with it; it can still be downloaded.
+  await page.getByRole('button', { name: /broken\.csv/ }).click();
+  const drawer = page.getByRole('complementary', { name: 'broken.csv' });
+  await expect(drawer.getByText(/No table view: /)).toBeVisible();
+  await expect(drawer.getByRole('link', { name: 'Download the file' })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  // And the other views of the same version.
+  await page.goto('/d/e2e/datasets/media?view=files');
+  await expect(page.getByRole('row', { name: /broken\.csv/ }).getByRole('cell', { name: '.csv', exact: true })).toBeVisible();
+  await expect(page.getByRole('row', { name: /tone\.wav/ })).toBeVisible();
+});
+
 const axePages = ['/no/such/page', '/d/e2e/datasets/nope', '/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/keys', '/tokens'];
 
 // Both themes: Daybreak as Playwright's default light scheme, Night flight
@@ -682,6 +701,30 @@ for (const scheme of ['light', 'dark'] as const) {
     }
   });
 }
+
+// Motion is decoration here (drifting clouds, the airship, transitions):
+// someone who asks for less gets none, on every page (docs/dashboard.md §9).
+test('with reduced motion on, no animation or transition runs on any page', async ({ page }) => {
+  await signIn(page);
+  const running = () =>
+    page.evaluate(() => document.getAnimations().filter((a) => a.playState === 'running').length);
+  // The control: the dataset's sky does move for everyone else.
+  await page.goto('/d/e2e/datasets/demo');
+  await page.waitForLoadState('networkidle');
+  expect(await running()).toBeGreaterThan(0);
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  for (const path of axePages) {
+    await page.goto(path);
+    await page.waitForLoadState('networkidle');
+    expect(await running(), path).toBe(0);
+  }
+  // A transition would start on a change, not on load: pin another release.
+  await page.goto('/d/e2e/datasets/demo');
+  await page.getByRole('button', { name: 'v1.0.0' }).click();
+  await expect(page).toHaveURL(/release=v1\.0\.0/);
+  expect(await running()).toBe(0);
+});
 
 test('the theme switch pins a theme across pages and reloads, and System lets go', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'light' });
