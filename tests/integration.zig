@@ -1585,6 +1585,27 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     try std.testing.expect(pushes >= 1);
     const tags = (try db.rawOne(i64, &fscope, "SELECT count(*) FROM activity_events e JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/rel' AND e.action = 'tag' AND e.ref = 'v1.0.0'", .{})).?;
     try std.testing.expect(tags >= 1);
+
+    // The overview counts the version it is pinned to: the release asked
+    // for, else the newest release, and never main's head beyond it.
+    try producer.dir.writeFile(io, .{ .sub_path = "z.txt", .data = "release content z" });
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "third", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    _ = try remote.tag(arena, "v1.1.0");
+    try producer.dir.writeFile(io, .{ .sub_path = "w.txt", .data = "not released yet" });
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "fourth", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    const overview_url = "/v0/datasets/test/datasets/rel/-/overview";
+    const first = cid.api.handle(arena, &deps, &scope, "GET", overview_url ++ "?release=v1.0.0", "Bearer test-token", "");
+    try std.testing.expectEqual(std.http.Status.ok, first.status);
+    try std.testing.expect(std.mem.indexOf(u8, first.body, "\"items\":2,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.body, try std.fmt.allocPrint(arena, "\"pinned_commit\":\"{s}\"", .{commit_for_release})) != null);
+    const newest = cid.api.handle(arena, &deps, &scope, "GET", overview_url, "Bearer test-token", "");
+    try std.testing.expect(std.mem.indexOf(u8, newest.body, "\"items\":3,") != null);
+    const unknown = cid.api.handle(arena, &deps, &scope, "GET", overview_url ++ "?release=v9.9.9", "Bearer test-token", "");
+    try std.testing.expect(std.mem.indexOf(u8, unknown.body, "\"items\":4,") != null);
 }
 
 test "git writer: one commit and tag per release, idempotent, resumable" {

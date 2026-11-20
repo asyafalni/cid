@@ -272,7 +272,7 @@ fn handleInner(
     if (eql(method, "GET") and eql(route.action, "info"))
         return datasetInfo(arena, deps, scope, ds);
     if (eql(method, "GET") and eql(route.action, "overview"))
-        return overview(arena, deps, scope, ds);
+        return overview(arena, deps, scope, ds, try param(arena, route, "release"));
     if (eql(method, "GET") and eql(route.action, "head"))
         return head(arena, deps, scope, ds, route.queryParam("branch") orelse "main");
     if (eql(method, "GET") and eql(route.action, "log"))
@@ -1711,8 +1711,10 @@ fn datasetInfo(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
 
 /// Everything the dashboard's Overview needs in one call: identity, the
 /// commit tape (newest first, releases attached), and the counts of the
-/// current head state. Pinned to main; branch views arrive later.
-fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) HandleError!Response {
+/// version the page is pinned to: the release asked for, else the newest
+/// release on the tape, else main's head (also when no release has the
+/// name asked for). The tape is main's; branch views arrive later.
+fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, release: ?[]const u8) HandleError!Response {
     const info = (deps.db.rawOne(InfoRow, scope, "SELECT kind, git_url, default_format FROM datasets WHERE dataset_id = $1::uuid", .{ds.id}) catch return error.Db) orelse return error.Db;
 
     const TapeEntry = struct {
@@ -1733,9 +1735,21 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) 
         "WHERE c.dataset_id = $1::uuid AND c.branch = 'main' " ++
         "ORDER BY c.commit_id DESC LIMIT 100", .{ds.id}) catch return error.Db;
 
-    // Counts at head, kept on the commit (versions.stats).
-    const head_stats: versions.Stats = if (tape.len > 0)
-        versions.stats(arena, deps.db, scope, ds.id, tape[0].id) catch |err| switch (err) {
+    // A release is found by name, not on the tape: the tape is the newest
+    // 100 commits, and a release older than that still pins.
+    var pinned: ?[]const u8 = null;
+    if (release) |name| {
+        pinned = deps.db.rawOne([]const u8, scope, "SELECT commit_id::text FROM refs " ++
+            "WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'release'", .{ ds.id, name }) catch return error.Db;
+    } else for (tape) |entry| if (entry.release != null) {
+        pinned = entry.id;
+        break;
+    };
+    if (pinned == null and tape.len > 0) pinned = tape[0].id;
+
+    // Counts at the pinned version, kept on the commit (versions.stats).
+    const pinned_stats: versions.Stats = if (pinned) |commit|
+        versions.stats(arena, deps.db, scope, ds.id, commit) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.Db,
         }
@@ -1756,10 +1770,11 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) 
         .git_url = info.git_url,
         .default_format = info.default_format,
         .commits = tape,
-        .items = head_stats.items,
-        .bytes = head_stats.bytes,
-        .classes = head_stats.classes,
-        .splits = head_stats.splits,
+        .pinned_commit = pinned,
+        .items = pinned_stats.items,
+        .bytes = pinned_stats.bytes,
+        .classes = pinned_stats.classes,
+        .splits = pinned_stats.splits,
     });
 }
 

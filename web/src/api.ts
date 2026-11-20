@@ -90,14 +90,18 @@ export type Overview = {
   git_url: string;
   default_format: string;
   commits: TapeCommit[]; // newest first
+  /** The version the counts below are of: the release asked for, else the newest. */
+  pinned_commit: string | null;
   items: number;
   bytes: number;
   classes: { name: string; count: number }[];
   splits: { name: string; count: number }[];
 };
 
-export function getOverview(name: string): Promise<Overview> {
-  return request(`/v0/datasets/${name}/-/overview`);
+/** A dataset's overview, its counts those of `release` (the newest when not given). */
+export function getOverview(name: string, release?: string): Promise<Overview> {
+  const q = release ? `?release=${encodeURIComponent(release)}` : '';
+  return request(`/v0/datasets/${name}/-/overview${q}`);
 }
 
 export function listDatasets(): Promise<{ datasets: DatasetSummary[] }> {

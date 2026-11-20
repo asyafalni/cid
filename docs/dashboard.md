@@ -47,10 +47,6 @@ search.
 **Parked, needs a decision first:** editing the card and making releases from the
 dashboard.
 
-**Known gap:** the Overview card's counts are the head of `main`, whatever release the
-page is pinned to (principle 3). The subset size in "Use this dataset" is the pinned
-release's.
-
 ---
 
 ## 1. What we learned from existing tools
@@ -103,8 +99,8 @@ section in §4 says so.
    table with column statistics. PDFs show page thumbnails.
 3. **Always pinned to a version.** Every page shows which release or commit you are
    looking at, with a picker like GitHub's branch picker. Nothing is "latest-ish".
-   *Built:* the release tape pins a release. *Known gap:* the Overview card's counts
-   show `main`'s head whatever release is pinned.
+   *Built:* the release tape pins a release, and the header, the card and every tab
+   show that release.
 4. **Every view is a link.** Release, filters, search, sort, selected item and zoom are
    in the URL. Pasting the link shows exactly the same thing. *Built:* tab, release,
    filters, path search, open item, open folder, compare pair and table mode. Sort and
@@ -270,7 +266,7 @@ Every dataset page (all five tabs) shares one header and the release tape.
 
 - **Header** (built): the sky band, with the path's owner part in monospace above the
   name in Fraunces (the heading reads the full path), then the kind, the restricted
-  badge, the item count and size, the owners (Maintainers, by name, as on the home
+  badge, the pinned release's item count and size, the owners (Maintainers, by name, as on the home
   card) and a plain **"View in git"** link to the dataset repository; the release tape
   rides the bottom of the sky, over a faint drifting cloud bank. The `cid clone`
   command lives in "Use this dataset". *Planned:* the repository's git status (up to
@@ -285,8 +281,9 @@ Every dataset page (all five tabs) shares one header and the release tape.
   that read the same commit statistics (`stats`), so their numbers agree. Every link
   in the git README lands on the dashboard pinned to that release.
 - **Auto dataset card.** *Built:* item count and size, class count, the class table
-  (with index), split sizes. *Known gap:* these counts are
-  `main`'s head, not the pinned release. *Planned:* media types and sizes, policy
+  (with index), split sizes, all of the pinned release, as the header's count and
+  size are (`overview?release=`; a release is found by name, so one older than the
+  tape's 100 commits pins too). *Planned:* media types and sizes, policy
   version (annotated datasets), last release notes, and the owners' own words
   (purpose, collection method, known gaps), which wait on card editing, a parked
   decision.
@@ -548,7 +545,7 @@ with history) · Releases timeline and compare (summary + visual diff) · Files 
 shareable URLs · restricted blur and reveal log · preview worker for images and tables.
 
 *Status:* built, except: the auto card is partial (counts, class table and split sizes
-only; its counts are `main`'s head, not the pinned release); Browse filters are path,
+only); Browse filters are path,
 split, class and type only; the Releases timeline is partial (message, date, author,
 id, and "not in git yet" on a release the server has not written to the dataset
 repository; no release notes, counts, quality, git link or purge notice) and covers `main`

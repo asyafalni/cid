@@ -63,7 +63,7 @@ export function OverviewTab({
         </p>
       </section>
 
-      <UseThisDataset overview={o} pinned={pinned} />
+      <UseThisDataset overview={o} pinned={pinned} commit={commit} />
       </div>
     </>
   );
@@ -132,7 +132,15 @@ function LookInside({ overview: o, commit, release }: { overview: Overview; comm
   );
 }
 
-function UseThisDataset({ overview: o, pinned }: { overview: Overview; pinned: string | null }) {
+function UseThisDataset({
+  overview: o,
+  pinned,
+  commit,
+}: {
+  overview: Overview;
+  pinned: string | null;
+  commit: string | null;
+}) {
   const formats =
     o.kind === 'annotated' ? (['files', 'jsonl', 'yolo'] as const) : (['files'] as const);
   const defaultFormat = o.kind === 'annotated' ? o.default_format : 'files';
@@ -144,7 +152,6 @@ function UseThisDataset({ overview: o, pinned }: { overview: Overview; pinned: s
   // The pinned version's real items, so the size line is a sum, not a
   // guess: counted on the server with the CLI's subset rule (src/client/
   // sync.zig, `narrow`), so it is exactly what the copied command takes.
-  const commit = o.commits.find((c) => c.release === pinned)?.id ?? o.commits[0]?.id ?? null;
   const size = useQuery({
     queryKey: ['size', o.name, commit, [...splits].sort().join(','), [...classes].sort().join(',')],
     queryFn: () => getSubsetSize(o.name, commit!, [...splits], [...classes]),

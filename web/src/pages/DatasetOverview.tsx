@@ -33,8 +33,11 @@ export function DatasetOverview() {
   };
   const navigate = useNavigate();
   const query = useQuery({
-    queryKey: ['overview', name],
-    queryFn: () => getOverview(name),
+    queryKey: ['overview', name, search.release ?? null],
+    queryFn: () => getOverview(name, search.release),
+    // Pinning another release keeps the page up while its counts arrive.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === name ? previous : undefined,
   });
   // Remembered only once the dataset answered: a mistyped link is not a visit.
   const found = query.isSuccess;
@@ -59,8 +62,13 @@ export function DatasetOverview() {
   const o = query.data;
   const releases = o.commits.filter((c) => c.release !== null);
   const pinned = search.release ?? releases[0]?.release ?? null;
+  // The server names the pinned version (a release older than the tape
+  // still pins); while another release's answer is on its way, the tape does.
   const pinnedCommit =
-    o.commits.find((c) => c.release === pinned)?.id ?? o.commits[0]?.id ?? null;
+    (query.isPlaceholderData ? null : o.pinned_commit) ??
+    o.commits.find((c) => c.release === pinned)?.id ??
+    o.commits[0]?.id ??
+    null;
   const view = search.view ?? 'overview';
   // The path's last part is the dataset's name; the rest says whose it is.
   const cut = o.name.lastIndexOf('/');

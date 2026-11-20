@@ -40,6 +40,9 @@ test('the overview carries the tape, the card and the paste-ready command', asyn
   await page.getByRole('button', { name: 'v1.0.0' }).click();
   await expect(page).toHaveURL(/release=v1\.0\.0/);
   await expect(page.getByText(/--release v1\.0\.0/)).toBeVisible();
+  // The card and the header count the pinned release, not main's head.
+  await expect(page.getByRole('region', { name: 'Dataset card' }).getByText(/3 items ·/)).toBeVisible();
+  await expect(page.locator('.dataset-meta').getByText(/3 items,/)).toBeVisible();
 });
 
 test('browse shows thumbnails for images and honest tiles for the rest', async ({ page }) => {
