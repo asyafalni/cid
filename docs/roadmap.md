@@ -18,21 +18,24 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
 
 - **Done:** all of Tier A; Tier B except the rest of B6; the Hugging Face door (C1),
   models (C2) and lineage (C3); the first half of U1. The toolchain is Zig 0.17.1
-  with nilo v0.8.0.
-- **What is left, in the order to take it:**
-  1. U1's missing sets (dark theme, 1024 and 390 px, the measured report), then U2:
-     the twelve defects listed there, worst first.
-  2. U3 and U4 (no blank waits; the first minute).
-  3. The rest of B6 (attribute and identity filters, histograms, the List view).
-  4. U5 to U8 and U10, one between each larger piece.
-  5. C1's two loose ends: the real-client check as an automated test (needs Python
+  with nilo v0.8.0. U1 and U2 are done too: every page photographed in both themes at
+  1440, 1024 and 390 px, the measured overflow report empty, and every defect found
+  fixed.
+- **What is left, in the order to take it** (agreed with the owner 2026-11-20):
+  1. U3 (no blank waits).
+  2. A declared key column for row diffs (Tier D): a design round with the owner
+     first, then built, so an edited row shows as changed, not removed and added.
+  3. U4 (the first minute).
+  4. The rest of B6 (attribute and identity filters, histograms, the List view).
+  5. U5 to U8 and U10, one between each larger piece.
+  6. C1's two loose ends: the real-client check as an automated test (needs Python
      and the Hugging Face libraries agreed as a test-only dependency), and an
      annotated split's file at 1M items (first request not measured, not prepared
      ahead).
-  6. Small gaps left by finished items: comparing a branch with `main` (B7); actions
+  7. Small gaps left by finished items: comparing a branch with `main` (B7); actions
      in the `⌘K` palette (B9); per-class change counts in `cid diff` (B5).
-  7. U11 (watch three engineers use it), once U1 to U4 are in.
-  8. Tier D, each with its own design first.
+  8. U11 (watch three engineers use it), once U1 to U4 are in.
+  9. The rest of Tier D, each with its own design first.
 - Running the e2e suite needs Playwright's browser:
   `pnpm --dir web exec playwright install chromium`.
 - The e2e database is seeded once and kept. A fixture change must be its own
