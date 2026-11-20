@@ -1771,6 +1771,20 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, 
     else
         .{};
 
+    // Releases on the tape that hold purged content say so, as a count
+    // (invariant 19); only a dataset holding some pays for the counting.
+    const PurgedRelease = struct { release: []const u8, items: u64 };
+    var purged: std.ArrayList(PurgedRelease) = .empty;
+    if (versions.holdsPurged(deps.db, scope, ds.id) catch return error.Db) {
+        for (tape) |entry| if (entry.release) |name| {
+            const n = versions.purgedItems(deps.db, scope, ds.id, entry.id) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.Db,
+            };
+            if (n > 0) try purged.append(arena, .{ .release = name, .items = n });
+        };
+    }
+
     // Owners are Maintainers (CLAUDE.md, words), by display name, as the
     // listing names them.
     const owners = (deps.db.rawOne([]const u8, scope, "SELECT coalesce(string_agg(ac.display_name, '\n' ORDER BY ac.display_name), '') " ++
@@ -1785,6 +1799,7 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, 
         .git_url = info.git_url,
         .default_format = info.default_format,
         .commits = tape,
+        .purged = purged.items,
         .pinned_commit = pinned,
         .items = pinned_stats.items,
         .bytes = pinned_stats.bytes,

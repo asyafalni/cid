@@ -146,8 +146,8 @@ both themes, and works with reduced motion. Beauty never costs a budget.
   items over compressed history (`tests/bench/browse_1m.sh`, `COMPRESS=1`) before
   keeping it.
 - ~~**B2. Size per file type** in the card~~ (done 2026-11-20; statistics format 3).
-- **B3. Purge notice** on a release in the history: "intact except N purged items",
-  with the paths (invariant 19).
+- ~~**B3. Purge notice** on a release in the history~~ (done 2026-11-20; a count
+  only: `docs/data-model.md` rules out showing the paths).
 - **B4. A stable random sample** for "A look inside" instead of the first eight items.
 - **B5. Compare, per class:** annotations added, changed and removed by class.
 - **B6. More Browse filters:** annotation count, attributes, identities; then

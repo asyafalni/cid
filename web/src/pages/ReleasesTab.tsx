@@ -70,6 +70,15 @@ export function ReleasesTab({
                     not in git yet
                   </span>
                 )}
+                {c.release && purgedIn(overview, c.release) > 0 && (
+                  <span
+                    className="chip moment-purged"
+                    title="Some of this release's items had their bytes erased by an administrator (cid admin purge). The release's history and hashes are kept; those items can no longer be downloaded."
+                  >
+                    intact except {purgedIn(overview, c.release).toLocaleString()} purged{' '}
+                    {purgedIn(overview, c.release) === 1 ? 'item' : 'items'}
+                  </span>
+                )}
                 {c.release && !c.git_pending && gitTagUrl(overview.git_url, c.release) && (
                   <a
                     className="moment-git"
@@ -135,6 +144,10 @@ function ReleaseCounts({ name, kind, release: c }: { name: string; kind: Overvie
 
 function n(count: number | null): string {
   return (count ?? 0).toLocaleString();
+}
+
+function purgedIn(overview: Overview, release: string): number {
+  return overview.purged.find((p) => p.release === release)?.items ?? 0;
 }
 
 // A count in a compare's summary: a number is data; a zero steps back.

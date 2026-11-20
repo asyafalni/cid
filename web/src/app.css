@@ -2299,3 +2299,8 @@
 .shortcuts dd {
   margin: 0;
 }
+
+/* A release that lost items to a purge: a fact, said plainly. */
+.moment-purged {
+  font-size: 0.8125rem;
+}

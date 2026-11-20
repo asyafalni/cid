@@ -157,6 +157,23 @@ test('a release written to a GitLab or GitHub repository links to its tag there'
   await expect(history.getByRole('link', { name: /in the git repository/ })).toHaveCount(0);
 });
 
+test('a release touched by a purge says it is intact except its purged items', async ({ page }) => {
+  await signIn(page);
+  // A purge is irreversible, so the shared fixtures never get one: the
+  // answer is given as if v1.0.0 had lost one item (the server's count is
+  // checked by the integration suite).
+  await page.route('**/v0/datasets/e2e/datasets/demo/-/overview*', async (route) => {
+    const res = await route.fetch();
+    await route.fulfill({ response: res, json: { ...(await res.json()), purged: [{ release: 'v1.0.0', items: 1 }] } });
+  });
+  await page.goto('/d/e2e/datasets/demo?view=releases');
+  const history = page.getByRole('region', { name: 'History' });
+  const older = history.locator('.moment--release').filter({ has: page.locator('.release-tag', { hasText: 'v1.0.0' }) });
+  await expect(older).toContainText('intact except 1 purged item');
+  const newer = history.locator('.moment--release').filter({ has: page.locator('.release-tag', { hasText: 'v1.1.0' }) });
+  await expect(newer).not.toContainText('purged');
+});
+
 test('the files tab walks the committed tree', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?view=files');

@@ -100,6 +100,8 @@ export type Overview = {
   git_url: string;
   default_format: string;
   commits: TapeCommit[]; // newest first
+  /** Releases on the tape some of whose items had their bytes purged, and how many. */
+  purged: { release: string; items: number }[];
   /** The version the counts below are of: the release asked for, else the newest. */
   pinned_commit: string | null;
   items: number;

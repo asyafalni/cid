@@ -352,9 +352,9 @@ Every dataset page (all five tabs) shares one header and the release tape.
   kept when it was made, as in its git release notes), linking to that comparison.
   A release in the dataset repository links to its tag there, where the host's URL
   form is known (GitLab, GitHub); one not there yet says "not in git yet".
-  *Planned:* release notes and quality numbers per release, and, for a release
-  touched by `cid admin purge`, "intact except N purged items" with the affected
-  paths.
+  A release touched by `cid admin purge` says "intact except N purged items": a
+  count, never the paths (`docs/data-model.md`), counted only for a dataset that holds
+  purged content. *Planned:* release notes and quality numbers per release.
 - **Compare** any two versions on `main` (releases or commits, picked as A and B; the
   pair is in the URL; by default the two newest releases):
   - Summary (built): items added/modified/deleted and, for annotated datasets,
@@ -559,7 +559,8 @@ split sizes and labelling policy only); Browse filters are path,
 split, class and type only; the Releases timeline is partial (message, date, author,
 id, each release's item count and changes since the one before, and "not in git
 yet" on a release the server has not written to the dataset repository, else a
-link to its tag on GitLab or GitHub; no release notes, quality or purge notice) and covers `main`
+link to its tag on GitLab or GitHub, and a purged-items count; no release notes or
+quality) and covers `main`
 only, and commits cannot be pinned; the Files tab has no last change or preview
 panel of its own (a file opens in Browse's drawer).
 

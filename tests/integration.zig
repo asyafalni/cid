@@ -2443,6 +2443,20 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     const check_body = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\"]}}", .{&sensitive_hash});
     const refused = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/purge/-/check-hashes", "Bearer test-token", check_body);
     try std.testing.expectEqual(std.http.Status.unprocessable_entity, refused.status);
+
+    // The history says which releases are intact except purged items, and
+    // how many: v1.0.0 held the face; v1.1.0, made without it, does not.
+    try producer.dir.deleteFile(io, "face.jpg");
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "without the face", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    _ = try remote.tag(arena, "v1.1.0");
+    const ov = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/purge/-/overview", "Bearer test-token", "");
+    try std.testing.expectEqual(std.http.Status.ok, ov.status);
+    try std.testing.expect(std.mem.indexOf(u8, ov.body, "\"purged\":[{\"release\":\"v1.0.0\",\"items\":1}]") != null);
+    // A count, never the path (docs/data-model.md).
+    const purged_part = ov.body[std.mem.indexOf(u8, ov.body, "\"purged\"").?..];
+    try std.testing.expect(std.mem.indexOf(u8, purged_part[0..std.mem.indexOfScalar(u8, purged_part, ']').?], "face") == null);
 }
 
 test "annotated: the platform writes revisions, the server commits, state composes" {

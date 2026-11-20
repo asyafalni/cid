@@ -55,6 +55,29 @@ pub const alive_cte =
     "  ORDER BY annotation_id, rev_id DESC), " ++
     "alive AS (SELECT * FROM a WHERE op <> 'delete')";
 
+/// Whether the dataset holds any content that `cid admin purge` erased:
+/// one lookup by key, so a dataset with none pays nothing more.
+pub fn holdsPurged(db: *dbx.sql.Db, scope: anytype, dataset_id: []const u8) Error!bool {
+    const found = db.rawOne(i64, scope, "SELECT 1::bigint FROM purged_items p JOIN dataset_hashes h USING (item_hash) " ++
+        "WHERE h.dataset_id = $1::uuid LIMIT 1", .{dataset_id}) catch return error.Db;
+    return found != null;
+}
+
+/// How many items of the version at `commit_id` had their bytes purged:
+/// the version is "intact except N purged items" (invariant 19). A count,
+/// never paths (docs/data-model.md). Only the paths that ever held purged
+/// content are composed, not the whole version.
+pub fn purgedItems(db: *dbx.sql.Db, scope: anytype, dataset_id: []const u8, commit_id: []const u8) Error!u64 {
+    const where = try at(db, scope, dataset_id, commit_id);
+    const n = db.rawOne(i64, scope, "WITH ph AS (SELECT p.item_hash FROM purged_items p JOIN dataset_hashes h USING (item_hash) WHERE h.dataset_id = $1::uuid), " ++
+        "touched AS (SELECT DISTINCT path FROM item_revisions WHERE dataset_id = $1::uuid AND item_hash IN (SELECT item_hash FROM ph)), " ++
+        "s AS (SELECT DISTINCT ON (path) path, op, item_hash FROM item_revisions " ++
+        "  WHERE dataset_id = $1::uuid AND path IN (SELECT path FROM touched) " ++
+        "  AND ((branch = 'main' AND rev_id <= $4::uuid) OR (branch = $2 AND rev_id <= $3::uuid)) ORDER BY path, rev_id DESC) " ++
+        "SELECT count(*)::bigint FROM s WHERE op <> 'delete' AND item_hash IN (SELECT item_hash FROM ph)", .{ dataset_id, where.branch, where.cutoff, where.main_cutoff }) catch return error.Db;
+    return @intCast(n orelse 0);
+}
+
 /// The file type of a path, in SQL: the base name's last extension,
 /// lowercased, or "file" for none or a leading dot only — the one rule the
 /// dashboard, browse, the home page and the dataset repository all use.
