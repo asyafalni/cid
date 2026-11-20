@@ -2304,3 +2304,9 @@
 .moment-purged {
   font-size: 0.8125rem;
 }
+
+/* When a file last changed, and by whom: context, not the point. */
+.files-changed {
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}

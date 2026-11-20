@@ -1607,6 +1607,23 @@ test "releases: tag, immutability, verify green, verify catches corruption" {
     const unknown = cid.api.handle(arena, &deps, &scope, "GET", overview_url ++ "?release=v9.9.9", "Bearer test-token", "");
     try std.testing.expect(std.mem.indexOf(u8, unknown.body, "\"items\":4,") != null);
 
+    // When each file last changed at a version, and by whom; a path the
+    // version does not hold is absent.
+    const lc_body = try std.fmt.allocPrint(arena, "{{\"commit\":\"{s}\",\"paths\":[\"x.txt\",\"y.txt\",\"z.txt\"]}}", .{commit_for_release});
+    const lc = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/rel/-/last-change", "Bearer test-token", lc_body);
+    try std.testing.expectEqual(std.http.Status.ok, lc.status);
+    const LastChanges = struct { changes: []const struct { path: []const u8, at_ms: i64, author: []const u8 } };
+    const changed = try std.json.parseFromSliceLeaky(LastChanges, arena, lc.body, .{});
+    try std.testing.expectEqual(@as(usize, 2), changed.changes.len);
+    try std.testing.expectEqualStrings("x.txt", changed.changes[0].path);
+    try std.testing.expectEqualStrings("y.txt", changed.changes[1].path);
+    try std.testing.expectEqualStrings("user:test", changed.changes[0].author);
+    try std.testing.expect(changed.changes[0].at_ms <= changed.changes[1].at_ms);
+    var many: std.ArrayList(u8) = .empty;
+    for (0..201) |n| try many.print(arena, "{s}\"p{d}\"", .{ if (n == 0) "" else ",", n });
+    const too_many = try std.fmt.allocPrint(arena, "{{\"commit\":\"{s}\",\"paths\":[{s}]}}", .{ commit_for_release, many.items });
+    try std.testing.expectEqual(std.http.Status.bad_request, cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/rel/-/last-change", "Bearer test-token", too_many).status);
+
     // Each file type with its size: two 17-byte files at v1.0.0.
     const two_txt = "\"types\":[{\"name\":\".txt\",\"count\":2,\"bytes\":34}]";
     try std.testing.expect(std.mem.indexOf(u8, first.body, two_txt) != null);

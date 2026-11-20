@@ -229,6 +229,13 @@ export function getDir(name: string, commit: string, prefix: string, after?: str
   return request(`/v0/datasets/${name}/-/browse/dir?${params.toString().replace(/\+/g, '%20')}`);
 }
 
+export type LastChange = { path: string; at_ms: number; author: string };
+
+/** When each path last changed at a version, and by whom (at most 200 paths). */
+export function getLastChange(name: string, commit: string, paths: string[]): Promise<{ changes: LastChange[] }> {
+  return post(`/v0/datasets/${name}/-/last-change`, { commit, paths });
+}
+
 export type CompareSide = {
   path: string;
   hash: string;

@@ -141,10 +141,8 @@ both themes, and works with reduced motion. Beauty never costs a budget.
 
 ## 4. Tier B: one server change each (about a day each)
 
-- **B1. Last change per file** in the Files tab: date and author of the revision that
-  put each file there. One query per page over `item_revisions`; measure it at 1M
-  items over compressed history (`tests/bench/browse_1m.sh`, `COMPRESS=1`) before
-  keeping it.
+- ~~**B1. Last change per file** in the Files tab~~ (done 2026-11-20; 1–7 ms per
+  120-file page at 1M items, 130–150 ms over compressed history).
 - ~~**B2. Size per file type** in the card~~ (done 2026-11-20; statistics format 3).
 - ~~**B3. Purge notice** on a release in the history~~ (done 2026-11-20; a count
   only: `docs/data-model.md` rules out showing the paths).

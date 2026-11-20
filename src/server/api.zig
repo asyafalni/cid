@@ -261,6 +261,8 @@ fn handleInner(
         return browseCompare(arena, deps, scope, ds, route);
     if (eql(method, "POST") and eql(route.action, "rowdiff"))
         return rowDiff(arena, deps, scope, ds, body);
+    if (eql(method, "POST") and eql(route.action, "last-change"))
+        return lastChange(arena, deps, scope, ds, body);
     if (eql(method, "GET") and eql(route.action, "history"))
         return history(arena, deps, scope, ds, route.queryParam("path") orelse "");
     if (eql(method, "POST") and eql(route.action, "reveal"))
@@ -613,6 +615,35 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
 /// with the commit that sealed it and that commit's release — or none,
 /// when the platform wrote it and nobody has committed since. The client
 /// pairs consecutive versions into before/after.
+const LastChangeBody = struct { commit: []const u8, paths: []const []const u8 };
+
+/// When each of these paths last changed at a version, and by whom: the
+/// revision that put its content there. A page of the Files tab at a
+/// time (at most `browse_mod.max_limit` paths), asked for after the page
+/// itself, so the listing never waits on history. A path the version
+/// does not hold is simply absent.
+fn lastChange(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
+    const req = parseBody(LastChangeBody, arena, body) orelse return error.BadRequest;
+    if (req.paths.len > browse_mod.max_limit) return error.BadRequest;
+    if (Uuid.parse(req.commit) == error.InvalidUuid) return error.BadRequest;
+    const where = versions.at(deps.db, scope, ds.id, req.commit) catch |err| switch (err) {
+        error.NoSuchCommit => return errorResponse(arena, .not_found, "no such version in this dataset", "Pick a version from the version picker."),
+        else => return error.Db,
+    };
+    const Changed = struct {
+        pub const nilo_table = .projection;
+        path: []const u8,
+        at_ms: i64,
+        author: []const u8,
+    };
+    const rows = deps.db.raw(Changed, scope, "SELECT path, at_ms, author FROM (" ++
+        "SELECT DISTINCT ON (r.path) r.path, r.op, (extract(epoch from r.ts) * 1000)::bigint AS at_ms, r.author " ++
+        "FROM item_revisions r WHERE r.dataset_id = $1::uuid AND r.path = ANY($2::text[]) " ++
+        "AND ((r.branch = 'main' AND r.rev_id <= $5::uuid) OR (r.branch = $3 AND r.rev_id <= $4::uuid)) " ++
+        "ORDER BY r.path, r.rev_id DESC) s WHERE op <> 'delete' ORDER BY path", .{ ds.id, req.paths, where.branch, where.cutoff, where.main_cutoff }) catch return error.Db;
+    return json(arena, .ok, .{ .changes = rows });
+}
+
 fn history(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, raw_path: []const u8) HandleError!Response {
     // The client sends encodeURIComponent's spelling: %XX, and `+` stays
     // a plus (a path may hold one), so std's decoder, not a form's.

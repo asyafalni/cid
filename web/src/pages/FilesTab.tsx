@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueries } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { getDir, getDownloads } from '../api';
+import { getDir, getDownloads, getLastChange, type LastChange } from '../api';
 import { extOf } from '../browseFilter';
 import { humanBytes } from '../format';
 
@@ -31,6 +31,20 @@ export function FilesTab({
     getNextPageParam: (last) => last.next ?? undefined,
     enabled: commit !== null,
   });
+
+  // When each file last changed, and by whom: asked per page once the
+  // page is there, so the listing never waits on history. A page whose
+  // answer has not come (or cannot) shows its files all the same.
+  const changedPages = useQueries({
+    queries: (listing.data?.pages ?? []).map((p, i) => ({
+      queryKey: ['last-change', name, commit, prefix, i],
+      queryFn: () => getLastChange(name, commit!, p.files.map((f) => f.path)),
+      enabled: commit !== null && p.files.length > 0,
+      staleTime: Infinity,
+    })),
+  });
+  const changed = new Map<string, LastChange>();
+  for (const q of changedPages) for (const c of q.data?.changes ?? []) changed.set(c.path, c);
 
   if (commit === null) return <p className="quiet">Nothing here until the first push.</p>;
   if (listing.isPending) return <p className="quiet">Reading the manifest…</p>;
@@ -72,6 +86,7 @@ export function FilesTab({
           <tr>
             <th>Name</th>
             <th>Type</th>
+            <th>Last change</th>
             <th className="num">Size</th>
             <th>
               <span className="visually-hidden">Download</span>
@@ -88,6 +103,7 @@ export function FilesTab({
                 </span>
               </td>
               <td className="quiet">folder</td>
+              <td></td>
               <td className="data num">{humanBytes(f.bytes)}</td>
               <td></td>
             </tr>
@@ -101,6 +117,15 @@ export function FilesTab({
                 </Link>
               </td>
               <td className="data">{extOf(item.path)}</td>
+              <td className="quiet files-changed">
+                {changed.has(item.path) && (
+                  <>
+                    <span className="data">{new Date(changed.get(item.path)!.at_ms).toISOString().slice(0, 10)}</span>
+                    {' · '}
+                    {changed.get(item.path)!.author}
+                  </>
+                )}
+              </td>
               <td className="data num">{humanBytes(item.size)}</td>
               <td className="files-action">
                 <DownloadLink name={name} hash={item.hash} />

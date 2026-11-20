@@ -181,6 +181,8 @@ test('the files tab walks the committed tree', async ({ page }) => {
   // Each file says its type, and its name opens it in Browse at the same release.
   const picture = page.getByRole('row', { name: /img-a\.png/ });
   await expect(picture.getByRole('cell', { name: '.png', exact: true })).toBeVisible();
+  // And when it last changed, and by whom (the CLI's author, user:$USER).
+  await expect(picture.getByRole('cell', { name: /^\d{4}-\d{2}-\d{2} · user:/ })).toBeVisible();
   await picture.getByRole('link', { name: 'img-a.png' }).click();
   await expect(page).toHaveURL(/view=browse/);
   await expect(page).toHaveURL(/item=img-a\.png/);
