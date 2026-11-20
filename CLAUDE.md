@@ -392,7 +392,8 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   for commit, release, branch, merge, diff and export.
 
 Deep dives: `docs/data-model.md` · `docs/access.md` · `docs/git-repository.md` ·
-`docs/dashboard.md`.
+`docs/dashboard.md`. What is left, in order, with the decisions that widen the scope
+(a Hugging Face read door, models): `docs/roadmap.md`.
 
 ---
 
@@ -656,7 +657,7 @@ deploy/sshd/                 hardened sshd_config and setup
 deploy/proxy/                reverse proxy configs (Caddy, nginx) for the server and the store
 web/                         dashboard: React + Vite + TypeScript (see docs/dashboard.md)
 web/e2e/                     Playwright tests: UX budgets, accessibility (axe), keyboard
-docs/                        data-model.md, access.md, git-repository.md, dashboard.md
+docs/                        data-model.md, access.md, git-repository.md, dashboard.md, roadmap.md
 src/util/                    hash (BLAKE3, the one content hash), uuid7, progress
 sql/migrations/
 tests/                       integration tests against real TimescaleDB + SeaweedFS;
