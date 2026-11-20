@@ -177,17 +177,18 @@ fn classesYaml(arena: std.mem.Allocator, input: Input) ![]const u8 {
 
 fn readme(arena: std.mem.Allocator, input: Input) ![]const u8 {
     var size_buf: [32]u8 = undefined;
+    const is_model = std.mem.eql(u8, input.kind, "model");
     const head = try std.fmt.allocPrint(arena,
         \\# {s}
         \\
-        \\A dataset versioned with **cid · Controlled Iterative Datasets**. cid keeps
+        \\A {s} versioned with **cid · Controlled Iterative Datasets**. cid keeps
         \\its readable record of releases here (this README, CHANGELOG.md and the
         \\other files it writes); anything else in this repository is left as it
-        \\is. The data itself lives in cid.
+        \\is. {s} lives in cid.
         \\
         \\**Latest release here: {s}** · {d} items · {s} · {s}
         \\
-        \\Get the data (the git URL works as a cid address):
+        \\Get {s} (the git URL works as a cid address):
         \\
         \\```
         \\cid clone {s}
@@ -197,10 +198,13 @@ fn readme(arena: std.mem.Allocator, input: Input) ![]const u8 {
         \\
     , .{
         input.dataset_name,
+        if (is_model) "model" else "dataset",
+        if (is_model) "The model itself (its weights and every other file)" else "The data itself",
         input.release,
         input.items,
         humanSize(&size_buf, input.bytes),
         &fmtDate(input.created_at_ms),
+        if (is_model) "the model" else "the data",
         input.git_url,
         input.server_url,
         input.dataset_name,

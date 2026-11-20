@@ -174,7 +174,7 @@ pub const Remote = struct {
     }
 
     pub fn createDataset(self: *const Remote, arena: std.mem.Allocator, git_url: []const u8) Error!void {
-        switch (try self.create(arena, git_url)) {
+        switch (try self.create(arena, git_url, "files")) {
             .created, .exists => {},
             .refused => return error.ServerRefused,
         }
@@ -194,10 +194,12 @@ pub const Remote = struct {
     /// repository.
     pub const Made = struct { git_checked: bool = false };
 
-    pub fn create(self: *const Remote, arena: std.mem.Allocator, git_url: []const u8) Error!Created {
+    /// `kind` is "files" or "model": what a folder can be created as
+    /// (annotated datasets are created by the annotation platform).
+    pub fn create(self: *const Remote, arena: std.mem.Allocator, git_url: []const u8, dataset_kind: []const u8) Error!Created {
         const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{
             .name = self.name,
-            .kind = "files",
+            .kind = dataset_kind,
             .git_url = git_url,
         }, .{})});
         // Not `send`: a refusal here says why (the role it needs, the host

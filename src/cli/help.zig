@@ -30,6 +30,7 @@ const owner_text =
     \\For dataset owners:
     \\
     \\  init <address> --git <git-url>   create a dataset from this folder
+    \\                     (--model when the folder holds a model's files)
     \\  tag <name>         make a release (never moves again)
     \\  branch <name>      a draft line of work, starting from main
     \\  merge <name>       merge a branch into main; conflicts are listed
