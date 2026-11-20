@@ -104,7 +104,61 @@ Close the "behind" rows without giving up an "ahead" one.
   scale, empty states, loading states, long names, narrow screens. The output is a
   list of defects in this file under U2, each with its screenshot; fix nothing in the
   same change.
-- **U2. Fix what U1 found**, worst first. (Filled in by U1.)
+- **U2. Fix what U1 found**, worst first. The first pass (2026-11-20) read every
+  page in the light theme at 1440 px; the list is below. **Still to look at:** the
+  dark theme, 1024 and 390 px, and the measured overflow report, none of which were
+  taken (the test database was re-created mid-run). Run
+  `SCREENS=<folder> pnpm --dir web exec playwright test screens` with nothing else
+  using the test database, read the pictures, and add to this list. The page names
+  are the picture names in `web/e2e/screens.spec.ts`.
+
+  Says nothing, or says it unclearly:
+  1. **A link to an item the version does not hold opens nothing and says nothing**
+     (`item-missing`): Browse loads as if no item were asked for. It should say the
+     item is not in this version, and offer the versions that have it.
+  2. **The header's git status is hard to read** (every dataset page): "v1.1.0,
+     v1.0.0 not there yet" sits right after "View in git" with no separator and no
+     subject. Say "not in git yet: v1.1.0" and cap a long list ("and 3 more").
+  3. **Split and class chips do not show what is chosen** (`overview-annotated`, "Use
+     this dataset"): "train" is a dashed chip and "all" is plain text; nothing looks
+     selected.
+  4. **Activity's "which" column** (`activity`): "…" is added to every value, even
+     "v1.0.0"; commit ids are cut and are not links to the version; the caption says
+     "the last 200 events" when there are five.
+
+  Data that is not pictures looks like nothing:
+  5. **A gallery of files with no preview is a wall of identical tiles**
+     (`browse-gallery-many`: 130 tiles reading ".txt"). Open in table mode when
+     nothing on the first page has a preview, and let a text tile show its first
+     lines.
+  6. **Home cards for non-visual datasets are mostly empty** (`home-cards`): a large
+     pale tile with one small type label, and the same large tile for an empty
+     dataset. A file with no extension shows as "·" in the tile but "file" in the
+     line under it.
+
+  Alignment and spacing:
+  7. **The Browse "?" button floats mid-toolbar and moves** between pages (740, 588
+     and 381 px from the left on three pages). Give it a fixed place at the end.
+  8. **Numbers in tables.** Browse's table has sizes bold and left-aligned, with the
+     right 40% of the table empty (`browse-table`); compare's by-class header
+     "class" does not sit over its column (`releases-annotated`); the card's "Items
+     by type" has an unlabelled count floating mid-row (`overview-files`).
+  9. **The card's policy line touches the caption below it** (`overview-annotated`).
+  10. **The drawer** (every `item-*`): one narrow width whatever it shows, so a
+      picture or a table is small beside a mostly empty page; "Download the file"
+      sits tight under History.
+  11. **Text over the clouds** (`home-cards`, every dataset header): the search hint
+      and the tape's legend run across cloud shapes. axe passes; it still reads
+      worse than the lines beside it.
+  12. **Sign-in** (`signin`): the airship floats alone at the top left, unrelated to
+      the panel; the disabled "Open the dashboard" is smaller and paler than the
+      button above, and reads as a different kind of control.
+
+  To check, not yet a defect:
+  - Type links in the card were two colours on one page (`overview-files`); it may
+    only be the visited state.
+  - A table item's drawer was not seen with its statistics (the previews had just
+    been reset).
 - **U3. No blank waits.** Wherever a page says "Reading…" or shows nothing while it
   loads, show the page's shape instead (the header, the tape, tile placeholders of the
   right size), so nothing jumps when the data arrives. Budget: no layout shift on
