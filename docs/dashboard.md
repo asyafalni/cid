@@ -160,7 +160,7 @@ the tagline in its three places, and the reduced-motion switch. Items marked
 - *Planned:* **Command palette** (`⌘K` / `Ctrl-K`): jump to any dataset, release, item
   or action by typing.
 - **Ship's log.** The Activity page reads like telemetry: monospace timestamps, one
-  event per line. *Planned:* filtering.
+  event per line, narrowed by action or person.
 - **Two small easter eggs, no more:** `cid --version` prints a small original ASCII
   airship, and the 404 page is "Lost in the clouds": cid's airship over the sky, what
   went wrong in plain words, a search box and the way home. An unknown address and a
@@ -269,8 +269,8 @@ Every dataset page (all five tabs) shares one header and the release tape.
   badge, the pinned release's item count and size, the owners (Maintainers, by name, as on the home
   card) and a plain **"View in git"** link to the dataset repository; the release tape
   rides the bottom of the sky, over a faint drifting cloud bank. The `cid clone`
-  command lives in "Use this dataset". *Planned:* the repository's git status (up to
-  date or pending).
+  command lives in "Use this dataset". Beside the link, the repository's status: "up to
+  date", or the releases made but not written there yet.
 - **Release tape** (built): the history of `main`, newest 100 commits, oldest on the
   left. Each release is a button that pins the page to it (`?release=` in the URL);
   with none chosen, the newest release is pinned. Commits are ticks that show their
@@ -395,7 +395,8 @@ There is no Health tab yet. Per-file table statistics already exist (in the draw
   dataset every read of its content: download, browse (a view opened), compare and
   export (the item list or an export a clone reads). It names who read restricted
   content, so only owners can read it; anyone else is told so in words.
-- *Planned:* filtering.
+- *Built:* narrowing the log by what was done and by whom (`what=`, `who=` in the
+  URL), over the 200 events shown. *Planned:* reaching further back than 200.
 
 ### 4.8 Your SSH keys
 

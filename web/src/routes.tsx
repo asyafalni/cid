@@ -80,6 +80,8 @@ const datasetRoute = createRoute({
     split?: string;
     class?: string;
     type?: string;
+    what?: string;
+    who?: string;
   } => ({
     view:
       search.view === 'browse'
@@ -103,6 +105,9 @@ const datasetRoute = createRoute({
     split: typeof search.split === 'string' ? search.split : undefined,
     class: typeof search.class === 'string' ? search.class : undefined,
     type: typeof search.type === 'string' ? search.type : undefined,
+    // Activity: the action and the person, when narrowed.
+    what: typeof search.what === 'string' ? search.what : undefined,
+    who: typeof search.who === 'string' ? search.who : undefined,
   }),
   beforeLoad: requireSignIn,
   component: DatasetOverview,

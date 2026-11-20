@@ -30,6 +30,8 @@ export function DatasetOverview() {
     split?: string;
     class?: string;
     type?: string;
+    what?: string;
+    who?: string;
   };
   const navigate = useNavigate();
   const query = useQuery({
@@ -61,6 +63,7 @@ export function DatasetOverview() {
 
   const o = query.data;
   const releases = o.commits.filter((c) => c.release !== null);
+  const waitingForGit = releases.filter((c) => c.git_pending);
   const pinned = search.release ?? releases[0]?.release ?? null;
   // The server names the pinned version (a release older than the tape
   // still pins); while another release's answer is on its way, the tape does.
@@ -106,6 +109,20 @@ export function DatasetOverview() {
                 <a href={gitWebUrl(o.git_url)} target="_blank" rel="noreferrer">
                   View in git
                 </a>
+                {releases.length > 0 && (
+                  <span
+                    className="quiet git-status"
+                    title={
+                      waitingForGit.length > 0
+                        ? "Made, and on their way: the server writes each release to the dataset's git repository and retries until it lands."
+                        : "Every release on this tape is in the dataset's git repository."
+                    }
+                  >
+                    {waitingForGit.length === 0
+                      ? 'up to date'
+                      : `${waitingForGit.map((c) => c.release).join(', ')} not there yet`}
+                  </span>
+                )}
               </span>
             </p>
           </div>
@@ -182,7 +199,12 @@ export function DatasetOverview() {
           onPick={(patch) => setSearch(patch)}
         />
       ) : view === 'activity' ? (
-        <ActivityTab name={name} />
+        <ActivityTab
+          name={name}
+          what={search.what}
+          who={search.who}
+          onFilter={(patch) => setSearch(patch)}
+        />
       ) : (
         <FilesTab
           name={name}

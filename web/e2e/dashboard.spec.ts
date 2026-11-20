@@ -26,6 +26,8 @@ test('sign-in guards the deck and the token opens it', async ({ page }) => {
 test('the overview carries the tape, the card and the paste-ready command', async ({ page }) => {
   await signIn(page);
   await page.getByRole('link', { name: 'e2e/datasets/demo' }).click();
+  // The header says where git stands: v1.1.0 is made but not written there yet.
+  await expect(page.locator('.dataset-meta')).toContainText('v1.1.0 not there yet');
   // The tape: both releases as engraved tags, newest pinned by default.
   await expect(page.getByRole('button', { name: 'v1.1.0' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'v1.0.0' })).toBeVisible();
@@ -451,6 +453,14 @@ test('restricted: blurred until a logged reveal, and the log is for owners', asy
   await page.goto('/d/e2e/datasets/faces?view=activity');
   await expect(page.locator('.activity-table')).toContainText('reveal');
   await expect(page.locator('.activity-table')).toContainText('server-token');
+  // Narrowed to one action, in the URL: only reveals remain.
+  await page.getByLabel('Filter by what').selectOption('reveal');
+  await expect(page).toHaveURL(/what=reveal/);
+  const chips = page.locator('.activity-table tbody .chip');
+  await expect(chips.first()).toHaveText('reveal');
+  expect(new Set(await chips.allTextContents())).toEqual(new Set(['reveal']));
+  await page.getByRole('button', { name: 'Clear' }).click();
+  await expect(page).not.toHaveURL(/what=/);
 });
 
 test('a reader of a restricted dataset cannot read its activity log', async ({ page }) => {

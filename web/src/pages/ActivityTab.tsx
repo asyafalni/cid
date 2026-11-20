@@ -4,7 +4,19 @@ import { ApiError, getActivity } from '../api';
 // Activity (docs/dashboard.md §4.7): who did what to this dataset, newest
 // first. It names who revealed restricted items, so only owners read it;
 // anyone else is told so in words, never a blank page.
-export function ActivityTab({ name }: { name: string }) {
+export function ActivityTab({
+  name,
+  what,
+  who,
+  onFilter,
+}: {
+  name: string;
+  /** The action shown alone, from the URL. */
+  what: string | undefined;
+  /** The person shown alone (their account id), from the URL. */
+  who: string | undefined;
+  onFilter: (patch: { what?: string | undefined; who?: string | undefined }) => void;
+}) {
   const log = useQuery({ queryKey: ['activity', name], queryFn: () => getActivity(name), retry: false });
 
   if (log.isPending) return <p className="quiet">Reading the log…</p>;
@@ -26,9 +38,29 @@ export function ActivityTab({ name }: { name: string }) {
       </div>
     );
   }
+  // Narrowing is over the events already here (the last 200), by what
+  // was done and by whom; the choices are the ones the log holds.
+  const actions = [...new Set(events.map((e) => e.action))].sort();
+  const people = [...new Map(events.map((e) => [e.account_id, e.display_name ?? e.account_id]))].sort((x, y) =>
+    x[1].localeCompare(y[1]),
+  );
+  const shown = events.filter((e) => (!what || e.action === what) && (!who || e.account_id === who));
   return (
+    <>
+    <div className="filter-bar" role="search" aria-label="Filter the log">
+      <Narrow label="what" value={what} options={actions.map((a) => [a, a])} onChange={(v) => onFilter({ what: v })} />
+      <Narrow label="who" value={who} options={people} onChange={(v) => onFilter({ who: v })} />
+      {(what || who) && (
+        <button className="filter-clear" onClick={() => onFilter({ what: undefined, who: undefined })}>
+          Clear
+        </button>
+      )}
+    </div>
+    {shown.length === 0 && <p className="quiet">Nothing in the last 200 events matches; clear a filter to see them all.</p>}
     <table className="browse-table activity-table">
-      <caption className="quiet">Newest first; the last 200 events.</caption>
+      <caption className="quiet">
+        Newest first; {shown.length === events.length ? 'the last 200 events' : `${shown.length} of the last ${events.length} events`}.
+      </caption>
       <thead>
         <tr>
           <th>when (UTC)</th>
@@ -38,7 +70,7 @@ export function ActivityTab({ name }: { name: string }) {
         </tr>
       </thead>
       <tbody>
-        {events.map((e, i) => (
+        {shown.map((e, i) => (
           <tr key={i}>
             <td className="data">{e.at.replace('T', ' ').replace('Z', '')}</td>
             <td title={e.account_id}>{e.display_name ?? e.account_id}</td>
@@ -50,6 +82,43 @@ export function ActivityTab({ name }: { name: string }) {
         ))}
       </tbody>
     </table>
+    </>
+  );
+}
+
+const any = '\u0000any';
+
+function Narrow({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string | undefined;
+  options: [string, string][];
+  onChange: (value: string | undefined) => void;
+}) {
+  // A value from the URL that the log no longer holds still shows as chosen.
+  const all = value !== undefined && !options.some(([v]) => v === value) ? [...options, [value, value] as [string, string]] : options;
+  return (
+    <label className="facet">
+      <span className="facet-label" aria-hidden="true">
+        {label}
+      </span>
+      <select
+        aria-label={`Filter by ${label}`}
+        value={value ?? any}
+        onChange={(e) => onChange(e.target.value === any ? undefined : e.target.value)}
+      >
+        <option value={any}>any</option>
+        {all.map(([v, text]) => (
+          <option key={v} value={v}>
+            {text}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
