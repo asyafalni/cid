@@ -1,9 +1,11 @@
 # Roadmap
 
-What is left, in the order to take it: cheapest first, then the direction work
-(a Hugging Face door, models, lineage). Arranged 2026-11-20. `CLAUDE.md` is still the
-law; where this file and `CLAUDE.md` disagree about scope, section 1 below records the
-newer decision and `CLAUDE.md` is updated in the change that builds it.
+What is left, in the order to take it: cheapest first, an experience tier that runs
+beside everything else (making the dashboard better than Hugging Face's pages, and
+checking that it is), then the direction work (a Hugging Face door, models, lineage).
+Arranged 2026-11-20. `CLAUDE.md` is still the law; where this file and `CLAUDE.md`
+disagree about scope, section 1 below records the newer decision and `CLAUDE.md` is
+updated in the change that builds it.
 
 Take one item at a time, as its own change with its tests, and strike it here in the
 same change.
@@ -62,14 +64,82 @@ same change.
 ## 2. Tier A: small, dashboard only (hours each)
 
 - ~~**A1. Policy version in the card**~~ (done 2026-11-20).
-- **A2. Keyboard in Browse:** `j`/`k` and arrows between items, `/` to the path
-  search, `?` listing the shortcuts (`docs/dashboard.md`, principle 10).
+- ~~**A2. Keyboard in Browse**~~ (done 2026-11-20; it also fixed the virtual gallery
+  and table measuring their place on the page from the wrong origin).
 - **A3. A release's git link in the history.** Only where the URL form is known from
   the host; otherwise no link. GitLab first (`/-/tags/<name>`).
 - **A4. Words for a model** in the dashboard, once C2 lands: the header label, "Use
   this model", the kind filter on the home page.
 
-## 3. Tier B: one server change each (about a day each)
+## 3. Tier U: the experience, better than Hugging Face
+
+The dashboard's promise is a better experience than Hugging Face's dataset pages
+(`docs/dashboard.md`, section 1). This tier is how that is checked and closed. It runs
+beside Tiers B and C, not after them: take U1 right after Tier A, then one U item
+between each larger piece.
+
+Where cid stands against Hugging Face today:
+
+| | Hugging Face | cid |
+|---|---|---|
+| A viewer for every dataset, any size | Often unavailable past 5 GB or for odd formats | **Ahead:** always there |
+| One bad file | Can disable the whole viewer | **Ahead:** only that file says so |
+| Annotations | Raw numbers in a table | **Ahead:** drawn on the item |
+| Media | 100-row table pages | **Ahead:** gallery, waveform, player |
+| What changed between versions | Needs code | **Ahead:** compare, with visual and row diffs |
+| Private data | Viewer needs a paid plan | **Ahead:** the same for everyone |
+| Column histograms, click to filter | Yes | **Behind:** statistics in the drawer only |
+| Search inside text and string columns | Yes | **Behind:** paths only |
+| A link to one row of a table | Yes | **Behind:** a link to a file, not a row |
+| SQL over a version | Yes, in the browser | **Behind:** not built |
+| Embedding the viewer elsewhere | Yes (iframe) | **Behind:** not built |
+| One line of code to load | `load_dataset(...)` | **Behind** until C1 |
+
+Close the "behind" rows without giving up an "ahead" one.
+
+- **U1. Look at every page, and write down what is off.** A Playwright script that
+  takes a screenshot of every page in the e2e fixtures, in both themes, at 1440, 1024
+  and 390 pixels wide, into one folder. Read them all against the design language
+  (`docs/dashboard.md`, section 3) and its rules (3.4): spacing, alignment, type
+  scale, empty states, loading states, long names, narrow screens. The output is a
+  list of defects in this file under U2, each with its screenshot; fix nothing in the
+  same change.
+- **U2. Fix what U1 found**, worst first. (Filled in by U1.)
+- **U3. No blank waits.** Wherever a page says "Reading…" or shows nothing while it
+  loads, show the page's shape instead (the header, the tape, tile placeholders of the
+  right size), so nothing jumps when the data arrives. Budget: no layout shift on
+  load, measured in `web/e2e/bench.spec.ts`.
+- **U4. The first minute.** A person who opens a dataset for the first time should
+  know within one screen what it is, how big, what kind of data, who owns it, and
+  the one command to get it. Test it as a script: open a dataset, read only what is
+  above the fold at 1440×900, and answer those five questions. Move what fails.
+- **U5. Charts where numbers are compared.** Class balance and split sizes as bars in
+  the card and in compare; a shared class colour palette, so a class has one colour
+  in the card, the overlays and the filters (`docs/dashboard.md`, 3.3). No chart
+  where a number alone says it.
+- **U6. Column histograms and click to filter** in table mode: each column's
+  distribution above it, a click narrowing the rows. The statistics are already
+  built per content hash.
+- **U7. A link to one row.** Opening a table item at a row (`row=` in the URL),
+  highlighted and scrolled to.
+- **U8. Search inside text.** Text files and string columns, per version. Needs an
+  index decision first (DuckDB full-text search over the browse index, or not at
+  all); write that decision up before building.
+- **U9. Keyboard everywhere, and "Show command"** (A2, B9): the two things an
+  engineer notices first.
+- **U10. Embedding.** A chrome-less view of Browse and of one item (`embed=1`), for
+  wikis and merge requests, under the same access rules. Never for a restricted
+  dataset.
+- **U11. Ask people.** Once U1 to U4 are in, sit three engineers who use Hugging Face
+  in front of a dataset they know, give them four tasks (find an item, see what
+  changed in the last release, get a subset onto their machine, say whether the
+  labels look right), and watch without helping. What they stumble on goes to the
+  top of this tier.
+
+Every change here keeps the budgets in `docs/dashboard.md`, section 7, passes axe in
+both themes, and works with reduced motion. Beauty never costs a budget.
+
+## 4. Tier B: one server change each (about a day each)
 
 - **B1. Last change per file** in the Files tab: date and author of the revision that
   put each file there. One query per page over `item_revisions`; measure it at 1M
@@ -88,7 +158,7 @@ same change.
 - **B8. `coco` and `voc` exports**, one file each in `src/export/`.
 - **B9. "Show command"** on every action, then the `⌘K` palette.
 
-## 4. Tier C: the direction (in this order)
+## 5. Tier C: the direction (in this order)
 
 ### C1. The Hugging Face read door
 
@@ -168,13 +238,13 @@ Released v1.0.0 (3 items), trained on your-org/datasets/person-vehicle v4.2.0.
   snippet in "Use this dataset".
 - Parquet exports for annotated datasets, if JSONL proves slow to load.
 
-## 5. Tier D: larger, each needs its own design
+## 6. Tier D: larger, each needs its own design
 
 A declared key column for row diffs · per-dataset deploy keys · the Health tab and
 Validator tiles · the SQL console · PDF page images (`vips`) · access from other git
 hosts (GitHub first) · DuckDB pinned for other platforms · dashboard Phase 3.
 
-## 6. Parked, not planned
+## 7. Parked, not planned
 
 Everything on `CLAUDE.md`'s "explicitly not now" list, card editing and releases from
 the dashboard, and from this round: uploads through the Hugging Face API (since

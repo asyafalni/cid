@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import {
@@ -51,19 +51,6 @@ export function BrowseTab({
   const mode: 'gallery' | 'table' = filters.mode === 'table' ? 'table' : 'gallery';
   const setMode = (m: 'gallery' | 'table') => onFilters({ mode: m === 'table' ? 'table' : undefined });
 
-  // `g` and `t`, the toggles docs/dashboard.md names — never while typing.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key === 'g') onFilters({ mode: undefined });
-      if (e.key === 't') onFilters({ mode: 'table' });
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onFilters]);
-
   // The search box commits to the URL after a pause, so typing a word is
   // one history entry, not one per letter.
   const [typed, setTyped] = useState(filters.q ?? '');
@@ -102,7 +89,7 @@ export function BrowseTab({
     getNextPageParam: (last) => last.next ?? undefined,
     enabled: commit !== null,
   });
-  const loaded = pages.data?.pages.flatMap((p) => p.items) ?? [];
+  const loaded = useMemo(() => pages.data?.pages.flatMap((p) => p.items) ?? [], [pages.data]);
   const openLoaded = loaded.find((i) => i.path === openItem);
   // A shared link can open an item no loaded page holds yet.
   const openFetched = useQuery({
@@ -113,6 +100,60 @@ export function BrowseTab({
     },
     enabled: commit !== null && openItem !== undefined && openLoaded === undefined && pages.isSuccess,
   });
+
+  // The keyboard (docs/dashboard.md, principle 10), never while typing or
+  // while a control or a player has the keys: `g`/`t` switch the view,
+  // `j`/`k` move between items (the arrows too, while one is open, so
+  // they still scroll the page otherwise), `/` searches, `?` lists them
+  // all, Escape closes what is open.
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [help, setHelp] = useState(false);
+  const { hasNextPage, fetchNextPage, isFetchingNextPage } = pages;
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const t = e.target as HTMLElement | null;
+      if (t && (['INPUT', 'TEXTAREA', 'SELECT', 'AUDIO', 'VIDEO'].includes(t.tagName) || t.isContentEditable)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const step = (by: 1 | -1) => {
+        e.preventDefault();
+        const at = loaded.findIndex((i) => i.path === openItem);
+        const to = at < 0 ? (by === 1 ? 0 : -1) : at + by;
+        if (to >= 0 && to < loaded.length) onOpenItem(loaded[to].path);
+        else if (to >= loaded.length && hasNextPage && !isFetchingNextPage) void fetchNextPage();
+      };
+      switch (e.key) {
+        case 'g':
+          return onFilters({ mode: undefined });
+        case 't':
+          return onFilters({ mode: 'table' });
+        case 'j':
+          return step(1);
+        case 'k':
+          return step(-1);
+        case 'ArrowDown':
+        case 'ArrowRight':
+          if (openItem !== undefined) step(1);
+          return;
+        case 'ArrowUp':
+        case 'ArrowLeft':
+          if (openItem !== undefined) step(-1);
+          return;
+        case '/':
+          if (!searchRef.current) return;
+          e.preventDefault();
+          searchRef.current.focus();
+          return;
+        case '?':
+          return setHelp((h) => !h);
+        case 'Escape':
+          if (help) setHelp(false);
+          else if (openItem !== undefined) onOpenItem(undefined);
+          return;
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onFilters, onOpenItem, loaded, openItem, help, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   if (commit === null) return <p className="quiet">Nothing to browse until the first push.</p>;
   if (pages.isPending) return <p className="quiet">Reading the manifest…</p>;
@@ -159,6 +200,15 @@ export function BrowseTab({
             </button>
           ))}
         </div>
+        <button
+          className="shortcuts-toggle data"
+          aria-label="Keyboard shortcuts"
+          aria-expanded={help}
+          title="Keyboard shortcuts (?)"
+          onClick={() => setHelp((h) => !h)}
+        >
+          ?
+        </button>
         {overview.restricted && (
           <p className="chip restricted-badge">restricted · blurred until revealed</p>
         )}
@@ -169,9 +219,12 @@ export function BrowseTab({
         </p>
       </div>
 
+      {help && <Shortcuts onClose={() => setHelp(false)} />}
+
       {total > 0 && (
         <div className="filter-bar" role="search">
           <input
+            ref={searchRef}
             type="search"
             className="filter-q"
             placeholder="Search paths"
@@ -276,6 +329,7 @@ export function BrowseTab({
       ) : mode === 'gallery' ? (
         <VirtualGallery
           items={items}
+          openItem={openItem}
           renderTile={(item) => (
             <button
               className={openItem === item.path ? 'tile tile--open' : 'tile'}
@@ -579,7 +633,96 @@ function HashChip({ hash }: { hash: string }) {
 // fit; each row measured as it renders.
 const tileMin = 140;
 
-function VirtualGallery({ items, renderTile }: { items: BrowseItem[]; renderTile: (item: BrowseItem) => ReactNode }) {
+// What the keys do, listed where they work.
+const shortcuts: [string, string][] = [
+  ['j  ↓  →', 'next item'],
+  ['k  ↑  ←', 'previous item'],
+  ['/', 'search paths'],
+  ['g', 'gallery'],
+  ['t', 'table'],
+  ['Esc', 'close the item'],
+  ['?', 'this list'],
+];
+
+function Shortcuts({ onClose }: { onClose: () => void }) {
+  return (
+    <section className="panel shortcuts" aria-label="Keyboard shortcuts">
+      <h2>Keyboard shortcuts</h2>
+      <dl>
+        {shortcuts.map(([keys, does]) => (
+          <div key={keys}>
+            <dt className="data">{keys}</dt>
+            <dd>{does}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="quiet">The arrows move between items while one is open; otherwise they scroll.</p>
+      <button className="filter-clear" onClick={onClose}>
+        Close
+      </button>
+    </section>
+  );
+}
+
+// The open item's row (gallery or table) is brought into view when it
+// is not already, so moving with the keys never leaves it off screen. Two
+// steps: the virtualizer jumps near it (it may not be rendered yet, and on
+// the first render its offset from the page top is not known), then the
+// row itself, once drawn, is aligned exactly.
+function useKeepInView(
+  index: number,
+  container: RefObject<HTMLElement | null>,
+  scrollToIndex: (i: number, o: { align: 'auto' }) => void,
+) {
+  useEffect(() => {
+    if (index < 0) return;
+    const drawn = () => container.current?.querySelector(`[data-index="${index}"]`);
+    // The virtualizer draws the rows for a new scroll position a frame or
+    // two after it; a few frames is plenty.
+    let frame = 0;
+    const align = (tries: number) => {
+      const row = drawn();
+      if (row) row.scrollIntoView({ block: 'nearest' });
+      else if (tries > 0) frame = requestAnimationFrame(() => align(tries - 1));
+    };
+    frame = requestAnimationFrame(() => {
+      if (!drawn()) scrollToIndex(index, { align: 'auto' });
+      frame = requestAnimationFrame(() => align(10));
+    });
+    return () => cancelAnimationFrame(frame);
+    // Only a new index moves the view; the virtualizer's function is new every render.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [index]);
+}
+
+// How far below the top of the page an element starts: the window
+// virtualizer's scroll margin. Not `offsetTop`, which counts from the
+// nearest positioned ancestor (from the <table>, for a <tbody>). Measured
+// after layout and again whenever the page changes size, because what
+// sits above (the filters, the shortcuts list) changes height.
+function usePageTop(ref: RefObject<HTMLElement | null>): number {
+  const [top, setTop] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => setTop(Math.round(el.getBoundingClientRect().top + window.scrollY));
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(document.body);
+    return () => watch.disconnect();
+  }, [ref]);
+  return top;
+}
+
+function VirtualGallery({
+  items,
+  openItem,
+  renderTile,
+}: {
+  items: BrowseItem[];
+  openItem: string | undefined;
+  renderTile: (item: BrowseItem) => ReactNode;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [gap, setGap] = useState(12);
@@ -595,6 +738,7 @@ function VirtualGallery({ items, renderTile }: { items: BrowseItem[]; renderTile
   const cols = Math.max(1, Math.floor((width + gap) / (tileMin + gap)));
   const rows = Math.ceil(items.length / cols);
   const tile = width > 0 ? (width - gap * (cols - 1)) / cols : tileMin;
+  const pageTop = usePageTop(ref);
   // The virtualizer's functions change every render on purpose; the
   // compiler is told so rather than memoizing them stale.
   // oxlint-disable-next-line react/incompatible-library
@@ -602,8 +746,10 @@ function VirtualGallery({ items, renderTile }: { items: BrowseItem[]; renderTile
     count: rows,
     estimateSize: () => tile * 0.75 + 28 + gap,
     overscan: 3,
-    scrollMargin: ref.current?.offsetTop ?? 0,
+    scrollMargin: pageTop,
   });
+  const openAt = openItem === undefined ? -1 : items.findIndex((i) => i.path === openItem);
+  useKeepInView(openAt < 0 ? -1 : Math.floor(openAt / cols), ref, (i, o) => virtual.scrollToIndex(i, o));
   return (
     <div ref={ref} className="gallery-virtual" style={{ height: virtual.getTotalSize() }}>
       {virtual.getVirtualItems().map((row) => (
@@ -639,13 +785,17 @@ function VirtualTable({
   onOpenItem: (path: string | undefined) => void;
 }) {
   const ref = useRef<HTMLTableSectionElement>(null);
+  const pageTop = usePageTop(ref);
   // oxlint-disable-next-line react/incompatible-library
   const virtual = useWindowVirtualizer({
     count: items.length,
     estimateSize: () => 37,
     overscan: 12,
-    scrollMargin: ref.current?.offsetTop ?? 0,
+    scrollMargin: pageTop,
   });
+  useKeepInView(openItem === undefined ? -1 : items.findIndex((i) => i.path === openItem), ref, (i, o) =>
+    virtual.scrollToIndex(i, o),
+  );
   const rows = virtual.getVirtualItems();
   const top = rows.length > 0 ? rows[0].start - virtual.options.scrollMargin : 0;
   const bottom = rows.length > 0 ? virtual.getTotalSize() - (rows[rows.length - 1].end - virtual.options.scrollMargin) : 0;

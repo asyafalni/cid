@@ -39,7 +39,7 @@ only).
 
 **Not built yet** (the spec below says so where it applies): the health badge, Health
 tab and Validator tiles; card completeness; most Browse filters,
-histograms and the List view; keyboard shortcuts beyond `g`/`t`; the "Show command"
+histograms and the List view; keyboard shortcuts outside Browse; the "Show command"
 toggle; the `⌘K` palette; charts and gauges; PDF page
 images (`vips`); viewing branches or pinning a commit; the SQL console; semantic
 search.
@@ -119,9 +119,12 @@ section in §4 says so.
    until the viewer chooses to reveal, and every reveal is logged. No paid tier for
    private viewing.
 10. **Keyboard first, mouse friendly.** `j`/`k` or arrows move between items, `/`
-    searches, `f` filters, `c` compares, `?` lists shortcuts. *Built so far:* `g`
-    (gallery) and `t` (table) in Browse, and every control reachable by Tab; the rest
-    are planned.
+    searches, `f` filters, `c` compares, `?` lists shortcuts. *Built so far,* in
+    Browse: `j`/`k` (and the arrows while an item is open, so they still scroll the
+    page otherwise) move between items and keep the open one in view, across pages;
+    `/` searches paths; `g` gallery, `t` table; `Esc` closes the item; `?` (or the `?`
+    button) lists them. Every control is reachable by Tab. `f`, `c` and shortcuts on
+    the other tabs are planned.
 
 ---
 
@@ -579,7 +582,7 @@ words.
 *Not built yet in Phase 2:* transcript segments on audio, the video segment/track
 timeline, text span highlights, PDF page images (they wait for `vips` on the worker),
 the Health tab, the SQL console, the card completeness checklist (it also needs card
-editing, a parked decision), and keyboard shortcuts beyond Browse's `g`/`t`.
+editing, a parked decision), and keyboard shortcuts outside Browse.
 
 *Built:* the row-level table diff. Compare shows, under each modified CSV, Parquet or
 JSONL file, its rows added and removed, with the rows themselves one click away (the

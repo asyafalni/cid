@@ -2252,3 +2252,50 @@
 .file-download:hover {
   text-decoration: underline;
 }
+
+/* --- keyboard shortcuts (Browse) --- */
+
+.shortcuts-toggle {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: transparent;
+  color: var(--text-muted);
+  min-width: 1.75rem;
+  height: 1.75rem;
+  cursor: pointer;
+}
+
+.shortcuts-toggle[aria-expanded='true'] {
+  color: var(--text);
+  border-color: var(--brass);
+}
+
+.shortcuts {
+  margin-bottom: var(--space-4);
+  max-width: 28rem;
+}
+
+.shortcuts h2 {
+  font-size: 1rem;
+  margin: 0 0 var(--space-2);
+}
+
+.shortcuts dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-4);
+  margin: 0 0 var(--space-3);
+}
+
+.shortcuts dl > div {
+  display: contents;
+}
+
+.shortcuts dt {
+  color: var(--text);
+  white-space: pre;
+}
+
+.shortcuts dd {
+  margin: 0;
+}

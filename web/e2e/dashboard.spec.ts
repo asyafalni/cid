@@ -669,6 +669,61 @@ test('browse pages through a version: one page, then more on scroll, and links p
   await expect(page.getByRole('complementary', { name: 'rows/0130.txt' })).toBeVisible();
 });
 
+test('the keyboard moves through items, searches, and lists its shortcuts', async ({ page }) => {
+  const at = (n: string) => new RegExp(`item=rows(%2F|/)${n}\\.txt`);
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/many?view=browse');
+  await expect(page.getByRole('button', { name: /rows\/0001\.txt/ })).toBeVisible();
+  // Arrows scroll the page while nothing is open; they never open an item.
+  await page.keyboard.press('ArrowDown');
+  await expect(page).not.toHaveURL(/item=/);
+  // j opens the first item, then moves on; k and the arrows too, once one is open.
+  await page.keyboard.press('j');
+  await expect(page).toHaveURL(at('0001'));
+  await expect(page.getByRole('complementary', { name: 'rows/0001.txt' })).toBeVisible();
+  await page.keyboard.press('j');
+  await expect(page).toHaveURL(at('0002'));
+  await page.keyboard.press('k');
+  await expect(page).toHaveURL(at('0001'));
+  await page.keyboard.press('ArrowRight');
+  await expect(page).toHaveURL(at('0002'));
+  await page.keyboard.press('ArrowLeft');
+  await expect(page).toHaveURL(at('0001'));
+  await page.keyboard.press('Escape');
+  await expect(page).not.toHaveURL(/item=/);
+
+  // `/` puts the cursor in the path search, and typing there types.
+  await page.keyboard.press('/');
+  await expect(page.getByLabel('Filter by path')).toBeFocused();
+  await page.keyboard.type('j');
+  await expect(page.getByLabel('Filter by path')).toHaveValue('j');
+  await expect(page).not.toHaveURL(/item=/);
+  await page.getByLabel('Filter by path').fill('');
+  await page.locator('body').click({ position: { x: 1, y: 1 } });
+
+  // `?` lists the shortcuts; Escape puts the list away.
+  await page.keyboard.press('?');
+  const list = page.getByRole('region', { name: 'Keyboard shortcuts' });
+  await expect(list).toContainText('next item');
+  const axe = await new AxeBuilder({ page }).include('.shortcuts').analyze();
+  expect(axe.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical')).toEqual([]);
+  await page.keyboard.press('Escape');
+  await expect(list).toHaveCount(0);
+
+  // The table: the open item stays in view, and the keys go on past the first page.
+  await page.goto('/d/e2e/datasets/many?view=browse&mode=table&item=rows/0060.txt');
+  await expect(page.getByRole('row', { name: /rows\/0060\.txt/ })).toBeInViewport();
+  for (let i = 0; i < 5; i++) await page.keyboard.press('j');
+  await expect(page).toHaveURL(at('0065'));
+  await expect(page.getByRole('row', { name: /rows\/0065\.txt/ })).toBeInViewport();
+  await page.goto('/d/e2e/datasets/many?view=browse&mode=table&item=rows/0120.txt');
+  await expect(page.getByRole('row', { name: /rows\/0120\.txt/ })).toBeVisible();
+  await page.keyboard.press('j');
+  await expect(page.getByRole('button', { name: /Show more/ })).toHaveCount(0);
+  if (at('0120').test(page.url())) await page.keyboard.press('j');
+  await expect(page).toHaveURL(at('0121'));
+});
+
 test('media opens as media: a sound plays with its waveform, a note reads as text', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/media?view=browse&item=tone.wav');
