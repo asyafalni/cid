@@ -41,7 +41,7 @@ only).
 tab and Validator tiles; card completeness; most Browse filters,
 histograms and the List view; keyboard shortcuts outside Browse; the "Show command"
 toggle; the `⌘K` palette; charts and gauges; PDF page
-images (`vips`); viewing branches; the SQL console; semantic
+images (`vips`); the SQL console; semantic
 search.
 
 **Parked, needs a decision first:** editing the card and making releases from the
@@ -282,7 +282,10 @@ Every dataset page (all five tabs) shares one header and the release tape.
   `cid checkout <commit>`, the Hugging Face snippet its 40-digit id). By keyboard,
   the history's "view" link per entry does the same, so the tape is no hundred tab
   stops. With commits but no release, the tape is only its facts ("1 commit, no
-  releases yet"). *Not built yet:* viewing branches (the tape shows `main` only).
+  releases yet"). With more than `main`, a branch picker beside the tape shows another
+  branch (`?branch=`): its own commits on the tape, its head pinned, the branch kept on
+  every link, and the commands checking it out (`cid checkout <branch>`, revision
+  `<branch>`).
 - The auto card here and the dataset repository's `README.md` are separate renderers
   that read the same commit statistics (`stats`), so their numbers agree. Every link
   in the git README lands on the dashboard pinned to that release.
@@ -572,7 +575,7 @@ id, each release's item count and changes since the one before, and "not in git
 yet" on a release the server has not written to the dataset repository, else a
 link to its tag on GitLab or GitHub, and a purged-items count; no release notes or
 quality) and covers `main`
-only (any commit on it can be pinned); the Files tab has no preview panel of its
+or the branch picked (any commit on it can be pinned); the Files tab has no preview panel of its
 own (a file opens in Browse's drawer).
 
 *Delivered ahead of Phase 2:* table statistics. A CSV, Parquet or JSONL item opens as a

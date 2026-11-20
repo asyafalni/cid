@@ -2344,6 +2344,21 @@ test "branches: compose from main, push on branch, merge with conflicts listed" 
     for (try remote.state(arena, (try remote.head(arena, "main")).?)) |item| {
         if (std.mem.eql(u8, item.path, "shared.txt")) try std.testing.expectEqualStrings(&shaOf("risky version"), item.hash);
     }
+
+    // The dashboard's overview of a branch: its own commits on the tape,
+    // pinned to its head; every branch listed, main first.
+    const on_branch = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/br/-/overview?branch=cleanup", "Bearer test-token", "");
+    try std.testing.expectEqual(std.http.Status.ok, on_branch.status);
+    const Ov = struct { branch: []const u8, branches: []const []const u8, pinned_commit: ?[]const u8, commits: []const struct { id: []const u8 } };
+    const ov = try std.json.parseFromSliceLeaky(Ov, arena, on_branch.body, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqualStrings("cleanup", ov.branch);
+    try std.testing.expectEqualStrings("main", ov.branches[0]);
+    try std.testing.expectEqualStrings((try remote.head(arena, "cleanup")).?, ov.pinned_commit.?);
+    for (ov.commits) |c| {
+        const on = (try db.rawOne([]const u8, &fscope, "SELECT branch FROM commits WHERE commit_id = $1::uuid", .{c.id})).?;
+        try std.testing.expectEqualStrings("cleanup", on);
+    }
+    try std.testing.expectEqual(std.http.Status.not_found, cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/br/-/overview?branch=ghost", "Bearer test-token", "").status);
 }
 
 test "s3 multipart: a large object goes up in parts and comes back identical" {

@@ -205,8 +205,9 @@ both themes, and works with reduced motion. Beauty never costs a budget.
 - ~~**B5. Compare, per class**~~ (done 2026-11-20; the dashboard only, not `cid diff`).
 - **B6. More Browse filters:** annotation count, attributes, identities; then
   histograms and the List view.
-- **B7. Branches on the tape** (pinning a commit: done 2026-11-20, `?commit=`). The
-  tape, the history and the compare pickers still show `main` only.
+- ~~**B7. Branches on the tape and pinning a commit**~~ (done 2026-11-20: `?commit=`,
+  `?branch=`). Comparing a branch with `main` across the two is not built: the
+  compare pickers list the shown branch's commits.
 - ~~**B8. `coco` and `voc` exports**~~ (done 2026-11-20; checked with pycocotools:
   loads, `annToMask` matches every area; migration 0005).
 - **B9. "Show command"** on every action, then the `⌘K` palette.

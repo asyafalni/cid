@@ -222,8 +222,10 @@ function UseThisDataset({
   commit: string | null;
   pin: Pin;
 }) {
-  // A commit pinned with no release on it: the clone, then a checkout of it.
+  // A commit pinned with no release on it, or another branch's head: the
+  // clone, then a checkout of it.
   const atCommit = pinned === null && pin.commit !== undefined && commit !== null ? commit : null;
+  const atBranch = pinned === null && atCommit === null && pin.branch !== undefined ? pin.branch : null;
   const formats =
     o.kind === 'annotated' ? (['files', 'jsonl', 'yolo', 'coco', 'voc'] as const) : (['files'] as const);
   const defaultFormat = o.kind === 'annotated' ? o.default_format : 'files';
@@ -253,9 +255,9 @@ function UseThisDataset({
   ]
     .filter(Boolean)
     .join(' ')
-    .concat(atCommit ? ` && cd ${folder} && cid checkout ${atCommit}` : '');
+    .concat(atCommit ? ` && cd ${folder} && cid checkout ${atCommit}` : atBranch ? ` && cd ${folder} && cid checkout ${atBranch}` : '');
   const snippet = pythonFor(format, folder);
-  const hf = hfSnippet(o, pinned ?? (atCommit ? commitAlias(atCommit) : null));
+  const hf = hfSnippet(o, pinned ?? (atCommit ? commitAlias(atCommit) : atBranch));
 
   function copy(what: 'command' | 'snippet' | 'hf', text: string) {
     void navigator.clipboard.writeText(text).then(() => {
@@ -321,7 +323,9 @@ function UseThisDataset({
           ? `Pinned to ${pinned}.`
           : atCommit
             ? `Pinned to commit ${atCommit.slice(0, 13)}, which is not a release.`
-            : 'No releases yet, so this clones the newest commit.'}
+            : atBranch
+              ? `The newest commit on ${atBranch}, a draft line of work.`
+              : 'No releases yet, so this clones the newest commit.'}
       </p>
 
       <div className="snippet">

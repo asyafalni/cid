@@ -98,7 +98,10 @@ export function ReleasesTab({
                 <Link
                   to="/d/$"
                   params={{ _splat: name }}
-                  search={c.release ? { release: c.release } : { commit: c.id }}
+                  search={{
+                    ...(overview.branch !== 'main' ? { branch: overview.branch } : {}),
+                    ...(c.release ? { release: c.release } : { commit: c.id }),
+                  }}
                   aria-label={`View this version: ${c.release ?? c.id.slice(0, 13)}`}
                 >
                   view

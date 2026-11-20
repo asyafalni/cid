@@ -317,6 +317,19 @@ function seedManyUnreleased(dir: string) {
   run(`${cid} push`, folder);
 }
 
+// A branch of many, with a commit of its own: a draft line of work,
+// made the way a person would.
+function seedManyBranch(dir: string) {
+  run(`${cid} clone cid@127.0.0.1:e2e/datasets/many many-fix`, dir);
+  const folder = join(dir, 'many-fix');
+  run(`${cid} branch fix`, folder);
+  run(`${cid} checkout fix`, folder);
+  writeFileSync(join(folder, 'rows', 'fix.txt'), 'a fix\n');
+  run(`${cid} add rows/fix.txt`, folder);
+  run(`${cid} commit -m "a fix on a branch"`, folder);
+  run(`${cid} push`, folder);
+}
+
 // Sound and words: a tone (its waveform the thumbnail) and a note.
 function seedMedia(dir: string) {
   const media = join(dir, 'media');
@@ -428,6 +441,8 @@ export default function setup() {
     if (!already.includes('e2e/datasets/many')) seedMany(dir);
     const manyLog = run(`curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/many/-/log -H "Authorization: Bearer ${token}"`);
     if (!manyLog.includes('one more row')) seedManyUnreleased(dir);
+    const manyBranches = run(`curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/many/-/branches -H "Authorization: Bearer ${token}"`);
+    if (!manyBranches.includes('"fix"')) seedManyBranch(dir);
     if (!already.includes('e2e/datasets/media')) seedMedia(dir);
     const mediaLog = run(
       `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/media/-/log -H "Authorization: Bearer ${token}"`,

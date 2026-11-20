@@ -22,6 +22,7 @@ export function DatasetOverview() {
     view?: 'overview' | 'browse' | 'releases' | 'files' | 'activity';
     release?: string;
     commit?: string;
+    branch?: string;
     item?: string;
     a?: string;
     b?: string;
@@ -36,8 +37,8 @@ export function DatasetOverview() {
   };
   const navigate = useNavigate();
   const query = useQuery({
-    queryKey: ['overview', name, search.release ?? null, search.commit ?? null],
-    queryFn: () => getOverview(name, search.release, search.commit),
+    queryKey: ['overview', name, search.release ?? null, search.commit ?? null, search.branch ?? null],
+    queryFn: () => getOverview(name, search.release, search.commit, search.branch),
     // Pinning another release keeps the page up while its counts arrive.
     placeholderData: (previous, previousQuery) =>
       previousQuery?.queryKey[1] === name ? previous : undefined,
@@ -67,9 +68,18 @@ export function DatasetOverview() {
   const waitingForGit = releases.filter((c) => c.git_pending);
   // The release pinned: the one asked for, the one at the pinned commit, or
   // with neither asked for, the newest.
-  const pinned = search.commit ? (query.isPlaceholderData ? null : o.pinned_release) : (search.release ?? releases[0]?.release ?? null);
-  // What rides on every link of the page, so a pinned commit stays pinned.
-  const pin: Pin = search.commit ? { commit: search.commit } : search.release ? { release: search.release } : {};
+  // On another branch, its head unless a version was asked for.
+  const pinned =
+    search.commit || (search.branch && !search.release)
+      ? query.isPlaceholderData
+        ? null
+        : o.pinned_release
+      : (search.release ?? releases[0]?.release ?? null);
+  // What rides on every link of the page, so a pinned commit or branch stays.
+  const pin: Pin = {
+    ...(search.branch ? { branch: search.branch } : {}),
+    ...(search.commit ? { commit: search.commit } : search.release ? { release: search.release } : {}),
+  };
   // The server names the pinned version (a release older than the tape
   // still pins); while another release's answer is on its way, the tape does.
   const pinnedCommit =
@@ -132,7 +142,32 @@ export function DatasetOverview() {
               </span>
             </p>
           </div>
+          {o.branches.length > 1 && (
+            <label className="branch-picker">
+              <span className="quiet">branch</span>
+              <select
+                aria-label="Branch"
+                value={o.branch}
+                onChange={(e) =>
+                  setSearch({
+                    branch: e.target.value === 'main' ? undefined : e.target.value,
+                    release: undefined,
+                    commit: undefined,
+                    a: undefined,
+                    b: undefined,
+                  })
+                }
+              >
+                {o.branches.map((b) => (
+                  <option key={b} value={b}>
+                    {b}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <ReleaseTape
+            branch={o.branch}
             commits={o.commits}
             pinned={pinned}
             pinnedCommit={search.commit ? pinnedCommit : null}

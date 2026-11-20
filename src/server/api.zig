@@ -274,7 +274,7 @@ fn handleInner(
     if (eql(method, "GET") and eql(route.action, "info"))
         return datasetInfo(arena, deps, scope, ds);
     if (eql(method, "GET") and eql(route.action, "overview"))
-        return overview(arena, deps, scope, caller, ds, try param(arena, route, "release"), try param(arena, route, "commit"));
+        return overview(arena, deps, scope, caller, ds, try param(arena, route, "release"), try param(arena, route, "commit"), (try param(arena, route, "branch")) orelse "main");
     if (eql(method, "GET") and eql(route.action, "head"))
         return head(arena, deps, scope, ds, route.queryParam("branch") orelse "main");
     if (eql(method, "GET") and eql(route.action, "log"))
@@ -1775,7 +1775,15 @@ fn datasetInfo(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
 /// version the page is pinned to: the release asked for, else the newest
 /// release on the tape, else main's head (also when no release has the
 /// name asked for). The tape is main's; branch views arrive later.
-fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, release: ?[]const u8, asked_commit: ?[]const u8) HandleError!Response {
+fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, release: ?[]const u8, asked_commit: ?[]const u8, branch: []const u8) HandleError!Response {
+    // The branches, main first: the tape shows one of them (`?branch=`).
+    const branch_names = deps.db.raw([]const u8, scope, "SELECT name FROM refs WHERE dataset_id = $1::uuid AND kind = 'branch' " ++
+        "ORDER BY name <> 'main', name", .{ds.id}) catch return error.Db;
+    if (!eql(branch, "main")) {
+        for (branch_names) |b| {
+            if (eql(b, branch)) break;
+        } else return errorResponse(arena, .not_found, "no such branch in this dataset", "Pick a branch from the branch picker.");
+    }
     const info = (deps.db.rawOne(InfoRow, scope, "SELECT kind, git_url, default_format FROM datasets WHERE dataset_id = $1::uuid", .{ds.id}) catch return error.Db) orelse return error.Db;
 
     const TapeEntry = struct {
@@ -1808,8 +1816,8 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Calle
         "FROM commits c LEFT JOIN LATERAL (" ++
         "  SELECT name, changes_from, changes, " ++ git_pending_sql ++ " AS pending FROM refs r WHERE r.dataset_id = c.dataset_id " ++
         "  AND r.commit_id = c.commit_id AND r.kind = 'release' ORDER BY name LIMIT 1) rel ON true " ++
-        "WHERE c.dataset_id = $1::uuid AND c.branch = 'main' " ++
-        "ORDER BY c.commit_id DESC LIMIT 100", .{ds.id}) catch return error.Db;
+        "WHERE c.dataset_id = $1::uuid AND c.branch = $2 " ++
+        "ORDER BY c.commit_id DESC LIMIT 100", .{ ds.id, branch }) catch return error.Db;
 
     // A release is found by name, not on the tape: the tape is the newest
     // 100 commits, and a release older than that still pins.
@@ -1833,11 +1841,12 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Calle
         pinned = deps.db.rawOne([]const u8, scope, "SELECT commit_id::text FROM refs " ++
             "WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'release'", .{ ds.id, name }) catch return error.Db;
         if (pinned != null) pinned_release = name;
-    } else for (tape) |entry| if (entry.release) |name| {
+    } else if (eql(branch, "main")) for (tape) |entry| if (entry.release) |name| {
         pinned = entry.id;
         pinned_release = name;
         break;
     };
+    // Another branch is a draft: its head, unless a version was asked for.
     if (pinned == null and tape.len > 0) pinned = tape[0].id;
 
     // Counts at the pinned version, kept on the commit (versions.stats).
@@ -1909,6 +1918,8 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Calle
         .purged = purged.items,
         .pinned_commit = pinned,
         .pinned_release = pinned_release,
+        .branch = branch,
+        .branches = branch_names,
         .trained_on = trained_on.items,
         .trained_models = trained_models.items,
         .lineage_unseen = unseen,

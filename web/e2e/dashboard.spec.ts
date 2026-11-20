@@ -247,6 +247,24 @@ test('a commit can be pinned: from the history or the tape, and every view and c
   await expect(page.getByText('130 items')).toBeVisible();
 });
 
+test('a branch can be viewed: its own tape, its head, and commands that check it out', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/many');
+  await page.getByLabel('Branch').selectOption('fix');
+  await expect(page).toHaveURL(/branch=fix/);
+  // Its head: main's 131 rows and the fix.
+  await expect(page.locator('.dataset-meta')).toContainText('132 items');
+  await expect(page.locator('.tape')).toContainText('on fix');
+  await expect(page.getByRole('region', { name: 'Use this dataset' })).toContainText('&& cd many && cid checkout fix');
+  await expect(page.getByRole('region', { name: 'With Hugging Face libraries' })).toContainText('revision="fix"');
+  // It stays on the branch from tab to tab, and main is one pick away.
+  await page.getByRole('link', { name: 'Files', exact: true }).click();
+  await expect(page).toHaveURL(/branch=fix/);
+  await page.getByLabel('Branch').selectOption('main');
+  await expect(page).not.toHaveURL(/branch=/);
+  await expect(page.locator('.dataset-meta')).toContainText('130 items');
+});
+
 test('the files tab walks the committed tree', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?view=files');

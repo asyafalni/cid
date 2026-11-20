@@ -120,6 +120,9 @@ export type Overview = {
   pinned_commit: string | null;
   /** The release made at that version, if any. */
   pinned_release: string | null;
+  /** The branch the tape shows, and every branch, main first. */
+  branch: string;
+  branches: string[];
   items: number;
   bytes: number;
   /** The labelling policy version the annotations were made under (the newest);
@@ -133,17 +136,18 @@ export type Overview = {
 
 /** A dataset's overview, its counts those of `release` (the newest when not given). */
 /** A dataset's overview at a version: a commit (`commit`), else a release, else the newest release. */
-export function getOverview(name: string, release?: string, commit?: string): Promise<Overview> {
-  const q = commit
-    ? `?commit=${encodeURIComponent(commit)}`
-    : release
-      ? `?release=${encodeURIComponent(release)}`
-      : '';
+export function getOverview(name: string, release?: string, commit?: string, branch?: string): Promise<Overview> {
+  const params = new URLSearchParams();
+  if (commit) params.set('commit', commit);
+  else if (release) params.set('release', release);
+  if (branch) params.set('branch', branch);
+  const q = params.size > 0 ? `?${params.toString().replace(/\+/g, '%20')}` : '';
   return request(`/v0/datasets/${name}/-/overview${q}`);
 }
 
-/** What a page is pinned to, as it rides on links: a release, or a commit (never both). */
-export type Pin = { release?: string; commit?: string };
+/** What a page is pinned to, as it rides on links: a branch other than main, and on
+ * it a release or a commit (never both). */
+export type Pin = { branch?: string; release?: string; commit?: string };
 
 /** A commit's id as the Hugging Face door spells it: 40 hex digits. */
 export function commitAlias(id: string): string {

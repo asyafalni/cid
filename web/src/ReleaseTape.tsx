@@ -8,12 +8,15 @@ import type { TapeCommit } from './api';
 // that commit (by pointer; from the keyboard, the history lists every
 // commit with a link, so the tape is not a hundred tab stops).
 export function ReleaseTape({
+  branch,
   commits,
   pinned,
   pinnedCommit,
   onPick,
   onPickCommit,
 }: {
+  /** The branch the commits are on. */
+  branch: string;
   commits: TapeCommit[]; // newest first
   pinned: string | null;
   /** A commit pinned by `?commit=` (null when a release is). */
@@ -32,7 +35,7 @@ export function ReleaseTape({
   // Oldest on the left, like a tape that has been running.
   const run = [...commits].reverse();
   const releases = commits.filter((c) => c.release !== null).length;
-  const commitCount = commits.length === 1 ? '1 commit' : `${commits.length} commits`;
+  const commitCount = `${commits.length === 1 ? '1 commit' : `${commits.length} commits`}${branch === 'main' ? '' : ` on ${branch}`}`;
 
   // Commits but no release: nothing to pin yet, so no tape, just the facts.
   if (releases === 0) {
