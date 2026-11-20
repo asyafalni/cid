@@ -186,6 +186,17 @@ test('a model is named a model: on its card, in its header, and in the home filt
   await expect(page.getByRole('region', { name: 'Model card' })).toContainText('1 item');
 });
 
+test('"Use this" shows the same version through Hugging Face libraries', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/demo?release=v1.0.0');
+  const ds = page.getByRole('region', { name: 'With Hugging Face libraries' });
+  await expect(ds).toContainText('HF_ENDPOINT=http://127.0.0.1:7177');
+  await expect(ds).toContainText('load_dataset("e2e/datasets__demo", revision="v1.0.0")');
+  await page.goto('/d/e2e/models/tiny-bert');
+  const model = page.getByRole('region', { name: 'With Hugging Face libraries' });
+  await expect(model).toContainText('AutoModel.from_pretrained("e2e/models__tiny-bert", revision="v1.1.0")');
+});
+
 test('lineage: a model release names what it was trained on, and the dataset names the model', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/models/tiny-bert?release=v1.1.0');
@@ -404,7 +415,7 @@ test('the command copied from "Use this dataset" works as pasted, subset and all
   await panel.getByRole('group', { name: 'Classes' }).getByRole('button', { name: 'person' }).click();
   // The size line is the sum the command will download, not a guess.
   await expect(panel.getByText(/^1 of 1 items · /)).toBeVisible();
-  await expect(panel.locator('pre')).toContainText('boxes/dataset.yaml');
+  await expect(panel.locator('pre').first()).toContainText('boxes/dataset.yaml');
 
   const command = (await panel.locator('code.command').textContent())!.trim();
   expect(command).toBe(

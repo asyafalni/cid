@@ -36,3 +36,10 @@ export function humanBytes(n: number): string {
   }
   return u === 0 ? `${n} B` : `${v.toFixed(1)} ${units[u]}`;
 }
+
+/** A cid path as a Hugging Face repo id: one slash, the rest written `__`
+ * (`org/datasets/x` is `org/datasets__x`), as the server's door reads it. */
+export function hfRepoId(path: string): string {
+  const cut = path.indexOf('/');
+  return cut < 0 ? path : `${path.slice(0, cut + 1)}${path.slice(cut + 1).replaceAll('/', '__')}`;
+}

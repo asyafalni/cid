@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { getBrowse, getSubsetSize, type Overview } from '../api';
 import { extOf } from '../browseFilter';
-import { humanBytes } from '../format';
+import { hfRepoId, humanBytes } from '../format';
 import { AnnotationOverlay } from '../overlays';
 import { Thumb } from '../Thumb';
 import { thumbsFor } from '../thumbs';
@@ -226,7 +226,7 @@ function UseThisDataset({
   const [format, setFormat] = useState<string>(defaultFormat);
   const [splits, setSplits] = useState<ReadonlySet<string>>(new Set());
   const [classes, setClasses] = useState<ReadonlySet<string>>(new Set());
-  const [copied, setCopied] = useState<'command' | 'snippet' | null>(null);
+  const [copied, setCopied] = useState<'command' | 'snippet' | 'hf' | null>(null);
 
   // The pinned version's real items, so the size line is a sum, not a
   // guess: counted on the server with the CLI's subset rule (src/client/
@@ -250,8 +250,9 @@ function UseThisDataset({
     .filter(Boolean)
     .join(' ');
   const snippet = pythonFor(format, folder);
+  const hf = hfSnippet(o, pinned);
 
-  function copy(what: 'command' | 'snippet', text: string) {
+  function copy(what: 'command' | 'snippet' | 'hf', text: string) {
     void navigator.clipboard.writeText(text).then(() => {
       setCopied(what);
       setTimeout(() => setCopied(null), 1600);
@@ -325,8 +326,36 @@ function UseThisDataset({
           <code>{snippet}</code>
         </pre>
       </div>
+
+      <section className="snippet" aria-label="With Hugging Face libraries">
+        <div className="snippet-head">
+          <span className="quiet">Or read it with Hugging Face libraries, no clone</span>
+          <button className="action action--quiet" onClick={() => copy('hf', hf)}>
+            {copied === 'hf' ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+        <pre className="data">
+          <code>{hf}</code>
+        </pre>
+        <p className="quiet">
+          HF_TOKEN is a personal token from your <a href="/tokens">Tokens</a> page. Read only: changes go
+          through <code className="data">cid push</code>.
+        </p>
+      </section>
     </section>
   );
+}
+
+// The same version through the Hugging Face door (src/server/hf.zig):
+// two environment variables, then the libraries people already use.
+function hfSnippet(o: Overview, pinned: string | null): string {
+  const id = hfRepoId(o.name);
+  const revision = pinned ?? 'main';
+  const env = `# export HF_ENDPOINT=${location.origin} HF_TOKEN=<your cid personal token>\n`;
+  if (o.kind === 'model') {
+    return `${env}from transformers import AutoModel\n\nmodel = AutoModel.from_pretrained("${id}", revision="${revision}")`;
+  }
+  return `${env}from datasets import load_dataset\n\nds = load_dataset("${id}", revision="${revision}")`;
 }
 
 function SubsetPicker({

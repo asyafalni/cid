@@ -2333,3 +2333,9 @@
   display: grid;
   gap: var(--space-1);
 }
+
+/* A link inside a line of quiet text is underlined: colour alone does
+   not tell it from the words around it (axe, link-in-text-block). */
+.snippet p a {
+  text-decoration: underline;
+}

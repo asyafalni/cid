@@ -315,8 +315,9 @@ Trained on your-org/datasets/person-vehicle v4.2.0.
 
 ### C4. After the door works
 
-- A model card and a `from_pretrained` snippet on the model's page; a `load_dataset`
-  snippet in "Use this dataset".
+- ~~A `from_pretrained` snippet on the model's page; a `load_dataset` snippet in "Use
+  this dataset"~~ (done 2026-11-20). The model's page says "Model card"; what owners
+  write in it waits on card editing, a parked decision.
 - Parquet exports for annotated datasets, if JSONL proves slow to load.
 
 ## 6. Tier D: larger, each needs its own design

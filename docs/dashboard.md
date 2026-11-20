@@ -299,7 +299,10 @@ Every dataset page (all five tabs) shares one header and the release tape.
   the same eight on every visit (chosen by a hash of their paths, so a release that
   keeps most paths keeps most of its sample), as Browse shows them (previews with annotations drawn, type tiles for the rest),
   each opening in Browse; one sample request and one thumbnail request.
-- **Use this dataset** (built): format picker (`files`, `jsonl`, `yolo` for annotated
+- **Use this dataset** (built; "Use this model" on a model): a second snippet reads
+  the pinned release with Hugging Face libraries and no clone (`load_dataset`, or
+  `AutoModel.from_pretrained` for a model) through the server's Hugging Face door,
+  with the two environment variables it needs. Then the format picker (`files`, `jsonl`, `yolo` for annotated
   datasets, `files` only for file datasets; `coco` and `voc` exports do not exist
   yet), split/class subset picker (the same
   `--split`/`--class` flags `cid clone` takes, so the subset is real), and the resulting
