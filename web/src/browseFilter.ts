@@ -10,6 +10,8 @@ export type Filters = {
   cls?: string;
   /** A file extension with its dot, or 'file' for none. */
   type?: string;
+  /** An annotation-count bucket: '0', '1', '2-4', '5-9' or '10+'. */
+  anns?: string;
 };
 
 /** The URL spelling of each filter, for patches back to the router. */
@@ -19,6 +21,7 @@ export type FilterPatch = {
   split?: string | undefined;
   class?: string | undefined;
   type?: string | undefined;
+  anns?: string | undefined;
 };
 
 export function extOf(path: string): string {
@@ -30,5 +33,5 @@ export function extOf(path: string): string {
 export type Facet = { value: string; count: number };
 
 export function anyFilter(f: Filters): boolean {
-  return Boolean(f.q) || f.split !== undefined || f.cls !== undefined || f.type !== undefined;
+  return Boolean(f.q) || f.split !== undefined || f.cls !== undefined || f.type !== undefined || f.anns !== undefined;
 }

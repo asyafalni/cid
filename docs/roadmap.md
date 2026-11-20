@@ -203,8 +203,8 @@ both themes, and works with reduced motion. Beauty never costs a budget.
   only: `docs/data-model.md` rules out showing the paths).
 - ~~**B4. A stable random sample** for "A look inside"~~ (done 2026-11-20).
 - ~~**B5. Compare, per class**~~ (done 2026-11-20; the dashboard only, not `cid diff`).
-- **B6. More Browse filters:** annotation count, attributes, identities; then
-  histograms and the List view.
+- **B6. More Browse filters:** ~~annotation count~~ (done 2026-11-20: buckets, index
+  format v3); attributes, identities; then histograms and the List view.
 - ~~**B7. Branches on the tape and pinning a commit**~~ (done 2026-11-20: `?commit=`,
   `?branch=`). Comparing a branch with `main` across the two is not built: the
   compare pickers list the shown branch's commits.

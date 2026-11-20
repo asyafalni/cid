@@ -167,9 +167,15 @@ function seedBoxesMoved() {
   const name = 'e2e/datasets/boxes';
   const datasetId = psqlValue(`SELECT dataset_id FROM datasets WHERE name = '${name}'`);
   const head = api('GET', `/v0/datasets/${name}/-/head`) as { commit: string };
-  const page = api('GET', `/v0/datasets/${name}/-/browse?commit=${head.commit}`) as {
-    items: { annotations: { id: string; item_id: string; class: string }[] }[];
-  };
+  // The server may still be indexing that version (a 503 that says so):
+  // ask again until it answers, as a person reloading would.
+  type Page = { items?: { annotations: { id: string; item_id: string; class: string }[] }[] };
+  let page: Page = {};
+  for (let tries = 0; tries < 60 && !page.items; tries++) {
+    if (tries > 0) execSync('sleep 1');
+    page = api('GET', `/v0/datasets/${name}/-/browse?commit=${head.commit}`) as Page;
+  }
+  if (!page.items) throw new Error('the boxes dataset never became browsable');
   const person = page.items.flatMap((i) => i.annotations).find((a) => a.class === 'person');
   if (!person) throw new Error('the boxes dataset has no person box to move');
   const rev = uuid7();

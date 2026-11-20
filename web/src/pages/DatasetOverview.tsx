@@ -33,6 +33,7 @@ export function DatasetOverview() {
     split?: string;
     class?: string;
     type?: string;
+    anns?: string;
     what?: string;
     who?: string;
   };
@@ -248,6 +249,7 @@ export function DatasetOverview() {
               cls: search.class,
               q: search.q,
               type: search.type,
+              anns: search.anns,
               a: search.a,
               b: search.b,
               dir: search.dir,
@@ -266,7 +268,7 @@ export function DatasetOverview() {
           commit={pinnedCommit}
           openItem={search.item}
           onOpenItem={(path) => setSearch({ item: path })}
-          filters={{ mode: search.mode, q: search.q, split: search.split, cls: search.class, type: search.type }}
+          filters={{ mode: search.mode, q: search.q, split: search.split, cls: search.class, type: search.type, anns: search.anns }}
           onFilters={(patch) => setSearch(patch)}
         />
       ) : view === 'releases' ? (

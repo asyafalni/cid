@@ -77,7 +77,7 @@ export function BrowseTab({
   // more than what was scrolled to, whatever the dataset's size. Each
   // page brings its own thumbnails; a page whose thumbnails cannot be had
   // still shows every item, as type tiles.
-  const query = { q: filters.q, split: filters.split, cls: filters.cls, type: filters.type };
+  const query = { q: filters.q, split: filters.split, cls: filters.cls, type: filters.type, anns: filters.anns };
   const pages = useInfiniteQuery({
     queryKey: ['browse', name, commit, query],
     queryFn: async ({ pageParam }) => {
@@ -255,11 +255,22 @@ export function BrowseTab({
             blank="no extension"
             onChange={(v) => onFilters({ type: v })}
           />
+          {overview.kind === 'annotated' && (
+            // How many annotations an item has, a histogram as much as a
+            // filter: "0" finds what is left to label.
+            <FacetSelect
+              label="annotations"
+              facets={first.facets.anns.map((f) => ({ ...f, value: f.value }))}
+              value={filters.anns}
+              blank="none"
+              onChange={(v) => onFilters({ anns: v })}
+            />
+          )}
           {filtered && (
             <button
               className="filter-clear"
               onClick={() =>
-                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined })
+                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined, anns: undefined })
               }
             >
               Clear filters
@@ -318,7 +329,7 @@ export function BrowseTab({
             <button
               className="filter-clear"
               onClick={() =>
-                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined })
+                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined, anns: undefined })
               }
             >
               Clear filters

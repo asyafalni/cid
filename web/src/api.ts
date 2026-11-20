@@ -193,7 +193,7 @@ export type BrowsePage = {
   /** The cursor for the next page; null on the last. */
   next: string | null;
   open: BrowseItem | null;
-  facets: { split: BrowseFacet[]; class: BrowseFacet[]; type: BrowseFacet[] };
+  facets: { split: BrowseFacet[]; class: BrowseFacet[]; type: BrowseFacet[]; anns: BrowseFacet[] };
   /** Annotations per class across the whole version. */
   classes: BrowseFacet[];
 };
@@ -203,6 +203,7 @@ export type BrowseQuery = {
   split?: string;
   cls?: string;
   type?: string;
+  anns?: string;
   after?: string;
   item?: string;
   limit?: number;
@@ -223,6 +224,7 @@ export function getBrowse(name: string, commit: string, query: BrowseQuery): Pro
   if (query.split !== undefined) params.set('split', query.split);
   if (query.cls !== undefined) params.set('class', query.cls);
   if (query.type !== undefined) params.set('type', query.type);
+  if (query.anns !== undefined) params.set('anns', query.anns);
   if (query.after !== undefined) params.set('after', query.after);
   if (query.item !== undefined) params.set('item', query.item);
   if (query.limit !== undefined) params.set('limit', String(query.limit));

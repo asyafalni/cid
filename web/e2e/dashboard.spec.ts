@@ -418,6 +418,23 @@ test('a view opened from its URL in a new browser shows the same release, filter
   await fresh.close();
 });
 
+test('the annotations filter counts items by how many annotations they have, and finds the unlabelled', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/boxes?view=browse');
+  const filter = page.getByLabel('Filter by annotations');
+  // The street frame has two boxes: one bucket, "2-4", with one item.
+  await expect(filter.locator('option', { hasText: '2-4 (1)' })).toHaveCount(1);
+  await filter.selectOption('2-4');
+  await expect(page).toHaveURL(/anns=2-4/);
+  await expect(page.getByRole('button', { name: /frames\/street\.png/ })).toBeVisible();
+  // None with no annotations here: the bucket is offered at zero once asked for.
+  await page.goto('/d/e2e/datasets/boxes?view=browse&anns=0');
+  await expect(page.getByText('0 of 1 items')).toBeVisible();
+  // A file dataset has no annotations to count.
+  await page.goto('/d/e2e/datasets/demo?view=browse');
+  await expect(page.getByLabel('Filter by annotations')).toHaveCount(0);
+});
+
 test('a class filter keeps the items that carry the class', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/boxes?view=browse');
@@ -526,7 +543,7 @@ test('"Show command" gives the cid command for the view on screen, and it does t
   // What has no command says so.
   await page.goto('/d/e2e/datasets/demo?view=browse&q=img');
   await page.getByRole('button', { name: 'Show command' }).click();
-  await expect(page.getByRole('region', { name: 'Command' })).toContainText('The path search and the type filter have no clone flag');
+  await expect(page.getByRole('region', { name: 'Command' })).toContainText('The path search and the type and annotations filters have no clone flag');
   await page.getByRole('link', { name: 'Activity', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Command' })).toContainText('no command shows it');
 });

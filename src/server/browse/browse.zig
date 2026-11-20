@@ -33,6 +33,8 @@ pub const Query = struct {
     /// The cursor: the last path of the previous page.
     after: ?[]const u8 = null,
     limit: u32 = default_limit,
+    /// Items whose annotation count falls in this bucket (`ann_buckets`).
+    anns: ?[]const u8 = null,
     /// The open item's path, answered beside the page (it may be on no
     /// page loaded yet: a shared link opens straight onto it).
     item: ?[]const u8 = null,
@@ -75,7 +77,17 @@ pub const Item = struct {
 
 pub const Facet = struct { value: []const u8, count: u64 };
 
-pub const Facets = struct { split: []Facet, class: []Facet, type: []Facet };
+pub const Facets = struct { split: []Facet, class: []Facet, type: []Facet, anns: []Facet = &.{} };
+
+/// An item's annotation count, as the `anns` filter and facet bucket it:
+/// "0" (unannotated), "1", "2-4", "5-9", "10+".
+pub const ann_buckets = [_][]const u8{ "0", "1", "2-4", "5-9", "10+" };
+/// Each bucket's counts, lowest and highest (the last open-ended).
+const bucket_bounds = [_][2]i64{ .{ 0, 0 }, .{ 1, 1 }, .{ 2, 4 }, .{ 5, 9 }, .{ 10, std.math.maxInt(i32) } };
+/// A count's bucket, as its place in `ann_buckets`: a small integer, so
+/// only the facet's own aggregate works it out, never every row of a page.
+const ann_bucket_sql = "CASE WHEN ann_count = 0 THEN 0 WHEN ann_count = 1 THEN 1 WHEN ann_count <= 4 THEN 2 " ++
+    "WHEN ann_count <= 9 THEN 3 ELSE 4 END";
 
 pub const Answer = struct {
     total: u64,
@@ -106,9 +118,30 @@ fn finish(arena: std.mem.Allocator, answer: Answer, q: Query) !Answer {
     a.facets.split = try keepActive(arena, a.facets.split, q.split);
     a.facets.class = try keepActive(arena, a.facets.class, q.class);
     a.facets.type = try keepActive(arena, a.facets.type, q.type);
+    a.facets.anns = try keepActive(arena, a.facets.anns, q.anns);
     inline for (.{ a.facets.split, a.facets.class, a.facets.type }) |list| std.mem.sort(Facet, list, {}, byCount);
+    // Buckets read as a histogram: in their own order, not by count.
+    std.mem.sort(Facet, a.facets.anns, {}, byBucket);
     std.mem.sort(Facet, a.classes, {}, byValue);
     return a;
+}
+
+/// A bucket's count as the facet query answers it: its place, not its name.
+const BucketCount = struct { b: usize, count: u64 };
+
+fn bucketFacets(arena: std.mem.Allocator, raw: []const BucketCount) ![]Facet {
+    const out = try arena.alloc(Facet, raw.len);
+    for (out, raw) |*f, r| f.* = .{ .value = ann_buckets[@min(r.b, ann_buckets.len - 1)], .count = r.count };
+    return out;
+}
+
+fn byBucket(_: void, a: Facet, b: Facet) bool {
+    return bucketRank(a.value) < bucketRank(b.value);
+}
+
+fn bucketRank(v: []const u8) usize {
+    for (ann_buckets, 0..) |b, i| if (std.mem.eql(u8, b, v)) return i;
+    return ann_buckets.len;
 }
 
 fn keepActive(arena: std.mem.Allocator, list: []Facet, active: ?[]const u8) ![]Facet {
@@ -135,8 +168,8 @@ fn byValue(_: void, a: Facet, b: Facet) bool {
 
 /// The browse index's format, in its file names (locally and in storage):
 /// changing the columns changes it, so an index in an older format is
-/// never read, only rebuilt. v2 added `class_set`.
-pub const index_format = "v2";
+/// never read, only rebuilt. v2 added `class_set`, v3 `ann_count`.
+pub const index_format = "v3";
 
 /// A version's browse index: its items in path order, and its annotations
 /// by item, as two Parquet files — and the JSON lines they are made from.
@@ -199,7 +232,9 @@ pub fn convertIndex(arena: std.mem.Allocator, io: std.Io, db: *duck.Db, files: F
         // Items carry their distinct classes, sorted: the class filter and
         // facet read that short list, not one class per annotation
         // (de-duplicating per page cost a 1M-item page about 100 ms).
-        const extra = if (i == 0) ", " ++ ann_digest ++ " AS digest" else ", list_sort(list_distinct(classes)) AS class_set";
+        // And their annotation count, for the `anns` filter: one class
+        // per annotation, so its length.
+        const extra = if (i == 0) ", " ++ ann_digest ++ " AS digest" else ", list_sort(list_distinct(classes)) AS class_set, len(classes) AS ann_count";
         _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT *{s} FROM read_json('{s}', format = 'newline_delimited', columns = {{{s}}})) TO '{s}' (FORMAT parquet)", .{ extra, step.lines, step.columns, tmp }));
         std.Io.Dir.rename(cwd, tmp, cwd, step.out, io) catch return error.WriteFailed;
     }
@@ -220,16 +255,20 @@ const counts_sql =
     \\'total', (SELECT count(*) FROM m),
     \\  'matched', (SELECT count(*) FROM sel),
     \\  'split', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
-    \\      FROM (SELECT coalesce(split, '') AS v, count(*) AS n FROM m WHERE fq AND fc AND ft GROUP BY 1)),
+    \\      FROM (SELECT coalesce(split, '') AS v, count(*) AS n FROM m WHERE fq AND fc AND ft AND fa GROUP BY 1)),
     \\  'class', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
-    \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(class_set) AS v FROM m WHERE fq AND fs AND ft) GROUP BY 1)),
+    \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(class_set) AS v FROM m WHERE fq AND fs AND ft AND fa) GROUP BY 1)),
     \\  'type', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
-    \\      FROM (SELECT ext AS v, count(*) AS n FROM m WHERE fq AND fs AND fc GROUP BY 1)),
+    \\      FROM (SELECT ext AS v, count(*) AS n FROM m WHERE fq AND fs AND fc AND fa GROUP BY 1)),
+    \\  'anns', (SELECT coalesce(json_group_array(json_object('b', v, 'count', n)), '[]'::JSON)
+    \\      FROM (SELECT
+++ " " ++ ann_bucket_sql ++ " " ++
+    \\ AS v, count(*) AS n FROM m WHERE fq AND fs AND fc AND ft GROUP BY 1)),
     \\  'classes', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
     \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(classes) AS v FROM read_parquet('{0s}')) GROUP BY 1))
 ;
 /// The same fields, left out (Query.facets false).
-const no_counts_sql = "'total', 0, 'matched', 0, 'split', '[]'::JSON, 'class', '[]'::JSON, 'type', '[]'::JSON, 'classes', '[]'::JSON";
+const no_counts_sql = "'total', 0, 'matched', 0, 'split', '[]'::JSON, 'class', '[]'::JSON, 'type', '[]'::JSON, 'anns', '[]'::JSON, 'classes', '[]'::JSON";
 
 /// The contract, answered from the index (inside the folder `db` is
 /// confined to). Every request value is a bound parameter.
@@ -243,13 +282,14 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
     // annotations. Shared CTEs are materialized, so carrying heavy
     // columns through them would cost seconds at 1M items.
     const sql = try std.fmt.allocPrint(arena,
-        \\WITH m AS (SELECT path, split, ext, class_set,
+        \\WITH m AS (SELECT path, split, ext, class_set, ann_count,
         \\    ($1::VARCHAR IS NULL OR contains(lower(path), lower($1::VARCHAR))) AS fq,
         \\    ($2::VARCHAR IS NULL OR coalesce(split, '') = $2::VARCHAR) AS fs,
         \\    ($3::VARCHAR IS NULL OR list_contains(class_set, $3::VARCHAR)) AS fc,
-        \\    ($4::VARCHAR IS NULL OR ext = $4::VARCHAR) AS ft
+        \\    ($4::VARCHAR IS NULL OR ext = $4::VARCHAR) AS ft,
+        \\    ($8::VARCHAR IS NULL OR ann_count BETWEEN $8::BIGINT AND $9::BIGINT) AS fa
         \\  FROM read_parquet('{0s}')),
-        \\sel AS (SELECT path FROM m WHERE fq AND fs AND fc AND ft),
+        \\sel AS (SELECT path FROM m WHERE fq AND fs AND fc AND ft AND fa),
         \\page AS (SELECT path FROM sel WHERE $5::VARCHAR IS NULL OR path > $5::VARCHAR ORDER BY {3s} LIMIT $6),
         \\last AS (SELECT max(path) AS p, count(*) AS n FROM page),
         \\whole AS (SELECT path, hash, size, split, item_id FROM read_parquet('{0s}') WHERE path IN (SELECT path FROM page)),
@@ -273,6 +313,12 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         if (q.sample) "md5(path), path" else "path",
         if (q.sample) "false" else "true",
     });
+    // The bucket asked for, as the counts it spans; one no bucket names
+    // matches nothing, as an unknown split does.
+    const bounds: ?[2]i64 = if (q.anns) |name| blk: {
+        for (ann_buckets, bucket_bounds) |b, r| if (std.mem.eql(u8, b, name)) break :blk r;
+        break :blk .{ -1, -1 };
+    } else null;
 
     const text = (try db.scalarTextArgs(arena, sql, &.{
         .{ .text = q.q },
@@ -282,6 +328,8 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         .{ .text = if (q.sample) null else q.after },
         .{ .int = q.limit },
         .{ .text = q.item },
+        .{ .text = if (bounds) |r| try std.fmt.allocPrint(arena, "{d}", .{r[0]}) else null },
+        .{ .text = if (bounds) |r| try std.fmt.allocPrint(arena, "{d}", .{r[1]}) else null },
     })) orelse return error.QueryFailed;
 
     const Raw = struct {
@@ -293,6 +341,7 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         split: []Facet,
         class: []Facet,
         type: []Facet,
+        anns: []const BucketCount,
         classes: []Facet,
     };
     const raw = std.json.parseFromSliceLeaky(Raw, arena, text, .{ .ignore_unknown_fields = true }) catch
@@ -303,7 +352,7 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         .items = raw.items,
         .next = raw.next,
         .open = raw.open,
-        .facets = .{ .split = raw.split, .class = raw.class, .type = raw.type },
+        .facets = .{ .split = raw.split, .class = raw.class, .type = raw.type, .anns = try bucketFacets(arena, raw.anns) },
         .classes = raw.classes,
     }, q);
 }
@@ -668,6 +717,16 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
     try std.testing.expectEqualStrings("README", lean.open.?.path);
     try std.testing.expectEqual(@as(u64, 0), lean.total);
     try std.testing.expectEqual(@as(usize, 0), lean.facets.split.len + lean.facets.class.len + lean.facets.type.len + lean.classes.len);
+    // By annotation count: unannotated, one, a few; the facet a histogram
+    // in bucket order, counted against the other filters.
+    const bare = try queryIndex(arena, &db, v1, .{ .anns = "0" });
+    try std.testing.expectEqual(@as(u64, 1), bare.matched);
+    try std.testing.expectEqualStrings("README", bare.items[0].path);
+    try std.testing.expectEqual(@as(u64, 2), (try queryIndex(arena, &db, v1, .{ .anns = "1" })).matched);
+    try std.testing.expectEqualStrings("img/a.jpg", (try queryIndex(arena, &db, v1, .{ .anns = "2-4" })).items[0].path);
+    try std.testing.expectEqualStrings("0", all.facets.anns[0].value);
+    try std.testing.expectEqual(@as(?u64, 2), countOf(all.facets.anns, "1"));
+    try std.testing.expectEqual(@as(?u64, 1), countOf(train.facets.anns, "1")); // b.JPG; c.png is val
     // A sample: spread by a hash of the paths, not the first by path, the
     // same every time, in path order, with no cursor.
     for (0..2) |_| {

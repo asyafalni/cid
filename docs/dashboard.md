@@ -334,9 +334,13 @@ Every dataset page (all five tabs) shares one header and the release tape.
   media, masks (including COCO RLE) painted once into a canvas in the class colour;
   toggle per class; opacity slider; labels on hover. A shape that does not parse loses
   only itself. *Planned:* identities.
-- **Filters.** *Built:* path contains, split, class and file type, each a facet counted
-  against the other filters, all in the URL. *Planned:* attributes, annotation count,
-  size, source (camera, video, feed), author (agent/human), policy version, changed
+- **Filters.** *Built:* path contains, split, class, file type and (annotated datasets)
+  annotation count in buckets (none, 1, 2–4, 5–9, 10+: "none" finds what is left to
+  label; the counts read as a histogram, in bucket order), each a facet counted
+  against the other filters, all in the URL. The count is a column of the browse
+  index (format v3, `ann_count`); measured at 1M items against the build before it,
+  same data, back to back: 5–8% more server CPU for a page with its facets, medians
+  0–10% slower (unfiltered about 360 to 390 ms). *Planned:* attributes, size, source (camera, video, feed), author (agent/human), policy version, changed
   since release X, and histograms as clickable filters, like Hugging Face's, for every
   numeric column and attribute.
 - **Search.** *Built:* file paths ("path contains"). *Planned:* text search on text
@@ -576,7 +580,7 @@ shareable URLs · restricted blur and reveal log · preview worker for images an
 
 *Status:* built, except: the auto card is partial (counts, file types, class table,
 split sizes and labelling policy only); Browse filters are path,
-split, class and type only; the Releases timeline is partial (message, date, author,
+split, class, type and annotation count only; the Releases timeline is partial (message, date, author,
 id, each release's item count and changes since the one before, and "not in git
 yet" on a release the server has not written to the dataset repository, else a
 link to its tag on GitLab or GitHub, and a purged-items count; no release notes or
