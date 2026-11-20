@@ -233,6 +233,23 @@ Administrators can still use `CID_SERVER` + `CID_TOKEN` with the server's static
 (full access; it wins over everything). The CLI writes no credentials file. Per-dataset
 deploy keys are planned, not built.
 
+### Hugging Face clients (read only)
+
+Code that already loads data with Hugging Face libraries reads a cid dataset with two
+environment variables and no other change (`src/server/hf.zig`, docs/roadmap.md C1):
+
+```bash
+export HF_ENDPOINT=https://cidhub.com HF_TOKEN=$CID_PAT   # a cid personal token
+python -c 'from datasets import load_dataset
+print(load_dataset("your-org/datasets__speech-id", revision="v1.3.0"))'
+```
+
+A repo id holds one `/`, so a dataset path's inner slashes are written `__`
+(`your-org/datasets__speech-id` is `your-org/datasets/speech-id`); the short
+`your-org/speech-id` works while one readable dataset in `your-org` ends that way.
+A revision is a release, a branch or a commit; `main` is the branch. Read only:
+uploads stay `cid push`. File datasets today; annotated datasets and models next.
+
 ---
 
 ## Goals and non-goals
@@ -639,7 +656,8 @@ src/client/index.zig         staging area (.cid/index) and the tracked tree
 src/client/local.zig         local commits, HEAD, last-pushed
 src/client/sync.zig          push, pull, replaying unpushed commits, conflicts, merge state
 src/server/                  api.zig (every route, tokens and permissions, presigned URLs,
-                             uploads), serve.zig (Nilo app), signin.zig (GitLab OAuth)
+                             uploads), serve.zig (Nilo app), signin.zig (GitLab OAuth),
+                             hf.zig (the Hugging Face door: the Hub's read routes)
 src/store/db.zig             TimescaleDB via nilo_sql (pg.zig native driver, pooled)
 src/store/blob.zig           S3 via nilo_s3: one Bucket ('cid'), the storage rules
 src/manifest/                canonical manifest rows, RFC 8785 JSON (jcs.zig)

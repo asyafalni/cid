@@ -27,6 +27,7 @@ pub const duck = @import("store/duck.zig");
 pub const table_stats = @import("tabular/stats.zig");
 pub const rowdiff = @import("tabular/rowdiff.zig");
 pub const api = @import("server/api.zig");
+pub const hf = @import("server/hf.zig");
 pub const serve = @import("server/serve.zig");
 pub const browse = @import("server/browse/browse.zig");
 pub const signin = @import("server/signin.zig");
@@ -123,4 +124,5 @@ test {
     _ = cli_diff;
     _ = cli_remote;
     _ = common;
+    _ = hf;
 }

@@ -595,8 +595,8 @@ fn runRename(
     const same = eql(old, new);
     if (same and git_url == null)
         return fail(io, .usage, "nothing to change: give a new name, or the new git URL. Run 'cid admin rename {s} {s} --git <git-url>'.", .{ old, old });
-    if (!validDatasetPath(new))
-        return fail(io, .usage, "'{s}' is not a dataset path: segments of letters, digits, '.', '_' and '-', joined by '/'. Run 'cid admin rename {s} <new-name>'.", .{ new, old });
+    if (!api.validDatasetPath(new))
+        return fail(io, .usage, "'{s}' is not a dataset path: segments of letters, digits, '.', '_' and '-' (never '__'), joined by '/'. Run 'cid admin rename {s} <new-name>'.", .{ new, old });
 
     var standalone: dbx.Standalone = undefined;
     adminPool(&standalone, arena, io, env, "cid admin rename") orelse return .network;
@@ -667,26 +667,6 @@ fn runRename(
     out.writeAll("\n") catch return .network;
     out.flush() catch return .network;
     return code;
-}
-
-/// A dataset path as GitLab spells project paths: `/`-joined segments of
-/// letters, digits, `.`, `_` and `-`, none empty, none `-` alone (the
-/// API's `/-/` separator), none ending in `.git` or `.cid`.
-fn validDatasetPath(path: []const u8) bool {
-    if (path.len == 0 or path.len > 255) return false;
-    var it = std.mem.splitScalar(u8, path, '/');
-    while (it.next()) |seg| {
-        if (seg.len == 0 or eql(seg, "-") or eql(seg, ".") or eql(seg, "..")) return false;
-        for (seg) |c| if (!(std.ascii.isAlphanumeric(c) or c == '.' or c == '_' or c == '-')) return false;
-    }
-    return !std.mem.endsWith(u8, path, ".git") and !std.mem.endsWith(u8, path, ".cid");
-}
-
-test "a new dataset path is checked the way GitLab spells project paths" {
-    try std.testing.expect(validDatasetPath("org/datasets/speech-id"));
-    try std.testing.expect(validDatasetPath("org/v1.2_data"));
-    for ([_][]const u8{ "", "/org/x", "org/x/", "org//x", "org/-/x", "org/x y", "org/x.git", "org/x.cid", "org/../x" }) |bad|
-        try std.testing.expect(!validDatasetPath(bad));
 }
 
 fn runSyncGitlab(

@@ -100,7 +100,7 @@ pub const Deps = struct {
 
 /// A DuckDB connection for one browse query: to the server's shared
 /// database when there is one, else to a database of its own.
-fn duckFor(arena: std.mem.Allocator, deps: *Deps, dir: []const u8) HandleError!duck.Db {
+pub fn duckFor(arena: std.mem.Allocator, deps: *Deps, dir: []const u8) HandleError!duck.Db {
     if (deps.duck) |shared| return shared.connect() catch error.Storage;
     return duck.Db.open(arena, .{ .allowed_dir = dir, .threads = browse_mod.query_threads }) catch error.Storage;
 }
@@ -110,7 +110,7 @@ fn duckFor(arena: std.mem.Allocator, deps: *Deps, dir: []const u8) HandleError!d
 /// good part of the database's one memory ceiling, so four at once ran out
 /// of it and answered 500; each already has both of DuckDB's threads, so
 /// running them together is never faster.
-fn browseQuery(deps: *Deps, comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) HandleError!@typeInfo(@typeInfo(@TypeOf(func)).@"fn".return_type.?).error_union.payload {
+pub fn browseQuery(deps: *Deps, comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) HandleError!@typeInfo(@typeInfo(@TypeOf(func)).@"fn".return_type.?).error_union.payload {
     if (deps.browse_gate) |gate| gate.enter() catch return error.Storage; // the request went away
     defer if (deps.browse_gate) |gate| gate.leave();
     return offload(deps, func, args) catch |err| duckErr(err);
@@ -129,7 +129,7 @@ pub const Response = struct {
     body: []const u8,
 };
 
-const presign_secs = 15 * 60;
+pub const presign_secs = 15 * 60;
 
 pub fn handle(
     arena: std.mem.Allocator,
@@ -175,7 +175,7 @@ pub fn handleAs(
 
 /// `Collected`: cleanup (`cid admin gc`) took a file this request was
 /// recording; nothing was recorded, and a retry uploads it again.
-const HandleError = error{ OutOfMemory, Db, Storage, BadRequest, Collected };
+pub const HandleError = error{ OutOfMemory, Db, Storage, BadRequest, Collected };
 
 fn handleInner(
     arena: std.mem.Allocator,
@@ -374,7 +374,7 @@ fn tokenAccount(arena: std.mem.Allocator, deps: *Deps, auth_header: ?[]const u8)
 
 /// Static token: everything. Scoped token: this dataset, this level or
 /// higher, not expired.
-fn authorized(
+pub fn authorized(
     arena: std.mem.Allocator,
     deps: *Deps,
     scope: anytype,
@@ -402,10 +402,10 @@ fn authorized(
 // Handlers
 // ---------------------------------------------------------------------------
 
-const Dataset = struct {
+pub const Dataset = struct {
     id: []const u8, // uuid text
     name: []const u8,
-    kind: []const u8, // 'files' | 'annotated'
+    kind: []const u8, // 'files' | 'annotated' | 'model'
     /// Previews blurred until a logged reveal; every clear URL logged.
     restricted: bool = false,
 };
@@ -505,7 +505,7 @@ fn finishJob(deps: *Deps, scope: anytype, commit_id: []const u8, status: []const
     _ = deps.db.exec(scope, "UPDATE version_jobs SET status = $2, reason = $3, updated_at = now() WHERE commit_id = $1::uuid", .{ commit_id, status, reason }) catch {};
 }
 
-fn lookupDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, name: []const u8) ?Dataset {
+pub fn lookupDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, name: []const u8) ?Dataset {
     _ = arena;
     const row = (deps.db.rawOne(DatasetRow, scope, "SELECT dataset_id::text AS dataset_id, kind, restricted FROM datasets WHERE name = $1", .{name}) catch return null) orelse return null;
     return .{ .id = row.dataset_id, .name = name, .kind = row.kind, .restricted = row.restricted };
@@ -939,7 +939,7 @@ fn paramAll(arena: std.mem.Allocator, route: DatasetRoute, key: []const u8) Hand
     return out.items;
 }
 
-const BrowseIndex = struct { dir: []const u8, files: browse_mod.Files };
+pub const BrowseIndex = struct { dir: []const u8, files: browse_mod.Files };
 
 fn releaseSlot(deps: *Deps) void {
     deps.browse_building_commit.store(0, .release);
@@ -954,7 +954,7 @@ const browse_wait_ms = 90_000;
 /// there for every version once built) or built from history the first
 /// time; null while another build holds the one build slot. Commits are sealed, so an index never
 /// goes stale; the folder keeps the most recent `browse_cache_max`.
-fn browseIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit: []const u8) HandleError!?BrowseIndex {
+pub fn browseIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, commit: []const u8) HandleError!?BrowseIndex {
     const cwd = std.Io.Dir.cwd();
     cwd.createDirPath(deps.io, deps.browse_dir) catch return error.Storage;
     const dir = cwd.realPathFileAlloc(deps.io, deps.browse_dir, arena) catch return error.Storage;
@@ -1403,7 +1403,7 @@ fn isOwner(deps: *Deps, scope: anytype, caller: Caller, ds: Dataset) HandleError
 
 /// Who did it, for the record: a dashboard session's account, an
 /// SSH-issued token's account, or the server token, which is nobody's.
-fn actorOf(arena: std.mem.Allocator, deps: *Deps, caller: Caller) HandleError![]const u8 {
+pub fn actorOf(arena: std.mem.Allocator, deps: *Deps, caller: Caller) HandleError![]const u8 {
     if (caller.account) |account| return account;
     if (deps.token_secret) |secret| if (caller.header) |h| if (std.mem.startsWith(u8, h, "Bearer ")) {
         const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(deps.io, .real).toSeconds()));
@@ -1446,7 +1446,7 @@ fn noteActivity(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: C
 
 /// An audit record, written before the thing it records happens: if it
 /// cannot be written, the clear URL is not handed out either.
-fn logActivity(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, actor: []const u8, action: []const u8, ref: ?[]const u8, detail: anytype) HandleError!void {
+pub fn logActivity(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, actor: []const u8, action: []const u8, ref: ?[]const u8, detail: anytype) HandleError!void {
     const detail_text: ?[]const u8 = if (@TypeOf(detail) == @TypeOf(null)) null else try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(detail, .{})});
     _ = deps.db.exec(scope, "INSERT INTO activity_events (ts, dataset_id, account_id, action, ref, detail) VALUES (now(), $1::uuid, $2, $3, $4, $5::jsonb)", .{ ds.id, actor, action, ref, detail_text }) catch return error.Db;
 }
@@ -1493,7 +1493,7 @@ const Resolved = union(enum) { caller: Caller, refused: Response };
 /// name is not read. A personal token (`cidp_…`) is looked up by its hash
 /// and, if live, becomes its maker's account; any other bearer token
 /// (the server's, or one minted over SSH) passes on unchanged.
-fn resolveCaller(arena: std.mem.Allocator, deps: *Deps, scope: anytype, given: Caller) HandleError!Resolved {
+pub fn resolveCaller(arena: std.mem.Allocator, deps: *Deps, scope: anytype, given: Caller) HandleError!Resolved {
     var caller = given;
     const h = caller.header orelse return .{ .caller = caller };
     if (std.mem.startsWith(u8, h, "Basic ")) {
@@ -1665,6 +1665,32 @@ fn myKeys(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller,
 /// with commits, never with visitors, the rule the preview queue follows.
 /// It is a derived cache of an immutable row, not history; a version it
 /// cannot read is recomputed and simply not stored.
+/// A dataset path as GitLab spells project paths: `/`-joined segments of
+/// letters, digits, `.`, `_` and `-`, none empty, none `-` alone (the
+/// API's `/-/` separator), none ending in `.git` or `.cid`. And no `__`
+/// inside a segment: the Hugging Face door writes a path's inner slashes
+/// as `__` (`org/datasets__x`), so a segment holding one would read back
+/// as two (docs/roadmap.md, decision 9).
+pub fn validDatasetPath(path: []const u8) bool {
+    if (path.len == 0 or path.len > 255) return false;
+    var it = std.mem.splitScalar(u8, path, '/');
+    while (it.next()) |seg| {
+        if (seg.len == 0 or eql(seg, "-") or eql(seg, ".") or eql(seg, "..")) return false;
+        if (std.mem.indexOf(u8, seg, "__") != null) return false;
+        for (seg) |c| if (!(std.ascii.isAlphanumeric(c) or c == '.' or c == '_' or c == '-')) return false;
+    }
+    return !std.mem.endsWith(u8, path, ".git") and !std.mem.endsWith(u8, path, ".cid");
+}
+
+test "a dataset path is checked the way GitLab spells project paths, without __" {
+    try std.testing.expect(validDatasetPath("org/datasets/speech-id"));
+    try std.testing.expect(validDatasetPath("org/v1.2_data"));
+    try std.testing.expect(validDatasetPath("org/a-b-c"));
+    try std.testing.expect(validDatasetPath("org/a--b_c"));
+    for ([_][]const u8{ "", "/org/x", "org/x/", "org//x", "org/-/x", "org/x y", "org/x.git", "org/x.cid", "org/../x", "org/speech__id", "org__x/y" }) |bad|
+        try std.testing.expect(!validDatasetPath(bad));
+}
+
 const CreateDatasetBody = struct {
     name: []const u8,
     kind: []const u8 = "files",
@@ -1674,6 +1700,8 @@ const CreateDatasetBody = struct {
 fn createDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, auth_header: ?[]const u8, body: []const u8) HandleError!Response {
     const req = parseBody(CreateDatasetBody, arena, body) orelse return error.BadRequest;
     if (req.name.len == 0 or req.git_url.len == 0) return error.BadRequest;
+    if (!validDatasetPath(req.name))
+        return errorResponse(arena, .unprocessable_entity, "that is not a dataset path: segments of letters, digits, '.', '_' and '-' (never '__'), joined by '/'", "Pick another path for the dataset, then run 'cid init' again.");
     if (!authorized(arena, deps, scope, .{ .header = auth_header }, req.name, .write))
         return errorResponse(arena, .unauthorized, "missing, wrong or expired token for this dataset", "Run the command again; cid fetches a fresh token over SSH. CI: check CID_TOKEN.");
     if (!eql(req.kind, "files") and !eql(req.kind, "annotated")) return error.BadRequest;

@@ -4584,3 +4584,190 @@ test "gc: never deletes what a release or branch head holds; collected bytes can
     _ = try cid.gc.run(std.testing.allocator, &standalone.db, &scope, &s3c, .{ .days = 0, .apply = true });
     for (hashes) |h| try std.testing.expect((try s3c.headObject(&scope, try cid.api.itemKey(arena, &h))) != null);
 }
+
+/// The Hugging Face door, as the client calls it: one request, its answer.
+fn hfCall(arena: std.mem.Allocator, deps: *cid.api.Deps, scope: anytype, method: []const u8, target: []const u8, auth: ?[]const u8, body: []const u8) cid.hf.Answer {
+    return cid.hf.handle(arena, deps, scope, method, target, .{ .header = auth }, body, "http://cid.test");
+}
+
+fn hfHeader(answer: cid.hf.Answer, name: []const u8) ?[]const u8 {
+    for (answer.headers) |h| if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
+    return null;
+}
+
+test "the Hugging Face door: a file dataset's releases, files and trees, as huggingface_hub reads them" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var browse_tmp = std.testing.tmpDir(.{});
+    defer browse_tmp.cleanup();
+    const browse_dir = try browse_tmp.dir.realPathFileAlloc(io, ".", arena);
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token", .browse_dir = browse_dir, .work_dir = browse_dir };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/hfdoor", .gpa = std.testing.allocator };
+    const bearer = "Bearer test-token";
+
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
+    inline for (.{ "activity_events", "refs", "commits", "item_revisions", "dataset_items", "access" }) |table| {
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name IN ('test/datasets/hfdoor', 'test/other/hfdoor', 'test/datasets/hfann'))", .{});
+    }
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name IN ('test/datasets/hfdoor', 'test/other/hfdoor', 'test/datasets/hfann')", .{});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
+
+    // A file dataset: a README, a table, and three files in a folder.
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    try producer.dir.writeFile(io, .{ .sub_path = "README.md", .data = "# speech\n" });
+    try producer.dir.writeFile(io, .{ .sub_path = "train.csv", .data = "id,text\n1,hello\n" });
+    try producer.dir.createDirPath(io, "audio/a");
+    inline for (.{ "audio/a/1.wav", "audio/a/2.wav", "audio/3.wav" }) |p| try producer.dir.writeFile(io, .{ .sub_path = p, .data = "RIFF " ++ p });
+    try cid.client.workspace.init(arena, io, producer.dir, "cid@test:test/datasets/hfdoor", "g@h:hf.git");
+    var pws = try cid.client.workspace.open(arena, io, producer.dir);
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "first", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    _ = try remote.tag(arena, "v1.0.0");
+    // main moves on: README changes after the release.
+    try producer.dir.writeFile(io, .{ .sub_path = "README.md", .data = "# speech, second\n" });
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "second", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    const v1_commit = (try db.rawOne([]const u8, &fscope, "SELECT r.commit_id::text FROM refs r JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/hfdoor' AND r.name = 'v1.0.0'", .{})).?;
+    const v1_sha = try cid.hf.commitAlias(arena, v1_commit);
+    try std.testing.expectEqual(@as(usize, 40), v1_sha.len);
+
+    // Info: the full form and the short form name the same dataset; a
+    // release and main are different commits.
+    const at_v1 = hfCall(arena, &deps, &scope, "GET", "/api/datasets/test/datasets__hfdoor/revision/v1.0.0", bearer, "");
+    try std.testing.expectEqual(std.http.Status.ok, at_v1.status);
+    try std.testing.expect(std.mem.indexOf(u8, at_v1.body, try std.fmt.allocPrint(arena, "\"sha\":\"{s}\"", .{v1_sha})) != null);
+    const short = hfCall(arena, &deps, &scope, "GET", "/api/datasets/test/hfdoor/revision/v1.0.0", bearer, "");
+    try std.testing.expect(std.mem.indexOf(u8, short.body, v1_sha) != null);
+    const main = hfCall(arena, &deps, &scope, "GET", "/api/datasets/test/datasets__hfdoor", bearer, "");
+    try std.testing.expectEqual(std.http.Status.ok, main.status);
+    try std.testing.expect(std.mem.indexOf(u8, main.body, v1_sha) == null);
+    // The commit's alias is a revision too, and so is its UUID.
+    const by_sha = hfCall(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, "/api/datasets/test/datasets__hfdoor/revision/{s}", .{v1_sha}), bearer, "");
+    try std.testing.expect(std.mem.indexOf(u8, by_sha.body, v1_sha) != null);
+
+    // A file: the redirect to its bytes, with what the client reads from it.
+    const readme = hfCall(arena, &deps, &scope, "HEAD", "/datasets/test/datasets__hfdoor/resolve/v1.0.0/README.md", bearer, "");
+    try std.testing.expectEqual(std.http.Status.found, readme.status);
+    try std.testing.expect(std.mem.indexOf(u8, readme.location.?, "items/blake3/") != null);
+    try std.testing.expectEqualStrings(v1_sha, hfHeader(readme, "X-Repo-Commit").?);
+    try std.testing.expectEqualStrings("9", hfHeader(readme, "X-Linked-Size").?);
+    try std.testing.expectEqualStrings(hfHeader(readme, "ETag").?, hfHeader(readme, "X-Linked-Etag").?);
+    try std.testing.expect(hfHeader(readme, "X-Xet-Hash") == null);
+    // The release keeps its README; main has the new one.
+    const readme_main = hfCall(arena, &deps, &scope, "GET", "/datasets/test/datasets__hfdoor/resolve/main/README.md", bearer, "");
+    try std.testing.expectEqualStrings("17", hfHeader(readme_main, "X-Linked-Size").?);
+    // A path in a folder, encoded as the client sends it.
+    const nested = hfCall(arena, &deps, &scope, "GET", "/datasets/test/hfdoor/resolve/v1.0.0/audio/a/1.wav", bearer, "");
+    try std.testing.expectEqual(std.http.Status.found, nested.status);
+
+    // What the client must be told, in its words.
+    const missing = hfCall(arena, &deps, &scope, "HEAD", "/datasets/test/datasets__hfdoor/resolve/v1.0.0/hfdoor.py", bearer, "");
+    try std.testing.expectEqual(std.http.Status.not_found, missing.status);
+    try std.testing.expectEqualStrings("EntryNotFound", hfHeader(missing, "X-Error-Code").?);
+    try std.testing.expectEqualStrings(v1_sha, hfHeader(missing, "X-Repo-Commit").?);
+    const no_rev = hfCall(arena, &deps, &scope, "GET", "/api/datasets/test/datasets__hfdoor/revision/v9", bearer, "");
+    try std.testing.expectEqualStrings("RevisionNotFound", hfHeader(no_rev, "X-Error-Code").?);
+    const no_token = hfCall(arena, &deps, &scope, "GET", "/api/datasets/test/datasets__hfdoor", null, "");
+    try std.testing.expectEqual(std.http.Status.unauthorized, no_token.status);
+    try std.testing.expectEqualStrings("RepoNotFound", hfHeader(no_token, "X-Error-Code").?);
+    const nobody = hfCall(arena, &deps, &scope, "GET", "/api/datasets/test/datasets__nothing-here", bearer, "");
+    try std.testing.expectEqual(std.http.Status.not_found, nobody.status);
+    try std.testing.expectEqualStrings("RepoNotFound", hfHeader(nobody, "X-Error-Code").?);
+    // A dataset is not a model.
+    try std.testing.expectEqual(std.http.Status.not_found, hfCall(arena, &deps, &scope, "GET", "/api/models/test/datasets__hfdoor", bearer, "").status);
+
+    // The tree, recursive, a page at a time by the absolute next link.
+    var paths: std.ArrayList([]const u8) = .empty;
+    var next: ?[]const u8 = "/api/datasets/test/datasets__hfdoor/tree/v1.0.0?recursive=true&limit=2";
+    const Entry = struct { type: []const u8, path: []const u8, size: u64, oid: []const u8 };
+    while (next) |page_target| {
+        const page = hfCall(arena, &deps, &scope, "GET", page_target, bearer, "");
+        try std.testing.expectEqual(std.http.Status.ok, page.status);
+        for (try std.json.parseFromSliceLeaky([]const Entry, arena, page.body, .{})) |e| try paths.append(arena, try std.fmt.allocPrint(arena, "{s} {s}", .{ e.type, e.path }));
+        next = null;
+        if (hfHeader(page, "Link")) |link| {
+            try std.testing.expect(std.mem.startsWith(u8, link, "<http://cid.test/api/"));
+            next = link["<http://cid.test".len..std.mem.indexOfScalar(u8, link, '>').?];
+        }
+    }
+    for ([_][]const u8{ "directory audio", "directory audio/a", "file audio/a/1.wav", "file audio/a/2.wav", "file audio/3.wav", "file README.md", "file train.csv" }) |want| {
+        for (paths.items) |p| {
+            if (std.mem.eql(u8, p, want)) break;
+        } else {
+            std.debug.print("missing from the tree: {s}; got {s}\n", .{ want, try std.mem.join(arena, ", ", paths.items) });
+            return error.TestExpectedTree;
+        }
+    }
+    // One folder, not recursive: its subfolder and its own file.
+    const audio = hfCall(arena, &deps, &scope, "GET", "/api/datasets/test/datasets__hfdoor/tree/v1.0.0/audio", bearer, "");
+    const in_audio = try std.json.parseFromSliceLeaky([]const Entry, arena, audio.body, .{});
+    try std.testing.expectEqual(@as(usize, 2), in_audio.len);
+    try std.testing.expectEqualStrings("audio/a", in_audio[0].path);
+    try std.testing.expectEqualStrings("audio/3.wav", in_audio[1].path);
+    try std.testing.expectEqualStrings("EntryNotFound", hfHeader(hfCall(arena, &deps, &scope, "GET", "/api/datasets/test/datasets__hfdoor/tree/v1.0.0/nope", bearer, ""), "X-Error-Code").?);
+
+    // paths-info: files and folders, the missing left out.
+    const info = hfCall(arena, &deps, &scope, "POST", "/api/datasets/test/datasets__hfdoor/paths-info/v1.0.0", bearer, "paths=train.csv&paths=audio&paths=nope&expand=false");
+    const infos = try std.json.parseFromSliceLeaky([]const Entry, arena, info.body, .{});
+    try std.testing.expectEqual(@as(usize, 2), infos.len);
+    try std.testing.expectEqualStrings("file", infos[0].type);
+    try std.testing.expectEqual(@as(u64, 16), infos[0].size);
+    try std.testing.expectEqualStrings("directory", infos[1].type);
+
+    // refs: main as a branch, the release as a tag, both as commit aliases.
+    const refs = hfCall(arena, &deps, &scope, "GET", "/api/datasets/test/datasets__hfdoor/refs", bearer, "");
+    try std.testing.expect(std.mem.indexOf(u8, refs.body, try std.fmt.allocPrint(arena, "{{\"name\":\"v1.0.0\",\"ref\":\"refs/tags/v1.0.0\",\"targetCommit\":\"{s}\"}}", .{v1_sha})) != null);
+    try std.testing.expect(std.mem.indexOf(u8, refs.body, "\"ref\":\"refs/heads/main\"") != null);
+
+    // The short form names one dataset only while one is readable: a
+    // second test/…/hfdoor makes it ambiguous, and the answer names both.
+    const other = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", bearer, "{\"name\":\"test/other/hfdoor\",\"git_url\":\"g@h:o.git\"}");
+    try std.testing.expectEqual(std.http.Status.created, other.status);
+    const twice = hfCall(arena, &deps, &scope, "GET", "/api/datasets/test/hfdoor", bearer, "");
+    try std.testing.expectEqual(std.http.Status.not_found, twice.status);
+    try std.testing.expect(std.mem.indexOf(u8, twice.body, "test/datasets__hfdoor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, twice.body, "test/other__hfdoor") != null);
+    // A path segment with '__' would read back as two: refused at creation.
+    const dashed = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", bearer, "{\"name\":\"test/datasets/speech__id\",\"git_url\":\"g@h:s.git\"}");
+    try std.testing.expectEqual(std.http.Status.unprocessable_entity, dashed.status);
+
+    // An annotated dataset says it is not served here yet, and what to do.
+    const ann = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", bearer, "{\"name\":\"test/datasets/hfann\",\"kind\":\"annotated\",\"git_url\":\"g@h:a.git\"}");
+    try std.testing.expectEqual(std.http.Status.created, ann.status);
+    const ann_info = hfCall(arena, &deps, &scope, "GET", "/api/datasets/test/datasets__hfann", bearer, "");
+    try std.testing.expectEqual(std.http.Status.not_implemented, ann_info.status);
+    try std.testing.expect(std.mem.indexOf(u8, ann_info.body, "cid clone") != null);
+
+    // A restricted dataset's file is a logged download.
+    _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = 'test/datasets/hfdoor'", .{});
+    defer _ = db.exec(&fscope, "UPDATE datasets SET restricted = false WHERE name = 'test/datasets/hfdoor'", .{}) catch {};
+    _ = hfCall(arena, &deps, &scope, "GET", "/datasets/test/datasets__hfdoor/resolve/v1.0.0/train.csv", bearer, "");
+    const logged = (try db.rawOne(i64, &fscope, "SELECT count(*) FROM activity_events e JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/hfdoor' AND e.action = 'download'", .{})).?;
+    try std.testing.expectEqual(@as(i64, 1), logged);
+}

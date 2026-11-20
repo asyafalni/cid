@@ -367,6 +367,49 @@ pub fn listDir(arena: std.mem.Allocator, db: *duck.Db, files: Files, prefix: []c
     return std.json.parseFromSliceLeaky(Listing, arena, text, .{ .ignore_unknown_fields = true }) catch error.QueryFailed;
 }
 
+/// Every file under `prefix` (any depth), a page at a time in path order:
+/// the Hugging Face door's recursive tree.
+pub const FilePage = struct {
+    files: []const struct { path: []const u8, size: u64, hash: []const u8 },
+    next: ?[]const u8,
+};
+
+pub fn filesUnder(arena: std.mem.Allocator, db: *duck.Db, files: Files, prefix: []const u8, after: ?[]const u8, limit: u32) Error!FilePage {
+    const sql = try std.fmt.allocPrint(arena,
+        \\WITH page AS (SELECT path, size, hash FROM read_parquet('{s}')
+        \\  WHERE starts_with(path, $1::VARCHAR) AND ($2::VARCHAR IS NULL OR path > $2::VARCHAR) ORDER BY path LIMIT $3 + 1)
+        \\SELECT json_object(
+        \\  'files', (SELECT coalesce(to_json(list(json_object('path', path, 'size', size, 'hash', hash) ORDER BY path)), '[]'::JSON)
+        \\     FROM (SELECT * FROM page ORDER BY path LIMIT $3)),
+        \\  'next', (SELECT CASE WHEN count(*) > $3 THEN (SELECT max(path) FROM (SELECT path FROM page ORDER BY path LIMIT $3)) END FROM page)
+        \\)::VARCHAR
+    , .{try quote(arena, files.items)});
+    const text = (try db.scalarTextArgs(arena, sql, &.{ .{ .text = prefix }, .{ .text = after }, .{ .int = limit } })) orelse return error.QueryFailed;
+    return std.json.parseFromSliceLeaky(FilePage, arena, text, .{ .ignore_unknown_fields = true }) catch error.QueryFailed;
+}
+
+/// What one path is at a version: a file (with its size and hash), a
+/// folder (some file lies under it), or nothing.
+pub const PathInfo = union(enum) {
+    file: struct { size: u64, hash: []const u8 },
+    folder,
+    none,
+};
+
+pub fn pathInfo(arena: std.mem.Allocator, db: *duck.Db, files: Files, path: []const u8) Error!PathInfo {
+    const sql = try std.fmt.allocPrint(arena,
+        \\SELECT json_object(
+        \\  'file', (SELECT json_object('size', size, 'hash', hash) FROM read_parquet('{0s}') WHERE path = $1::VARCHAR LIMIT 1),
+        \\  'folder', EXISTS (SELECT 1 FROM read_parquet('{0s}') WHERE starts_with(path, $1::VARCHAR || '/'))
+        \\)::VARCHAR
+    , .{try quote(arena, files.items)});
+    const text = (try db.scalarTextArgs(arena, sql, &.{.{ .text = path }})) orelse return error.QueryFailed;
+    const Raw = struct { file: ?struct { size: u64, hash: []const u8 }, folder: bool };
+    const raw = std.json.parseFromSliceLeaky(Raw, arena, text, .{ .ignore_unknown_fields = true }) catch return error.QueryFailed;
+    if (raw.file) |f| return .{ .file = .{ .size = f.size, .hash = f.hash } };
+    return if (raw.folder) .folder else .none;
+}
+
 pub const DiffSummary = struct {
     added: u64 = 0,
     modified: u64 = 0,
@@ -635,6 +678,20 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
         try std.testing.expect(some.next == null);
     }
     try std.testing.expectEqual(@as(usize, 4), (try queryIndex(arena, &db, v1, .{ .limit = 10, .sample = true })).items.len);
+    // Every file under a folder, a page at a time, and what a path is.
+    var under_seen: usize = 0;
+    var under_after: ?[]const u8 = null;
+    while (true) {
+        const page = try filesUnder(arena, &db, v1, "img/", under_after, 2);
+        for (page.files) |f| try std.testing.expect(std.mem.startsWith(u8, f.path, "img/"));
+        under_seen += page.files.len;
+        under_after = page.next orelse break;
+    }
+    try std.testing.expectEqual(@as(usize, 3), under_seen);
+    try std.testing.expectEqual(@as(usize, 4), (try filesUnder(arena, &db, v1, "", null, 10)).files.len);
+    try std.testing.expectEqualStrings("aa", (try pathInfo(arena, &db, v1, "img/a.jpg")).file.hash);
+    try std.testing.expect((try pathInfo(arena, &db, v1, "img")) == .folder);
+    try std.testing.expect((try pathInfo(arena, &db, v1, "im")) == .none);
     // The open item comes with any page, whatever the filters.
     const open = try queryIndex(arena, &db, v1, .{ .split = "val", .item = "README" });
     try std.testing.expectEqualStrings("README", open.open.?.path);

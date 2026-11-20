@@ -7,6 +7,7 @@
 const std = @import("std");
 const nilo = @import("nilo_http");
 const api = @import("api.zig");
+const hf = @import("hf.zig");
 const duck = @import("../store/duck.zig");
 const browse = @import("browse/browse.zig");
 const fetch = @import("nilo_fetch");
@@ -87,6 +88,12 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
     try app.post("/v0/*", dispatch);
     try app.put("/v0/*", dispatch);
     try app.delete("/v0/*", dispatch);
+    // The Hugging Face door (src/server/hf.zig): the Hub's routes, read
+    // only, for HF_ENDPOINT=<this server>. HEAD is answered by the GET
+    // routes. The dashboard has no page under /api or /datasets.
+    try app.get("/api/*", hfDispatch);
+    try app.post("/api/*", hfDispatch);
+    try app.get("/datasets/*", hfDispatch);
     // The dashboard, embedded at build time: /v0/* wins over these by
     // specificity, and every non-API path falls back to the app shell so
     // deep links (/d/org/datasets/x) open where they point.
@@ -167,6 +174,29 @@ fn dispatch(deps: *api.Deps, s: signin.Session, c: *nilo.Ctx) !void {
         null;
     const response = api.handleAs(arena, deps, c, @tagName(c.method), target, .{ .header = auth, .account = account }, body);
     try c.send(@backingInt(response.status), "application/json", response.body);
+}
+
+/// The Hugging Face door: the same target, token and body as `dispatch`
+/// reads, and an answer with headers and, for a file, its redirect.
+fn hfDispatch(deps: *api.Deps, c: *nilo.Ctx) !void {
+    const arena = c.arena();
+    const qs = c.queryString();
+    const target = if (qs.len() == 0)
+        c.path().view()
+    else
+        try std.fmt.allocPrint(arena, "{s}?{s}", .{ c.path().view(), qs.view() });
+    const auth: ?[]const u8 = if (c.header("authorization")) |h| h.view() else null;
+    const body: []const u8 = if (c.method == .POST) (try c.body()).view() else "";
+    // Where the client reached us, for the absolute next-page links of a
+    // tree: the host it asked for, https when the proxy says so.
+    const host = if (c.header("host")) |h| h.view() else "127.0.0.1";
+    const proto = if (c.header("x-forwarded-proto")) |p| p.view() else "http";
+    const base = try std.fmt.allocPrint(arena, "{s}://{s}", .{ if (std.mem.eql(u8, proto, "https")) "https" else "http", host });
+    const method = if (c.method == .HEAD) "HEAD" else @tagName(c.method);
+    const answer = hf.handle(arena, deps, c, method, target, .{ .header = auth }, body, base);
+    for (answer.headers) |h| c.setHeader(h.name, h.value) catch {};
+    if (answer.location) |url| return c.redirect(@backingInt(answer.status), url);
+    try c.send(@backingInt(answer.status), answer.content_type, answer.body);
 }
 
 /// The background worker: every couple of seconds, prepares whatever

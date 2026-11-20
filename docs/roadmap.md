@@ -51,15 +51,17 @@ same change.
    only, so `your-org/datasets/speech-id` cannot be one as it stands. Two forms, both
    answered:
    - **The full form, always:** the first segment, then the rest with its slashes
-     written `--`: `your-org/datasets--speech-id`. It maps back without a lookup and
+     written `__`: `your-org/datasets__speech-id`. It maps back without a lookup and
      can never be ambiguous, so it is the one cid prints (dashboard snippets, git
-     README).
+     README). (Decided as `--` first; changed 2026-11-20 when the real client refused
+     it: `validate_repo_id` rejects `--` and `..`, and allows only letters, digits,
+     `_`, `-` and `.`, so `__` is the one readable separator left.)
    - **The short form, when it is unambiguous:** `your-org/speech-id`, when exactly
      one dataset (under `datasets/…` routes) or model (under model routes) in
      `your-org` ends in that name. If several do, the answer is `RepoNotFound` with a
      message naming the full forms.
-   A path segment may not contain `--`; creating or renaming a dataset to one that
-   does is refused from now on.
+   A path segment may not contain `__`; creating or renaming a dataset to one that
+   does is refused (built: the server checks every new path, `api.validDatasetPath`).
 
 ## 2. Tier A: small, dashboard only (hours each)
 
@@ -212,6 +214,17 @@ both themes, and works with reduced motion. Beauty never costs a budget.
 ## 5. Tier C: the direction (in this order)
 
 ### C1. The Hugging Face read door
+
+**File datasets: done (2026-11-20, `src/server/hf.zig`).** Checked with the real
+`huggingface_hub` 2.4.0 and `datasets` 5.2.0 against `cid admin serve`:
+`dataset_info`, `hf_hub_download`, `snapshot_download` (a second run downloads
+nothing), `list_repo_refs`, `load_dataset` (train and test splits found with no
+configuration, and streaming), the short form, and each error as the client's own
+exception. The integration suite covers the routes (`the Hugging Face door: …`); the
+real-client check is not automated (it needs Python: still a dependency to agree).
+**Still to do:** annotated datasets (they answer 501 with "run 'cid clone'"), and
+models once C2 lands (`/api/models/…` routes are answered; the root
+`/{ns}/{name}/resolve/…` route is not registered yet).
 
 Facts read from `huggingface_hub` 2.4.0, `datasets` 5.2.0 and `transformers` 5.23.0
 on 2026-11-20. Check them against the versions current when building.
