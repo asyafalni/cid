@@ -49,11 +49,19 @@ same change.
 8. **First audience is internal.** Done means unmodified `snapshot_download`,
    `load_dataset` and `from_pretrained` work against a release.
 
-**Open, needs the owner's answer before C1:** how a cid path becomes a Hugging Face
-repo id. The client allows one `/` only, so `your-org/datasets/speech-id` cannot be
-one. Recommended: `your-org/speech-id` when exactly one dataset (or model) of that
-type in `your-org` ends in that name, and `your-org/datasets--speech-id` (inner
-slashes written `--`) always.
+9. **A Hugging Face repo id is a cid path made to fit.** The client allows one `/`
+   only, so `your-org/datasets/speech-id` cannot be one as it stands. Two forms, both
+   answered:
+   - **The full form, always:** the first segment, then the rest with its slashes
+     written `--`: `your-org/datasets--speech-id`. It maps back without a lookup and
+     can never be ambiguous, so it is the one cid prints (dashboard snippets, git
+     README).
+   - **The short form, when it is unambiguous:** `your-org/speech-id`, when exactly
+     one dataset (under `datasets/…` routes) or model (under model routes) in
+     `your-org` ends in that name. If several do, the answer is `RepoNotFound` with a
+     message naming the full forms.
+   A path segment may not contain `--`; creating or renaming a dataset to one that
+   does is refused from now on.
 
 ## 2. Tier A: small, dashboard only (hours each)
 
