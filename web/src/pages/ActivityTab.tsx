@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { Link } from '@tanstack/react-router';
 import { ApiError, getActivity } from '../api';
 
 // Activity (docs/dashboard.md §4.7): who did what to this dataset, newest
@@ -6,11 +7,14 @@ import { ApiError, getActivity } from '../api';
 // anyone else is told so in words, never a blank page.
 export function ActivityTab({
   name,
+  releases,
   what,
   who,
   onFilter,
 }: {
   name: string;
+  /** The dataset's releases, so an event about one links to it. */
+  releases: ReadonlySet<string>;
   /** The action shown alone, from the URL. */
   what: string | undefined;
   /** The person shown alone (their account id), from the URL. */
@@ -59,7 +63,13 @@ export function ActivityTab({
     {shown.length === 0 && <p className="quiet">Nothing in the last 200 events matches; clear a filter to see them all.</p>}
     <table className="browse-table activity-table">
       <caption className="quiet">
-        Newest first; {shown.length === events.length ? 'the last 200 events' : `${shown.length} of the last ${events.length} events`}.
+        Newest first;{' '}
+        {shown.length === events.length
+          ? events.length < 200
+            ? `all ${events.length} ${events.length === 1 ? 'event' : 'events'}`
+            : 'the last 200 events'
+          : `${shown.length} of the last ${events.length} events`}
+        .
       </caption>
       <thead>
         <tr>
@@ -77,7 +87,7 @@ export function ActivityTab({
             <td>
               <span className="chip">{e.action}</span>
             </td>
-            <td className="data">{e.ref ? `${e.ref.slice(0, 12)}…` : describe(e.detail)}</td>
+            <td className="data">{e.ref ? <Which name={name} value={e.ref} releases={releases} /> : describe(e.detail)}</td>
           </tr>
         ))}
       </tbody>
@@ -120,6 +130,26 @@ function Narrow({
       </select>
     </label>
   );
+}
+
+// What an event was about: a release or a commit is a link to that
+// version; a content hash is cut, with the whole of it on hover; anything
+// else is shown as it is.
+function Which({ name, value, releases }: { name: string; value: string; releases: ReadonlySet<string> }) {
+  if (releases.has(value))
+    return (
+      <Link to="/d/$" params={{ _splat: name }} search={{ release: value }}>
+        {value}
+      </Link>
+    );
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value))
+    return (
+      <Link to="/d/$" params={{ _splat: name }} search={{ commit: value }} title={value}>
+        {value.slice(0, 13)}
+      </Link>
+    );
+  if (/^[0-9a-f]{64}$/.test(value)) return <span title={value}>{value.slice(0, 12)}…</span>;
+  return <span>{value}</span>;
 }
 
 function describe(detail: string | null): string {

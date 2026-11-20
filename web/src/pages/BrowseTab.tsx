@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { Link } from '@tanstack/react-router';
 import {
   ApiError,
   getBrowse,
@@ -23,6 +24,10 @@ import { TableView } from '../TableView';
 import { Thumb } from '../Thumb';
 import { thumbsFor } from '../thumbs';
 import { anyFilter, extOf, type FilterPatch, type Filters } from '../browseFilter';
+
+// The file types the preview worker draws: pictures, video posters and
+// sound waveforms (src/preview/).
+const previewable = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.mp4', '.mov', '.webm', '.mkv', '.avi', '.wav', '.mp3', '.flac', '.ogg', '.m4a']);
 
 // A page of the gallery or table: what the server answers per request,
 // and what one scroll to the bottom asks for next.
@@ -48,8 +53,7 @@ export function BrowseTab({
   filters: Filters;
   onFilters: (patch: FilterPatch) => void;
 }) {
-  const mode: 'gallery' | 'table' = filters.mode === 'table' ? 'table' : 'gallery';
-  const setMode = (m: 'gallery' | 'table') => onFilters({ mode: m === 'table' ? 'table' : undefined });
+  const setMode = (m: 'gallery' | 'table') => onFilters({ mode: m });
 
   // The search box commits to the URL after a pause, so typing a word is
   // one history entry, not one per letter.
@@ -123,7 +127,7 @@ export function BrowseTab({
       };
       switch (e.key) {
         case 'g':
-          return onFilters({ mode: undefined });
+          return onFilters({ mode: 'gallery' });
         case 't':
           return onFilters({ mode: 'table' });
         case 'j':
@@ -171,6 +175,12 @@ export function BrowseTab({
   }
 
   const first = pages.data.pages[0];
+  // As asked; with nothing asked, the gallery, unless nothing in this
+  // version can have a preview (no picture, video or sound): a wall of
+  // identical type tiles says less than a table of paths and sizes. Decided
+  // by the version, not the page, so a filter never flips the view.
+  const mode: 'gallery' | 'table' =
+    filters.mode ?? (overview.types.length > 0 && !overview.types.some((t) => previewable.has(t.name)) ? 'table' : 'gallery');
   const total = first.total;
   const matched = first.matched;
   const items = loaded;
@@ -200,6 +210,14 @@ export function BrowseTab({
             </button>
           ))}
         </div>
+        {overview.restricted && (
+          <p className="chip restricted-badge">restricted · blurred until revealed</p>
+        )}
+        <p className="quiet data" aria-live="polite">
+          {filtered
+            ? `${matched.toLocaleString()} of ${total.toLocaleString()} items`
+            : `${total.toLocaleString()} items`}
+        </p>
         <button
           className="shortcuts-toggle data"
           aria-label="Keyboard shortcuts"
@@ -209,14 +227,6 @@ export function BrowseTab({
         >
           ?
         </button>
-        {overview.restricted && (
-          <p className="chip restricted-badge">restricted · blurred until revealed</p>
-        )}
-        <p className="quiet data" aria-live="polite">
-          {filtered
-            ? `${matched.toLocaleString()} of ${total.toLocaleString()} items`
-            : `${total.toLocaleString()} items`}
-        </p>
       </div>
 
       {help && <Shortcuts onClose={() => setHelp(false)} />}
@@ -388,6 +398,10 @@ export function BrowseTab({
         />
       )}
 
+      {openItem !== undefined && !open && openFetched.isSuccess && (
+        <MissingItem name={name} path={openItem} onClose={() => onOpenItem(undefined)} />
+      )}
+
       {open && (
         <ItemDrawer
           name={name}
@@ -402,6 +416,46 @@ export function BrowseTab({
         />
       )}
     </div>
+  );
+}
+
+// A link to an item this version does not hold (a path from another
+// release, a typo, a deleted file): said in words, with the releases that
+// do hold it, from its history; never a page that silently shows nothing.
+function MissingItem({ name, path, onClose }: { name: string; path: string; onClose: () => void }) {
+  const history = useQuery({ queryKey: ['history', name, path], queryFn: () => getHistory(name, path) });
+  const holding = [
+    ...new Set(
+      (history.data?.changes ?? []).filter((c) => c.op !== 'delete' && c.release !== null).map((c) => c.release!),
+    ),
+  ];
+  return (
+    <section className="panel notice missing-item" role="status" aria-label="Item not in this version">
+      <p>
+        <span className="data">{path}</span> is not in this version.
+      </p>
+      {history.isPending ? (
+        <p className="quiet">Looking for the releases that hold it…</p>
+      ) : holding.length > 0 ? (
+        <p>
+          It is in{' '}
+          {holding.slice(0, 5).map((r, i) => (
+            <span key={r}>
+              {i > 0 && ', '}
+              <Link to="/d/$" params={{ _splat: name }} search={{ view: 'browse', release: r, item: path }}>
+                {r}
+              </Link>
+            </span>
+          ))}
+          {holding.length > 5 && ` and ${holding.length - 5} more releases`}.
+        </p>
+      ) : (
+        <p className="quiet">No release holds it: it may be on another branch, not released yet, or never added.</p>
+      )}
+      <button className="filter-clear" onClick={onClose}>
+        Close
+      </button>
+    </section>
   );
 }
 
@@ -814,8 +868,8 @@ function VirtualTable({
     <table className="browse-table" aria-rowcount={items.length + 1}>
       <thead>
         <tr aria-rowindex={1}>
-          <th>path</th>
-          <th>size</th>
+          <th className="path-col">path</th>
+          <th className="num">size</th>
           <th>split</th>
           <th>hash</th>
         </tr>
@@ -838,7 +892,7 @@ function VirtualTable({
               onClick={() => onOpenItem(item.path)}
             >
               <td className="data">{item.path}</td>
-              <td className="data">{humanBytes(item.size)}</td>
+              <td className="data num">{humanBytes(item.size)}</td>
               <td>{item.split ?? '—'}</td>
               <td>
                 <HashChip hash={item.hash} />

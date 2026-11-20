@@ -131,10 +131,17 @@ for (const theme of themes) {
       for (const [name, path] of pages) {
         await page.goto(path);
         await page.waitForLoadState('networkidle');
-        // Pictures still arriving would be drawn as their placeholders.
-        await page.evaluate(() =>
-          Promise.all([...document.images].filter((i) => !i.complete).map((i) => new Promise((done) => (i.onload = i.onerror = done)))),
-        );
+        // Pictures still arriving would be drawn as their placeholders. Lazy
+        // ones below the fold never start on their own, so they are asked
+        // for now; and no wait outlasts ten seconds.
+        await page.evaluate(() => {
+          const images = [...document.images];
+          for (const i of images) if (i.loading === 'lazy') i.loading = 'eager';
+          const loaded = Promise.all(
+            images.filter((i) => !i.complete).map((i) => new Promise((done) => (i.onload = i.onerror = done))),
+          );
+          return Promise.race([loaded, new Promise((done) => setTimeout(done, 10_000))]);
+        });
         await page.screenshot({ path: join(out!, `${name}.${theme}.${width}.png`), fullPage: true });
         for (const what of await measure(page)) findings.push({ page: name, theme, width, what });
       }

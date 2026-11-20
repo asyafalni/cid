@@ -38,6 +38,17 @@ export function OverviewTab({
         {o.types.length > 0 && (
           <table className="count-table">
             <caption>Items by type</caption>
+            <thead>
+              <tr>
+                <th scope="col">type</th>
+                <th scope="col" className="count">
+                  items
+                </th>
+                <th scope="col" className="count">
+                  size
+                </th>
+              </tr>
+            </thead>
             <tbody>
               {o.types.slice(0, shownTypes).map((t) => (
                 <tr key={t.name}>
@@ -388,7 +399,7 @@ function SubsetPicker({
       {values.map((v) => (
         <button
           key={v}
-          className={chosen.has(v) ? 'class-chip' : 'class-chip class-chip--off'}
+          className={chosen.has(v) ? 'subset-chip subset-chip--on' : 'subset-chip'}
           aria-pressed={chosen.has(v)}
           onClick={() => {
             const next = new Set(chosen);
@@ -400,7 +411,7 @@ function SubsetPicker({
           {v}
         </button>
       ))}
-      {chosen.size === 0 && <span className="quiet">all</span>}
+      <span className="quiet subset-hint">{chosen.size === 0 ? 'all of them; pick to narrow' : `${chosen.size} picked`}</span>
     </div>
   );
 }

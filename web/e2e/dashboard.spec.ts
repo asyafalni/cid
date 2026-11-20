@@ -27,7 +27,7 @@ test('the overview carries the tape, the card and the paste-ready command', asyn
   await signIn(page);
   await page.getByRole('link', { name: 'e2e/datasets/demo' }).click();
   // The header says where git stands: v1.1.0 is made but not written there yet.
-  await expect(page.locator('.dataset-meta')).toContainText('v1.1.0 not there yet');
+  await expect(page.locator('.dataset-meta')).toContainText('not in git yet: v1.1.0');
   // The tape: both releases as engraved tags, newest pinned by default.
   await expect(page.getByRole('button', { name: 'v1.1.0' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'v1.0.0' })).toBeVisible();
@@ -263,6 +263,45 @@ test('a branch can be viewed: its own tape, its head, and commands that check it
   await page.getByLabel('Branch').selectOption('main');
   await expect(page).not.toHaveURL(/branch=/);
   await expect(page.locator('.dataset-meta')).toContainText('130 items');
+});
+
+test('a link to an item this version does not hold says so, and names the releases that do', async ({ page }) => {
+  await signIn(page);
+  // notes.txt came with v1.1.0: v1.0.0 does not hold it.
+  await page.goto('/d/e2e/datasets/demo?view=browse&release=v1.0.0&item=notes.txt');
+  const missing = page.getByRole('status', { name: 'Item not in this version' });
+  await expect(missing).toContainText('notes.txt is not in this version.');
+  await missing.getByRole('link', { name: 'v1.1.0' }).click();
+  await expect(page).toHaveURL(/release=v1\.1\.0/);
+  await expect(page.getByRole('complementary', { name: 'notes.txt' })).toBeVisible();
+  // A path no release ever held says that too, and Close lets it go.
+  await page.goto('/d/e2e/datasets/demo?view=browse&item=never.txt');
+  await expect(page.getByRole('status', { name: 'Item not in this version' })).toContainText('No release holds it');
+  await page.getByRole('button', { name: 'Close' }).click();
+  await expect(page).not.toHaveURL(/item=/);
+});
+
+test('files with no preview open as a table; the gallery is one click away', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/many?view=browse');
+  await expect(page.getByRole('radio', { name: 'table' })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByRole('cell', { name: 'rows/0001.txt' })).toBeVisible();
+  await page.getByRole('radio', { name: 'gallery' }).click();
+  await expect(page).toHaveURL(/mode=gallery/);
+  await expect(page.getByRole('button', { name: /rows\/0001\.txt/ })).toBeVisible();
+  // Pictures still open as pictures.
+  await page.goto('/d/e2e/datasets/demo?view=browse');
+  await expect(page.getByRole('radio', { name: 'gallery' })).toHaveAttribute('aria-checked', 'true');
+});
+
+test('the subset picker shows what is picked', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/boxes');
+  const splits = page.getByRole('group', { name: 'Splits' });
+  await expect(splits).toContainText('all of them; pick to narrow');
+  await splits.getByRole('button', { name: 'train' }).click();
+  await expect(splits.getByRole('button', { name: 'train' })).toHaveClass(/subset-chip--on/);
+  await expect(splits).toContainText('1 picked');
 });
 
 test('the files tab walks the committed tree', async ({ page }) => {
@@ -721,6 +760,9 @@ test('restricted: blurred until a logged reveal, and the log is for owners', asy
   await page.goto('/d/e2e/datasets/faces?view=activity');
   await expect(page.locator('.activity-table')).toContainText('reveal');
   await expect(page.locator('.activity-table')).toContainText('server-token');
+  // A short log says how many it holds, and a release it names is a link.
+  await expect(page.locator('.activity-table caption')).toContainText(/all \d+ events?/);
+  await expect(page.locator('.activity-table').getByRole('link', { name: 'v1.0.0' }).first()).toHaveAttribute('href', /release=v1\.0\.0/);
   // Narrowed to one action, in the URL: only reveals remain.
   await page.getByLabel('Filter by what').selectOption('reveal');
   await expect(page).toHaveURL(/what=reveal/);
@@ -931,7 +973,7 @@ test('browse pages through a version: one page, then more on scroll, and links p
 test('the keyboard moves through items, searches, and lists its shortcuts', async ({ page }) => {
   const at = (n: string) => new RegExp(`item=rows(%2F|/)${n}\\.txt`);
   await signIn(page);
-  await page.goto('/d/e2e/datasets/many?view=browse');
+  await page.goto('/d/e2e/datasets/many?view=browse&mode=gallery');
   await expect(page.getByRole('button', { name: /rows\/0001\.txt/ })).toBeVisible();
   // Arrows scroll the page while nothing is open; they never open an item.
   await page.keyboard.press('ArrowDown');

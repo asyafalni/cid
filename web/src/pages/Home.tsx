@@ -311,11 +311,14 @@ function Mosaic({ dataset: d }: { dataset: DatasetSummary }) {
   return (
     <span className={`mosaic mosaic--types mosaic--${Math.max(1, tiles.length)}`} aria-hidden="true">
       {tiles.length === 0 ? (
-        <span className="mosaic-type data">empty</span>
+        <span className="mosaic-type mosaic-type--empty data">no items yet</span>
       ) : (
+        // Data that is not pictures: each kind of file with how many, so a
+        // card says what the dataset holds instead of showing a pale tile.
         tiles.map((t) => (
           <span key={t.ext} className="mosaic-type data">
-            {t.ext === 'file' ? '·' : t.ext}
+            <span className="mosaic-type-ext">{t.ext}</span>
+            <span className="mosaic-type-count">{t.count.toLocaleString()}</span>
           </span>
         ))
       )}

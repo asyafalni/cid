@@ -1027,12 +1027,24 @@
 
 /* --- item drawer --- */
 
+/* The drawer's width: wider on a wide screen, where a picture or a table
+   would otherwise be small beside a mostly empty page. */
+:root {
+  --drawer-w: 24rem;
+}
+
+@media (min-width: 1400px) {
+  :root {
+    --drawer-w: min(36rem, 36vw);
+  }
+}
+
 .drawer {
   position: fixed;
   top: var(--topbar-h);
   right: 0;
   bottom: 0;
-  width: min(24rem, 90vw);
+  width: min(var(--drawer-w), 90vw);
   padding: var(--space-4);
   overflow-y: auto;
   border-radius: 0;
@@ -1048,7 +1060,7 @@
     width: min(
       100% - 2 * var(--gutter),
       var(--measure),
-      100% - max(var(--gutter), calc((100% - var(--measure)) / 2)) - 24rem - var(--gutter)
+      100% - max(var(--gutter), calc((100% - var(--measure)) / 2)) - var(--drawer-w) - var(--gutter)
     );
   }
 }
@@ -1132,6 +1144,7 @@
 .drawer-download {
   display: inline-block;
   text-align: center;
+  margin-top: var(--space-4);
 }
 
 .drawer-download:hover {
@@ -2450,4 +2463,106 @@ button.tick-mark:hover {
 
 .palette-none {
   padding: var(--space-2) var(--space-3);
+}
+
+/* A subset picker's choices: plain until picked, then filled and ticked,
+   so what the command keeps reads at a glance. */
+.subset-chip {
+  padding: 2px var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.subset-chip--on {
+  background: color-mix(in srgb, var(--aether) 22%, transparent);
+  border-color: var(--aether);
+  font-weight: 600;
+}
+
+.subset-chip--on::before {
+  content: '✓ ';
+}
+
+.subset-hint {
+  font-size: 0.8125rem;
+}
+
+.missing-item {
+  margin-bottom: var(--space-4);
+}
+
+/* --- U2: alignment --- */
+
+/* The ? button keeps one place: the end of Browse's toolbar. */
+.browse-bar {
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.browse-bar .shortcuts-toggle {
+  order: 99;
+}
+
+/* Numbers in tables: right-aligned, figures of one width, not bold; the
+   path takes the room. */
+.browse-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.browse-table .path-col {
+  width: 60%;
+}
+
+.count-table th {
+  text-align: left;
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 0.8125rem;
+  padding: var(--space-1) 0;
+}
+
+.count-table th.count {
+  text-align: right;
+}
+
+.count-table .count {
+  font-variant-numeric: tabular-nums;
+}
+
+.card-policy {
+  margin: 0 0 var(--space-4);
+}
+
+/* A type tile: the kind of file, large, and how many beneath it. */
+.mosaic-type {
+  grid-auto-flow: row;
+  align-content: center;
+  gap: 2px;
+}
+
+.mosaic-type-ext {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.mosaic-type-count {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.ds-card .mosaic-type-ext {
+  font-size: 1.25rem;
+}
+
+.mosaic-type--empty {
+  background: transparent;
+  border: 1px dashed var(--line);
 }

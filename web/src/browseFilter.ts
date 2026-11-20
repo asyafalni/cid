@@ -3,7 +3,8 @@
 // the version's Parquet index); this file is the URL side of the contract.
 
 export type Filters = {
-  mode?: 'table';
+  /** Asked for; with none, the gallery, or the table when nothing on the first page has a preview. */
+  mode?: 'table' | 'gallery';
   q?: string;
   split?: string;
   /** Items carrying at least one annotation of this class. */
@@ -16,7 +17,7 @@ export type Filters = {
 
 /** The URL spelling of each filter, for patches back to the router. */
 export type FilterPatch = {
-  mode?: 'table' | undefined;
+  mode?: 'table' | 'gallery' | undefined;
   q?: string | undefined;
   split?: string | undefined;
   class?: string | undefined;

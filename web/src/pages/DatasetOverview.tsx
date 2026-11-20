@@ -28,7 +28,7 @@ export function DatasetOverview() {
     a?: string;
     b?: string;
     dir?: string;
-    mode?: 'table';
+    mode?: 'table' | 'gallery';
     q?: string;
     split?: string;
     class?: string;
@@ -129,21 +129,24 @@ export function DatasetOverview() {
                 <a href={gitWebUrl(o.git_url)} target="_blank" rel="noreferrer">
                   View in git
                 </a>
-                {releases.length > 0 && (
-                  <span
-                    className="quiet git-status"
-                    title={
-                      waitingForGit.length > 0
-                        ? "Made, and on their way: the server writes each release to the dataset's git repository and retries until it lands."
-                        : "Every release on this tape is in the dataset's git repository."
-                    }
-                  >
-                    {waitingForGit.length === 0
-                      ? 'up to date'
-                      : `${waitingForGit.map((c) => c.release).join(', ')} not there yet`}
-                  </span>
-                )}
               </span>
+              {releases.length > 0 && (
+                <span
+                  className="dataset-fact git-status"
+                  title={
+                    waitingForGit.length > 0
+                      ? "Made, and on their way: the server writes each release to the dataset's git repository and retries until it lands."
+                      : "Every release on this tape is in the dataset's git repository."
+                  }
+                >
+                  {waitingForGit.length === 0
+                    ? 'git up to date'
+                    : `not in git yet: ${waitingForGit
+                        .slice(0, 3)
+                        .map((c) => c.release)
+                        .join(', ')}${waitingForGit.length > 3 ? ` and ${waitingForGit.length - 3} more` : ''}`}
+                </span>
+              )}
             </p>
           </div>
           {o.branches.length > 1 && (
@@ -282,6 +285,7 @@ export function DatasetOverview() {
       ) : view === 'activity' ? (
         <ActivityTab
           name={name}
+          releases={new Set(releases.map((c) => c.release!))}
           what={search.what}
           who={search.who}
           onFilter={(patch) => setSearch(patch)}

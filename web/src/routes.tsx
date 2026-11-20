@@ -77,7 +77,7 @@ const datasetRoute = createRoute({
     a?: string;
     b?: string;
     dir?: string;
-    mode?: 'table';
+    mode?: 'table' | 'gallery';
     q?: string;
     split?: string;
     class?: string;
@@ -105,7 +105,7 @@ const datasetRoute = createRoute({
     dir: typeof search.dir === 'string' ? search.dir : undefined,
     // Browse: the gallery is the default, so only the table is spelled;
     // filters are present only when set, so a clean view has a clean URL.
-    mode: search.mode === 'table' ? 'table' : undefined,
+    mode: search.mode === 'table' || search.mode === 'gallery' ? search.mode : undefined,
     q: typeof search.q === 'string' && search.q !== '' ? search.q : undefined,
     split: typeof search.split === 'string' ? search.split : undefined,
     class: typeof search.class === 'string' ? search.class : undefined,
