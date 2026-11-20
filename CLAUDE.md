@@ -132,7 +132,7 @@ When a design choice trades simplicity for power, choose simplicity and ask firs
 | What it holds | Any files, in folders, exactly as you put them | Items (images, clips, audio…) plus structured annotations |
 | Who changes it | People and scripts, from a folder: `cid add`, `cid commit`, `cid push` | The annotation platform (agents + reviewers), through the server |
 | Typical use | Text corpora, audio sets, tables, documents, model inputs, anything | Vision datasets built in the annotation platform |
-| Clone gives you | The same folder tree | A ready-to-train export (`yolo`, `jsonl`; `coco` and `voc` planned) |
+| Clone gives you | The same folder tree | A ready-to-train export (`yolo`, `jsonl`, `coco`, `voc`) |
 | Diff shows | Files added/removed/changed; rows added/removed for CSV, Parquet, JSONL | Items and annotations added/removed/changed |
 
 Both kinds share the same history model, releases, storage and commands. Annotations in
@@ -197,7 +197,7 @@ then `cid pull --continue`; `cid merge` conflicts resolve the same way, then
 
 Engineers use the reading commands above.
 `cid clone cid@cidhub.com:your-org/datasets/person-vehicle` gives a ready-to-train
-folder in the dataset's default format; `--format jsonl` (or `yolo`) for another, and
+folder in the dataset's default format; `--format jsonl` (or `yolo`, `coco`, `voc`) for another, and
 `--split train --class person` for just part of it. In such a clone,
 `cid add` refuses with: `This is an export of an annotated dataset. Annotations change
 in the annotation platform; run 'cid pull' to update.` The platform does commits and
@@ -563,9 +563,13 @@ asks the server what it still lacks, whole files and pieces alike, and sends onl
 ## Formats
 
 - **`files`** (default for file datasets): the folder tree exactly as committed.
-- **Annotated datasets:** `yolo` (images) and `jsonl` (universal: one line per item with
-  its annotations; works for audio, text and anything else). `coco` and `voc` are
-  planned, not built; `cid clone` refuses other names.
+- **Annotated datasets:** `yolo` (images), `coco` (images: one instances file per split,
+  `annotations/instances_<split>.json`; boxes, polygons and masks, a mask kept as its
+  COCO RLE), `voc` (images: `Annotations/<path>.xml` with boxes in VOC's 1-based
+  pixels, `ImageSets/Main/<split>.txt`) and `jsonl` (universal: one line per item with
+  its annotations; works for audio, text and anything else). `cid clone` refuses other
+  names. Every image format fails, naming the item, rather than drop a shape: an image
+  without recorded dimensions, a shape without a class.
 - Each format is one file in `src/export/`, a streaming writer fed an item at a time
   (with its annotations) by `src/export/bundle.zig`, which reads the version once on
   the server, narrowed in SQL to any `--split`/`--class` subset. An export reaches the
@@ -676,7 +680,8 @@ src/store/blob.zig           S3 via nilo_s3: one Bucket ('cid'), the storage rul
 src/manifest/                canonical manifest rows, RFC 8785 JSON (jcs.zig)
 src/media/                   media type sniffing and image dimensions
 src/tabular/                 row diffs and table statistics for CSV, Parquet, JSONL (DuckDB)
-src/export/                  bundle.zig (the streamed version), jsonl.zig, yolo.zig
+src/export/                  bundle.zig (the streamed version), jsonl.zig, yolo.zig,
+                             coco.zig, voc.zig
 src/server/browse/           dashboard API: manifest queries, facets, cursors, compare
 src/preview/                 preview worker: calls ffmpeg, stores by item hash
 src/gitrepo/                 dataset repository: render release files, queue, push, resync,

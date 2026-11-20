@@ -2136,11 +2136,11 @@ fn versionFile(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
     if (Uuid.parse(commit_id) == error.InvalidUuid)
         return errorResponse(arena, .bad_request, "that is not a commit id", "Run 'cid log' to list commits.");
     const kind = std.meta.stringToEnum(bundle_mod.Kind, (try param(arena, route, "kind")) orelse "state") orelse
-        return errorResponse(arena, .bad_request, "no such export format", "Use one of: files, jsonl, yolo.");
+        return errorResponse(arena, .bad_request, "no such export format", "Use one of: files, jsonl, yolo, coco, voc.");
     if (kind != .state and !eql(ds.kind, "annotated"))
         return errorResponse(arena, .bad_request, "only annotated datasets have exports", "Clone it as files.");
     // The door's export is the door's (src/server/hf.zig), not a clone format.
-    if (kind == .hf) return errorResponse(arena, .bad_request, "no such export format", "Use one of: files, jsonl, yolo.");
+    if (kind == .hf) return errorResponse(arena, .bad_request, "no such export format", "Use one of: files, jsonl, yolo, coco, voc.");
     // The subset, canonical: sorted lists, so the same subset is one file.
     const splits = try sortedCopy(arena, try paramAll(arena, route, "split"));
     const classes = try sortedCopy(arena, try paramAll(arena, route, "class"));
@@ -2232,7 +2232,7 @@ fn fileKey(arena: std.mem.Allocator, dataset_id: []const u8, commit_id: []const 
     const sub = (try subsetHash(arena, subset_key))[0..16];
     return switch (kind) {
         .state => std.fmt.allocPrint(arena, "states/{s}/{s}-{s}-{s}.jsonl.gz", .{ dataset_id, commit_id, sub, file_hash[0..16] }),
-        .jsonl, .yolo, .hf => std.fmt.allocPrint(arena, "exports/{s}/{s}/{t}-{s}-{s}.jsonl.gz", .{ dataset_id, commit_id, kind, sub, file_hash[0..16] }),
+        .jsonl, .yolo, .hf, .coco, .voc => std.fmt.allocPrint(arena, "exports/{s}/{s}/{t}-{s}-{s}.jsonl.gz", .{ dataset_id, commit_id, kind, sub, file_hash[0..16] }),
     };
 }
 

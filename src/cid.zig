@@ -43,6 +43,8 @@ pub const jcs = @import("manifest/jcs.zig");
 pub const exports = struct {
     pub const jsonl = @import("export/jsonl.zig");
     pub const yolo = @import("export/yolo.zig");
+    pub const coco = @import("export/coco.zig");
+    pub const voc = @import("export/voc.zig");
     pub const bundle = @import("export/bundle.zig");
 };
 pub const gitrepo = struct {
@@ -101,6 +103,8 @@ test {
     _ = jcs;
     _ = exports.jsonl;
     _ = exports.yolo;
+    _ = exports.coco;
+    _ = exports.voc;
     _ = exports.bundle;
     _ = media;
     _ = gitrepo.render;

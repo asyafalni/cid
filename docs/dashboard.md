@@ -302,9 +302,8 @@ Every dataset page (all five tabs) shares one header and the release tape.
 - **Use this dataset** (built; "Use this model" on a model): a second snippet reads
   the pinned release with Hugging Face libraries and no clone (`load_dataset`, or
   `AutoModel.from_pretrained` for a model) through the server's Hugging Face door,
-  with the two environment variables it needs. Then the format picker (`files`, `jsonl`, `yolo` for annotated
-  datasets, `files` only for file datasets; `coco` and `voc` exports do not exist
-  yet), split/class subset picker (the same
+  with the two environment variables it needs. Then the format picker (`files`, `jsonl`, `yolo`, `coco`, `voc`
+  for annotated datasets, `files` only for file datasets), split/class subset picker (the same
   `--split`/`--class` flags `cid clone` takes, so the subset is real), and the resulting
   `cid clone …` command; the download size, summed exactly from the pinned release's
   items rather than estimated; and a Python snippet that loads the folder the command

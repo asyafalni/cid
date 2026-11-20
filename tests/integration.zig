@@ -3429,6 +3429,36 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
         .split = &.{"val"},
     }));
     try std.testing.expectError(error.NotADataset, cid.client.workspace.open(arena, io, none_dir.dir));
+
+    // COCO and VOC, from the same version, through the same clone.
+    var coco_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer coco_dir.cleanup();
+    _ = try cid.client.sync.clone(arena, io, coco_dir.dir, cache.dir, &remote, "cid@test:test/datasets/fmt", null, "coco", .{});
+    const instances = try readWholeFile(io, coco_dir.dir, "annotations/instances_train.json", arena);
+    const Coco = struct {
+        categories: []const struct { id: u64, name: []const u8 },
+        images: []const struct { id: u64, file_name: []const u8, width: u32, height: u32 },
+        annotations: []const struct { image_id: u64, category_id: u64, bbox: [4]f64 },
+    };
+    const doc = try std.json.parseFromSliceLeaky(Coco, arena, instances, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqualStrings("img/a.jpg", doc.images[0].file_name);
+    try std.testing.expectEqual(@as(u32, 640), doc.images[0].width);
+    try std.testing.expect(std.mem.indexOf(u8, instances, "\"bbox\":[32,48,64,96]") != null);
+    for (doc.annotations) |ann| try std.testing.expectEqual(doc.images[0].id, ann.image_id);
+    try std.testing.expect(doc.categories.len >= 1);
+    // The folder is clean: the generated files are ignored, as for yolo.
+    const coco_ws = try cid.client.workspace.open(arena, io, coco_dir.dir);
+    try std.testing.expectEqualStrings("coco", coco_ws.config.format);
+    try std.testing.expect(std.mem.indexOf(u8, try readWholeFile(io, coco_dir.dir, ".cidignore", arena), "annotations/") != null);
+
+    var voc_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer voc_dir.cleanup();
+    _ = try cid.client.sync.clone(arena, io, voc_dir.dir, cache.dir, &remote, "cid@test:test/datasets/fmt", null, "voc", .{});
+    const xml = try readWholeFile(io, voc_dir.dir, "Annotations/img/a.xml", arena);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<name>person</name>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<xmin>33</xmin>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<ymax>144</ymax>") != null);
+    try std.testing.expectEqualStrings("img/a\n", try readWholeFile(io, voc_dir.dir, "ImageSets/Main/train.txt", arena));
 }
 
 test "annotated git writer: classes.yaml, policy.md and per-class stats land" {

@@ -221,7 +221,7 @@ function UseThisDataset({
   commit: string | null;
 }) {
   const formats =
-    o.kind === 'annotated' ? (['files', 'jsonl', 'yolo'] as const) : (['files'] as const);
+    o.kind === 'annotated' ? (['files', 'jsonl', 'yolo', 'coco', 'voc'] as const) : (['files'] as const);
   const defaultFormat = o.kind === 'annotated' ? o.default_format : 'files';
   const [format, setFormat] = useState<string>(defaultFormat);
   const [splits, setSplits] = useState<ReadonlySet<string>>(new Set());
@@ -397,6 +397,12 @@ function SubsetPicker({
 function pythonFor(format: string, folder: string): string {
   if (format === 'yolo') {
     return `from ultralytics import YOLO\n\nYOLO("yolov8n.pt").train(data="${folder}/dataset.yaml")`;
+  }
+  if (format === 'coco') {
+    return `from pycocotools.coco import COCO\n\ncoco = COCO("${folder}/annotations/instances_train.json")`;
+  }
+  if (format === 'voc') {
+    return `import xml.etree.ElementTree as ET\n\nids = open("${folder}/ImageSets/Main/train.txt").read().split()\nboxes = {i: ET.parse(f"${folder}/Annotations/{i}.xml").findall("object") for i in ids}`;
   }
   if (format === 'jsonl') {
     return `import json\n\nitems = [json.loads(line) for line in open("${folder}/annotations.jsonl")]`;

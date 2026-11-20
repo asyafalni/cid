@@ -24,10 +24,12 @@ const dbx = @import("../store/db.zig");
 const version = @import("../core/version.zig");
 const jsonl = @import("jsonl.zig");
 const yolo = @import("yolo.zig");
+const coco = @import("coco.zig");
+const voc = @import("voc.zig");
 
 /// `hf`: the jsonl export's lines alone, no bundle framing or header: a
 /// plain JSON-lines file, as the Hugging Face door serves it.
-pub const Kind = enum { state, jsonl, yolo, hf };
+pub const Kind = enum { state, jsonl, yolo, hf, coco, voc };
 
 pub const Subset = struct {
     splits: []const []const u8 = &.{},
@@ -177,9 +179,13 @@ pub fn build(
                 if (rows.len < version.batch_rows) break;
             }
         },
-        .jsonl, .yolo, .hf => {
+        .coco => {
+            bundleHeader(out, kind, commit_id) catch return error.WriteFailed;
+            if (try writeCoco(gpa, arena, &tx, scope, bundle)) |failure| return .{ .failed = failure };
+        },
+        .jsonl, .yolo, .hf, .voc => {
             if (kind != .hf) bundleHeader(out, kind, commit_id) catch return error.WriteFailed;
-            var renderer: union(enum) { jsonl, yolo: yolo.Writer } = .jsonl;
+            var renderer: union(enum) { jsonl, yolo: yolo.Writer, voc } = if (kind == .voc) .voc else .jsonl;
             if (kind == .yolo) {
                 const nameless = tx.rawOne([]const u8, scope, "SELECT path FROM x_anns WHERE kind = 'box' AND class IS NULL " ++
                     "ORDER BY path COLLATE \"C\" LIMIT 1", .{}) catch return error.Db;
@@ -224,11 +230,19 @@ pub fn build(
                             error.OutOfMemory => error.OutOfMemory,
                             else => error.WriteFailed,
                         }) |failure| return .{ .failed = .{ .path = try gpa.dupe(u8, failure.path), .why = failure.why } },
+                        .voc => switch (voc.writeItem(bundle, sa, itemOf(r), mine.items) catch |err| return switch (err) {
+                            error.OutOfMemory => error.OutOfMemory,
+                            else => error.WriteFailed,
+                        }) {
+                            .written, .left_out => {},
+                            .failed => |failure| return .{ .failed = .{ .path = try gpa.dupe(u8, failure.path), .why = failure.why } },
+                        },
                     }
                 }
                 if (rows.len < version.batch_rows) break;
             }
 
+            if (renderer == .voc) try vocLists(gpa, arena, &tx, scope, bundle);
             if (renderer == .yolo) {
                 // The split lists, each one file, a batch of paths per line.
                 var present: [yolo.split_names.len]bool = @splat(false);
@@ -257,6 +271,139 @@ pub fn build(
     }
     out.flush() catch return error.WriteFailed;
     return .{ .written = .{ .media_pending = media_pending } };
+}
+
+/// A split's value as an SQL literal: the splits come from history, and
+/// a cursor's query takes no parameters, so it is quoted here.
+fn literal(arena: std.mem.Allocator, value: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.append(arena, '\'');
+    for (value) |c| {
+        if (c == '\'') try out.append(arena, '\'');
+        try out.append(arena, c);
+    }
+    try out.append(arena, '\'');
+    return out.items;
+}
+
+/// Every split value in the export, sorted ("" for items with none).
+fn splitsOf(arena: std.mem.Allocator, tx: anytype, scope: anytype) version.Error![]const []const u8 {
+    const rows = tx.raw([]const u8, scope, "SELECT s FROM (SELECT DISTINCT coalesce(split, '') AS s FROM x_items) d ORDER BY s COLLATE \"C\"", .{}) catch return error.Db;
+    return dupeAll(arena, rows);
+}
+
+/// VOC's split lists: each image that got its annotation file (it has
+/// dimensions), by its id, a batch of ids per piece.
+fn vocLists(gpa: std.mem.Allocator, arena: std.mem.Allocator, tx: anytype, scope: anytype, out: Bundle) version.Error!void {
+    for (try splitsOf(arena, tx, scope)) |split| {
+        const file = try voc.listFor(arena, split);
+        _ = tx.exec(scope, try std.fmt.allocPrint(arena, "DECLARE x_list NO SCROLL CURSOR FOR SELECT path FROM x_items " ++
+            "WHERE coalesce(split, '') = {s} AND width > 0 AND height > 0 ORDER BY path COLLATE \"C\"", .{try literal(arena, split)}), .{}) catch return error.Db;
+        while (true) {
+            var batch = dbx.Run.init(gpa);
+            defer batch.deinit();
+            const paths = tx.raw([]const u8, &batch, "FETCH 5000 FROM x_list", .{}) catch return error.Db;
+            var text: std.ArrayList(u8) = .empty;
+            for (paths) |p| try text.print(batch.arena(), "{s}\n", .{voc.stem(p)});
+            if (text.items.len > 0) out.put(file, text.items) catch return error.WriteFailed;
+            if (paths.len < version.batch_rows) break;
+        }
+        _ = tx.exec(scope, "CLOSE x_list", .{}) catch return error.Db;
+    }
+}
+
+const CocoImageRow = struct {
+    pub const nilo_table = .projection;
+    path: []const u8,
+    hash: []const u8,
+    size_bytes: i64,
+    split: ?[]const u8,
+    item_id: ?[]const u8,
+    width: ?i32,
+    height: ?i32,
+    image_id: i64,
+    shapes: bool,
+};
+
+const CocoAnnRow = struct {
+    pub const nilo_table = .projection;
+    path: []const u8,
+    id: []const u8,
+    kind: ?[]const u8,
+    class: ?[]const u8,
+    geometry: ?[]const u8,
+    attrs: ?[]const u8,
+    image_id: i64,
+};
+
+/// COCO: per split, one instances file written whole before the next:
+/// header, images, annotations, footer. Image ids are the items' places in
+/// path order across the export, annotation ids a count in writing order,
+/// so the same version always writes the same files.
+fn writeCoco(gpa: std.mem.Allocator, arena: std.mem.Allocator, tx: anytype, scope: anytype, out: Bundle) version.Error!?Failure {
+    const shapes = "kind IN " ++ coco.exported_kinds;
+    if (tx.rawOne([]const u8, scope, "SELECT path FROM x_anns WHERE " ++ shapes ++ " AND class IS NULL ORDER BY path COLLATE \"C\" LIMIT 1", .{}) catch return error.Db) |path|
+        return .{ .path = try gpa.dupe(u8, path), .why = "a shape has no class" };
+    const categories = try dupeAll(arena, tx.raw([]const u8, scope, "SELECT class FROM (SELECT DISTINCT class FROM x_anns WHERE " ++ shapes ++ ") d ORDER BY class COLLATE \"C\"", .{}) catch return error.Db);
+    _ = tx.exec(scope, "CREATE TEMP TABLE x_img ON COMMIT DROP AS SELECT i.path, i.item_hash, i.split, i.item_id, i.width, i.height, " ++
+        "row_number() OVER (ORDER BY i.path COLLATE \"C\") AS image_id, " ++
+        "EXISTS (SELECT 1 FROM x_anns a WHERE a.path = i.path AND a." ++ shapes ++ ") AS shapes FROM x_items i", .{}) catch return error.Db;
+    _ = tx.exec(scope, "CREATE INDEX ON x_img (path COLLATE \"C\")", .{}) catch return error.Db;
+
+    var next_ann: u64 = 1;
+    var scratch = std.heap.ArenaAllocator.init(gpa);
+    defer scratch.deinit();
+    for (try splitsOf(arena, tx, scope)) |split| {
+        const file = try coco.fileFor(arena, split);
+        const where = try std.fmt.allocPrint(arena, "coalesce(split, '') = {s}", .{try literal(arena, split)});
+        coco.header(out, arena, file, categories) catch return error.WriteFailed;
+
+        // Its images: every item with dimensions, and any with shapes
+        // (which then must have them); a file that is not an image, with
+        // nothing to draw on it, is not one.
+        _ = tx.exec(scope, try std.fmt.allocPrint(arena, "DECLARE x_ci NO SCROLL CURSOR FOR SELECT path, encode(item_hash, 'hex') AS hash, 0::bigint AS size_bytes, split, " ++
+            "item_id::text AS item_id, width, height, image_id, shapes FROM x_img WHERE {s} AND (shapes OR (width > 0 AND height > 0)) ORDER BY path COLLATE \"C\"", .{where}), .{}) catch return error.Db;
+        var first = true;
+        while (true) {
+            var batch = dbx.Run.init(gpa);
+            defer batch.deinit();
+            const rows = tx.raw(CocoImageRow, &batch, "FETCH 5000 FROM x_ci", .{}) catch return error.Db;
+            for (rows) |r| {
+                _ = scratch.reset(.retain_capacity);
+                const item = itemOf(.{ .path = r.path, .hash = r.hash, .size_bytes = 0, .split = r.split, .item_id = r.item_id, .width = r.width, .height = r.height });
+                if (coco.image(out, scratch.allocator(), file, first, @intCast(r.image_id), item) catch return error.WriteFailed) |failure|
+                    return .{ .path = try gpa.dupe(u8, failure.path), .why = failure.why };
+                first = false;
+            }
+            if (rows.len < version.batch_rows) break;
+        }
+        _ = tx.exec(scope, "CLOSE x_ci", .{}) catch return error.Db;
+        coco.between(out, file) catch return error.WriteFailed;
+
+        _ = tx.exec(scope, try std.fmt.allocPrint(arena, "DECLARE x_ca NO SCROLL CURSOR FOR SELECT a.path, a.annotation_id::text AS id, a.kind, a.class, " ++
+            "a.geometry::text AS geometry, a.attrs::text AS attrs, i.image_id FROM x_anns a JOIN x_img i USING (path) " ++
+            "WHERE coalesce(i.split, '') = {s} AND a.{s} ORDER BY i.image_id, a.annotation_id", .{ try literal(arena, split), shapes }), .{}) catch return error.Db;
+        first = true;
+        while (true) {
+            var batch = dbx.Run.init(gpa);
+            defer batch.deinit();
+            const rows = tx.raw(CocoAnnRow, &batch, "FETCH 5000 FROM x_ca", .{}) catch return error.Db;
+            for (rows) |r| {
+                _ = scratch.reset(.retain_capacity);
+                const ann: Ann = .{ .id = r.id, .kind = r.kind, .class = r.class, .geometry = r.geometry, .attrs = r.attrs };
+                if (coco.annotation(out, scratch.allocator(), file, first, next_ann, @intCast(r.image_id), r.path, categories, ann) catch |err| return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    else => error.WriteFailed,
+                }) |failure| return .{ .path = try gpa.dupe(u8, failure.path), .why = failure.why };
+                first = false;
+                next_ann += 1;
+            }
+            if (rows.len < version.batch_rows) break;
+        }
+        _ = tx.exec(scope, "CLOSE x_ca", .{}) catch return error.Db;
+        coco.footer(out, file) catch return error.WriteFailed;
+    }
+    return null;
 }
 
 fn dupeAll(arena: std.mem.Allocator, list: []const []const u8) ![]const []const u8 {

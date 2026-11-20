@@ -20,8 +20,10 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         } else if (std.mem.eql(u8, args[i], "--format")) {
             i += 1;
             const f: []const u8 = if (i < args.len) args[i] else "";
-            if (!std.mem.eql(u8, f, "files") and !std.mem.eql(u8, f, "jsonl") and !std.mem.eql(u8, f, "yolo"))
-                return common.fail(ctx, .usage, "this build knows the formats files, jsonl and yolo. Run 'cid clone <address> --format jsonl'.", .{});
+            const known = [_][]const u8{ "files", "jsonl", "yolo", "coco", "voc" };
+            for (known) |k| {
+                if (std.mem.eql(u8, f, k)) break;
+            } else return common.fail(ctx, .usage, "this build knows the formats files, jsonl, yolo, coco and voc. Run 'cid clone <address> --format jsonl'.", .{});
             format = f;
         } else if (std.mem.eql(u8, args[i], "--split") or std.mem.eql(u8, args[i], "--class")) {
             const flag = args[i];
