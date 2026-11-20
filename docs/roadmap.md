@@ -149,7 +149,7 @@ both themes, and works with reduced motion. Beauty never costs a budget.
 - ~~**B3. Purge notice** on a release in the history~~ (done 2026-11-20; a count
   only: `docs/data-model.md` rules out showing the paths).
 - ~~**B4. A stable random sample** for "A look inside"~~ (done 2026-11-20).
-- **B5. Compare, per class:** annotations added, changed and removed by class.
+- ~~**B5. Compare, per class**~~ (done 2026-11-20; the dashboard only, not `cid diff`).
 - **B6. More Browse filters:** annotation count, attributes, identities; then
   histograms and the List view.
 - **B7. Branches on the tape and pinning a commit.** The server already resolves any

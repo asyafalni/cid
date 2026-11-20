@@ -339,6 +339,10 @@ test('compare: a changed box shows before and after on the same image', async ({
   // The sentence: no file changed, one annotation did.
   await expect(page.getByText('0 added, 0 modified, 0 deleted')).toBeVisible();
   await expect(page.getByText('0 added, 1 changed, 0 removed')).toBeVisible();
+  // Per class: the person box moved; the vehicle is not listed, it did not change.
+  const byClass = page.getByRole('table', { name: 'Annotation changes by class' });
+  await expect(byClass.getByRole('row', { name: 'person 0 1 0' })).toBeVisible();
+  await expect(byClass.getByRole('row', { name: /vehicle/ })).toHaveCount(0);
 
   // docs/dashboard.md §9: the same image twice, the box where each
   // version had it — dashed for the old, solid for the new.

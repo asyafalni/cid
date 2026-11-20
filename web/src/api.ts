@@ -265,6 +265,8 @@ export type ComparePage = {
     shapes_after: StateAnnotation[];
   }[];
   ann_changes: { change: 'added' | 'changed' | 'removed'; kind: string | null; class: string | null; item_path: string | null }[];
+  /** Annotation changes counted per class, most changed first ("" = no class); first page only. */
+  by_class: { class: string; added: number; changed: number; removed: number }[];
 };
 
 export function getCompare(name: string, a: string, b: string, after?: string): Promise<ComparePage> {

@@ -358,7 +358,8 @@ Every dataset page (all five tabs) shares one header and the release tape.
 - **Compare** any two versions on `main` (releases or commits, picked as A and B; the
   pair is in the URL; by default the two newest releases):
   - Summary (built): items added/modified/deleted and, for annotated datasets,
-    annotations added/changed/removed, as totals. *Planned:* the same per class.
+    annotations added/changed/removed, as totals, and the same per class (a changed
+    annotation counts under its class at the later version).
   - Change list (built): a flat list of changed paths with their sizes, small
     before/after thumbnails for modified pictures, a page at a time; the first
     annotation changes, with `cid diff` named for the rest. *Planned:* a folder tree

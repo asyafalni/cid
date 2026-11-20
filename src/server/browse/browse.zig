@@ -432,7 +432,13 @@ pub const ComparePage = struct {
     },
     /// The first annotation changes, by item path (first page only).
     ann_changes: []const struct { change: []const u8, kind: ?[]const u8, class: ?[]const u8, item_path: ?[]const u8 },
+    /// The annotation changes counted per class, most changed first, at
+    /// most `max_limit` classes (first page only). A changed annotation
+    /// counts under its class at the later version; "" is no class.
+    by_class: []const ClassChanges = &.{},
 };
+
+pub const ClassChanges = struct { class: []const u8, added: u64, changed: u64, removed: u64 };
 
 /// A pair's diff, computed once and kept (both versions are sealed): the
 /// changed items by path, and the changed annotations by item path, each
@@ -504,7 +510,12 @@ pub fn comparePage(arena: std.mem.Allocator, db: *duck.Db, a: Files, b: Files, d
         \\    ORDER BY v.item_path)), '[]'::JSON) FROM vis v),
         \\  'ann_changes', (SELECT coalesce(to_json(list(json_object('change', change, 'kind', kind, 'class', class, 'item_path', item_path)
         \\      ORDER BY item_path, id)), '[]'::JSON)
-        \\    FROM (SELECT * FROM acp WHERE $1::VARCHAR IS NULL ORDER BY item_path, id LIMIT {6d}))
+        \\    FROM (SELECT * FROM acp WHERE $1::VARCHAR IS NULL ORDER BY item_path, id LIMIT {6d})),
+        \\  'by_class', (SELECT coalesce(to_json(list(json_object('class', class, 'added', a, 'changed', c, 'removed', r)
+        \\      ORDER BY a + c + r DESC, class)), '[]'::JSON)
+        \\    FROM (SELECT coalesce(class, '') AS class, count(*) FILTER (WHERE change = 'added') AS a,
+        \\        count(*) FILTER (WHERE change = 'changed') AS c, count(*) FILTER (WHERE change = 'removed') AS r
+        \\      FROM acp WHERE $1::VARCHAR IS NULL GROUP BY 1 ORDER BY count(*) DESC, 1 LIMIT {6d}))
         \\)::VARCHAR
     , .{ try quote(arena, d.items), try quote(arena, d.anns), try quote(arena, a.items), try quote(arena, b.items), visual_items, try summaryOf(arena, d), max_limit });
     const text = (try db.scalarTextArgs(arena, sql, &.{ .{ .text = after }, .{ .int = limit } })) orelse return error.QueryFailed;
@@ -684,6 +695,11 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
     try std.testing.expectEqual(@as(usize, 3), cmp.ann_changes.len);
     try std.testing.expectEqualStrings("img/a.jpg", cmp.ann_changes[0].item_path.?);
     try std.testing.expectEqual(@as(usize, 0), page2.ann_changes.len);
+    // Per class: a car box replaced (one removed, one added), a person box moved.
+    try std.testing.expectEqual(@as(usize, 2), cmp.by_class.len);
+    try std.testing.expectEqualDeep(ClassChanges{ .class = "car", .added = 1, .changed = 0, .removed = 1 }, cmp.by_class[0]);
+    try std.testing.expectEqualDeep(ClassChanges{ .class = "person", .added = 0, .changed = 1, .removed = 0 }, cmp.by_class[1]);
+    try std.testing.expectEqual(@as(usize, 0), page2.by_class.len);
 
     // The CLI's lines: the same changes, in files DuckDB writes.
     const out: CompareFiles = .{

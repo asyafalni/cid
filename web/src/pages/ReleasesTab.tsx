@@ -251,6 +251,42 @@ function Comparison({
         )}
       </dl>
 
+      {overview.kind === 'annotated' && first.by_class.length > 0 && (
+        <table className="count-table class-changes">
+          <caption>Annotation changes by class</caption>
+          <thead>
+            <tr>
+              <th scope="col">class</th>
+              <th scope="col" className="count">
+                added
+              </th>
+              <th scope="col" className="count">
+                changed
+              </th>
+              <th scope="col" className="count">
+                removed
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {first.by_class.map((c) => (
+              <tr key={c.class}>
+                <td>{c.class === '' ? <span className="quiet">no class</span> : c.class}</td>
+                <td className="data count">
+                  <Count n={c.added} />
+                </td>
+                <td className="data count">
+                  <Count n={c.changed} />
+                </td>
+                <td className="data count">
+                  <Count n={c.removed} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
       {!anyItems && !anyAnns && <p className="quiet">These two versions hold exactly the same data.</p>}
 
       {changes.length > 0 && (
