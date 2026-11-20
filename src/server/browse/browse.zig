@@ -41,6 +41,11 @@ pub const Query = struct {
     /// a sample of items, an item opened from a link. The answer then
     /// carries zeros and empty lists, at half the cost at 1M items.
     facets: bool = true,
+    /// A sample instead of a page: `limit` items spread over the version,
+    /// chosen by a hash of their paths, so the same version gives the same
+    /// sample every time, and a version that keeps most paths keeps most
+    /// of it. No cursor (`after` is ignored, `next` is null).
+    sample: bool = false,
 };
 
 pub const Ann = struct {
@@ -245,7 +250,7 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         \\    ($4::VARCHAR IS NULL OR ext = $4::VARCHAR) AS ft
         \\  FROM read_parquet('{0s}')),
         \\sel AS (SELECT path FROM m WHERE fq AND fs AND fc AND ft),
-        \\page AS (SELECT path FROM sel WHERE $5::VARCHAR IS NULL OR path > $5::VARCHAR ORDER BY path LIMIT $6),
+        \\page AS (SELECT path FROM sel WHERE $5::VARCHAR IS NULL OR path > $5::VARCHAR ORDER BY {3s} LIMIT $6),
         \\last AS (SELECT max(path) AS p, count(*) AS n FROM page),
         \\whole AS (SELECT path, hash, size, split, item_id FROM read_parquet('{0s}') WHERE path IN (SELECT path FROM page)),
         \\opened AS (SELECT path, hash, size, split, item_id FROM read_parquet('{0s}') WHERE path = $7::VARCHAR LIMIT 1),
@@ -257,18 +262,24 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         \\  'items', (SELECT coalesce(to_json(list(json_object('path', w.path, 'hash', w.hash, 'size', w.size, 'split', w.split,
         \\      'item_id', w.item_id, 'annotations', coalesce(b.j, '[]'::JSON)) ORDER BY w.path)), '[]'::JSON)
         \\      FROM whole w LEFT JOIN boxes b USING (item_id)),
-        \\  'next', (SELECT CASE WHEN n = $6 AND EXISTS (SELECT 1 FROM sel WHERE sel.path > last.p) THEN p END FROM last),
+        \\  'next', (SELECT CASE WHEN {4s} AND n = $6 AND EXISTS (SELECT 1 FROM sel WHERE sel.path > last.p) THEN p END FROM last),
         \\  'open', (SELECT json_object('path', o.path, 'hash', o.hash, 'size', o.size, 'split', o.split,
         \\      'item_id', o.item_id, 'annotations', coalesce(b.j, '[]'::JSON)) FROM opened o LEFT JOIN boxes b USING (item_id))
         \\)::VARCHAR
-    , .{ items, anns, if (q.facets) try std.fmt.allocPrint(arena, counts_sql, .{items}) else no_counts_sql });
+    , .{
+        items,
+        anns,
+        if (q.facets) try std.fmt.allocPrint(arena, counts_sql, .{items}) else no_counts_sql,
+        if (q.sample) "md5(path), path" else "path",
+        if (q.sample) "false" else "true",
+    });
 
     const text = (try db.scalarTextArgs(arena, sql, &.{
         .{ .text = q.q },
         .{ .text = q.split },
         .{ .text = q.class },
         .{ .text = q.type },
-        .{ .text = q.after },
+        .{ .text = if (q.sample) null else q.after },
         .{ .int = q.limit },
         .{ .text = q.item },
     })) orelse return error.QueryFailed;
@@ -603,6 +614,16 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
     try std.testing.expectEqualStrings("README", lean.open.?.path);
     try std.testing.expectEqual(@as(u64, 0), lean.total);
     try std.testing.expectEqual(@as(usize, 0), lean.facets.split.len + lean.facets.class.len + lean.facets.type.len + lean.classes.len);
+    // A sample: spread by a hash of the paths, not the first by path, the
+    // same every time, in path order, with no cursor.
+    for (0..2) |_| {
+        const some = try queryIndex(arena, &db, v1, .{ .limit = 2, .sample = true, .after = "zzz", .facets = false });
+        try std.testing.expectEqual(@as(usize, 2), some.items.len);
+        try std.testing.expectEqualStrings("img/a.jpg", some.items[0].path);
+        try std.testing.expectEqualStrings("img/b.JPG", some.items[1].path);
+        try std.testing.expect(some.next == null);
+    }
+    try std.testing.expectEqual(@as(usize, 4), (try queryIndex(arena, &db, v1, .{ .limit = 10, .sample = true })).items.len);
     // The open item comes with any page, whatever the filters.
     const open = try queryIndex(arena, &db, v1, .{ .split = "val", .item = "README" });
     try std.testing.expectEqualStrings("README", open.open.?.path);

@@ -295,10 +295,10 @@ Every dataset page (all five tabs) shares one header and the release tape.
 - *Planned:* **Card completeness** (owner-only): a checklist like Kaggle's usability
   score: purpose, collection method, license, provenance, known gaps, cover image,
   column descriptions. Depends on card editing.
-- **A look inside** (built): the pinned version's first eight items in path order,
-  as Browse shows them (previews with annotations drawn, type tiles for the rest),
-  each opening in Browse; one page request and one thumbnail request. *Planned:* a
-  random but stable sample instead of the first items.
+- **A look inside** (built): eight of the pinned version's items, spread over it and
+  the same eight on every visit (chosen by a hash of their paths, so a release that
+  keeps most paths keeps most of its sample), as Browse shows them (previews with annotations drawn, type tiles for the rest),
+  each opening in Browse; one sample request and one thumbnail request.
 - **Use this dataset** (built): format picker (`files`, `jsonl`, `yolo` for annotated
   datasets, `files` only for file datasets; `coco` and `voc` exports do not exist
   yet), split/class subset picker (the same

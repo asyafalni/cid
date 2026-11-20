@@ -116,14 +116,15 @@ const shownTypes = 8;
 
 const noneHidden: ReadonlySet<string> = new Set();
 
-// A look inside: the version's first items, as Browse shows them (real
+// A look inside: eight items spread over the version, the same eight each
+// time (chosen by a hash of their paths), as Browse shows them (real
 // previews with their annotations drawn, or type tiles), each opening in
-// Browse. One page request and one thumbnail request, never a scan.
+// Browse. One request for the sample and one for its thumbnails.
 function LookInside({ overview: o, commit, release }: { overview: Overview; commit: string; release: string | undefined }) {
   const sample = useQuery({
     queryKey: ['look-inside', o.name, commit],
     queryFn: async () => {
-      const page = await getBrowse(o.name, commit, { limit: 8, facets: false });
+      const page = await getBrowse(o.name, commit, { limit: 8, facets: false, sample: true });
       const thumbs = await thumbsFor(o.name, page.items);
       return { items: page.items, thumbs: new Map(thumbs.map((t) => [t.hash, t.url])) };
     },

@@ -177,6 +177,8 @@ export type BrowseQuery = {
    * the first; a sample or an opened item does not show them). Half the
    * server's work at 1M items. */
   facets?: boolean;
+  /** A stable sample of `limit` items spread over the version, instead of a page. */
+  sample?: boolean;
 };
 
 /** One page of a version, filtered on the server (docs/dashboard.md,
@@ -192,6 +194,7 @@ export function getBrowse(name: string, commit: string, query: BrowseQuery): Pro
   if (query.item !== undefined) params.set('item', query.item);
   if (query.limit !== undefined) params.set('limit', String(query.limit));
   if (query.facets === false) params.set('facets', '0');
+  if (query.sample) params.set('sample', '1');
   // The server decodes %XX only: spaces must not travel as '+'.
   return request(`/v0/datasets/${name}/-/browse?${params.toString().replace(/\+/g, '%20')}`);
 }

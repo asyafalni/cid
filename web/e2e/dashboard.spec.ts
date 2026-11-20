@@ -206,6 +206,17 @@ test('the overview opens with a look inside: real items, their annotations, each
   await expect(media.getByRole('link', { name: /tone\.wav/ }).locator('img')).toBeVisible();
   // No release yet: the facts, not an empty tape.
   await expect(page.getByText('2 commits, no releases yet.')).toBeVisible();
+
+  // Spread over the version, not its first eight files, and the same eight on every visit.
+  const sample = async () => {
+    await page.goto('/d/e2e/datasets/many');
+    const links = page.getByRole('region', { name: 'A look inside' }).getByRole('link', { name: /rows\// });
+    await expect(links).toHaveCount(8);
+    return (await links.allTextContents()).map((t) => t.match(/rows\/\d+\.txt/)![0]);
+  };
+  const once = await sample();
+  expect(once).not.toEqual(Array.from({ length: 8 }, (_, i) => `rows/${String(i + 1).padStart(4, '0')}.txt`));
+  expect(await sample()).toEqual(once);
 });
 
 test('lost in the clouds: an unknown address or dataset says so and offers the way back', async ({ page }) => {
