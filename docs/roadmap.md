@@ -10,16 +10,12 @@ same change.
 
 ## 0. Where the work stands
 
-- `main`: untouched since `26e3c58`.
-- `dashboard-phase1-leftovers` (seven commits on `main`, the last adding this file;
-  not pushed, not merged): the
+- `main` holds the first round of dashboard leftovers (merged 2026-11-20): the
   overview counts the pinned release; file types in the card; per-release counts in
   the history; type and open-in-Browse in the Files tab; reduced-motion and
-  malformed-CSV tests; git status in the header and activity filters. All suites
-  green. **Merge this first.**
-- `model-kind` (one WIP commit on top of the first five of those; rebase it onto
-  `main` once the leftovers are merged): the start of item C2. It builds; nothing in
-  it is tested.
+  malformed-CSV tests; git status in the header and activity filters.
+- `model-kind`, a local branch that is not pushed: one WIP commit, the start of item
+  C2. It builds; nothing in it is tested. Rebase it onto `main` before continuing.
 - Running the e2e suite needs Playwright's browser:
   `pnpm --dir web exec playwright install chromium`.
 - The e2e database is seeded once and kept. A fixture change must be its own
