@@ -186,6 +186,15 @@ test('keyboard: the tape is reachable and Enter pins', async ({ page }) => {
   await expect(page).toHaveURL(/release=v1\.0\.0/);
 });
 
+test('an annotated dataset names the labelling policy its annotations follow; a file dataset does not', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/boxes');
+  const card = page.getByRole('region', { name: 'Dataset card' });
+  await expect(card.getByText('Annotations made under labelling policy p1.')).toBeVisible();
+  await page.goto('/d/e2e/datasets/demo');
+  await expect(page.getByRole('region', { name: 'Dataset card' }).getByText(/labelling policy/)).toHaveCount(0);
+});
+
 test('a detection dataset: boxes are drawn in the gallery and the drawer', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/boxes?view=browse');

@@ -30,6 +30,11 @@ export function OverviewTab({
           {o.items.toLocaleString()} {o.items === 1 ? 'item' : 'items'} · {humanBytes(o.bytes)}
           {o.classes.length > 0 && <> · {o.classes.length} classes</>}
         </p>
+        {o.policy && (
+          <p className="quiet card-policy">
+            Annotations made under labelling policy <span className="data">{o.policy}</span>.
+          </p>
+        )}
         {o.types.length > 0 && (
           <table className="count-table">
             <caption>Items by type</caption>

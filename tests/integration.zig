@@ -3494,6 +3494,17 @@ test "annotated git writer: classes.yaml, policy.md and per-class stats land" {
     try std.testing.expect(std.mem.indexOf(u8, stats, "\"person\": 2") != null);
     try std.testing.expect(std.mem.indexOf(u8, stats, "\"vehicle\": 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, stats, "\"train\": 1") != null);
+
+    // The dashboard's card names the same policy, and withholds it once
+    // the dataset is restricted, as the repository does.
+    const open = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/anngit/-/overview", "Bearer test-token", "");
+    try std.testing.expectEqual(std.http.Status.ok, open.status);
+    try std.testing.expect(std.mem.indexOf(u8, open.body, "\"policy\":\"policy-v3\"") != null);
+    _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = 'test/datasets/anngit'", .{});
+    const closed = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/anngit/-/overview", "Bearer test-token", "");
+    try std.testing.expect(std.mem.indexOf(u8, closed.body, "\"policy\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, closed.body, "policy-v3") == null);
+    _ = try db.exec(&fscope, "UPDATE datasets SET restricted = false WHERE name = 'test/datasets/anngit'", .{});
 }
 
 test "preview worker: builds image thumbs under discipline, skips the rest" {

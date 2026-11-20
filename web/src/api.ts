@@ -104,6 +104,9 @@ export type Overview = {
   pinned_commit: string | null;
   items: number;
   bytes: number;
+  /** The labelling policy version the annotations were made under (the newest);
+   * null for file datasets and restricted ones. */
+  policy: string | null;
   /** Items per file type (".wav", or "file" for none), most first. */
   types: { name: string; count: number }[];
   classes: { name: string; count: number }[];

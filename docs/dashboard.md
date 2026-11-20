@@ -114,7 +114,7 @@ section in §4 says so.
 8. **Cards write themselves.** Counts, classes, splits, sizes, changes and quality
    numbers are filled from the manifest; people add only what a machine can't know
    (purpose, collection method, known gaps, license). *Built so far:* counts, file
-   types, the class table and split sizes.
+   types, the class table, split sizes and the labelling policy version.
 9. **Private by default, private for free.** Restricted datasets show blurred previews
    until the viewer chooses to reveal, and every reveal is logged. No paid tier for
    private viewing.
@@ -284,8 +284,9 @@ Every dataset page (all five tabs) shares one header and the release tape.
   (with index), split sizes, and items by file type (the eight commonest, each a link
   into Browse filtered to it), all of the pinned release, as the header's count and
   size are (`overview?release=`; a release is found by name, so one older than the
-  tape's 100 commits pins too). *Planned:* sizes per type, policy
-  version (annotated datasets), last release notes, and the owners' own words
+  tape's 100 commits pins too). An annotated dataset's card also names the newest
+  labelling policy its annotations were made under (not for a restricted one, as in
+  git). *Planned:* sizes per type, last release notes, and the owners' own words
   (purpose, collection method, known gaps), which wait on card editing, a parked
   decision.
 - *Planned:* **Card completeness** (owner-only): a checklist like Kaggle's usability

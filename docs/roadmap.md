@@ -61,9 +61,7 @@ same change.
 
 ## 2. Tier A: small, dashboard only (hours each)
 
-- **A1. Policy version in the card** (annotated datasets). `versions.Stats.policy`
-  already holds it; return it from `overview` and show it. Never for a restricted
-  dataset.
+- ~~**A1. Policy version in the card**~~ (done 2026-11-20).
 - **A2. Keyboard in Browse:** `j`/`k` and arrows between items, `/` to the path
   search, `?` listing the shortcuts (`docs/dashboard.md`, principle 10).
 - **A3. A release's git link in the history.** Only where the URL form is known from

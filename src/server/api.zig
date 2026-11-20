@@ -1789,6 +1789,10 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, 
         .items = pinned_stats.items,
         .bytes = pinned_stats.bytes,
         .types = pinned_stats.types,
+        // The labelling policy the pinned version's annotations were made
+        // under, newest first. A restricted dataset's policy is its
+        // content, as in git (invariant 21): never shown.
+        .policy = if (eql(ds.kind, "annotated") and !ds.restricted) pinned_stats.policy else null,
         .classes = pinned_stats.classes,
         .splits = pinned_stats.splits,
     });
