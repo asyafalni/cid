@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { ApiError, getOverview, type Pin } from '../api';
 import { ReleaseTape } from '../ReleaseTape';
+import { DatasetSkeleton } from '../Skeleton';
 import { commandFor, type Shown } from '../command';
 import { gitWebUrl, humanBytes } from '../format';
 import { OverviewTab } from './OverviewTab';
@@ -53,7 +54,7 @@ export function DatasetOverview() {
     if (found) noteVisit(name);
   }, [found, name]);
 
-  if (query.isPending) return <p className="quiet">Reading {name}…</p>;
+  if (query.isPending) return <DatasetSkeleton name={name} />;
   if (query.isError) {
     const err = query.error;
     if (err instanceof ApiError && err.status === 404) {

@@ -5,6 +5,7 @@ import { ApiError, getMe, kindLabel, listDatasets, setStar, type DatasetSummary 
 import { humanBytes } from '../format';
 import { Thumb } from '../Thumb';
 import { Airship } from '../Airship';
+import { HomeSkeleton } from '../Skeleton';
 import { recentDatasets } from '../recent';
 
 type HomeSearch = {
@@ -51,9 +52,7 @@ export function Home() {
     return () => clearTimeout(timer);
   });
 
-  if (query.isPending) {
-    return <p className="quiet">Reading the manifest…</p>;
-  }
+  if (query.isPending) return <HomeSkeleton />;
   if (query.isError) {
     const err = query.error;
     return (

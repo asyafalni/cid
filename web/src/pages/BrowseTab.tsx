@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, 
 import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
+import { GridSkeleton } from '../Skeleton';
 import {
   ApiError,
   getBrowse,
@@ -160,7 +161,7 @@ export function BrowseTab({
   }, [onFilters, onOpenItem, loaded, openItem, help, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   if (commit === null) return <p className="quiet">Nothing to browse until the first push.</p>;
-  if (pages.isPending) return <p className="quiet">Reading the manifest…</p>;
+  if (pages.isPending) return <GridSkeleton count={pageSize > 24 ? 24 : pageSize} />;
   if (pages.isError) {
     const indexing = pages.error instanceof ApiError && pages.error.status === 503;
     return (

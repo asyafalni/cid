@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
+import { RowsSkeleton } from '../Skeleton';
 import { ApiError, getActivity } from '../api';
 
 // Activity (docs/dashboard.md §4.7): who did what to this dataset, newest
@@ -23,7 +24,7 @@ export function ActivityTab({
 }) {
   const log = useQuery({ queryKey: ['activity', name], queryFn: () => getActivity(name), retry: false });
 
-  if (log.isPending) return <p className="quiet">Reading the log…</p>;
+  if (log.isPending) return <RowsSkeleton rows={6} cols={4} />;
   if (log.isError) {
     const err = log.error;
     return (

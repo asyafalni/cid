@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { comparePair } from '../command';
+import { RowsSkeleton } from '../Skeleton';
 import { getCompare, getRowDiff, getThumbs, type CompareSide, type Overview, type StateAnnotation, type TapeCommit } from '../api';
 import { AnnotationOverlay } from '../overlays';
 import { Thumb } from '../Thumb';
@@ -231,7 +232,7 @@ function Comparison({
   });
   const thumbBy = new Map((thumbs.data?.thumbs ?? []).map((t) => [t.hash, t.url]));
 
-  if (pages.isPending) return <p className="quiet">Comparing…</p>;
+  if (pages.isPending) return <RowsSkeleton rows={4} cols={3} />;
   if (pages.isError || !first)
     return (
       <p className="quiet" role="alert">

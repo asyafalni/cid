@@ -3,6 +3,7 @@ import { useInfiniteQuery, useQueries } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { getDir, getDownloads, getLastChange, type LastChange, type Pin } from '../api';
 import { extOf } from '../browseFilter';
+import { RowsSkeleton } from '../Skeleton';
 import { humanBytes } from '../format';
 
 // Files: the folder tree exactly as committed, sizes and types, a
@@ -47,7 +48,7 @@ export function FilesTab({
   for (const q of changedPages) for (const c of q.data?.changes ?? []) changed.set(c.path, c);
 
   if (commit === null) return <p className="quiet">Nothing here until the first push.</p>;
-  if (listing.isPending) return <p className="quiet">Reading the manifest…</p>;
+  if (listing.isPending) return <RowsSkeleton rows={8} cols={4} />;
   if (listing.isError)
     return (
       <div className="panel notice" role="alert">

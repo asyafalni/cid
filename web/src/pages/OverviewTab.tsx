@@ -7,6 +7,7 @@ import { hfRepoId, humanBytes } from '../format';
 import { AnnotationOverlay } from '../overlays';
 import { Thumb } from '../Thumb';
 import { thumbsFor } from '../thumbs';
+import { Bar } from '../Skeleton';
 
 export function OverviewTab({
   overview: o,
@@ -173,6 +174,25 @@ function LookInside({ overview: o, commit, pin }: { overview: Overview; commit: 
       return { items: page.items, thumbs: new Map(thumbs.map((t) => [t.hash, t.url])) };
     },
   });
+  // Its room is kept while the sample is on its way (U3: nothing jumps).
+  if (sample.isPending)
+    return (
+      <section className="look-inside" aria-label="A look inside" aria-busy="true">
+        <div className="look-inside-head">
+          <h2>A look inside</h2>
+        </div>
+        <ul className="look-inside-strip">
+          {Array.from({ length: Math.min(8, o.items) }, (_, i) => (
+            <li key={i}>
+              <span className="tile look-tile tile--skeleton">
+                <span className="skeleton-block tile-skeleton-media" />
+                <Bar width="60%" />
+              </span>
+            </li>
+          ))}
+        </ul>
+      </section>
+    );
   if (!sample.data || sample.data.items.length === 0) return null;
   const { items, thumbs } = sample.data;
   return (

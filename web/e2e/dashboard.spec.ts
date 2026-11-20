@@ -1101,6 +1101,45 @@ test('with reduced motion on, no animation or transition runs on any page', asyn
   expect(await running()).toBe(0);
 });
 
+// U3: no blank waits. With every answer slowed, each page shows its own
+// shape first, so nothing jumps when the data arrives: the summed layout
+// shift stays under 0.1 (the web's "good").
+test('pages hold their shape while their data arrives: layout shift under 0.1', async ({ page }) => {
+  await signIn(page);
+  await page.route('**/v0/**', async (route) => {
+    await new Promise((done) => setTimeout(done, 400));
+    await route.continue();
+  });
+  const shifted = async (path: string) => {
+    await page.goto(path);
+    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(300);
+    return page.evaluate(
+      () =>
+        new Promise<number>((done) => {
+          let sum = 0;
+          new PerformanceObserver((list) => {
+            for (const e of list.getEntries() as unknown as { value: number; hadRecentInput: boolean }[])
+              if (!e.hadRecentInput) sum += e.value;
+          }).observe({ type: 'layout-shift', buffered: true });
+          setTimeout(() => done(sum), 100);
+        }),
+    );
+  };
+  for (const path of [
+    '/',
+    '/d/e2e/datasets/demo',
+    '/d/e2e/datasets/boxes?view=browse',
+    '/d/e2e/datasets/demo?view=files',
+    '/d/e2e/datasets/boxes?view=releases',
+    '/d/e2e/datasets/faces?view=activity',
+  ]) {
+    const value = await shifted(path);
+    console.log(`layout shift ${path}: ${value.toFixed(3)}`);
+    expect(value, path).toBeLessThan(0.1);
+  }
+});
+
 test('the theme switch pins a theme across pages and reloads, and System lets go', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'light' });
   await signIn(page);

@@ -22,7 +22,8 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
   1440, 1024 and 390 px, the measured overflow report empty, and every defect found
   fixed.
 - **What is left, in the order to take it** (agreed with the owner 2026-11-20):
-  1. U3 (no blank waits).
+  1. ~~U3 (no blank waits)~~ (done 2026-11-20: layout shift 0.001–0.074 per page with
+     every answer slowed 400 ms; `web/e2e/dashboard.spec.ts`).
   2. A declared key column for row diffs (Tier D): a design round with the owner
      first, then built, so an edited row shows as changed, not removed and added.
   3. U4 (the first minute).
@@ -183,7 +184,8 @@ Close the "behind" rows without giving up an "ahead" one.
     only be the visited state.
   - A table item's drawer was not seen with its statistics (the previews had just
     been reset).
-- **U3. No blank waits.** Wherever a page says "Reading…" or shows nothing while it
+- ~~**U3. No blank waits.**~~ (done 2026-11-20; measured in `dashboard.spec.ts`, not the
+  1M bench: the test slows every answer instead.) Wherever a page says "Reading…" or shows nothing while it
   loads, show the page's shape instead (the header, the tape, tile placeholders of the
   right size), so nothing jumps when the data arrives. Budget: no layout shift on
   load, measured in `web/e2e/bench.spec.ts`.
