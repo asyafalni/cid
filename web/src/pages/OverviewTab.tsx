@@ -99,6 +99,7 @@ export function OverviewTab({
             </tbody>
           </table>
         )}
+        <Lineage overview={o} />
         <p className="quiet">
           Purpose, collection method and known gaps are written by the owners in the dataset's
           card; each release keeps a copy, shown in its git repository's README.
@@ -108,6 +109,38 @@ export function OverviewTab({
       <UseThisDataset overview={o} pinned={pinned} commit={commit} />
       </div>
     </>
+  );
+}
+
+// Lineage at the pinned release (docs/roadmap.md, C3): a model's card says
+// what it was trained on, a dataset's which models were trained on it,
+// each a link to the other at that release. What the viewer cannot read
+// is counted, never named.
+function Lineage({ overview: o }: { overview: Overview }) {
+  const isModel = o.kind === 'model';
+  const links = isModel ? o.trained_on : o.trained_models;
+  if (links.length === 0 && o.lineage_unseen === 0) return null;
+  const title = isModel ? 'Trained on' : 'Models trained on this release';
+  return (
+    <section className="lineage" aria-label={title}>
+      <h3 className="lineage-title">{title}</h3>
+      <ul>
+        {links.map((l) => (
+          <li key={`${l.dataset}@${l.release}`}>
+            <Link to="/d/$" params={{ _splat: l.dataset }} search={{ release: l.release }} className="data">
+              {l.dataset}
+            </Link>{' '}
+            <span className="release-tag">{l.release}</span>
+          </li>
+        ))}
+      </ul>
+      {o.lineage_unseen > 0 && (
+        <p className="quiet">
+          and {o.lineage_unseen} {o.lineage_unseen === 1 ? (isModel ? 'dataset' : 'model') : isModel ? 'datasets' : 'models'} you
+          cannot open.
+        </p>
+      )}
+    </section>
   );
 }
 

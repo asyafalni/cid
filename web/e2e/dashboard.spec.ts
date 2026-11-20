@@ -186,6 +186,26 @@ test('a model is named a model: on its card, in its header, and in the home filt
   await expect(page.getByRole('region', { name: 'Model card' })).toContainText('1 item');
 });
 
+test('lineage: a model release names what it was trained on, and the dataset names the model', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/models/tiny-bert?release=v1.1.0');
+  const trainedOn = page.getByRole('region', { name: 'Trained on' });
+  await expect(trainedOn).toContainText('e2e/datasets/demo');
+  await expect(trainedOn).toContainText('v1.0.0');
+  // The first release named none.
+  await page.goto('/d/e2e/models/tiny-bert?release=v1.0.0');
+  await expect(page.getByRole('region', { name: 'Trained on' })).toHaveCount(0);
+  // From the dataset's side, at that release, and back.
+  await page.goto('/d/e2e/models/tiny-bert?release=v1.1.0');
+  await page.getByRole('region', { name: 'Trained on' }).getByRole('link', { name: 'e2e/datasets/demo' }).click();
+  await expect(page).toHaveURL(/\/d\/e2e\/datasets\/demo\?release=v1\.0\.0/);
+  const models = page.getByRole('region', { name: 'Models trained on this release' });
+  await expect(models).toContainText('e2e/models/tiny-bert');
+  await expect(models).toContainText('v1.1.0');
+  await page.goto('/d/e2e/datasets/demo?release=v1.1.0');
+  await expect(page.getByRole('region', { name: 'Models trained on this release' })).toHaveCount(0);
+});
+
 test('the files tab walks the committed tree', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?view=files');

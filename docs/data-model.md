@@ -247,6 +247,17 @@ CREATE TABLE refs (
   changes          jsonb,                 -- counted since it, at release time
   PRIMARY KEY (dataset_id, name)
 );
+
+-- Lineage: the dataset releases a model release was trained on
+-- (`cid tag --trained-on`). A link, never a copy; written with the release
+-- and, like it, never changed (a trigger refuses UPDATE and DELETE outside
+-- maintenance). The source is kept by id, so a renamed dataset still links.
+CREATE TABLE release_sources (
+  dataset_id, release,                    -- the model release
+  source_dataset_id, source_release,      -- the dataset release
+  source_commit_id, manifest_hash,        -- what that release was
+  PRIMARY KEY (dataset_id, release, source_dataset_id, source_release)
+);
 ```
 
 A release keeps what changed since the release before it, counted when it is made

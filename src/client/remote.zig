@@ -404,17 +404,43 @@ pub const Remote = struct {
         if (!std.mem.eql(u8, &reading.hash_hex, where.hash)) return error.Corrupt;
     }
 
-    pub const TagResult = struct { release: []const u8, commit: []const u8, manifest_hash: []const u8, items: u64 };
+    pub const Source = struct { dataset: []const u8, release: []const u8 };
+
+    pub const TagResult = struct {
+        release: []const u8,
+        commit: []const u8,
+        manifest_hash: []const u8,
+        items: u64,
+        trained_on: []const Source = &.{},
+    };
 
     pub fn tag(self: *const Remote, arena: std.mem.Allocator, name: []const u8) Error!TagResult {
-        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .name = name }, .{})});
+        return switch (try self.tagWith(arena, name, &.{})) {
+            .made => |r| r,
+            .refused => error.ServerRefused,
+        };
+    }
+
+    /// A release; a model's may name the dataset releases it was trained
+    /// on, and the server's refusal of one of those comes back in its words.
+    pub const Tagged = union(enum) {
+        made: TagResult,
+        refused: struct { what: []const u8, next: []const u8 },
+    };
+
+    pub fn tagWith(self: *const Remote, arena: std.mem.Allocator, name: []const u8, trained_on: []const Source) Error!Tagged {
+        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .name = name, .trained_on = trained_on }, .{})});
         const res = try self.send(arena, "POST", try self.target(arena, "tag", .{}), body);
+        if (res.status == .unprocessable_entity) {
+            const Refusal = struct { @"error": []const u8, next: []const u8 = "", trained_on: bool = false };
+            if (parse(Refusal, arena, res.body)) |r| if (r.trained_on) return .{ .refused = .{ .what = r.@"error", .next = r.next } };
+        }
         if (res.status == .conflict) return error.ReleaseExists;
         if (res.status == .bad_request) return error.BadReleaseName;
         if (res.status == .unprocessable_entity) return error.NothingToTag;
         if (res.status == .not_found) return error.NoSuchDataset;
         if (res.status != .created) return error.ServerRefused;
-        return parse(TagResult, arena, res.body) orelse error.ServerRefused;
+        return .{ .made = parse(TagResult, arena, res.body) orelse return error.ServerRefused };
     }
 
     pub const Release = struct { name: []const u8, commit: []const u8, manifest_hash: []const u8 };

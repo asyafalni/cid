@@ -332,10 +332,29 @@ fn loadInput(
     const all = db.raw(All, scope, "SELECT r.name, c.message, (extract(epoch from c.recorded_at) * 1000)::bigint AS created_ms, " ++
         "c.commit_id::text AS commit_id, r.changes_from, r.changes::text AS changes FROM refs r JOIN commits c ON c.commit_id = r.commit_id " ++
         "WHERE r.dataset_id = $1::uuid AND r.kind = 'release' ORDER BY r.commit_id DESC, r.name DESC", .{dataset_id}) catch return error.Db;
+    // What each model release was trained on (none for a dataset).
+    const SourceRow = struct {
+        pub const nilo_table = .projection;
+        release: []const u8,
+        dataset: []const u8,
+        source_release: []const u8,
+        manifest_hex: []const u8,
+        restricted: bool,
+    };
+    const source_rows = db.raw(SourceRow, scope, "SELECT s.release, d.name AS dataset, s.source_release, encode(s.manifest_hash, 'hex') AS manifest_hex, d.restricted " ++
+        "FROM release_sources s JOIN datasets d ON d.dataset_id = s.source_dataset_id WHERE s.dataset_id = $1::uuid " ++
+        "ORDER BY s.release, d.name, s.source_release", .{dataset_id}) catch return error.Db;
     const releases = try arena.alloc(render.ReleaseInfo, all.len);
     for (releases, all) |*r, row| {
         const their = versions.stats(arena, db, scope, dataset_id, row.commit_id) catch return error.Db;
+        var sources: std.ArrayList(render.Source) = .empty;
+        for (source_rows) |sr| if (std.mem.eql(u8, sr.release, row.name)) try sources.append(arena, .{
+            .dataset = sr.dataset,
+            .release = sr.source_release,
+            .manifest_hash_hex = if (sr.restricted) null else sr.manifest_hex,
+        });
         r.* = .{
+            .trained_on = sources.items,
             .name = row.name,
             .message = row.message,
             .created_at_ms = @intCast(@max(0, row.created_ms)),

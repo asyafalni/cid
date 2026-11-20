@@ -344,6 +344,17 @@ function seedModel(dir: string) {
   run(`${cid} tag v1.0.0`, model);
 }
 
+// The model's second release, trained on demo's first: lineage, recorded
+// the way a person would, with `cid tag --trained-on`.
+function seedModelTrained(dir: string) {
+  run(`${cid} clone cid@127.0.0.1:e2e/models/tiny-bert model-trained`, dir);
+  const folder = join(dir, 'model-trained');
+  writeFileSync(join(folder, 'config.json'), '{"model_type":"bert","hidden_size":8,"num_hidden_layers":2}\n');
+  run(`${cid} commit -a -m "two layers"`, folder);
+  run(`${cid} push`, folder);
+  run(`${cid} tag v1.1.0 --trained-on e2e/datasets/demo@v1.0.0`, folder);
+}
+
 // A restricted dataset: previews blurred until a logged reveal.
 function seedFaces(dir: string) {
   const faces = join(dir, 'faces');
@@ -410,6 +421,10 @@ export default function setup() {
     );
     if (!mediaLog.includes('one broken table')) seedMediaBroken(dir);
     if (!already.includes('e2e/models/tiny-bert')) seedModel(dir);
+    const modelReleases = run(
+      `curl -s http://127.0.0.1:7178/v0/datasets/e2e/models/tiny-bert/-/releases -H "Authorization: Bearer ${token}"`,
+    );
+    if (!modelReleases.includes('"v1.1.0"')) seedModelTrained(dir);
     const tableReleases = run(
       `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/tables/-/releases -H "Authorization: Bearer ${token}"`,
     );

@@ -291,9 +291,17 @@ not installed for the check). Not done: a line in `tests/usability.sh`.
 
 ### C3. Lineage
 
+**Done (2026-11-20).** `release_sources` (migration 0004, immutable like a release);
+`cid tag --trained-on`; the overview's `trained_on` / `trained_models` /
+`lineage_unseen`; the card's "Trained on" and "Models trained on this release"; the
+model's README, `release.json` and CHANGELOG. Tested in the integration suite (each
+refusal, the unreadable source counted not named, immutability), the renderer's unit
+tests and e2e (both pages, the links between them).
+
 ```
-cid tag v1.0.0 --trained-on your-org/datasets/person-vehicle@v4.2.0
-Released v1.0.0 (3 items), trained on your-org/datasets/person-vehicle v4.2.0.
+cid tag v1.1.0 --trained-on your-org/datasets/person-vehicle@v4.2.0
+Release v1.1.0 created at 01a1f943-ff94: 2 items, manifest fa054ccbe9f8…
+Trained on your-org/datasets/person-vehicle v4.2.0.
 ```
 
 - `--trained-on` repeats; leaving it out releases weights only.

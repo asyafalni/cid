@@ -39,7 +39,10 @@ CHANGELOG.md       every release in full, newest first: name, date, message, ite
                    and what changed since the release before it (see below)
 release.json       dataset, release, commit (cid commit id), manifest_hash,
                    created_at (date), items, changes_from and changes (the counts
-                   below), clone (the git URL), dashboard (server URL)
+                   below), clone (the git URL), dashboard (server URL); a model
+                   release named with `cid tag --trained-on` also lists trained_on
+                   (dataset, release, manifest hash; no hash for a restricted
+                   dataset), and its README and CHANGELOG name them too
 stats.yaml         release, items, bytes, files_by_extension; for annotated datasets
                    also annotations, annotations_by_class and items_by_split (one
                    value per line, so git diffs between releases read clearly)

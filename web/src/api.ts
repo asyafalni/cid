@@ -108,6 +108,12 @@ export type Overview = {
   git_url: string;
   default_format: string;
   commits: TapeCommit[]; // newest first
+  /** A model at the pinned release: the dataset releases it was trained on (those the viewer can read). */
+  trained_on: { dataset: string; release: string }[];
+  /** A dataset at the pinned release: the model releases trained on it (those the viewer can read). */
+  trained_models: { dataset: string; release: string }[];
+  /** How many of either the viewer cannot read, so they are counted, not named. */
+  lineage_unseen: number;
   /** Releases on the tape some of whose items had their bytes purged, and how many. */
   purged: { release: string; items: number }[];
   /** The version the counts below are of: the release asked for, else the newest. */

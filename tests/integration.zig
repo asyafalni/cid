@@ -4865,10 +4865,12 @@ test "models: a third kind, versioned exactly like a file dataset, and served to
     const bearer = "Bearer test-token";
 
     _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM release_sources WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name IN ('test/models/detector', 'test/datasets/street')) " ++
+        "OR source_dataset_id IN (SELECT dataset_id FROM datasets WHERE name IN ('test/models/detector', 'test/datasets/street'))", .{});
     inline for (.{ "activity_events", "refs", "commits", "item_revisions", "dataset_items", "access" }) |table| {
-        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = 'test/models/detector')", .{});
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name IN ('test/models/detector', 'test/datasets/street'))", .{});
     }
-    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/models/detector'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name IN ('test/models/detector', 'test/datasets/street')", .{});
     _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
 
     // `cid init --model`: created on the server as a model, the folder
@@ -4916,4 +4918,62 @@ test "models: a third kind, versioned exactly like a file dataset, and served to
     try std.testing.expect(cid.hf.isModelFile("/test/models__detector/resolve/v1.0.0/weights/model.safetensors"));
     try std.testing.expectEqual(std.http.Status.not_found, cid.hf.handle(arena, &deps, &scope, "GET", "/api/datasets/test/models__detector", .{ .header = bearer }, "", "http://cid.test").status);
     try std.testing.expectEqual(std.http.Status.not_found, cid.hf.handle(arena, &deps, &scope, "HEAD", "/datasets/test/models__detector/resolve/v1.0.0/config.json", .{ .header = bearer }, "", "http://cid.test").status);
+
+    // Lineage: a model release names the dataset releases it was trained
+    // on, a link recorded once; both pages show it.
+    var street_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer street_dir.cleanup();
+    const street: cid.client.remote.Remote = .{ .t = direct.transport(), .name = "test/datasets/street", .gpa = std.testing.allocator };
+    try street_dir.dir.writeFile(io, .{ .sub_path = "frame.txt", .data = "a street" });
+    try cid.client.workspace.init(arena, io, street_dir.dir, "cid@test:test/datasets/street", "g@h:street.git");
+    var sws = try cid.client.workspace.open(arena, io, street_dir.dir);
+    _ = try cid.client.workspace.add(arena, io, &sws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &sws, "frames", "user:test");
+    _ = try cid.client.sync.push(arena, io, &sws, cache.dir, &street);
+    _ = try street.tag(arena, "v4.2.0");
+
+    try producer.dir.writeFile(io, .{ .sub_path = "config.json", .data = "{\"model_type\":\"tiny\",\"epochs\":2}\n" });
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "retrained", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    // Refused before anything is made: a release that does not exist.
+    switch (try remote.tagWith(arena, "v1.1.0", &.{.{ .dataset = "test/datasets/street", .release = "v9" }})) {
+        .refused => |r| try std.testing.expect(std.mem.indexOf(u8, r.what, "no release 'v9'") != null),
+        .made => return error.TestTaggedOnAMissingRelease,
+    }
+    // Someone who may tag the model but cannot read the dataset hears the
+    // same words as for a dataset that does not exist.
+    _ = try db.exec(&fscope, "INSERT INTO accounts (account_id, display_name, source) VALUES ('gitlab:7771', 'Model Mo', 'gitlab') ON CONFLICT DO NOTHING", .{});
+    _ = try db.exec(&fscope, "INSERT INTO access (dataset_id, account_id, level, source) SELECT dataset_id, 'gitlab:7771', 'maintain', 'dashboard' FROM datasets WHERE name = 'test/models/detector' ON CONFLICT DO NOTHING", .{});
+    const unseen = cid.api.handleAs(arena, &deps, &scope, "POST", "/v0/datasets/test/models/detector/-/tag", .{ .account = "gitlab:7771" }, "{\"name\":\"v1.1.0\",\"trained_on\":[{\"dataset\":\"test/datasets/street\",\"release\":\"v4.2.0\"}]}");
+    try std.testing.expectEqual(std.http.Status.unprocessable_entity, unseen.status);
+    try std.testing.expect(std.mem.indexOf(u8, unseen.body, "no release 'v4.2.0' of a dataset 'test/datasets/street' that you can read") != null);
+    // A dataset's release records no sources.
+    switch (try street.tagWith(arena, "v4.3.0", &.{.{ .dataset = "test/models/detector", .release = "v1.0.0" }})) {
+        .refused => |r| try std.testing.expect(std.mem.indexOf(u8, r.what, "only a model's release") != null),
+        .made => return error.TestDatasetRecordedSources,
+    }
+    const trained = switch (try remote.tagWith(arena, "v1.1.0", &.{.{ .dataset = "test/datasets/street", .release = "v4.2.0" }})) {
+        .made => |r| r,
+        .refused => |r| {
+            std.debug.print("refused: {s}\n", .{r.what});
+            return error.TestTagRefused;
+        },
+    };
+    try std.testing.expectEqual(@as(usize, 1), trained.trained_on.len);
+    try std.testing.expectEqualStrings("test/datasets/street", trained.trained_on[0].dataset);
+    const model_page = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/models/detector/-/overview?release=v1.1.0", bearer, "");
+    try std.testing.expect(std.mem.indexOf(u8, model_page.body, "\"trained_on\":[{\"dataset\":\"test/datasets/street\",\"release\":\"v4.2.0\"}]") != null);
+    const v1_page = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/models/detector/-/overview?release=v1.0.0", bearer, "");
+    try std.testing.expect(std.mem.indexOf(u8, v1_page.body, "\"trained_on\":[]") != null);
+    const street_page = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/street/-/overview?release=v4.2.0", bearer, "");
+    try std.testing.expect(std.mem.indexOf(u8, street_page.body, "\"trained_models\":[{\"dataset\":\"test/models/detector\",\"release\":\"v1.1.0\"}]") != null);
+    // Mo reads the model but not the street dataset: a count, not a name.
+    const mo_page = cid.api.handleAs(arena, &deps, &scope, "GET", "/v0/datasets/test/models/detector/-/overview?release=v1.1.0", .{ .account = "gitlab:7771" }, "");
+    try std.testing.expect(std.mem.indexOf(u8, mo_page.body, "\"trained_on\":[]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mo_page.body, "\"lineage_unseen\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mo_page.body, "street") == null);
+    // What a release was trained on never changes (invariant 5).
+    try expectRefused(db, &fscope, "DELETE FROM release_sources WHERE release = 'v1.1.0'", "never changes");
+    try expectRefused(db, &fscope, "UPDATE release_sources SET source_release = 'v1' WHERE release = 'v1.1.0'", "never changes");
 }

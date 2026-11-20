@@ -609,7 +609,9 @@ Everyday (shown by `cid help`):
 
 For dataset owners (`cid help --all`): `init <address> --git <url> [--model]` (both
 addresses required; `--model` when the folder holds a model's files),
-`tag`, `branch`, `merge [--continue]`, and `remote` (the folder's address and git URL;
+`tag` (a model's release may add `--trained-on <dataset>@<release>`, repeatable: what it
+was trained on, recorded once, shown on both pages and in git), `branch`,
+`merge [--continue]`, and `remote` (the folder's address and git URL;
 `remote set-url [<address>] [--git <url>]` after a rename, as in git: the old address
 stops answering, nothing redirects; server commands warn when the folder's git URL is
 not the dataset's). Without SSH (scripts, CI), any address may be

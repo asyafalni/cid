@@ -31,7 +31,8 @@ const owner_text =
     \\
     \\  init <address> --git <git-url>   create a dataset from this folder
     \\                     (--model when the folder holds a model's files)
-    \\  tag <name>         make a release (never moves again)
+    \\  tag <name>         make a release (never moves again); a model's may add
+    \\                     --trained-on <dataset>@<release>, once per dataset release
     \\  branch <name>      a draft line of work, starting from main
     \\  merge <name>       merge a branch into main; conflicts are listed
     \\  remote [set-url [<address>] [--git <git-url>]]   the folder's address

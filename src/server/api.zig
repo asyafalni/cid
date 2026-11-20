@@ -274,7 +274,7 @@ fn handleInner(
     if (eql(method, "GET") and eql(route.action, "info"))
         return datasetInfo(arena, deps, scope, ds);
     if (eql(method, "GET") and eql(route.action, "overview"))
-        return overview(arena, deps, scope, ds, try param(arena, route, "release"));
+        return overview(arena, deps, scope, caller, ds, try param(arena, route, "release"));
     if (eql(method, "GET") and eql(route.action, "head"))
         return head(arena, deps, scope, ds, route.queryParam("branch") orelse "main");
     if (eql(method, "GET") and eql(route.action, "log"))
@@ -1775,7 +1775,7 @@ fn datasetInfo(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
 /// version the page is pinned to: the release asked for, else the newest
 /// release on the tape, else main's head (also when no release has the
 /// name asked for). The tape is main's; branch views arrive later.
-fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, release: ?[]const u8) HandleError!Response {
+fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, release: ?[]const u8) HandleError!Response {
     const info = (deps.db.rawOne(InfoRow, scope, "SELECT kind, git_url, default_format FROM datasets WHERE dataset_id = $1::uuid", .{ds.id}) catch return error.Db) orelse return error.Db;
 
     const TapeEntry = struct {
@@ -1814,11 +1814,14 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, 
     // A release is found by name, not on the tape: the tape is the newest
     // 100 commits, and a release older than that still pins.
     var pinned: ?[]const u8 = null;
+    var pinned_release: ?[]const u8 = null;
     if (release) |name| {
         pinned = deps.db.rawOne([]const u8, scope, "SELECT commit_id::text FROM refs " ++
             "WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'release'", .{ ds.id, name }) catch return error.Db;
-    } else for (tape) |entry| if (entry.release != null) {
+        if (pinned != null) pinned_release = name;
+    } else for (tape) |entry| if (entry.release) |name| {
         pinned = entry.id;
+        pinned_release = name;
         break;
     };
     if (pinned == null and tape.len > 0) pinned = tape[0].id;
@@ -1846,6 +1849,35 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, 
         };
     }
 
+    // Lineage at the pinned release (docs/roadmap.md, C3): what a model
+    // release was trained on, or which models a dataset release fed. Only
+    // what the viewer can read is named; the rest is a count, so a name is
+    // never learnt this way.
+    const Linked = struct { dataset: []const u8, release: []const u8 };
+    var trained_on: std.ArrayList(Linked) = .empty;
+    var trained_models: std.ArrayList(Linked) = .empty;
+    var unseen: u64 = 0;
+    if (pinned_release) |rel| {
+        const Row = struct {
+            pub const nilo_table = .projection;
+            name: []const u8,
+            release: []const u8,
+        };
+        const rows = if (eql(ds.kind, "model"))
+            deps.db.raw(Row, scope, "SELECT d.name, s.source_release AS release FROM release_sources s JOIN datasets d ON d.dataset_id = s.source_dataset_id " ++
+                "WHERE s.dataset_id = $1::uuid AND s.release = $2 ORDER BY d.name, s.source_release", .{ ds.id, rel }) catch return error.Db
+        else
+            deps.db.raw(Row, scope, "SELECT d.name, s.release FROM release_sources s JOIN datasets d ON d.dataset_id = s.dataset_id " ++
+                "WHERE s.source_dataset_id = $1::uuid AND s.source_release = $2 ORDER BY d.name, s.release", .{ ds.id, rel }) catch return error.Db;
+        for (rows) |r| {
+            if (!canRead(arena, deps, scope, caller, r.name)) {
+                unseen += 1;
+                continue;
+            }
+            try (if (eql(ds.kind, "model")) &trained_on else &trained_models).append(arena, .{ .dataset = r.name, .release = r.release });
+        }
+    }
+
     // Owners are Maintainers (CLAUDE.md, words), by display name, as the
     // listing names them.
     const owners = (deps.db.rawOne([]const u8, scope, "SELECT coalesce(string_agg(ac.display_name, '\n' ORDER BY ac.display_name), '') " ++
@@ -1862,6 +1894,9 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, 
         .commits = tape,
         .purged = purged.items,
         .pinned_commit = pinned,
+        .trained_on = trained_on.items,
+        .trained_models = trained_models.items,
+        .lineage_unseen = unseen,
         .items = pinned_stats.items,
         .bytes = pinned_stats.bytes,
         .types = pinned_stats.types,
@@ -2335,11 +2370,65 @@ const TagBody = struct {
     /// Defaults to the branch head.
     commit: ?[]const u8 = null,
     branch: []const u8 = "main",
+    /// A model release: the dataset releases it was trained on.
+    trained_on: []const Source = &.{},
 };
+
+pub const Source = struct { dataset: []const u8, release: []const u8 };
+
+/// Whether the person behind `caller` may read a dataset: what the caller
+/// itself may, or, for a token scoped to one dataset (the SSH front
+/// door's), what its account may (`cid tag --trained-on` names datasets
+/// other than the one the token is for).
+fn canRead(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, dataset: []const u8) bool {
+    if (authorized(arena, deps, scope, caller, dataset, .read)) return true;
+    const account = actorOf(arena, deps, caller) catch return false;
+    if (eql(account, "server-token")) return false;
+    return authorized(arena, deps, scope, .{ .account = account }, dataset, .read);
+}
+
+/// A source as recorded: which dataset (by id: renames keep it), which
+/// release, and what that release was.
+const SourceRow = struct { dataset_id: []const u8, name: []const u8, release: []const u8, commit_id: []const u8, manifest_hex: []const u8 };
+
+/// A refusal of `--trained-on`, told apart from the other 422s so `cid tag`
+/// prints the server's words.
+fn refusedSources(arena: std.mem.Allocator, what: []const u8, next: []const u8) HandleError!Response {
+    return json(arena, .unprocessable_entity, .{ .@"error" = what, .next = next, .trained_on = true });
+}
 
 /// `cid tag`: a release never moves once this returns (invariant 5).
 fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(TagBody, arena, body) orelse return error.BadRequest;
+
+    // What a model release was trained on, checked before anything is made:
+    // a model's only, each a release the person tagging can read. One
+    // answer for "no such" and "not yours", so nothing is learnt about a
+    // dataset one cannot read.
+    var sources: std.ArrayList(SourceRow) = .empty;
+    if (req.trained_on.len > 0 and !eql(ds.kind, "model"))
+        return refusedSources(arena, "only a model's release records what it was trained on", "Leave out --trained-on, or tag the model (one made with 'cid init --model').");
+    if (req.trained_on.len > 50) return error.BadRequest;
+    for (req.trained_on) |src| {
+        const Row = struct {
+            pub const nilo_table = .projection;
+            dataset_id: []const u8,
+            commit_id: []const u8,
+            manifest_hex: []const u8,
+        };
+        const found: ?Row = if (canRead(arena, deps, scope, caller, src.dataset))
+            deps.db.rawOne(Row, scope, "SELECT d.dataset_id::text AS dataset_id, r.commit_id::text AS commit_id, encode(r.manifest_hash, 'hex') AS manifest_hex " ++
+                "FROM refs r JOIN datasets d USING (dataset_id) WHERE d.name = $1 AND r.name = $2 AND r.kind = 'release'", .{ src.dataset, src.release }) catch return error.Db
+        else
+            null;
+        const row = found orelse return refusedSources(
+            arena,
+            try std.fmt.allocPrint(arena, "no release '{s}' of a dataset '{s}' that you can read", .{ src.release, src.dataset }),
+            "Check the dataset's path and release name (its history on the dashboard), then run 'cid tag' again.",
+        );
+        if (eql(row.dataset_id, ds.id)) return refusedSources(arena, "a model cannot be trained on itself", "Name the dataset releases it was trained on.");
+        try sources.append(arena, .{ .dataset_id = row.dataset_id, .name = src.dataset, .release = src.release, .commit_id = row.commit_id, .manifest_hex = row.manifest_hex });
+    }
 
     const commit_id: []const u8 = blk: {
         if (req.commit) |c| {
@@ -2398,6 +2487,12 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
             error.Db => error.Db,
         };
     };
+    // What it was trained on, before its git copy is rendered (which names
+    // them). Checked above; a duplicate named twice is recorded once.
+    for (sources.items) |src| {
+        _ = deps.db.exec(scope, "INSERT INTO release_sources (dataset_id, release, source_dataset_id, source_release, source_commit_id, manifest_hash) " ++
+            "VALUES ($1::uuid, $2, $3::uuid, $4, $5::uuid, decode($6, 'hex')) ON CONFLICT DO NOTHING", .{ ds.id, created.name, src.dataset_id, src.release, src.commit_id, src.manifest_hex }) catch return error.Db;
+    }
     // The release stands; its git copy is queued and attempted right away
     // when configured. A git failure never blocks the release (invariant 21).
     _ = deps.db.exec(
@@ -2434,7 +2529,14 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
         .manifest_hash = &created.manifest_hash,
         .items = created.items,
         .git = git_status,
+        .trained_on = try sourcesOut(arena, sources.items),
     });
+}
+
+fn sourcesOut(arena: std.mem.Allocator, rows: []const SourceRow) HandleError![]const Source {
+    const out = try arena.alloc(Source, rows.len);
+    for (out, rows) |*o, r| o.* = .{ .dataset = r.name, .release = r.release };
+    return out;
 }
 
 fn releases(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) HandleError!Response {

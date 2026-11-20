@@ -2310,3 +2310,26 @@
   font-size: 0.8125rem;
   white-space: nowrap;
 }
+
+/* Lineage on the card: what a model release was trained on, or which
+   models a dataset release fed. Links between the two, at that release. */
+.lineage {
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-3);
+  margin: var(--space-3) 0;
+}
+
+.lineage-title {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  font-weight: normal;
+  margin: 0 0 var(--space-2);
+}
+
+.lineage ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-1);
+}

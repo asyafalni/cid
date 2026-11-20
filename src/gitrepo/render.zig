@@ -16,6 +16,16 @@ pub const ReleaseInfo = struct {
     /// which release that was; null for the first release.
     changes_from: ?[]const u8 = null,
     changes: ?Changes = null,
+    /// A model release: the dataset releases it was trained on (C3).
+    trained_on: []const Source = &.{},
+};
+
+/// A dataset release a model was trained on, by its path now. The manifest
+/// hash is null for a restricted dataset, named by path and release alone.
+pub const Source = struct {
+    dataset: []const u8,
+    release: []const u8,
+    manifest_hash_hex: ?[]const u8 = null,
 };
 
 /// Counts only, so a restricted dataset shows them too.
@@ -211,8 +221,29 @@ fn readme(arena: std.mem.Allocator, input: Input) ![]const u8 {
         input.release,
     });
     if (input.restricted) return std.fmt.allocPrint(arena, "{s}\nThis dataset is restricted: this repository holds counts only.\n", .{head});
-    const card = input.card orelse return head;
-    return std.fmt.allocPrint(arena, "{s}{s}", .{ head, try cardSection(arena, card) });
+    const with_sources = try std.fmt.allocPrint(arena, "{s}{s}", .{ head, try sourcesSection(arena, input) });
+    const card = input.card orelse return with_sources;
+    return std.fmt.allocPrint(arena, "{s}{s}", .{ with_sources, try cardSection(arena, card) });
+}
+
+/// This release's own entry among every release.
+fn thisRelease(input: Input) ?ReleaseInfo {
+    for (input.releases) |r| if (std.mem.eql(u8, r.name, input.release)) return r;
+    return null;
+}
+
+/// "Trained on": each dataset release, linked to it on the dashboard.
+fn sourcesSection(arena: std.mem.Allocator, input: Input) ![]const u8 {
+    const r = thisRelease(input) orelse return "";
+    if (r.trained_on.len == 0) return "";
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(arena, "\nTrained on:\n\n");
+    for (r.trained_on) |src| {
+        try out.print(arena, "- [{s} {s}]({s}/d/{s}?release={s})", .{ src.dataset, src.release, input.server_url, src.dataset, src.release });
+        if (src.manifest_hash_hex) |h| try out.print(arena, ", manifest `{s}`", .{h[0..@min(h.len, 16)]});
+        try out.append(arena, '\n');
+    }
+    return out.items;
 }
 
 /// The card's fields in a fixed order (the known ones first, then any
@@ -265,6 +296,10 @@ fn changelog(arena: std.mem.Allocator, input: Input) ![]const u8 {
         } else if (i == input.releases.len - 1) {
             try out.appendSlice(arena, " The first release.");
         }
+        if (!input.restricted) for (r.trained_on, 0..) |src, n| {
+            try out.print(arena, "{s}{s} {s}", .{ if (n == 0) " Trained on " else ", ", src.dataset, src.release });
+            if (n + 1 == r.trained_on.len) try out.append(arena, '.');
+        };
         try out.append(arena, '\n');
     }
     return out.items;
@@ -287,6 +322,22 @@ fn plural(n: u64) []const u8 {
 }
 
 fn releaseJson(arena: std.mem.Allocator, input: Input) ![]const u8 {
+    // A model release names what it was trained on; nothing else gains a
+    // field, so no other repository's release.json changes.
+    const sources: []const Source = if (input.restricted) &.{} else if (thisRelease(input)) |r| r.trained_on else &.{};
+    if (sources.len > 0) return std.fmt.allocPrint(arena, "{f}\n", .{std.json.fmt(.{
+        .dataset = input.dataset_name,
+        .release = input.release,
+        .commit = input.commit_id,
+        .manifest_hash = input.manifest_hash_hex,
+        .created_at = &fmtDate(input.created_at_ms),
+        .items = input.items,
+        .changes_from = if (input.releases.len > 0) input.releases[0].changes_from else null,
+        .changes = if (input.releases.len > 0) input.releases[0].changes else null,
+        .trained_on = sources,
+        .clone = input.git_url,
+        .dashboard = input.server_url,
+    }, .{ .whitespace = .indent_2 })});
     return std.fmt.allocPrint(arena, "{f}\n", .{std.json.fmt(.{
         .dataset = input.dataset_name,
         .release = input.release,
@@ -462,6 +513,51 @@ test "the changelog says what changed since the release before, in counts" {
     const json = try releaseJson(arena, input);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"changes_from\": \"v1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ann_changed\": 4") != null);
+}
+
+test "a model release names what it was trained on, a restricted source by path and release alone" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var input: Input = .{
+        .dataset_name = "org/models/detector",
+        .kind = "model",
+        .git_url = "git@example.invalid:org/models/detector.git",
+        .server_url = "https://cid.example",
+        .release = "v2",
+        .commit_id = "01a00000-0000-7000-8000-000000000002",
+        .manifest_hash_hex = repeat("ab", 32),
+        .created_at_ms = 1769904000000,
+        .items = 3,
+        .bytes = 10,
+        .releases = &.{
+            .{ .name = "v2", .message = "retrained", .created_at_ms = 1769904000000, .items = 3, .trained_on = &.{
+                .{ .dataset = "org/datasets/street", .release = "v4.2.0", .manifest_hash_hex = repeat("cd", 32) },
+                .{ .dataset = "org/datasets/faces", .release = "v1" },
+            } },
+            .{ .name = "v1", .message = "first", .created_at_ms = 1769817600000, .items = 2 },
+        },
+    };
+    const files = try renderAll(arena, input);
+    const text = for (files) |f| {
+        if (std.mem.eql(u8, f.path, "README.md")) break f.contents;
+    } else return error.TestNoReadme;
+    try std.testing.expect(std.mem.indexOf(u8, text, "A model versioned with") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "- [org/datasets/street v4.2.0](https://cid.example/d/org/datasets/street?release=v4.2.0), manifest `cdcdcdcdcdcdcdcd`\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "- [org/datasets/faces v1](https://cid.example/d/org/datasets/faces?release=v1)\n") != null);
+    const json = try releaseJson(arena, input);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"trained_on\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"manifest_hash_hex\": null") != null);
+    const log = try changelog(arena, input);
+    try std.testing.expect(std.mem.indexOf(u8, log, "3 items. Trained on org/datasets/street v4.2.0, org/datasets/faces v1.\n") != null);
+    // A release that names none renders as before: no new field anywhere.
+    input.release = "v1";
+    try std.testing.expect(std.mem.indexOf(u8, try releaseJson(arena, input), "trained_on") == null);
+    // A restricted model: counts only, no sources.
+    input.release = "v2";
+    input.restricted = true;
+    try std.testing.expect(std.mem.indexOf(u8, try releaseJson(arena, input), "trained_on") == null);
+    try std.testing.expect(std.mem.indexOf(u8, try changelog(arena, input), "Trained on") == null);
 }
 
 test "a restricted release renders counts only; the card renders from its snapshot" {
