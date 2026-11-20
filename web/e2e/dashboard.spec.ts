@@ -34,7 +34,12 @@ test('the overview carries the tape, the card and the paste-ready command', asyn
     'true',
   );
   // The engraved count line and the command.
-  await expect(page.getByRole('region', { name: 'Dataset card' }).getByText(/4 items ·/)).toBeVisible();
+  const card = page.getByRole('region', { name: 'Dataset card' });
+  await expect(card.getByText(/4 items ·/)).toBeVisible();
+  // What kind of data it is, counted: never assumed to be images.
+  const types = card.getByRole('table', { name: 'Items by type' });
+  await expect(types.getByRole('row', { name: /\.png items 2/ })).toBeVisible();
+  await expect(types.getByRole('row', { name: /\.txt items 2/ })).toBeVisible();
   await expect(page.getByText(/cid clone cid@.*e2e\/datasets\/demo --release v1\.1\.0/)).toBeVisible();
   // Picking the older release repins and lands in the URL (every view is a link).
   await page.getByRole('button', { name: 'v1.0.0' }).click();
@@ -43,6 +48,12 @@ test('the overview carries the tape, the card and the paste-ready command', asyn
   // The card and the header count the pinned release, not main's head.
   await expect(page.getByRole('region', { name: 'Dataset card' }).getByText(/3 items ·/)).toBeVisible();
   await expect(page.locator('.dataset-meta').getByText(/3 items,/)).toBeVisible();
+  await expect(types.getByRole('row', { name: /\.txt items 1/ })).toBeVisible();
+  // A type is a way into Browse, filtered, at the same release.
+  await types.getByRole('link', { name: 'Browse the .txt items' }).click();
+  await expect(page).toHaveURL(/view=browse/);
+  await expect(page).toHaveURL(/release=v1\.0\.0/);
+  await expect(page.getByLabel('Filter by type')).toHaveValue('.txt');
 });
 
 test('browse shows thumbnails for images and honest tiles for the rest', async ({ page }) => {

@@ -113,8 +113,8 @@ section in §4 says so.
    `cid clone` command, plus a Python snippet, with format and subset choices applied.
 8. **Cards write themselves.** Counts, classes, splits, sizes, changes and quality
    numbers are filled from the manifest; people add only what a machine can't know
-   (purpose, collection method, known gaps, license). *Built so far:* counts, the
-   class table and split sizes.
+   (purpose, collection method, known gaps, license). *Built so far:* counts, file
+   types, the class table and split sizes.
 9. **Private by default, private for free.** Restricted datasets show blurred previews
    until the viewer chooses to reveal, and every reveal is logged. No paid tier for
    private viewing.
@@ -281,9 +281,10 @@ Every dataset page (all five tabs) shares one header and the release tape.
   that read the same commit statistics (`stats`), so their numbers agree. Every link
   in the git README lands on the dashboard pinned to that release.
 - **Auto dataset card.** *Built:* item count and size, class count, the class table
-  (with index), split sizes, all of the pinned release, as the header's count and
+  (with index), split sizes, and items by file type (the eight commonest, each a link
+  into Browse filtered to it), all of the pinned release, as the header's count and
   size are (`overview?release=`; a release is found by name, so one older than the
-  tape's 100 commits pins too). *Planned:* media types and sizes, policy
+  tape's 100 commits pins too). *Planned:* sizes per type, policy
   version (annotated datasets), last release notes, and the owners' own words
   (purpose, collection method, known gaps), which wait on card editing, a parked
   decision.
@@ -544,8 +545,8 @@ tables (gallery + table, overlays for box/polygon/points/mask, filters, item dra
 with history) · Releases timeline and compare (summary + visual diff) · Files tab ·
 shareable URLs · restricted blur and reveal log · preview worker for images and tables.
 
-*Status:* built, except: the auto card is partial (counts, class table and split sizes
-only); Browse filters are path,
+*Status:* built, except: the auto card is partial (counts, file types, class table and
+split sizes only); Browse filters are path,
 split, class and type only; the Releases timeline is partial (message, date, author,
 id, and "not in git yet" on a release the server has not written to the dataset
 repository; no release notes, counts, quality, git link or purge notice) and covers `main`

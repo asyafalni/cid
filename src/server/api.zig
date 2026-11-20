@@ -1773,6 +1773,7 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, 
         .pinned_commit = pinned,
         .items = pinned_stats.items,
         .bytes = pinned_stats.bytes,
+        .types = pinned_stats.types,
         .classes = pinned_stats.classes,
         .splits = pinned_stats.splits,
     });

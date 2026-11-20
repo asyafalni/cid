@@ -94,6 +94,8 @@ export type Overview = {
   pinned_commit: string | null;
   items: number;
   bytes: number;
+  /** Items per file type (".wav", or "file" for none), most first. */
+  types: { name: string; count: number }[];
   classes: { name: string; count: number }[];
   splits: { name: string; count: number }[];
 };

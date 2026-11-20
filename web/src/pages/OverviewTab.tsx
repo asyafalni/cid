@@ -30,6 +30,39 @@ export function OverviewTab({
           {o.items.toLocaleString()} {o.items === 1 ? 'item' : 'items'} · {humanBytes(o.bytes)}
           {o.classes.length > 0 && <> · {o.classes.length} classes</>}
         </p>
+        {o.types.length > 0 && (
+          <table className="count-table">
+            <caption>Items by type</caption>
+            <tbody>
+              {o.types.slice(0, shownTypes).map((t) => (
+                <tr key={t.name}>
+                  <td className="data">
+                    <Link
+                      to="/d/$"
+                      params={{ _splat: o.name }}
+                      search={{ view: 'browse', release, type: t.name }}
+                      aria-label={`Browse the ${t.name} items`}
+                    >
+                      {t.name}
+                    </Link>
+                  </td>
+                  <td className="data count">{t.count.toLocaleString()}</td>
+                </tr>
+              ))}
+              {o.types.length > shownTypes && (
+                <tr>
+                  <td className="quiet">{o.types.length - shownTypes} more types</td>
+                  <td className="data count">
+                    {o.types
+                      .slice(shownTypes)
+                      .reduce((sum, t) => sum + t.count, 0)
+                      .toLocaleString()}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
         {o.classes.length > 0 && (
           <table className="count-table">
             <caption>Annotations by class</caption>
@@ -68,6 +101,9 @@ export function OverviewTab({
     </>
   );
 }
+
+/** The card names a dataset's commonest file types; Browse filters by any. */
+const shownTypes = 8;
 
 const noneHidden: ReadonlySet<string> = new Set();
 
