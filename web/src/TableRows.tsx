@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { getRows, type ColumnHist, type RowFilter, type TableStats } from './api';
 
@@ -15,6 +16,8 @@ export function TableRows({
   path,
   where,
   onWhere,
+  row,
+  onRow,
   fallback,
 }: {
   name: string;
@@ -22,14 +25,21 @@ export function TableRows({
   path: string;
   where: string | undefined;
   onWhere: (where: string | undefined) => void;
+  /** The linked row, from 1 (U7): the rows open at it, highlighted. */
+  row?: string;
+  onRow?: (row: string | undefined) => void;
   /** The first rows from the statistics, shown where rows cannot be had. */
   fallback: TableStats | null;
 }) {
   const filters = parseWhere(where);
+  // The file's row index (from 0) of the linked row.
+  const at = row !== undefined && /^\d+$/.test(row) && Number(row) > 0 ? Number(row) - 1 : undefined;
   const pages = useInfiniteQuery({
-    queryKey: ['rows', name, hash, path, JSON.stringify(filters)],
-    queryFn: ({ pageParam }) => getRows(name, hash, path, filters, pageParam),
-    initialPageParam: 0,
+    queryKey: ['rows', name, hash, path, JSON.stringify(filters), at ?? null],
+    // The first page is the one that holds the linked row; then on from it.
+    queryFn: ({ pageParam }) =>
+      pageParam === -1 ? getRows(name, hash, path, filters, 0, at) : getRows(name, hash, path, filters, pageParam),
+    initialPageParam: at === undefined ? 0 : -1,
     getNextPageParam: (last) => {
       const p = last.page;
       if (!p) return undefined;
@@ -38,6 +48,12 @@ export function TableRows({
     },
   });
   const set = (next: RowFilter[]) => onWhere(next.length > 0 ? JSON.stringify(next) : undefined);
+  // Scrolled to once its page arrives.
+  const linked = useRef<HTMLTableRowElement>(null);
+  const arrived = pages.isSuccess;
+  useEffect(() => {
+    if (arrived) linked.current?.scrollIntoView({ block: 'center' });
+  }, [arrived, at]);
   const toggle = (f: RowFilter) => {
     const others = filters.filter((x) => x.column !== f.column);
     const same = filters.find((x) => x.column === f.column);
@@ -60,6 +76,7 @@ export function TableRows({
   }
   const head = first.page;
   const rows = pages.data.pages.flatMap((p) => p.page?.rows ?? []);
+  const linkedShown = at !== undefined && rows.some((r) => Number(r.__row) === at);
   const cols = head.columns;
   return (
     <section className="table-rows" aria-label="Rows">
@@ -80,6 +97,23 @@ export function TableRows({
           </button>
         )}
       </div>
+      {head.offset > 0 && (
+        <p className="quiet data">
+          From row {(head.offset + 1).toLocaleString()} of the {filters.length > 0 ? 'filtered ' : ''}rows
+          {onRow && row !== undefined && (
+            <>
+              {' '}
+              ·{' '}
+              <button className="filter-clear" onClick={() => onRow(undefined)}>
+                Back to the first row
+              </button>
+            </>
+          )}
+        </p>
+      )}
+      {at !== undefined && !linkedShown && (
+        <p className="quiet">Row {(at + 1).toLocaleString()} is not among these rows: a filter leaves it out, or the file has fewer.</p>
+      )}
       <div className="table-scroll">
         <table className="browse-table table-sample table-rows-grid">
           <thead>
@@ -101,16 +135,29 @@ export function TableRows({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
-              <tr key={String(row.__row)}>
-                <td className="data num quiet">{Number(row.__row) + 1}</td>
-                {cols.map((c) => (
-                  <td key={c.name} className="data">
-                    {cell(row[c.name])}
+            {rows.map((r) => {
+              const index = Number(r.__row);
+              const here = index === at;
+              return (
+                <tr key={String(r.__row)} ref={here ? linked : undefined} className={here ? 'row--linked' : undefined} aria-current={here ? 'true' : undefined}>
+                  <td className="data num quiet">
+                    {onRow ? (
+                      // Its number links to it: the URL then opens here.
+                      <button className="row-link data" aria-label={`Link to row ${index + 1}`} onClick={() => onRow(String(index + 1))}>
+                        {index + 1}
+                      </button>
+                    ) : (
+                      index + 1
+                    )}
                   </td>
-                ))}
-              </tr>
-            ))}
+                  {cols.map((c) => (
+                    <td key={c.name} className="data">
+                      {cell(r[c.name])}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

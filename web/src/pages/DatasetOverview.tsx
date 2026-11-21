@@ -38,6 +38,7 @@ export function DatasetOverview() {
     attr?: string;
     identity?: string;
     rows?: string;
+    row?: number;
     what?: string;
     who?: string;
   };
@@ -102,7 +103,7 @@ export function DatasetOverview() {
   const owner = cut >= 0 ? o.name.slice(0, cut + 1) : '';
   const leaf = o.name.slice(cut + 1);
 
-  function setSearch(patch: Record<string, string | undefined>) {
+  function setSearch(patch: Record<string, string | number | undefined>) {
     void navigate({
       to: '/d/$',
       params: { _splat: name },
@@ -279,9 +280,12 @@ export function DatasetOverview() {
           overview={o}
           commit={pinnedCommit}
           openItem={search.item}
-          onOpenItem={(path) => setSearch({ item: path, rows: undefined })}
+          onOpenItem={(path) => setSearch({ item: path, rows: undefined, row: undefined })}
           rowFilter={search.rows}
           onRowFilter={(rows) => setSearch({ rows })}
+          row={search.row === undefined ? undefined : String(search.row)}
+          // A number in the URL (row=4), not a quoted string.
+          onRow={(row) => setSearch({ row: row === undefined ? undefined : Number(row) })}
           filters={{ mode: search.mode, q: search.q, split: search.split, cls: search.class, type: search.type, anns: search.anns, attr: search.attr, identity: search.identity }}
           onFilters={(patch) => setSearch(patch)}
         />

@@ -386,7 +386,9 @@ Every dataset page (all five tabs) shares one header and the release tape.
   (20 equal bins across a number column's range; any other column's 10 most common
   values, with "other" and empty), counted against the other columns' filters as
   Browse's facets are; a click on a bar or a value narrows the rows, and the filters
-  are in the URL (`rows=`). Read on request (`GET /-/rows`, `src/tabular/rows.zig`),
+  are in the URL (`rows=`). A link to one row (`row=4`, from 1) opens the rows at the
+  page holding it, under the filters, marked and scrolled to; each row's number makes
+  that link, and a filter that leaves the row out says so. Read on request (`GET /-/rows`, `src/tabular/rows.zig`),
   from the table converted to Parquet once into the browse folder and pruned with the
   indexes; files up to 128 MB, as row diffs; never a restricted dataset's rows.
   Measured on a 66 MB CSV of 1M rows and 8 columns (ReleaseFast, 2026-11-21): the

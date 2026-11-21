@@ -56,7 +56,9 @@ fn isNumber(column_type: []const u8) bool {
 /// `hist` is `{kind: "bins", lo, hi, counts: [20], nulls}` or `{kind:
 /// "values", top: [{v, n}], other, nulls}`, or null past the first 30
 /// columns.
-pub fn page(arena: std.mem.Allocator, db: *duck.Db, parquet: []const u8, filters: []const Filter, offset: u64, limit: u32) duck.Error!Answer {
+/// With `at`, the page is the one holding that row (its place in the file)
+/// among the filtered rows, and `offset` is ignored: a link to one row.
+pub fn page(arena: std.mem.Allocator, db: *duck.Db, parquet: []const u8, filters: []const Filter, start: u64, limit: u32, at: ?u64) duck.Error!Answer {
     const src = try std.fmt.allocPrint(arena, "read_parquet({s}, file_row_number = true)", .{try sql.literal(arena, parquet)});
     const described = (try db.scalarText(arena, try std.fmt.allocPrint(arena, "SELECT json_group_array(json_object('name', column_name, 'type', column_type)) FROM (DESCRIBE SELECT * FROM read_parquet({s}))", .{try sql.literal(arena, parquet)}))) orelse return error.QueryFailed;
     const columns = std.json.parseFromSliceLeaky([]const Column, arena, described, .{}) catch return error.QueryFailed;
@@ -81,7 +83,6 @@ pub fn page(arena: std.mem.Allocator, db: *duck.Db, parquet: []const u8, filters
         } else return .{ .refused = f.column };
     }
 
-    var out: std.ArrayList(u8) = .empty;
     const w = struct {
         fn all(a: std.mem.Allocator, parts: []const []const u8, skip: ?usize) ![]const u8 {
             var t: std.ArrayList(u8) = .empty;
@@ -93,6 +94,13 @@ pub fn page(arena: std.mem.Allocator, db: *duck.Db, parquet: []const u8, filters
             return t.items;
         }
     };
+    // The page that holds row `at`: as many filtered rows come before it.
+    const offset = if (at) |row| blk: {
+        const before = (try db.scalarTextArgs(arena, try std.fmt.allocPrint(arena, "WITH t AS (SELECT * EXCLUDE (file_row_number), file_row_number AS __row FROM {s}) SELECT count(*)::VARCHAR FROM t WHERE __row < {d} AND {s}", .{ src, row, try w.all(arena, conds, null) }), args.items)) orelse return error.QueryFailed;
+        const n = std.fmt.parseInt(u64, before, 10) catch return error.QueryFailed;
+        break :blk n / limit * limit;
+    } else start;
+    var out: std.ArrayList(u8) = .empty;
     try out.print(arena, "WITH t AS (SELECT * EXCLUDE (file_row_number), file_row_number AS __row FROM {s}) SELECT json_object(" ++
         "'total', (SELECT count(*) FROM t), 'matched', (SELECT count(*) FROM t WHERE {s}), 'offset', {d}, " ++
         "'rows', (SELECT coalesce(json_group_array(to_json(r)), '[]') FROM (SELECT * FROM t WHERE {s} ORDER BY __row LIMIT {d} OFFSET {d}) r), " ++
@@ -152,7 +160,7 @@ test "rows a page at a time, narrowed by a bin or a value, each column counted a
         columns: []const struct { name: []const u8, type: []const u8, hist: ?Hist },
         rows: []const std.json.Value,
     };
-    const all = try std.json.parseFromSliceLeaky(Page, arena, (try page(arena, &db, parquet, &.{}, 0, 2)).page, .{ .ignore_unknown_fields = true });
+    const all = try std.json.parseFromSliceLeaky(Page, arena, (try page(arena, &db, parquet, &.{}, 0, 2, null)).page, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqual(@as(u64, 5), all.total);
     try std.testing.expectEqual(@as(u64, 5), all.matched);
     try std.testing.expectEqual(@as(usize, 2), all.rows.len);
@@ -170,7 +178,7 @@ test "rows a page at a time, narrowed by a bin or a value, each column counted a
 
     // The top bin's rows; the score column still counts every score, the
     // others only that row.
-    const top = try std.json.parseFromSliceLeaky(Page, arena, (try page(arena, &db, parquet, &.{.{ .column = "score", .bin = bins - 1 }}, 0, 50)).page, .{ .ignore_unknown_fields = true });
+    const top = try std.json.parseFromSliceLeaky(Page, arena, (try page(arena, &db, parquet, &.{.{ .column = "score", .bin = bins - 1 }}, 0, 50, null)).page, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqual(@as(u64, 1), top.matched);
     var still: u64 = 0;
     for (top.columns[3].hist.?.counts.?) |n| still += n;
@@ -178,10 +186,19 @@ test "rows a page at a time, narrowed by a bin or a value, each column counted a
     try std.testing.expectEqual(@as(u64, 1), top.columns[2].hist.?.top.?.len);
 
     // A value, bound, never spliced; an unknown column refused.
-    const one = try std.json.parseFromSliceLeaky(Page, arena, (try page(arena, &db, parquet, &.{.{ .column = "name", .value = "x' OR '1'='1" }}, 0, 50)).page, .{ .ignore_unknown_fields = true });
+    const one = try std.json.parseFromSliceLeaky(Page, arena, (try page(arena, &db, parquet, &.{.{ .column = "name", .value = "x' OR '1'='1" }}, 0, 50, null)).page, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqual(@as(u64, 0), one.matched);
-    try std.testing.expectEqualStrings("nope", (try page(arena, &db, parquet, &.{.{ .column = "nope", .value = "1" }}, 0, 50)).refused);
-    try std.testing.expectEqualStrings("name", (try page(arena, &db, parquet, &.{.{ .column = "name", .bin = 0 }}, 0, 50)).refused);
-    const none = try std.json.parseFromSliceLeaky(Page, arena, (try page(arena, &db, parquet, &.{.{ .column = "score", .null = true }}, 0, 50)).page, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqualStrings("nope", (try page(arena, &db, parquet, &.{.{ .column = "nope", .value = "1" }}, 0, 50, null)).refused);
+    try std.testing.expectEqualStrings("name", (try page(arena, &db, parquet, &.{.{ .column = "name", .bin = 0 }}, 0, 50, null)).refused);
+    // A link to row 3 (the fourth), two rows a page: the page from row 2.
+    const linked = try std.json.parseFromSliceLeaky(struct { offset: u64, rows: []const std.json.Value }, arena, (try page(arena, &db, parquet, &.{}, 0, 2, 3)).page, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(@as(u64, 2), linked.offset);
+    try std.testing.expectEqual(@as(i64, 3), linked.rows[1].object.get("__row").?.integer);
+    // Among Bandung's rows (0 and 2), row 2 is the second: page from 1.
+    const among = try std.json.parseFromSliceLeaky(struct { offset: u64 }, arena, (try page(arena, &db, parquet, &.{.{ .column = "city", .value = "Bandung" }}, 0, 1, 2)).page, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(@as(u64, 1), among.offset);
+    // And with a bin filter, whose formula reads the column's range.
+    _ = (try page(arena, &db, parquet, &.{.{ .column = "score", .bin = bins - 1 }}, 0, 1, 4)).page;
+    const none = try std.json.parseFromSliceLeaky(Page, arena, (try page(arena, &db, parquet, &.{.{ .column = "score", .null = true }}, 0, 50, null)).page, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqual(@as(u64, 1), none.matched);
 }

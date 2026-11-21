@@ -785,6 +785,8 @@ fn tableRows(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset,
         &.{};
     const offset = if (route.queryParam("offset")) |o| std.fmt.parseInt(u64, o, 10) catch return error.BadRequest else 0;
     const limit: u32 = if (route.queryParam("limit")) |l| std.math.clamp(std.fmt.parseInt(u32, l, 10) catch return error.BadRequest, 1, table_rows.max_limit) else 50;
+    // A link to one row: the page that holds it.
+    const at: ?u64 = if (route.queryParam("at")) |r| std.fmt.parseInt(u64, r, 10) catch return error.BadRequest else null;
 
     const cwd = std.Io.Dir.cwd();
     cwd.createDirPath(deps.io, deps.browse_dir) catch return error.Storage;
@@ -814,7 +816,7 @@ fn tableRows(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset,
 
     var db = try duckFor(arena, deps, dir);
     defer db.close();
-    return switch (try browseQuery(deps, table_rows.page, .{ arena, &db, parquet, filters, offset, limit })) {
+    return switch (try browseQuery(deps, table_rows.page, .{ arena, &db, parquet, filters, offset, limit, at })) {
         .page => |text| .{ .status = .ok, .body = try std.fmt.allocPrint(arena, "{{\"status\":\"done\",\"page\":{s}}}", .{text}) },
         .refused => |column| errorResponse(arena, .bad_request, try std.fmt.allocPrint(arena, "the table has no column '{s}' to filter that way", .{column}), "Pick a value from the column's distribution."),
     };

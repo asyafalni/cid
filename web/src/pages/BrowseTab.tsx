@@ -47,6 +47,8 @@ export function BrowseTab({
   onFilters,
   rowFilter,
   onRowFilter,
+  row,
+  onRow,
 }: {
   name: string;
   overview: Overview;
@@ -58,6 +60,9 @@ export function BrowseTab({
   /** The open table item's row filters, as JSON, from the URL. */
   rowFilter?: string;
   onRowFilter?: (rows: string | undefined) => void;
+  /** The open table item's linked row, from the URL. */
+  row?: string;
+  onRow?: (row: string | undefined) => void;
 }) {
   const setMode = (m: 'gallery' | 'table' | 'list') => onFilters({ mode: m });
 
@@ -448,6 +453,8 @@ export function BrowseTab({
           opacity={opacity}
           rowFilter={rowFilter}
           onRowFilter={onRowFilter}
+          row={row}
+          onRow={onRow}
           onClose={() => onOpenItem(undefined)}
         />
       )}
@@ -506,6 +513,8 @@ function ItemDrawer({
   opacity,
   rowFilter,
   onRowFilter,
+  row,
+  onRow,
   onClose,
 }: {
   name: string;
@@ -518,6 +527,8 @@ function ItemDrawer({
   opacity: number;
   rowFilter?: string;
   onRowFilter?: (rows: string | undefined) => void;
+  row?: string;
+  onRow?: (row: string | undefined) => void;
   onClose: () => void;
 }) {
   // A restricted item's bytes are never fetched just because its drawer
@@ -583,6 +594,8 @@ function ItemDrawer({
           revealed={revealed?.table}
           where={rowFilter}
           onWhere={onRowFilter}
+          row={row}
+          onRow={onRow}
         />
       ) : (
         <TextView name={name} path={item.path} hash={item.hash} revealed={revealed?.text} />

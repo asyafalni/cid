@@ -33,7 +33,7 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
   4. ~~The rest of B6~~ (done 2026-11-21): ~~the attribute filter~~ (done 2026-11-21: index format v4,
      `attr_set`); ~~the List view~~ and ~~the identity filter~~ (done 2026-11-21;
      identities are `attrs.identity`, docs/data-model.md); ~~histograms~~ (done with U6).
-  5. ~~U5~~ and ~~U6~~ (done 2026-11-21), then U7, U8 and U10, one between each larger piece.
+  5. ~~U5~~, ~~U6~~ and ~~U7~~ (done 2026-11-21), then U8 and U10, one between each larger piece.
   6. C1's two loose ends: the real-client check as an automated test (needs Python
      and the Hugging Face libraries agreed as a test-only dependency), and an
      annotated split's file at 1M items (first request not measured, not prepared
@@ -207,7 +207,8 @@ Close the "behind" rows without giving up an "ahead" one.
 - ~~**U6. Column histograms and click to filter**~~ (done 2026-11-21, with B6's
   histograms: a table's rows, each column's distribution above it, a click narrowing
   them, in the URL; docs/dashboard.md, the item drawer).
-- **U7. A link to one row.** Opening a table item at a row (`row=` in the URL),
+- ~~**U7. A link to one row.**~~ (done 2026-11-21: `row=` opens the rows at the page
+  holding it, under any filters, marked and scrolled to; a row's number makes the link.) Opening a table item at a row (`row=` in the URL),
   highlighted and scrolled to.
 - **U8. Search inside text.** Text files and string columns, per version. Needs an
   index decision first (DuckDB full-text search over the browse index, or not at

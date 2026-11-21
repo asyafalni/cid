@@ -13,6 +13,8 @@ export function TableView({
   revealed,
   where,
   onWhere,
+  row,
+  onRow,
 }: {
   name: string;
   hash: string;
@@ -22,6 +24,9 @@ export function TableView({
   /** The row filters, as JSON, from the URL; and how to change them. */
   where?: string;
   onWhere?: (where: string | undefined) => void;
+  /** The linked row (from 1), and how to link another. */
+  row?: string;
+  onRow?: (row: string | undefined) => void;
 }) {
   const answer = useQuery({ queryKey: ['table', name, hash], queryFn: () => getTable(name, hash) });
 
@@ -38,7 +43,7 @@ export function TableView({
             ? `No column statistics: ${a.reason ?? 'the worker could not read it'}.`
             : 'The column statistics are being built; they appear here when the preview worker reaches this file.'}
         </p>
-        {!a.withheld && onWhere && <TableRows name={name} hash={hash} path={path} where={where} onWhere={onWhere} fallback={null} />}
+        {!a.withheld && onWhere && <TableRows name={name} hash={hash} path={path} where={where} onWhere={onWhere} row={row} onRow={onRow} fallback={null} />}
       </>
     );
   }
@@ -84,7 +89,7 @@ export function TableView({
       ) : !revealed && onWhere ? (
         // Every row, a page at a time, each column's distribution above
         // it; the first rows stand in where rows cannot be had.
-        <TableRows name={name} hash={hash} path={path} where={where} onWhere={onWhere} fallback={stats} />
+        <TableRows name={name} hash={hash} path={path} where={where} onWhere={onWhere} row={row} onRow={onRow} fallback={stats} />
       ) : (
         stats.sample.length > 0 && (
           <div className="table-scroll">

@@ -2979,3 +2979,21 @@ button.tick-mark:hover {
   border-color: var(--aether);
   color: var(--text);
 }
+
+/* A linked row (U7): marked in the interactive colour, its number a link. */
+.row--linked td {
+  background: color-mix(in srgb, var(--aether) 14%, transparent);
+}
+
+.row--linked td:first-child {
+  box-shadow: inset 2px 0 0 var(--aether);
+}
+
+.row-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}

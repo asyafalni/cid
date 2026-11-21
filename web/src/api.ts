@@ -408,10 +408,11 @@ export type RowsAnswer = {
 };
 
 /** A table item's rows, narrowed, with each column's distribution (U6). */
-export function getRows(name: string, hash: string, path: string, where: RowFilter[], offset: number): Promise<RowsAnswer> {
+export function getRows(name: string, hash: string, path: string, where: RowFilter[], offset: number, at?: number): Promise<RowsAnswer> {
   // encodeURIComponent, not URLSearchParams: the server decodes %20, not '+'.
   const where_ = where.length > 0 ? `&where=${encodeURIComponent(JSON.stringify(where))}` : '';
-  return request(`/v0/datasets/${name}/-/rows?hash=${hash}&path=${encodeURIComponent(path)}&offset=${offset}&limit=50${where_}`);
+  const at_ = at === undefined ? '' : `&at=${at}`;
+  return request(`/v0/datasets/${name}/-/rows?hash=${hash}&path=${encodeURIComponent(path)}&offset=${offset}&limit=50${where_}${at_}`);
 }
 
 export type RowDiff = {

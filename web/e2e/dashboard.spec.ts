@@ -1022,6 +1022,22 @@ test('a table\'s rows: each column\'s distribution above it, a click narrows the
   await expect(page.getByRole('region', { name: 'Rows' })).toContainText('1 of 5 rows');
 });
 
+test('a link to one row opens the table there, marked, and a row\'s number makes that link', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/tables?view=browse&release=v1.1.0&item=people.csv');
+  const rows = page.getByRole('region', { name: 'Rows' });
+  await rows.getByRole('button', { name: 'Link to row 4' }).click();
+  await expect(page).toHaveURL(/row=4/);
+  // The link, opened afresh: that row, marked as the current one.
+  await page.reload();
+  const linked = page.getByRole('region', { name: 'Rows' }).locator('tr[aria-current="true"]');
+  await expect(linked).toContainText('Eko');
+  await expect(linked).toBeInViewport();
+  // Under a filter that leaves it out, the page says so.
+  await page.getByRole('button', { name: /^city = Medan: 1 row$/ }).click();
+  await expect(page.getByRole('region', { name: 'Rows' })).toContainText('Row 4 is not among these rows');
+});
+
 test('a declared key turns a removed-and-added pair into one row changed, cell by cell', async ({ page }) => {
   await signIn(page);
   // Without .cidkeys: an edit is one removed and one added, and the page says how to see it changed.
