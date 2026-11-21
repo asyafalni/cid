@@ -4897,7 +4897,22 @@ test "the Hugging Face door: a file dataset's releases, files and trees, as hugg
         try ptx.commit();
     }
     _ = try ann_remote.commitServer(arena, "main", "labelled", "agent:a");
-    _ = try ann_remote.tag(arena, "v1.0.0");
+    // The background worker prepares the release's split files before any
+    // client asks: one per split, unsplit included. Even when the commit
+    // was prepared as a head first, as the platform's commits are.
+    {
+        var prep_tmp = std.testing.tmpDir(.{});
+        defer prep_tmp.cleanup();
+        const saved = deps.browse_dir;
+        deps.browse_dir = try prep_tmp.dir.realPathFileAlloc(io, ".", arena);
+        defer deps.browse_dir = saved;
+        while (try cid.api.prepareNext(arena, &deps, &scope)) {}
+        _ = try ann_remote.tag(arena, "v1.0.0");
+        while (try cid.api.prepareNext(arena, &deps, &scope)) {}
+        const files = try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM version_files f JOIN refs r ON r.commit_id = f.commit_id " ++
+            "WHERE r.dataset_id = $1::uuid AND r.name = 'v1.0.0' AND f.kind = 'hf'", .{ann_id});
+        try std.testing.expectEqual(@as(?i64, 3), files);
+    }
 
     const ann_readme = hfCall(arena, &deps, &scope, "GET", "/datasets/test/datasets__hfann/resolve/v1.0.0/README.md", bearer, "");
     try std.testing.expectEqual(std.http.Status.ok, ann_readme.status);

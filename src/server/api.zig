@@ -36,6 +36,7 @@ const table_stats = @import("../tabular/stats.zig");
 const rowdiff_mod = @import("../tabular/rowdiff.zig");
 const table_keys = @import("../tabular/keys.zig");
 const table_rows = @import("../tabular/rows.zig");
+const hf = @import("hf.zig");
 const browse_mod = @import("browse/browse.zig");
 const bundle_mod = @import("../export/bundle.zig");
 const versions = @import("../core/version.zig");
@@ -433,6 +434,16 @@ fn queueVersion(deps: *Deps, scope: anytype, ds: Dataset, commit_id: []const u8)
     _ = deps.db.exec(scope, "INSERT INTO version_jobs (commit_id, dataset_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING", .{ commit_id, ds.id }) catch {};
 }
 
+/// A new release: queued again even when its commit was prepared as a
+/// branch head, since a release has work of its own (its diff with the
+/// release before, and an annotated release's Hugging Face split files);
+/// every step already done is kept and costs nothing the second time. A
+/// job building at that moment is left to finish.
+fn queueRelease(deps: *Deps, scope: anytype, ds: Dataset, commit_id: []const u8) void {
+    _ = deps.db.exec(scope, "INSERT INTO version_jobs (commit_id, dataset_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT (commit_id) DO UPDATE " ++
+        "SET status = 'pending', reason = NULL, queued_at = now(), updated_at = now() WHERE version_jobs.status <> 'building'", .{ commit_id, ds.id }) catch {};
+}
+
 /// Prepares the next queued version: its statistics, its browse index,
 /// its items file, for a release its diff with the release before, and
 /// for an annotated dataset its default export —
@@ -504,6 +515,14 @@ fn prepare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, c
             std.log.scoped(.prepare).debug("{s}: {s} export", .{ commit_id, default_format });
             _ = try ensureVersionFile(arena, deps, scope, ds, commit_id, kind, .{});
         };
+        // A release's split files for the Hugging Face door, which its
+        // clients pin by release; built on a first request they can take
+        // longer than a client waits (hf.prepareSplits).
+        const released = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM refs WHERE dataset_id = $1::uuid AND commit_id = $2::uuid AND kind = 'release'", .{ ds.id, commit_id }) catch return error.Db;
+        if (released != null) {
+            std.log.scoped(.prepare).debug("{s}: Hugging Face split files", .{commit_id});
+            try hf.prepareSplits(arena, deps, scope, ds, commit_id);
+        }
     }
 }
 
@@ -2656,7 +2675,7 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
         } else |_| std.log.warn("browse: the new release's index was not built; browsing will build it", .{});
     }
     if (cached) |files| storeBrowseIndex(arena, deps, scope, ds, created.commit_id, files);
-    queueVersion(deps, scope, ds, created.commit_id);
+    queueRelease(deps, scope, ds, created.commit_id);
     noteActivity(arena, deps, scope, caller, ds, "tag", created.name, .{ .items = created.items });
     return json(arena, .created, .{
         .release = created.name,

@@ -10,7 +10,8 @@
 //! An annotated dataset is served as its item files, at their paths, plus
 //! its annotations: one gzip JSON-lines file per split under
 //! `_annotations/` (the jsonl export's lines, built once per version and
-//! kept), and a generated `README.md` whose `configs:` name them as the
+//! kept; a release's ahead of its first reader, by the background worker),
+//! and a generated `README.md` whose `configs:` name them as the
 //! splits, so `load_dataset` reads them with no guessing.
 //!
 //! Like api.zig it is HTTP-free: `handle` takes a method and a target and
@@ -338,6 +339,14 @@ fn built(arena: std.mem.Allocator, deps: *api.Deps, scope: anytype, ds: api.Data
     };
     const size = (deps.s3.headObject(scope, file.key) catch return error.Storage) orelse return error.Storage;
     return .{ .key = file.key, .hash = file.file_hash, .size = size };
+}
+
+/// Every split's file of a version, built now: the server's background
+/// worker does this for an annotated release, ahead of its first reader. A
+/// Hugging Face client gives up on a file's metadata after 10 s, and the
+/// first build of a 1M-item release's train split takes about a minute.
+pub fn prepareSplits(arena: std.mem.Allocator, deps: *api.Deps, scope: anytype, ds: api.Dataset, commit: []const u8) api.HandleError!void {
+    for (try splitsOf(arena, deps, scope, ds, commit)) |sp| _ = try built(arena, deps, scope, ds, commit, sp);
 }
 
 fn findSplit(splits: []const Split, path: []const u8) ?Split {

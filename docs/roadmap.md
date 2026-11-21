@@ -35,9 +35,9 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      identities are `attrs.identity`, docs/data-model.md); ~~histograms~~ (done with U6).
   5. ~~U5~~, ~~U6~~, ~~U7~~ and ~~U8~~ (done 2026-11-21); U10 parked (below).
   6. C1's two loose ends: the real-client check as an automated test (needs Python
-     and the Hugging Face libraries agreed as a test-only dependency), and an
-     annotated split's file at 1M items (first request not measured, not prepared
-     ahead).
+     and the Hugging Face libraries agreed as a test-only dependency), and ~~an
+     annotated split's file at 1M items~~ (done 2026-11-21: prepared ahead for
+     releases, and a release of an already prepared head is queued again).
   7. Small gaps left by finished items: comparing a branch with `main` (B7); actions
      in the `⌘K` palette (B9); per-class change counts in `cid diff` (B5).
   8. U11 (watch three engineers use it), once U1 to U4 are in.
@@ -270,12 +270,14 @@ and their annotations as one gzip JSON-lines file per split under `_annotations/
 generated `README.md` (`configs:`): `train`, `val`, …, `unsplit` for items with
 none, or one `train` when there are no splits. Checked with the real clients:
 `snapshot_download`, `load_dataset` (each split, rows with their boxes) and
-streaming. A split's file is built on its first request and kept; at 1M items that
-first request waits for the build (not measured yet; the background worker does not
-prepare it ahead).
+streaming. A split's file is built once and kept. At 1M items its first build takes
+58.6 s for an 800,000-item train split, longer than a Hugging Face client waits for
+a file's metadata (10 s), so the background worker builds every split's file of an
+annotated release ahead of its first reader, and a release is queued again even
+when its commit was prepared as a head (2026-11-21: after preparation, 1–4 ms).
+Branch heads and commits are still built on a first request.
 **Models: done with C2 (2026-11-20),** on `/api/models/…` and at the root.
-**Still to do:** the real-client check as an automated test, and an annotated
-split's file at 1M items (section 0, item 5).
+**Still to do:** the real-client check as an automated test (section 0, item 6).
 
 Facts read from `huggingface_hub` 2.4.0, `datasets` 5.2.0 and `transformers` 5.23.0
 on 2026-11-20. Check them against the versions current when building.
