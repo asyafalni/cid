@@ -39,7 +39,8 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      annotated split's file at 1M items~~ (done 2026-11-21: prepared ahead for
      releases, and a release of an already prepared head is queued again).
   7. Small gaps left by finished items: comparing a branch with `main` (B7); actions
-     in the `⌘K` palette (B9); per-class change counts in `cid diff` (B5).
+     in the `⌘K` palette (B9); ~~per-class change counts in `cid diff` (B5)~~ (done 2026-11-21: counted as the
+     diff streams, the 20 most changed classes, and `by_class` in `--json`).
   8. U11 (watch three engineers use it), once U1 to U4 are in.
   9. The rest of Tier D, each with its own design first.
 - Running the e2e suite needs Playwright's browser:

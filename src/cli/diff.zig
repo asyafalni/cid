@@ -107,15 +107,16 @@ fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: [
     // The server compares (core/version.zig) and the changes stream in,
     // printed as they arrive: a million-item diff holds one line at a time.
     if (!ctx.json) ctx.out.print("Comparing {s} → {s}\n", .{ a_label, b_label }) catch return .network;
-    var printer: Printer = .{ .ctx = ctx, .remote = remote, .commit_b = b_commit };
+    var printer: Printer = .{ .ctx = ctx, .remote = remote, .commit_b = b_commit, .classes = .{ .arena = ctx.arena } };
     const sum = remote.compare(ctx.arena, a_commit, b_commit, .{ .ctx = &printer, .visit = Printer.visit }) catch |err| switch (err) {
         error.Corrupt => return common.fail(ctx, .integrity, "the diff from the server failed its check; the lines above are void. Run 'cid diff' again.", .{}),
         error.AccessDenied => return common.denied(ctx, "cid diff"),
         else => return common.fail(ctx, .network, "cannot compare '{s}' and '{s}' on the server. Check CID_SERVER, then run 'cid diff' again.", .{ a_label, b_label }),
     };
     if (printer.failed) return .network;
+    const by_class = printer.classes.sorted(ctx.arena) catch return .network;
 
-    if (common.emitJson(ctx, .{ .summary = sum })) return .ok;
+    if (common.emitJson(ctx, .{ .summary = sum, .by_class = by_class })) return .ok;
     const items = sum.added + sum.modified + sum.deleted;
     const anns = sum.ann_added + sum.ann_changed + sum.ann_removed;
     if (items == 0 and anns == 0) {
@@ -128,8 +129,58 @@ fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: [
         ctx.out.print("items: {d} added, {d} modified, {d} deleted · annotations: {d} added, {d} changed, {d} removed\n", .{
             sum.added, sum.modified, sum.deleted, sum.ann_added, sum.ann_changed, sum.ann_removed,
         }) catch return .network;
+        formatClasses(ctx.out, by_class) catch return .network;
     }
     return .ok;
+}
+
+/// Annotation changes counted per class as the diff streams past: memory
+/// grows with the classes, never with the changes.
+const ClassCounts = struct {
+    pub const Row = struct { class: []const u8, added: u64 = 0, changed: u64 = 0, removed: u64 = 0 };
+    arena: std.mem.Allocator,
+    rows: std.StringArrayHashMapUnmanaged(Row) = .empty,
+
+    fn count(self: *ClassCounts, class: ?[]const u8, change: []const u8) !void {
+        const name = class orelse "";
+        const slot = try self.rows.getOrPut(self.arena, name);
+        if (!slot.found_existing) {
+            const kept = try self.arena.dupe(u8, name);
+            slot.key_ptr.* = kept;
+            slot.value_ptr.* = .{ .class = kept };
+        }
+        const r = slot.value_ptr;
+        if (std.mem.eql(u8, change, "added")) r.added += 1 else if (std.mem.eql(u8, change, "removed")) r.removed += 1 else r.changed += 1;
+    }
+
+    /// Most changed first, then by name: the same order as the dashboard's.
+    fn sorted(self: *const ClassCounts, arena: std.mem.Allocator) ![]Row {
+        const out = try arena.dupe(Row, self.rows.values());
+        std.mem.sort(Row, out, {}, struct {
+            fn before(_: void, a: Row, b: Row) bool {
+                const ta = a.added + a.changed + a.removed;
+                const tb = b.added + b.changed + b.removed;
+                return if (ta != tb) ta > tb else std.mem.order(u8, a.class, b.class) == .lt;
+            }
+        }.before);
+        return out;
+    }
+};
+
+/// The per-class lines under the summary: the 20 most changed classes.
+fn formatClasses(out: *std.Io.Writer, rows: []const ClassCounts.Row) !void {
+    if (rows.len == 0) return;
+    const shown = rows[0..@min(rows.len, 20)];
+    var width: usize = "(no class)".len;
+    for (shown) |r| width = @max(width, r.class.len);
+    try out.writeAll("by class:\n");
+    for (shown) |r| {
+        const name = if (r.class.len == 0) "(no class)" else r.class;
+        try out.print("  {s}", .{name});
+        try out.splatByteAll(' ', width - name.len + 2);
+        try out.print("{d} added, {d} changed, {d} removed\n", .{ r.added, r.changed, r.removed });
+    }
+    if (rows.len > shown.len) try out.print("  … and {d} more classes\n", .{rows.len - shown.len});
 }
 
 /// Prints each change as it streams in; a modified table also gets its
@@ -139,6 +190,7 @@ const Printer = struct {
     remote: *const remote_mod.Remote,
     /// The later version: its `.cidkeys` names each table's key.
     commit_b: []const u8,
+    classes: ClassCounts,
     failed: bool = false,
 
     fn visit(raw: *anyopaque, line: remote_mod.Remote.DiffLine) anyerror!void {
@@ -151,6 +203,7 @@ const Printer = struct {
 
     fn print(self: *Printer, line: remote_mod.Remote.DiffLine) !void {
         const ctx = self.ctx;
+        if (line.ann) |change| try self.classes.count(line.class, change);
         if (ctx.json) return ctx.out.print("{f}\n", .{std.json.fmt(line, .{})});
         if (line.change) |change| {
             const path = line.path orelse return;
@@ -309,6 +362,32 @@ test "row lines: counts, a column change, the same rows, and words when not comp
     var w: std.Io.Writer = .fixed(&buf);
     try formatRows(&w, keyed);
     try std.testing.expectEqualStrings("rows by id: 1 added, 1 removed, 1 changed (5 → 5)\n                {\"id\":3}: score 78.0 → 79.0\n", w.buffered());
+}
+
+test "per-class lines: most changed first, no class named, and the rest counted" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var counts: ClassCounts = .{ .arena = arena };
+    try counts.count("person", "changed");
+    try counts.count("car", "removed");
+    try counts.count("car", "added");
+    try counts.count(null, "added");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try formatClasses(&w, try counts.sorted(arena));
+    try std.testing.expectEqualStrings(
+        \\by class:
+        \\  car         1 added, 0 changed, 1 removed
+        \\  (no class)  1 added, 0 changed, 0 removed
+        \\  person      0 added, 1 changed, 0 removed
+        \\
+    , w.buffered());
+    for (0..25) |i| try counts.count(try std.fmt.allocPrint(arena, "c{d:0>2}", .{i}), "added");
+    var big: [4096]u8 = undefined;
+    var w2: std.Io.Writer = .fixed(&big);
+    try formatClasses(&w2, try counts.sorted(arena));
+    try std.testing.expect(std.mem.endsWith(u8, w2.buffered(), "  … and 8 more classes\n"));
 }
 
 test "human sizes" {
