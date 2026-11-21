@@ -525,7 +525,7 @@ pub const Remote = struct {
         if (res.status != .ok) return error.ServerRefused;
     }
 
-    pub const DiffSummary = struct { added: u64 = 0, modified: u64 = 0, deleted: u64 = 0, ann_added: u64 = 0, ann_changed: u64 = 0, ann_removed: u64 = 0 };
+    pub const DiffSummary = struct { added: u64 = 0, modified: u64 = 0, deleted: u64 = 0, ann_added: u64 = 0, ann_changed: u64 = 0, ann_removed: u64 = 0, split: u64 = 0 };
 
     /// One change in a diff: an item (`change` set) or an annotation
     /// (`ann` set). Strings are valid only during the visit.
@@ -536,6 +536,9 @@ pub const Remote = struct {
         hash_b: ?[]const u8 = null,
         size_a: ?u64 = null,
         size_b: ?u64 = null,
+        /// The item's split at each version (a `split` change moves it).
+        split_a: ?[]const u8 = null,
+        split_b: ?[]const u8 = null,
         ann: ?[]const u8 = null,
         kind: ?[]const u8 = null,
         class: ?[]const u8 = null,

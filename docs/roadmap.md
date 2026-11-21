@@ -41,6 +41,9 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
   7. Small gaps left by finished items: comparing a branch with `main` (B7); actions
      in the `⌘K` palette (B9); ~~per-class change counts in `cid diff` (B5)~~ (done 2026-11-21: counted as the
      diff streams, the 20 most changed classes, and `by_class` in `--json`).
+     Found and fixed on the way (2026-11-21): an item moved to another split with its
+     bytes unchanged was invisible to `cid diff`, Compare and a release's counts;
+     it is now a change of its own (`split`, old → new), migration 0007.
   8. U11 (watch three engineers use it), once U1 to U4 are in.
   9. The rest of Tier D, each with its own design first.
 - Running the e2e suite needs Playwright's browser:

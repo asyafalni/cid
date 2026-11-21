@@ -411,6 +411,9 @@ pub const Changes = struct {
     ann_added: u64 = 0,
     ann_changed: u64 = 0,
     ann_removed: u64 = 0,
+    /// Items whose bytes held but whose split moved. Absent from releases
+    /// made before it was counted, which read as none.
+    split: u64 = 0,
 };
 
 /// Between two commits of one line of history (main, or one branch over
@@ -427,15 +430,15 @@ fn changesSql(comptime touched: bool) []const u8 {
     const two = struct {
         fn ctes(comptime p: []const u8, comptime br: []const u8, comptime cut: []const u8, comptime main: []const u8, comptime fi: []const u8, comptime fa: []const u8) []const u8 {
             const own = "WHERE dataset_id = $1::uuid AND ((branch = 'main' AND rev_id <= $" ++ main ++ "::uuid) OR (branch = $" ++ br ++ " AND rev_id <= $" ++ cut ++ "::uuid))";
-            return p ++ "_s AS (SELECT DISTINCT ON (path) path, op, item_hash FROM item_revisions " ++ own ++ fi ++ " ORDER BY path, rev_id DESC), " ++
-                p ++ "_live AS (SELECT path, item_hash FROM " ++ p ++ "_s WHERE op <> 'delete'), " ++
+            return p ++ "_s AS (SELECT DISTINCT ON (path) path, op, item_hash, split FROM item_revisions " ++ own ++ fi ++ " ORDER BY path, rev_id DESC), " ++
+                p ++ "_live AS (SELECT path, item_hash, split FROM " ++ p ++ "_s WHERE op <> 'delete'), " ++
                 p ++ "_a AS (SELECT DISTINCT ON (annotation_id) annotation_id, op, kind, class, geometry::text AS geometry, attrs::text AS attrs " ++
                 "FROM annotation_revisions " ++ own ++ fa ++ " ORDER BY annotation_id, rev_id DESC), " ++
                 p ++ "_alive AS (SELECT * FROM " ++ p ++ "_a WHERE op <> 'delete')";
         }
     }.ctes;
     return "WITH " ++ two("x", "2", "3", "4", items_f, anns_f) ++ ", " ++ two("y", "5", "6", "7", items_f, anns_f) ++ ", " ++
-        "files AS (SELECT x_live.item_hash AS ha, y_live.item_hash AS hb FROM x_live FULL JOIN y_live USING (path)), " ++
+        "files AS (SELECT x_live.item_hash AS ha, y_live.item_hash AS hb, x_live.split AS sa, y_live.split AS sb FROM x_live FULL JOIN y_live USING (path)), " ++
         "anns AS (SELECT x_alive.annotation_id AS ia, y_alive.annotation_id AS ib, " ++
         "  (x_alive.kind, x_alive.class, x_alive.geometry, x_alive.attrs) IS DISTINCT FROM (y_alive.kind, y_alive.class, y_alive.geometry, y_alive.attrs) AS differs " ++
         "  FROM x_alive FULL JOIN y_alive USING (annotation_id)) " ++
@@ -445,7 +448,8 @@ fn changesSql(comptime touched: bool) []const u8 {
         "'deleted', (SELECT count(*) FROM files WHERE hb IS NULL), " ++
         "'ann_added', (SELECT count(*) FROM anns WHERE ia IS NULL), " ++
         "'ann_changed', (SELECT count(*) FROM anns WHERE ia IS NOT NULL AND ib IS NOT NULL AND differs), " ++
-        "'ann_removed', (SELECT count(*) FROM anns WHERE ib IS NULL))::text";
+        "'ann_removed', (SELECT count(*) FROM anns WHERE ib IS NULL), " ++
+        "'split', (SELECT count(*) FROM files WHERE ha = hb AND sa IS DISTINCT FROM sb))::text";
 }
 
 /// What changed from `from_commit` to `to_commit`, as JSON text (the

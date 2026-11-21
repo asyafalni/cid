@@ -133,7 +133,7 @@ When a design choice trades simplicity for power, choose simplicity and ask firs
 | Who changes it | People and scripts, from a folder: `cid add`, `cid commit`, `cid push` | The annotation platform (agents + reviewers), through the server |
 | Typical use | Text corpora, audio sets, tables, documents, model inputs, anything | Vision datasets built in the annotation platform |
 | Clone gives you | The same folder tree | A ready-to-train export (`yolo`, `jsonl`, `coco`, `voc`) |
-| Diff shows | Files added/removed/changed; rows added/removed for CSV, Parquet, JSONL | Items and annotations added/removed/changed |
+| Diff shows | Files added/removed/changed; rows added/removed for CSV, Parquet, JSONL | Items and annotations added/removed/changed, and items moved to another split |
 
 Both kinds share the same history model, releases, storage and commands. Annotations in
 a file dataset are just files (e.g. `labels.jsonl`); structured annotations exist only in

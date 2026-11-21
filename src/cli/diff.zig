@@ -117,17 +117,22 @@ fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: [
     const by_class = printer.classes.sorted(ctx.arena) catch return .network;
 
     if (common.emitJson(ctx, .{ .summary = sum, .by_class = by_class })) return .ok;
-    const items = sum.added + sum.modified + sum.deleted;
+    // A split moved is a change: the item trains as something else now.
+    const items = sum.added + sum.modified + sum.deleted + sum.split;
     const anns = sum.ann_added + sum.ann_changed + sum.ann_removed;
     if (items == 0 and anns == 0) {
         ctx.out.writeAll("No differences.\n") catch return .network;
     } else if (anns == 0) {
-        ctx.out.print("{d} change{s}: {d} added, {d} modified, {d} deleted\n", .{
+        ctx.out.print("{d} change{s}: {d} added, {d} modified, {d} deleted", .{
             items, plural(items), sum.added, sum.modified, sum.deleted,
         }) catch return .network;
+        if (sum.split > 0) ctx.out.print(", {d} moved to another split", .{sum.split}) catch return .network;
+        ctx.out.writeByte('\n') catch return .network;
     } else {
-        ctx.out.print("items: {d} added, {d} modified, {d} deleted · annotations: {d} added, {d} changed, {d} removed\n", .{
-            sum.added, sum.modified, sum.deleted, sum.ann_added, sum.ann_changed, sum.ann_removed,
+        ctx.out.print("items: {d} added, {d} modified, {d} deleted", .{ sum.added, sum.modified, sum.deleted }) catch return .network;
+        if (sum.split > 0) ctx.out.print(", {d} moved to another split", .{sum.split}) catch return .network;
+        ctx.out.print(" · annotations: {d} added, {d} changed, {d} removed\n", .{
+            sum.ann_added, sum.ann_changed, sum.ann_removed,
         }) catch return .network;
         formatClasses(ctx.out, by_class) catch return .network;
     }
@@ -209,6 +214,9 @@ const Printer = struct {
             const path = line.path orelse return;
             if (std.mem.eql(u8, change, "deleted")) {
                 try printLine(ctx, "deleted", path, null);
+            } else if (std.mem.eql(u8, change, "split")) {
+                // The same bytes, moved to another split: what it trains as changed.
+                try ctx.out.print("  {s: <9} {s}  {s} → {s}\n", .{ "split", path, line.split_a orelse "(none)", line.split_b orelse "(none)" });
             } else {
                 try printLine(ctx, change, path, line.size_b);
                 if (std.mem.eql(u8, change, "modified") and isTable(path))

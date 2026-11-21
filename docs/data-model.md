@@ -540,8 +540,11 @@ Built from content or from sealed versions, so never stale; each row is written 
   (statistics, browse index, items file, default export), queued after each push,
   commit, merge and release. Index `version_jobs_pending (queued_at) WHERE status IN
   ('pending','building')`.
-- `version_diffs (dataset_id, commit_a, commit_b, file_hash, summary)`: what changed
-  between two versions, as a gzip file in storage plus its summary.
+- `version_diffs (dataset_id, commit_a, commit_b, file_hash, summary, format)`: what
+  changed between two versions, as a gzip file in storage plus its summary. `format`
+  is the diff's (`browse.diff_format`; d2 counts an item moved to another split, with
+  its bytes unchanged, as a change, which d1 missed): a diff kept in another format is
+  rebuilt on its next request, and the pair's Parquet files carry it in their names.
 
 ---
 

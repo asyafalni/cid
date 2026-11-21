@@ -1215,8 +1215,8 @@ fn diffIndex(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset,
     if (cwd.statFile(deps.io, d.items, .{})) |_| return d else |_| {}
 
     const keys = [_][]const u8{
-        try std.fmt.allocPrint(arena, "diffs/{s}/{s}-{s}.anns.parquet", .{ ds.id, a, b }),
-        try std.fmt.allocPrint(arena, "diffs/{s}/{s}-{s}.items.parquet", .{ ds.id, a, b }),
+        try std.fmt.allocPrint(arena, "diffs/{s}/{s}-{s}." ++ browse_mod.diff_format ++ ".anns.parquet", .{ ds.id, a, b }),
+        try std.fmt.allocPrint(arena, "diffs/{s}/{s}-{s}." ++ browse_mod.diff_format ++ ".items.parquet", .{ ds.id, a, b }),
     };
     const local = [_][]const u8{ d.anns, d.items };
     fetched: {
@@ -1931,13 +1931,16 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Calle
         ann_added: ?i64,
         ann_changed: ?i64,
         ann_removed: ?i64,
+        /// Absent from releases made before it was counted.
+        split: ?i64,
     };
     const tape = deps.db.raw(TapeEntry, scope, "SELECT c.commit_id::text AS id, c.message, c.author, " ++
         "(extract(epoch from c.recorded_at) * 1000)::bigint AS at_ms, rel.name AS release, coalesce(rel.pending, false) AS git_pending, " ++
         "CASE WHEN rel.name IS NOT NULL THEN (c.stats->>'items')::bigint END AS items, rel.changes_from, " ++
         "(rel.changes->>'added')::bigint AS added, (rel.changes->>'modified')::bigint AS modified, " ++
         "(rel.changes->>'deleted')::bigint AS deleted, (rel.changes->>'ann_added')::bigint AS ann_added, " ++
-        "(rel.changes->>'ann_changed')::bigint AS ann_changed, (rel.changes->>'ann_removed')::bigint AS ann_removed " ++
+        "(rel.changes->>'ann_changed')::bigint AS ann_changed, (rel.changes->>'ann_removed')::bigint AS ann_removed, " ++
+        "(rel.changes->>'split')::bigint AS split " ++
         "FROM commits c LEFT JOIN LATERAL (" ++
         "  SELECT name, changes_from, changes, " ++ git_pending_sql ++ " AS pending FROM refs r WHERE r.dataset_id = c.dataset_id " ++
         "  AND r.commit_id = c.commit_id AND r.kind = 'release' ORDER BY name LIMIT 1) rel ON true " ++
@@ -2457,7 +2460,7 @@ fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, p
         file_hash: []const u8,
         summary: []const u8,
     };
-    if (deps.db.rawOne(Kept, scope, "SELECT file_hash, summary::text AS summary FROM version_diffs WHERE commit_a = $1::uuid AND commit_b = $2::uuid AND dataset_id = $3::uuid", .{ a, b, ds.id }) catch return error.Db) |kept| {
+    if (deps.db.rawOne(Kept, scope, "SELECT file_hash, summary::text AS summary FROM version_diffs WHERE commit_a = $1::uuid AND commit_b = $2::uuid AND dataset_id = $3::uuid AND format = $4", .{ a, b, ds.id, browse_mod.diff_format }) catch return error.Db) |kept| {
         const url = deps.s3.presignGet(scope, try diffKey(arena, ds.id, a, b, kept.file_hash), presign_secs) catch return error.Storage;
         return json(arena, .ok, .{ .url = url, .hash = kept.file_hash, .summary = jsonValue(arena, kept.summary) });
     }
@@ -2501,8 +2504,10 @@ fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, p
     const file_hash = try gz.finish();
     deps.s3.putFile(scope, deps.io, try diffKey(arena, ds.id, a, b, &file_hash), gz.path) catch return error.Storage;
     const summary_text = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(summary, .{})});
-    _ = deps.db.exec(scope, "INSERT INTO version_diffs (dataset_id, commit_a, commit_b, file_hash, summary) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::jsonb) " ++
-        "ON CONFLICT DO NOTHING", .{ ds.id, a, b, @as([]const u8, &file_hash), summary_text }) catch return error.Db;
+    // A diff kept in an older format is replaced.
+    _ = deps.db.exec(scope, "INSERT INTO version_diffs (dataset_id, commit_a, commit_b, file_hash, summary, format) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::jsonb, $6) " ++
+        "ON CONFLICT (commit_a, commit_b) DO UPDATE SET file_hash = excluded.file_hash, summary = excluded.summary, format = excluded.format, created_at = now() " ++
+        "WHERE version_diffs.format <> excluded.format", .{ ds.id, a, b, @as([]const u8, &file_hash), summary_text, browse_mod.diff_format }) catch return error.Db;
     const url = deps.s3.presignGet(scope, try diffKey(arena, ds.id, a, b, &file_hash), presign_secs) catch return error.Storage;
     return json(arena, .ok, .{ .url = url, .hash = @as([]const u8, &file_hash), .summary = summary });
 }

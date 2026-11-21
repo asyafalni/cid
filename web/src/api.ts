@@ -89,6 +89,8 @@ export type TapeCommit = {
   ann_added: number | null;
   ann_changed: number | null;
   ann_removed: number | null;
+  /** Items moved to another split (counted since 2026-11-21; absent before). */
+  split?: number | null;
 };
 
 /** A model is a file dataset by another name: only its label differs. */
@@ -296,13 +298,17 @@ export type ComparePage = {
     ann_added: number;
     ann_changed: number;
     ann_removed: number;
+    /** Items whose bytes held but whose split moved. */
+    split?: number;
   };
   changes: {
-    change: 'added' | 'modified' | 'deleted';
+    change: 'added' | 'modified' | 'deleted' | 'split';
     path: string;
     hash_a: string | null;
     hash_b: string | null;
     size_b: number | null;
+    split_a?: string | null;
+    split_b?: string | null;
   }[];
   next: string | null;
   visual: {

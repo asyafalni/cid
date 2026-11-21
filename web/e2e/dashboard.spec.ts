@@ -162,9 +162,15 @@ test('a release touched by a purge says it is intact except its purged items', a
   // A purge is irreversible, so the shared fixtures never get one: the
   // answer is given as if v1.0.0 had lost one item (the server's count is
   // checked by the integration suite).
+  // The page asks for more than one overview (compare reads each side's);
+  // one whose answer is gone by the time it is read passes through as it is.
   await page.route('**/v0/datasets/e2e/datasets/demo/-/overview*', async (route) => {
-    const res = await route.fetch();
-    await route.fulfill({ response: res, json: { ...(await res.json()), purged: [{ release: 'v1.0.0', items: 1 }] } });
+    try {
+      const res = await route.fetch();
+      await route.fulfill({ response: res, json: { ...(await res.json()), purged: [{ release: 'v1.0.0', items: 1 }] } });
+    } catch {
+      await route.continue().catch(() => {});
+    }
   });
   await page.goto('/d/e2e/datasets/demo?view=releases');
   const history = page.getByRole('region', { name: 'History' });
@@ -524,6 +530,11 @@ test('the card draws class balance and split sizes as bars, and compare draws th
   await expect(balance.getByRole('row', { name: /truck/ })).toContainText('0 → 1');
   await expect(balance.getByRole('row', { name: /car/ })).toContainText('2');
   await expect(page.getByRole('table', { name: /Items by split/ }).getByRole('row', { name: /val/ })).toContainText('0 → 1');
+  // The move itself is a change, listed and counted, though no byte changed.
+  await expect(page.locator('.compare-stats')).toContainText('1 moved to another split');
+  await expect(page.locator('.change', { hasText: 'street/hidden.png' })).toContainText('train → val');
+  // And the history says so under the release.
+  await expect(page.locator('.moment-counts').first()).toContainText('1 moved to another split');
   // A version pair whose counts held draws no chart.
   await page.goto('/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0');
   await expect(page.locator('.dumbbell-table')).toHaveCount(0);

@@ -124,10 +124,12 @@ export function ReleasesTab({
 // the comparison itself.
 function ReleaseCounts({ name, kind, release: c }: { name: string; kind: Overview['kind']; release: TapeCommit }) {
   if (c.items === null && c.changes_from === null) return null;
+  const moved = c.split ?? 0;
   const files =
-    (c.added ?? 0) + (c.modified ?? 0) + (c.deleted ?? 0) === 0
+    (c.added ?? 0) + (c.modified ?? 0) + (c.deleted ?? 0) + moved === 0
       ? 'no files changed'
-      : `${n(c.added)} ${c.added === 1 ? 'file' : 'files'} added, ${n(c.modified)} modified, ${n(c.deleted)} deleted`;
+      : `${n(c.added)} ${c.added === 1 ? 'file' : 'files'} added, ${n(c.modified)} modified, ${n(c.deleted)} deleted` +
+        (moved > 0 ? `, ${moved.toLocaleString()} moved to another split` : '');
   const annotations =
     kind === 'annotated'
       ? `; ${n(c.ann_added)} ${c.ann_added === 1 ? 'annotation' : 'annotations'} added, ${n(c.ann_changed)} changed, ${n(c.ann_removed)} removed`
@@ -243,7 +245,8 @@ function Comparison({
     );
 
   const s = first.summary;
-  const anyItems = s.added + s.modified + s.deleted > 0;
+  // A split moved is a change: the item trains as something else now.
+  const anyItems = s.added + s.modified + s.deleted + (s.split ?? 0) > 0;
   const anyAnns = s.ann_added + s.ann_changed + s.ann_removed > 0;
 
   return (
@@ -253,6 +256,11 @@ function Comparison({
           <dt>Files</dt>
           <dd>
             <Count n={s.added} /> added, <Count n={s.modified} /> modified, <Count n={s.deleted} /> deleted
+            {(s.split ?? 0) > 0 && (
+              <>
+                , <Count n={s.split ?? 0} /> moved to another split
+              </>
+            )}
           </dd>
         </div>
         {overview.kind === 'annotated' && (
@@ -311,9 +319,15 @@ function Comparison({
         <ul className="change-list">
           {changes.map((c) => (
             <li key={c.path} className="change">
-              <span className={`change-verb change-verb--${c.change}`}>{c.change}</span>
+              <span className={`change-verb change-verb--${c.change === 'split' ? 'modified' : c.change}`}>{c.change}</span>
               <span className="data change-path">{c.path}</span>
-              {c.size_b !== null && <span className="quiet data">{humanBytes(c.size_b)}</span>}
+              {c.change === 'split' ? (
+                <span className="data">
+                  {c.split_a ?? 'no split'} → {c.split_b ?? 'no split'}
+                </span>
+              ) : (
+                c.size_b !== null && <span className="quiet data">{humanBytes(c.size_b)}</span>
+              )}
               {c.change === 'modified' && thumbBy.has(c.hash_a!) && thumbBy.has(c.hash_b!) && (
                 <span className="before-after">
                   <Thumb src={thumbBy.get(c.hash_a!)} alt={`${c.path} before`} label={extOf(c.path)} />

@@ -497,7 +497,14 @@ pub const DiffSummary = struct {
     ann_added: u64 = 0,
     ann_changed: u64 = 0,
     ann_removed: u64 = 0,
+    /// Items whose bytes held but whose split moved (train → val).
+    split: u64 = 0,
 };
+
+/// The pair-diff files' format, in their names: d2 counts a split moved
+/// as a change. Diffs kept in an older format are never read, only
+/// rebuilt (the server records each kept diff's format, `version_diffs`).
+pub const diff_format = "d2";
 
 /// The joins every compare shares, after WITH: `ch` (items whose bytes
 /// differ, by path), `acp` (annotations added, removed, or changed in
@@ -508,12 +515,13 @@ pub const DiffSummary = struct {
 /// differ are then read whole (at 1M items, 1.5 s down to 0.5 s).
 fn compareCtes(arena: std.mem.Allocator, a: Files, b: Files) Error![]const u8 {
     return std.fmt.allocPrint(arena,
-        \\ia AS (SELECT path, hash, size, item_id FROM read_parquet('{0s}')),
-        \\ib AS (SELECT path, hash, size, item_id FROM read_parquet('{1s}')),
+        \\ia AS (SELECT path, hash, size, item_id, split FROM read_parquet('{0s}')),
+        \\ib AS (SELECT path, hash, size, item_id, split FROM read_parquet('{1s}')),
         \\ch AS (SELECT coalesce(x.path, y.path) AS path,
-        \\    CASE WHEN x.path IS NULL THEN 'added' WHEN y.path IS NULL THEN 'deleted' ELSE 'modified' END AS change,
-        \\    x.hash AS hash_a, y.hash AS hash_b, x.size AS size_a, y.size AS size_b
-        \\  FROM ia x FULL JOIN ib y USING (path) WHERE x.hash IS DISTINCT FROM y.hash),
+        \\    CASE WHEN x.path IS NULL THEN 'added' WHEN y.path IS NULL THEN 'deleted'
+        \\      WHEN x.hash IS DISTINCT FROM y.hash THEN 'modified' ELSE 'split' END AS change,
+        \\    x.hash AS hash_a, y.hash AS hash_b, x.size AS size_a, y.size AS size_b, x.split AS split_a, y.split AS split_b
+        \\  FROM ia x FULL JOIN ib y USING (path) WHERE x.hash IS DISTINCT FROM y.hash OR x.split IS DISTINCT FROM y.split),
         \\ids AS (SELECT coalesce(x.id, y.id) AS id
         \\  FROM (SELECT id, digest FROM read_parquet('{2s}')) x FULL JOIN (SELECT id, digest FROM read_parquet('{3s}')) y USING (id)
         \\  WHERE x.id IS NULL OR y.id IS NULL OR x.digest <> y.digest),
@@ -544,7 +552,7 @@ pub const VisualSide = struct { path: []const u8, hash: []const u8, item_id: ?[]
 
 pub const ComparePage = struct {
     summary: DiffSummary,
-    changes: []const struct { change: []const u8, path: []const u8, hash_a: ?[]const u8, hash_b: ?[]const u8, size_b: ?u64 },
+    changes: []const struct { change: []const u8, path: []const u8, hash_a: ?[]const u8, hash_b: ?[]const u8, size_b: ?u64, split_a: ?[]const u8 = null, split_b: ?[]const u8 = null },
     next: ?[]const u8,
     visual: []const struct {
         path: []const u8,
@@ -573,8 +581,8 @@ pub const DiffFiles = struct {
 
     pub fn of(arena: std.mem.Allocator, dir: []const u8, a: []const u8, b: []const u8) Error!DiffFiles {
         return .{
-            .items = try std.fmt.allocPrint(arena, "{s}/{s}-{s}.diff-items.parquet", .{ dir, a, b }),
-            .anns = try std.fmt.allocPrint(arena, "{s}/{s}-{s}.diff-anns.parquet", .{ dir, a, b }),
+            .items = try std.fmt.allocPrint(arena, "{s}/{s}-{s}." ++ diff_format ++ ".diff-items.parquet", .{ dir, a, b }),
+            .anns = try std.fmt.allocPrint(arena, "{s}/{s}-{s}." ++ diff_format ++ ".diff-anns.parquet", .{ dir, a, b }),
         };
     }
 };
@@ -587,7 +595,7 @@ pub fn buildDiff(arena: std.mem.Allocator, io: std.Io, db: *duck.Db, a: Files, b
     const ctes = try compareCtes(arena, a, b);
     const steps = [_]struct { out: []const u8, select: []const u8 }{
         .{ .out = out.anns, .select = "SELECT change, id, kind, class, item, item_path, before, after FROM acp ORDER BY item_path, id" },
-        .{ .out = out.items, .select = "SELECT change, path, hash_a, hash_b, size_a, size_b FROM ch ORDER BY path" },
+        .{ .out = out.items, .select = "SELECT change, path, hash_a, hash_b, size_a, size_b, split_a, split_b FROM ch ORDER BY path" },
     };
     var token: [8]u8 = undefined;
     io.random(&token);
@@ -608,7 +616,8 @@ fn summaryOf(arena: std.mem.Allocator, d: DiffFiles) Error![]const u8 {
         \\  'deleted', (SELECT count(*) FROM read_parquet('{0s}') WHERE change = 'deleted'),
         \\  'ann_added', (SELECT count(*) FROM read_parquet('{1s}') WHERE change = 'added'),
         \\  'ann_changed', (SELECT count(*) FROM read_parquet('{1s}') WHERE change = 'changed'),
-        \\  'ann_removed', (SELECT count(*) FROM read_parquet('{1s}') WHERE change = 'removed'))
+        \\  'ann_removed', (SELECT count(*) FROM read_parquet('{1s}') WHERE change = 'removed'),
+        \\  'split', (SELECT count(*) FROM read_parquet('{0s}') WHERE change = 'split'))
     , .{ try quote(arena, d.items), try quote(arena, d.anns) });
 }
 
@@ -623,7 +632,7 @@ pub fn comparePage(arena: std.mem.Allocator, db: *duck.Db, a: Files, b: Files, d
         \\sb AS (SELECT path, hash, item_id FROM read_parquet('{3s}') WHERE item_id IN (SELECT item FROM vis))
         \\SELECT json_object(
         \\  'summary', {5s},
-        \\  'changes', (SELECT coalesce(to_json(list(json_object('change', change, 'path', path, 'hash_a', hash_a, 'hash_b', hash_b, 'size_b', size_b) ORDER BY path)), '[]'::JSON) FROM page),
+        \\  'changes', (SELECT coalesce(to_json(list(json_object('change', change, 'path', path, 'hash_a', hash_a, 'hash_b', hash_b, 'size_b', size_b, 'split_a', split_a, 'split_b', split_b) ORDER BY path)), '[]'::JSON) FROM page),
         \\  'next', (SELECT CASE WHEN n = $2 AND EXISTS (SELECT 1 FROM ch WHERE ch.path > last.p) THEN p END FROM last),
         \\  'visual', (SELECT coalesce(to_json(list(json_object('path', v.item_path,
         \\      'before', (SELECT json_object('path', path, 'hash', hash, 'item_id', item_id) FROM sa WHERE sa.item_id = v.item LIMIT 1),
@@ -652,7 +661,7 @@ pub fn comparePage(arena: std.mem.Allocator, db: *duck.Db, a: Files, b: Files, d
 pub const CompareFiles = struct { items: []const u8, anns: []const u8 };
 
 pub fn compareLines(arena: std.mem.Allocator, db: *duck.Db, d: DiffFiles, out: CompareFiles) Error!DiffSummary {
-    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT change, path, hash_a, hash_b, size_a, size_b FROM read_parquet('{s}') ORDER BY path) TO '{s}' (FORMAT json)", .{ try quote(arena, d.items), try quote(arena, out.items) }));
+    _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT change, path, hash_a, hash_b, size_a, size_b, split_a, split_b FROM read_parquet('{s}') ORDER BY path) TO '{s}' (FORMAT json)", .{ try quote(arena, d.items), try quote(arena, out.items) }));
     _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT change AS ann, id, kind, class, item_path FROM read_parquet('{s}') ORDER BY item_path, id) TO '{s}' (FORMAT json)", .{ try quote(arena, d.anns), try quote(arena, out.anns) }));
     const text = (try db.scalarText(arena, try std.fmt.allocPrint(arena, "SELECT {s}::VARCHAR", .{try summaryOf(arena, d)}))) orelse return error.QueryFailed;
     return std.json.parseFromSliceLeaky(DiffSummary, arena, text, .{}) catch error.QueryFailed;
@@ -819,13 +828,14 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
     const rest = try listDir(arena, &db, v1, "img/", img.next, 2);
     try std.testing.expectEqualStrings("img/c.png", rest.files[0].path);
 
-    // Compare: README gone, a.jpg's bytes changed, d.txt new; box x1
-    // moved, x3 removed, x5 added on b.JPG.
+    // Compare: README gone, a.jpg's bytes changed, d.txt new, c.png
+    // moved from val to train with its bytes as they were; box x1 moved,
+    // x3 removed, x5 added on b.JPG.
     const v2 = try writeFixture(arena, io, &db, dir, "v2",
         \\{"path":"d.txt","hash":"ee","size":5,"split":null,"item_id":null,"ext":".txt","classes":[]}
         \\{"path":"img/a.jpg","hash":"a2","size":1,"split":"train","item_id":"i1","ext":".jpg","classes":["person","person"]}
         \\{"path":"img/b.JPG","hash":"bb","size":2,"split":"train","item_id":"i2","ext":".jpg","classes":["car"]}
-        \\{"path":"img/c.png","hash":"cc","size":3,"split":"val","item_id":"i3","ext":".png","classes":[""]}
+        \\{"path":"img/c.png","hash":"cc","size":3,"split":"train","item_id":"i3","ext":".png","classes":[""]}
         \\
     ,
         \\{"id":"x1","item_id":"i1","kind":"box","class":"person","geometry":{"y":2,"x":9,"h":4,"w":3},"attrs":null,"author":"user:r","policy_ver":"p1"}
@@ -837,7 +847,7 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
     const d12 = try DiffFiles.of(arena, dir, "v1", "v2");
     try buildDiff(arena, io, &db, v1, v2, d12);
     const cmp = try comparePage(arena, &db, v1, v2, d12, null, 2);
-    try std.testing.expectEqual(DiffSummary{ .added = 1, .modified = 1, .deleted = 1, .ann_added = 1, .ann_changed = 1, .ann_removed = 1 }, cmp.summary);
+    try std.testing.expectEqual(DiffSummary{ .added = 1, .modified = 1, .deleted = 1, .ann_added = 1, .ann_changed = 1, .ann_removed = 1, .split = 1 }, cmp.summary);
     try std.testing.expectEqualStrings("README", cmp.changes[0].path);
     try std.testing.expectEqualStrings("deleted", cmp.changes[0].change);
     try std.testing.expectEqualStrings("d.txt", cmp.changes[1].path);
@@ -850,6 +860,9 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
     try std.testing.expectEqualStrings("a2", cmp.visual[0].after.?.hash);
     const page2 = try comparePage(arena, &db, v1, v2, d12, cmp.next, 2);
     try std.testing.expectEqualStrings("img/a.jpg", page2.changes[0].path);
+    try std.testing.expectEqualStrings("split", page2.changes[1].change);
+    try std.testing.expectEqualStrings("val", page2.changes[1].split_a.?);
+    try std.testing.expectEqualStrings("train", page2.changes[1].split_b.?);
     try std.testing.expectEqual(@as(usize, 0), page2.visual.len);
     try std.testing.expectEqual(@as(usize, 3), cmp.ann_changes.len);
     try std.testing.expectEqualStrings("img/a.jpg", cmp.ann_changes[0].item_path.?);
@@ -868,7 +881,8 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
     const sum = try compareLines(arena, &db, d12, out);
     try std.testing.expectEqual(cmp.summary, sum);
     const lines = try std.Io.Dir.cwd().readFileAlloc(io, out.items, arena, .limited(1 << 20));
-    try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, lines, "\n"));
+    try std.testing.expectEqual(@as(usize, 4), std.mem.count(u8, lines, "\n"));
+    try std.testing.expect(std.mem.indexOf(u8, lines, "\"change\":\"split\",\"path\":\"img/c.png\"") != null);
     try std.testing.expect(std.mem.startsWith(u8, lines, "{\"change\":\"deleted\",\"path\":\"README\""));
     const ann_lines = try std.Io.Dir.cwd().readFileAlloc(io, out.anns, arena, .limited(1 << 20));
     try std.testing.expect(std.mem.indexOf(u8, ann_lines, "\"ann\":\"changed\",\"id\":\"x1\",\"kind\":\"box\",\"class\":\"person\",\"item_path\":\"img/a.jpg\"") != null);
