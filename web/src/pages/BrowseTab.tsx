@@ -45,6 +45,8 @@ export function BrowseTab({
   onOpenItem,
   filters,
   onFilters,
+  rowFilter,
+  onRowFilter,
 }: {
   name: string;
   overview: Overview;
@@ -53,6 +55,9 @@ export function BrowseTab({
   onOpenItem: (path: string | undefined) => void;
   filters: Filters;
   onFilters: (patch: FilterPatch) => void;
+  /** The open table item's row filters, as JSON, from the URL. */
+  rowFilter?: string;
+  onRowFilter?: (rows: string | undefined) => void;
 }) {
   const setMode = (m: 'gallery' | 'table' | 'list') => onFilters({ mode: m });
 
@@ -441,6 +446,8 @@ export function BrowseTab({
           thumb={thumbByHash.get(open.hash)}
           hidden={hidden}
           opacity={opacity}
+          rowFilter={rowFilter}
+          onRowFilter={onRowFilter}
           onClose={() => onOpenItem(undefined)}
         />
       )}
@@ -497,6 +504,8 @@ function ItemDrawer({
   thumb,
   hidden,
   opacity,
+  rowFilter,
+  onRowFilter,
   onClose,
 }: {
   name: string;
@@ -507,6 +516,8 @@ function ItemDrawer({
   thumb: string | undefined;
   hidden: ReadonlySet<string>;
   opacity: number;
+  rowFilter?: string;
+  onRowFilter?: (rows: string | undefined) => void;
   onClose: () => void;
 }) {
   // A restricted item's bytes are never fetched just because its drawer
@@ -565,7 +576,14 @@ function ItemDrawer({
           <Thumb className="drawer-media" src={shownThumb} alt={item.path} label={extOf(item.path)} />
         )
       ) : isTable(item.path) ? (
-        <TableView name={name} hash={item.hash} revealed={revealed?.table} />
+        <TableView
+          name={name}
+          hash={item.hash}
+          path={item.path}
+          revealed={revealed?.table}
+          where={rowFilter}
+          onWhere={onRowFilter}
+        />
       ) : (
         <TextView name={name} path={item.path} hash={item.hash} revealed={revealed?.text} />
       )}

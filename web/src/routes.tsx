@@ -85,6 +85,8 @@ const datasetRoute = createRoute({
     anns?: string;
     attr?: string;
     identity?: string;
+    /** A table item's row filters, as JSON (TableView). */
+    rows?: string;
     what?: string;
     who?: string;
   } => ({
@@ -116,6 +118,7 @@ const datasetRoute = createRoute({
     anns: typeof search.anns === 'string' || typeof search.anns === 'number' ? String(search.anns) : undefined,
     attr: typeof search.attr === 'string' ? search.attr : undefined,
     identity: typeof search.identity === 'string' || typeof search.identity === 'number' ? String(search.identity) : undefined,
+    rows: typeof search.rows === 'string' ? search.rows : Array.isArray(search.rows) ? JSON.stringify(search.rows) : undefined,
     // Activity: the action and the person, when narrowed.
     what: typeof search.what === 'string' ? search.what : undefined,
     who: typeof search.who === 'string' ? search.who : undefined,

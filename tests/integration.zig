@@ -4163,6 +4163,29 @@ test "row diffs: rows added and removed between versions, cached, withheld when 
     try std.testing.expect(std.mem.indexOf(u8, closed.body, "\"withheld\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, closed.body, "\"added\":2") != null);
 
+    // Its rows, a page at a time, narrowed by a column's value, each
+    // column's distribution beside them (U6); a column the table lacks is
+    // refused in words, and a restricted dataset's rows are withheld.
+    {
+        // The check above left the dataset restricted until the test ends.
+        _ = try db.exec(&fscope, "UPDATE datasets SET restricted = false WHERE name = 'test/datasets/rowdiff'", .{});
+        const base = try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/rowdiff/-/rows?hash={s}&path=people.csv", .{&hashes[1]});
+        const all = cid.api.handle(arena, &deps, &scope, "GET", base, "Bearer test-token", "");
+        try std.testing.expectEqual(std.http.Status.ok, all.status);
+        try std.testing.expect(std.mem.indexOf(u8, all.body, "\"total\":5") != null);
+        try std.testing.expect(std.mem.indexOf(u8, all.body, "Fajar") != null);
+        try std.testing.expect(std.mem.indexOf(u8, all.body, "\"kind\":\"bins\"") != null);
+        const medan = cid.api.handle(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, "{s}&where=%5B%7B%22column%22%3A%22city%22%2C%22value%22%3A%22Medan%22%7D%5D", .{base}), "Bearer test-token", "");
+        try std.testing.expect(std.mem.indexOf(u8, medan.body, "\"matched\":1") != null);
+        const nope = cid.api.handle(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, "{s}&where=%5B%7B%22column%22%3A%22nope%22%2C%22value%22%3A%221%22%7D%5D", .{base}), "Bearer test-token", "");
+        try std.testing.expectEqual(std.http.Status.bad_request, nope.status);
+        _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = 'test/datasets/rowdiff'", .{});
+        const hidden = cid.api.handle(arena, &deps, &scope, "GET", base, "Bearer test-token", "");
+        _ = try db.exec(&fscope, "UPDATE datasets SET restricted = false WHERE name = 'test/datasets/rowdiff'", .{});
+        try std.testing.expect(std.mem.indexOf(u8, hidden.body, "withheld") != null);
+        try std.testing.expect(std.mem.indexOf(u8, hidden.body, "Fajar") == null);
+    }
+
     // Another dataset's content is not an oracle (invariant 12), and a
     // file that is not a table is said so in words.
     const foreign = try std.fmt.allocPrint(arena, "{{\"a\":\"{s}\",\"b\":\"{s}\",\"path_a\":\"people.csv\",\"path_b\":\"people.csv\"}}", .{ repeat("ab", 32), &hashes[1] });

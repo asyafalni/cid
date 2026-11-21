@@ -345,7 +345,8 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   `CID_PUBLIC_URL`, `CID_SESSION_SECRET`).
 - **DuckDB** (C API, in-process on the server) answers every question asked of a
   version: browse pages, subset sizes, folder listings, comparing two versions, table
-  statistics and row-level diffs. It is **always linked** (`src/store/duck.zig`):
+  statistics, a table's rows (filtered, with each column's distribution) and row-level
+  diffs. It is **always linked** (`src/store/duck.zig`):
   libduckdb is a pinned dependency, linked dynamically and installed beside the binary.
   `cid admin serve` opens **one** database for browse queries, confined to its browse
   folder (`CID_BROWSE_DIR`) with a locked configuration, two threads and one memory

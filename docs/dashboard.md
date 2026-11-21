@@ -382,6 +382,16 @@ Every dataset page (all five tabs) shares one header and the release tape.
   hash as a copyable chip; the annotation list; and the item's **history** (every
   change to the file and its annotations, by whom, in which release). In a restricted
   dataset the clear media, table rows and text come only after a logged reveal.
+  A table's rows are all browsable, 50 at a time, each column's distribution above it
+  (20 equal bins across a number column's range; any other column's 10 most common
+  values, with "other" and empty), counted against the other columns' filters as
+  Browse's facets are; a click on a bar or a value narrows the rows, and the filters
+  are in the URL (`rows=`). Read on request (`GET /-/rows`, `src/tabular/rows.zig`),
+  from the table converted to Parquet once into the browse folder and pruned with the
+  indexes; files up to 128 MB, as row diffs; never a restricted dataset's rows.
+  Measured on a 66 MB CSV of 1M rows and 8 columns (ReleaseFast, 2026-11-21): the
+  first request, download and conversion included, 0.86 s; a page after 0.14–0.47 s,
+  three filters at once or 900,000 rows in; server memory at most 330 MB.
   *Planned:* provenance (source video/camera/feed alert, agent or reviewer, policy
   rule) and attribute fields.
 - **Virtualised infinite scroll** (built): the next page loads as its button scrolls

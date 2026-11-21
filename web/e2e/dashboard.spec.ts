@@ -1000,6 +1000,28 @@ test('compare shows a modified table by its rows: counts, then the rows themselv
   await expect(change.locator('table', { hasText: 'Added' })).toContainText('Fajar');
 });
 
+test('a table\'s rows: each column\'s distribution above it, a click narrows the rows, and the URL keeps it', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/tables?view=browse&release=v1.1.0&item=people.csv');
+  const rows = page.getByRole('region', { name: 'Rows' });
+  await expect(rows).toContainText('5 rows');
+  // A value of a text column narrows to its rows.
+  await rows.getByRole('button', { name: /^city = Medan: 1 row$/ }).click();
+  await expect(page).toHaveURL(/rows=/);
+  await expect(rows).toContainText('1 of 5 rows');
+  await expect(rows.getByRole('row', { name: /Fajar/ })).toBeVisible();
+  await expect(rows.getByRole('row', { name: /Citra/ })).toHaveCount(0);
+  // The link holds it: a reload shows the same rows.
+  await page.reload();
+  await expect(page.getByRole('region', { name: 'Rows' })).toContainText('1 of 5 rows');
+  // Removed with its chip; then a number column's top bin.
+  await page.getByRole('button', { name: 'Remove the filter city = Medan' }).click();
+  await expect(page.getByRole('region', { name: 'Rows' })).toContainText('5 rows');
+  const bins = page.getByRole('group', { name: 'score: distribution' }).getByRole('button', { name: /^score .*: 1 row$/ });
+  await bins.last().click();
+  await expect(page.getByRole('region', { name: 'Rows' })).toContainText('1 of 5 rows');
+});
+
 test('a declared key turns a removed-and-added pair into one row changed, cell by cell', async ({ page }) => {
   await signIn(page);
   // Without .cidkeys: an edit is one removed and one added, and the page says how to see it changed.
@@ -1141,7 +1163,8 @@ test('a malformed CSV shows its own error, in words, and the rest of the dataset
   // The bad file opens too, and says what is wrong with it; it can still be downloaded.
   await page.getByRole('button', { name: /broken\.csv/ }).click();
   const drawer = page.getByRole('complementary', { name: 'broken.csv' });
-  await expect(drawer.getByText(/No table view: /)).toBeVisible();
+  await expect(drawer.getByText(/No column statistics: /)).toBeVisible();
+  await expect(drawer.getByText(/Rows are not browsable: not a readable table/)).toBeVisible();
   await expect(drawer.getByRole('link', { name: 'Download the file' })).toBeVisible();
   await expect(page.getByRole('alert')).toHaveCount(0);
   // And the other views of the same version.

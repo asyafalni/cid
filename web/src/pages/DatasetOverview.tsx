@@ -37,6 +37,7 @@ export function DatasetOverview() {
     anns?: string;
     attr?: string;
     identity?: string;
+    rows?: string;
     what?: string;
     who?: string;
   };
@@ -278,7 +279,9 @@ export function DatasetOverview() {
           overview={o}
           commit={pinnedCommit}
           openItem={search.item}
-          onOpenItem={(path) => setSearch({ item: path })}
+          onOpenItem={(path) => setSearch({ item: path, rows: undefined })}
+          rowFilter={search.rows}
+          onRowFilter={(rows) => setSearch({ rows })}
           filters={{ mode: search.mode, q: search.q, split: search.split, cls: search.class, type: search.type, anns: search.anns, attr: search.attr, identity: search.identity }}
           onFilters={(patch) => setSearch(patch)}
         />

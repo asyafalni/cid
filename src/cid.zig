@@ -27,6 +27,7 @@ pub const duck = @import("store/duck.zig");
 pub const table_stats = @import("tabular/stats.zig");
 pub const rowdiff = @import("tabular/rowdiff.zig");
 pub const table_keys = @import("tabular/keys.zig");
+pub const table_rows = @import("tabular/rows.zig");
 pub const pathpattern = @import("util/pathpattern.zig");
 pub const api = @import("server/api.zig");
 pub const hf = @import("server/hf.zig");
@@ -95,6 +96,7 @@ test {
     _ = table_stats;
     _ = rowdiff;
     _ = table_keys;
+    _ = table_rows;
     _ = pathpattern;
     _ = api;
     _ = serve;

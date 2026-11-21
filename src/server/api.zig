@@ -35,6 +35,7 @@ const duck = @import("../store/duck.zig");
 const table_stats = @import("../tabular/stats.zig");
 const rowdiff_mod = @import("../tabular/rowdiff.zig");
 const table_keys = @import("../tabular/keys.zig");
+const table_rows = @import("../tabular/rows.zig");
 const browse_mod = @import("browse/browse.zig");
 const bundle_mod = @import("../export/bundle.zig");
 const versions = @import("../core/version.zig");
@@ -80,6 +81,8 @@ pub const Deps = struct {
     /// One row diff at a time, server-wide: DuckDB work never scales with
     /// requests (each answer is cached, so this is rarely contended).
     rowdiff_busy: std.atomic.Value(bool) = .init(false),
+    /// A table being converted for its rows view (one at a time).
+    table_busy: std.atomic.Value(bool) = .init(false),
     /// The server's browse indexes, two Parquet files per version
     /// (named by commit id), kept here and in storage for releases.
     browse_dir: []const u8 = "/tmp/cid-browse",
@@ -252,6 +255,8 @@ fn handleInner(
         return textHead(arena, deps, scope, ds, route.queryParam("hash") orelse "");
     if (eql(method, "GET") and eql(route.action, "table"))
         return tableStats(arena, deps, scope, ds, route.queryParam("hash") orelse "");
+    if (eql(method, "GET") and eql(route.action, "rows"))
+        return tableRows(arena, deps, scope, ds, route);
     if (eql(method, "GET") and eql(route.action, "browse"))
         return browse(arena, deps, scope, ds, route);
     if (eql(method, "GET") and eql(route.action, "browse/size"))
@@ -752,6 +757,67 @@ fn tableStats(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset
         return json(arena, .ok, .{ .status = "skipped", .reason = @as(?[]const u8, "the stored statistics could not be read") });
     if (!ds.restricted) return json(arena, .ok, .{ .status = "done", .stats = stats, .withheld = false });
     return json(arena, .ok, .{ .status = "done", .stats = try shapeOnly(arena, stats), .withheld = true });
+}
+
+/// A table item's rows, a page at a time, narrowed by its columns, with
+/// each column's distribution (tabular/rows.zig). The table is converted
+/// to Parquet once, into the browse folder, and kept with the indexes. A
+/// restricted dataset's rows are its content: withheld (invariant 11).
+fn tableRows(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, route: DatasetRoute) HandleError!Response {
+    const hash = route.queryParam("hash") orelse "";
+    if (!validHashHex(hash)) return error.BadRequest;
+    const kind = table_stats.kindOf((try param(arena, route, "path")) orelse "") orelse
+        return json(arena, .ok, .{ .status = "not_a_table", .reason = @as(?[]const u8, "only CSV, Parquet and JSONL files have rows") });
+    const Here = struct {
+        pub const nilo_table = .projection;
+        size_bytes: i64,
+    };
+    const here = (deps.db.rawOne(Here, scope, "SELECT i.size_bytes FROM items i JOIN dataset_hashes h USING (item_hash) " ++
+        "WHERE h.dataset_id = $1::uuid AND h.item_hash = decode($2, 'hex')", .{ ds.id, hash }) catch return error.Db) orelse
+        return errorResponse(arena, .not_found, "no such item in this dataset", "Pick the item from this dataset's Browse view.");
+    if (ds.restricted) return json(arena, .ok, .{ .status = "withheld", .reason = @as(?[]const u8, "this dataset is restricted: its rows are not shown") });
+    if (here.size_bytes > rowdiff_max_bytes)
+        return json(arena, .ok, .{ .status = "too_large", .reason = @as(?[]const u8, "over 128 MB; split large tables into partitioned files to browse their rows") });
+
+    const filters: []const table_rows.Filter = if (try param(arena, route, "where")) |w|
+        std.json.parseFromSliceLeaky([]const table_rows.Filter, arena, w, .{}) catch return error.BadRequest
+    else
+        &.{};
+    const offset = if (route.queryParam("offset")) |o| std.fmt.parseInt(u64, o, 10) catch return error.BadRequest else 0;
+    const limit: u32 = if (route.queryParam("limit")) |l| std.math.clamp(std.fmt.parseInt(u32, l, 10) catch return error.BadRequest, 1, table_rows.max_limit) else 50;
+
+    const cwd = std.Io.Dir.cwd();
+    cwd.createDirPath(deps.io, deps.browse_dir) catch return error.Storage;
+    const dir = cwd.realPathFileAlloc(deps.io, deps.browse_dir, arena) catch return error.Storage;
+    const parquet = try std.fmt.allocPrint(arena, "{s}/{s}.{t}.table.parquet", .{ dir, hash, kind });
+    if (cwd.statFile(deps.io, parquet, .{})) |_| {} else |_| {
+        if (deps.table_busy.swap(true, .acquire))
+            return errorResponse(arena, .service_unavailable, "the server is reading another table", "Reload in a moment.");
+        defer deps.table_busy.store(false, .release);
+        const src = try uniqueTmp(arena, deps, try std.fmt.allocPrint(arena, "{s}/{s}.src.{t}", .{ dir, hash, kind }));
+        defer cwd.deleteFile(deps.io, src) catch {};
+        if (!(try downloadTo(deps, scope, try itemKey(arena, hash), src))) return error.Storage;
+        const tmp = try uniqueTmp(arena, deps, parquet);
+        var db = duck.Db.open(arena, .{ .allowed_dir = dir, .threads = 1 }) catch return error.Storage;
+        defer db.close();
+        offload(deps, table_rows.convert, .{ arena, &db, src, kind, tmp }) catch |err| {
+            cwd.deleteFile(deps.io, tmp) catch {};
+            return switch (err) {
+                error.QueryFailed => json(arena, .ok, .{ .status = "unreadable", .reason = @as(?[]const u8, "not a readable table: DuckDB could not read it as its file name says") }),
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.Storage,
+            };
+        };
+        std.Io.Dir.rename(cwd, tmp, cwd, parquet, deps.io) catch return error.Storage;
+        pruneKind(arena, deps, dir, ".table.parquet", ".table.none");
+    }
+
+    var db = try duckFor(arena, deps, dir);
+    defer db.close();
+    return switch (try browseQuery(deps, table_rows.page, .{ arena, &db, parquet, filters, offset, limit })) {
+        .page => |text| .{ .status = .ok, .body = try std.fmt.allocPrint(arena, "{{\"status\":\"done\",\"page\":{s}}}", .{text}) },
+        .refused => |column| errorResponse(arena, .bad_request, try std.fmt.allocPrint(arena, "the table has no column '{s}' to filter that way", .{column}), "Pick a value from the column's distribution."),
+    };
 }
 
 /// A version's browse index, ready to query, or the answer that says why

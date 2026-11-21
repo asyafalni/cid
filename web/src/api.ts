@@ -386,6 +386,34 @@ export function getTable(name: string, hash: string): Promise<TableAnswer> {
   return request(`/v0/datasets/${name}/-/table?hash=${hash}`);
 }
 
+/** One column's row filter: a bin of a number column, a value, or empty. */
+export type RowFilter = { column: string; bin?: number; value?: string; null?: boolean };
+
+export type ColumnHist =
+  | { kind: 'bins'; lo: number | null; hi: number | null; counts: number[]; nulls: number }
+  | { kind: 'values'; top: { v: string; n: number }[]; nonnull: number; nulls: number };
+
+export type RowsPage = {
+  total: number;
+  matched: number;
+  offset: number;
+  columns: { name: string; type: string; hist: ColumnHist | null }[];
+  rows: Record<string, unknown>[];
+};
+
+export type RowsAnswer = {
+  status: 'done' | 'withheld' | 'too_large' | 'unreadable' | 'not_a_table';
+  reason?: string | null;
+  page?: RowsPage;
+};
+
+/** A table item's rows, narrowed, with each column's distribution (U6). */
+export function getRows(name: string, hash: string, path: string, where: RowFilter[], offset: number): Promise<RowsAnswer> {
+  // encodeURIComponent, not URLSearchParams: the server decodes %20, not '+'.
+  const where_ = where.length > 0 ? `&where=${encodeURIComponent(JSON.stringify(where))}` : '';
+  return request(`/v0/datasets/${name}/-/rows?hash=${hash}&path=${encodeURIComponent(path)}&offset=${offset}&limit=50${where_}`);
+}
+
 export type RowDiff = {
   rows_a: number;
   rows_b: number;

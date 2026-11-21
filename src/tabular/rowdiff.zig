@@ -105,7 +105,7 @@ fn whole(
 }
 
 /// An identifier as DuckDB reads one: double-quoted.
-fn ident(arena: std.mem.Allocator, name: []const u8) error{OutOfMemory}![]const u8 {
+pub fn ident(arena: std.mem.Allocator, name: []const u8) error{OutOfMemory}![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.append(arena, '"');
     for (name) |c| {
@@ -117,7 +117,7 @@ fn ident(arena: std.mem.Allocator, name: []const u8) error{OutOfMemory}![]const 
 }
 
 /// A string literal: single-quoted.
-fn literal(arena: std.mem.Allocator, text: []const u8) error{OutOfMemory}![]const u8 {
+pub fn literal(arena: std.mem.Allocator, text: []const u8) error{OutOfMemory}![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.append(arena, '\'');
     for (text) |c| {

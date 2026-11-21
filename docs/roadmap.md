@@ -30,10 +30,10 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      the clone command all above the fold at 1440×900, checked by an e2e test; a
      dataset with no Maintainer now says "no owner named". What a dataset is *for*
      waits on card editing, a parked decision).
-  4. The rest of B6: ~~the attribute filter~~ (done 2026-11-21: index format v4,
+  4. ~~The rest of B6~~ (done 2026-11-21): ~~the attribute filter~~ (done 2026-11-21: index format v4,
      `attr_set`); ~~the List view~~ and ~~the identity filter~~ (done 2026-11-21;
-     identities are `attrs.identity`, docs/data-model.md); histograms, with U6.
-  5. ~~U5~~ (done 2026-11-21), then U6 to U8 and U10, one between each larger piece.
+     identities are `attrs.identity`, docs/data-model.md); ~~histograms~~ (done with U6).
+  5. ~~U5~~ and ~~U6~~ (done 2026-11-21), then U7, U8 and U10, one between each larger piece.
   6. C1's two loose ends: the real-client check as an automated test (needs Python
      and the Hugging Face libraries agreed as a test-only dependency), and an
      annotated split's file at 1M items (first request not measured, not prepared
@@ -114,7 +114,7 @@ Where cid stands against Hugging Face today:
 | Media | 100-row table pages | **Ahead:** gallery, waveform, player |
 | What changed between versions | Needs code | **Ahead:** compare, with visual and row diffs |
 | Private data | Viewer needs a paid plan | **Ahead:** the same for everyone |
-| Column histograms, click to filter | Yes | **Behind:** statistics in the drawer only |
+| Column histograms, click to filter | Yes | **Level:** a table's rows, each column's distribution above it, a click to filter (U6) |
 | Search inside text and string columns | Yes | **Behind:** paths only |
 | A link to one row of a table | Yes | **Behind:** a link to a file, not a row |
 | SQL over a version | Yes, in the browser | **Behind:** not built |
@@ -204,9 +204,9 @@ Close the "behind" rows without giving up an "ahead" one.
   the card and in compare; a shared class colour palette, so a class has one colour
   in the card, the overlays and the filters (`docs/dashboard.md`, 3.3). No chart
   where a number alone says it.
-- **U6. Column histograms and click to filter** in table mode: each column's
-  distribution above it, a click narrowing the rows. The statistics are already
-  built per content hash.
+- ~~**U6. Column histograms and click to filter**~~ (done 2026-11-21, with B6's
+  histograms: a table's rows, each column's distribution above it, a click narrowing
+  them, in the URL; docs/dashboard.md, the item drawer).
 - **U7. A link to one row.** Opening a table item at a row (`row=` in the URL),
   highlighted and scrolled to.
 - **U8. Search inside text.** Text files and string columns, per version. Needs an
@@ -238,7 +238,7 @@ both themes, and works with reduced motion. Beauty never costs a budget.
 - **B6. More Browse filters:** ~~annotation count~~ (done 2026-11-20: buckets, index
   format v3); ~~attributes~~ (done 2026-11-21: index format v4); ~~identities~~
   (done 2026-11-21: index format v5); ~~the List view~~ (done 2026-11-21);
-  histograms, with U6.
+  ~~histograms~~ (done with U6).
 - ~~**B7. Branches on the tape and pinning a commit**~~ (done 2026-11-20: `?commit=`,
   `?branch=`). Comparing a branch with `main` across the two is not built: the
   compare pickers list the shown branch's commits.

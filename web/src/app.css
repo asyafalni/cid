@@ -2858,3 +2858,124 @@ button.tick-mark:hover {
   border-radius: 50%;
   margin: 0 var(--space-1) 0 var(--space-2);
 }
+
+/* A table's rows (TableRows.tsx): each column's distribution above it,
+   bars in the one data hue; a picked bar or value is outlined. */
+.row-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.table-rows-grid .hist-row td {
+  vertical-align: top;
+  padding-top: 0;
+}
+
+.hist {
+  min-width: 96px;
+  display: grid;
+  gap: 2px;
+}
+
+.hist-bins {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 36px;
+}
+
+.hist-bin {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.hist-bin span {
+  display: block;
+  width: 100%;
+  background: var(--data);
+  border-radius: 2px 2px 0 0;
+}
+
+.hist-bin:disabled {
+  cursor: default;
+}
+
+.hist-bin:hover span,
+.hist-bin.on span {
+  background: var(--aether);
+}
+
+.hist-bin.on {
+  outline: 1px solid var(--aether);
+}
+
+.hist-range {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.6875rem;
+}
+
+.hist-value {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-height: 1.25rem;
+  padding: 0 var(--space-1);
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+
+.hist-value-bar {
+  position: absolute;
+  inset: 2px auto 2px 0;
+  background: var(--data-soft);
+  border-radius: 0 2px 2px 0;
+}
+
+.hist-value-text {
+  position: relative;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+.hist-value:hover,
+.hist-value.on {
+  border-color: var(--aether);
+}
+
+.hist-more {
+  font-size: 0.6875rem;
+  margin: 0;
+}
+
+.hist-empty {
+  justify-self: start;
+  font-size: 0.6875rem;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.hist-empty.on {
+  border-color: var(--aether);
+  color: var(--text);
+}

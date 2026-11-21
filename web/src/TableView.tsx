@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { getTable, type TableStats } from './api';
+import { TableRows } from './TableRows';
 
 // A table item, shown as a table (docs/dashboard.md: media-native, never
 // "viewer not available"): its columns with type, range, distinct count
@@ -8,12 +9,19 @@ import { getTable, type TableStats } from './api';
 export function TableView({
   name,
   hash,
+  path,
   revealed,
+  where,
+  onWhere,
 }: {
   name: string;
   hash: string;
+  path: string;
   /** A reveal's full statistics, which replace the withheld shape. */
   revealed?: TableStats | null;
+  /** The row filters, as JSON, from the URL; and how to change them. */
+  where?: string;
+  onWhere?: (where: string | undefined) => void;
 }) {
   const answer = useQuery({ queryKey: ['table', name, hash], queryFn: () => getTable(name, hash) });
 
@@ -21,12 +29,17 @@ export function TableView({
   if (answer.isError) return <p className="quiet">The table's statistics could not be read; the file is still one click away.</p>;
   const a = answer.data;
   if (a.status !== 'done' || !a.stats) {
+    // The column statistics are the worker's; the rows are read on
+    // request, so they are offered whatever became of the statistics.
     return (
-      <p className="quiet table-pending">
-        {a.status === 'skipped'
-          ? `No table view: ${a.reason ?? 'the worker could not read it'}.`
-          : 'The table view is being built; it appears here when the preview worker reaches it.'}
-      </p>
+      <>
+        <p className="quiet table-pending">
+          {a.status === 'skipped'
+            ? `No column statistics: ${a.reason ?? 'the worker could not read it'}.`
+            : 'The column statistics are being built; they appear here when the preview worker reaches this file.'}
+        </p>
+        {!a.withheld && onWhere && <TableRows name={name} hash={hash} path={path} where={where} onWhere={onWhere} fallback={null} />}
+      </>
     );
   }
   const stats = revealed ?? a.stats;
@@ -68,6 +81,10 @@ export function TableView({
       </div>
       {withheld ? (
         <p className="quiet">Values and rows are withheld: this dataset is restricted. Reveal the item to see them; the reveal is logged.</p>
+      ) : !revealed && onWhere ? (
+        // Every row, a page at a time, each column's distribution above
+        // it; the first rows stand in where rows cannot be had.
+        <TableRows name={name} hash={hash} path={path} where={where} onWhere={onWhere} fallback={stats} />
       ) : (
         stats.sample.length > 0 && (
           <div className="table-scroll">
