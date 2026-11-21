@@ -799,6 +799,7 @@ fn browse(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, ro
         .item = try param(arena, route, "item"),
         .anns = try param(arena, route, "anns"),
         .attr = try param(arena, route, "attr"),
+        .identity = try param(arena, route, "identity"),
         .limit = try limitOf(route, browse_mod.default_limit),
         .facets = !std.mem.eql(u8, (try param(arena, route, "facets")) orelse "1", "0"),
         .sample = std.mem.eql(u8, (try param(arena, route, "sample")) orelse "0", "1"),
@@ -1969,6 +1970,9 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Calle
         .policy = if (eql(ds.kind, "annotated") and !ds.restricted) pinned_stats.policy else null,
         .classes = pinned_stats.classes,
         .splits = pinned_stats.splits,
+        // How many people or things the annotations name: whether Browse
+        // offers the identity filter. A count, never the names.
+        .identities = pinned_stats.identities,
     });
 }
 

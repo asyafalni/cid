@@ -82,7 +82,7 @@ export function BrowseTab({
   // more than what was scrolled to, whatever the dataset's size. Each
   // page brings its own thumbnails; a page whose thumbnails cannot be had
   // still shows every item, as type tiles.
-  const query = { q: filters.q, split: filters.split, cls: filters.cls, type: filters.type, anns: filters.anns, attr: filters.attr };
+  const query = { q: filters.q, split: filters.split, cls: filters.cls, type: filters.type, anns: filters.anns, attr: filters.attr, identity: filters.identity };
   const pages = useInfiniteQuery({
     queryKey: ['browse', name, commit, query],
     queryFn: async ({ pageParam }) => {
@@ -290,11 +290,16 @@ export function BrowseTab({
               onChange={(v) => onFilters({ attr: v })}
             />
           )}
+          {((overview.identities ?? 0) > 0 || filters.identity !== undefined) && (
+            // Who or what an annotation names: typed, matched exactly; no
+            // list, since a face set names thousands.
+            <IdentityFilter value={filters.identity} onChange={(v) => onFilters({ identity: v })} />
+          )}
           {filtered && (
             <button
               className="filter-clear"
               onClick={() =>
-                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined, anns: undefined, attr: undefined })
+                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined, anns: undefined, attr: undefined, identity: undefined })
               }
             >
               Clear filters
@@ -353,7 +358,7 @@ export function BrowseTab({
             <button
               className="filter-clear"
               onClick={() =>
-                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined, anns: undefined, attr: undefined })
+                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined, anns: undefined, attr: undefined, identity: undefined })
               }
             >
               Clear filters
@@ -721,6 +726,40 @@ function HashChip({ hash }: { hash: string }) {
 // infinite scroll). Rows of tiles, as many columns as the CSS grid would
 // fit; each row measured as it renders.
 const tileMin = 140;
+
+// The identity filter: committed on Enter or when the field is left, so
+// a half-typed name never asks the server; the URL is the truth.
+function IdentityFilter({ value, onChange }: { value: string | undefined; onChange: (v: string | undefined) => void }) {
+  const [typed, setTyped] = useState(value ?? '');
+  const [seen, setSeen] = useState(value);
+  if (value !== seen) {
+    setSeen(value);
+    setTyped(value ?? '');
+  }
+  const commit = () => {
+    const v = typed.trim();
+    if (v !== (value ?? '')) onChange(v === '' ? undefined : v);
+  };
+  return (
+    <label className="facet">
+      <span className="facet-label" aria-hidden="true">
+        identity
+      </span>
+      <input
+        type="search"
+        className="filter-identity data"
+        placeholder="exact id"
+        aria-label="Filter by identity"
+        value={typed}
+        onChange={(e) => setTyped(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit();
+        }}
+        onBlur={commit}
+      />
+    </label>
+  );
+}
 
 // What the keys do, listed where they work.
 const shortcuts: [string, string][] = [

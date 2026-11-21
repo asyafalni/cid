@@ -272,8 +272,8 @@ function seedMasks(dir: string) {
 // Boxes with attributes, the platform's way: one occluded, one not, for
 // Browse's attribute filter.
 function seedAttrs(dir: string) {
-  const name = 'e2e/datasets/attrs';
-  const created = api('POST', '/v0/datasets', { name, kind: 'annotated', git_url: 'g@h:attrs.git' }) as {
+  const name = 'e2e/datasets/attrs2';
+  const created = api('POST', '/v0/datasets', { name, kind: 'annotated', git_url: 'g@h:attrs2.git' }) as {
     dataset_id?: string;
   };
   const datasetId = created.dataset_id;
@@ -302,7 +302,7 @@ function seedAttrs(dir: string) {
         ON CONFLICT (item_id) DO NOTHING;
       INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, attrs, author, policy_ver)
       VALUES ('${uuid7()}'::uuid, now(), '${datasetId}'::uuid, 'main', '${uuid7()}'::uuid, '${itemId}'::uuid,
-              'create', 'box', 'car', '{"x":20,"y":30,"w":60,"h":40}'::jsonb, '{"occluded":${occluded}}'::jsonb, 'agent:annotator', 'p1');`;
+              'create', 'box', 'car', '{"x":20,"y":30,"w":60,"h":40}'::jsonb, '{"occluded":${occluded}${occluded ? ',"identity":"car-0042"' : ''}}'::jsonb, 'agent:annotator', 'p1');`;
   }
   psql(sql);
   api('POST', `/v0/datasets/${name}/-/commit`, { message: 'two cars', author: 'agent:annotator' });
@@ -496,7 +496,7 @@ export default function setup() {
     if (!already.includes('e2e/datasets/faces')) seedFaces(dir);
     if (!already.includes('e2e/datasets/masks')) seedMasks(dir);
     if (!already.includes('e2e/datasets/tables')) seedTables(dir);
-    if (!already.includes('e2e/datasets/attrs')) seedAttrs(dir);
+    if (!already.includes('e2e/datasets/attrs2')) seedAttrs(dir);
     if (!already.includes('e2e/datasets/many')) seedMany(dir);
     const manyLog = run(`curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/many/-/log -H "Authorization: Bearer ${token}"`);
     if (!manyLog.includes('one more row')) seedManyUnreleased(dir);

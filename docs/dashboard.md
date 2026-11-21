@@ -336,7 +336,8 @@ Every dataset page (all five tabs) shares one header and the release tape.
 - **Annotation overlays.** *Built:* boxes, polygons and points drawn as SVG over the
   media, masks (including COCO RLE) painted once into a canvas in the class colour;
   toggle per class; opacity slider; labels on hover. A shape that does not parse loses
-  only itself. *Planned:* identities.
+  only itself. A label names the annotation's identity (`attrs.identity`) beside its
+  class.
 - **Filters.** *Built:* path contains, split, class, file type and (annotated datasets)
   annotation count in buckets (none, 1, 2–4, 5–9, 10+: "none" finds what is left to
   label; the counts read as a histogram, in bucket order), each a facet counted
@@ -353,7 +354,15 @@ Every dataset page (all five tabs) shares one header and the release tape.
   57 to 64 s, 18–26% more server CPU for a page with its facets, pages 0.30–0.38 s,
   peak memory 388 to 411 MB. The facet reads the attribute lists in a scan of its
   own: through the shared, materialized filter table, under the browse database's
-  memory ceiling, they doubled a page. *Planned:* size, source (camera, video, feed), author (agent/human), policy version, changed
+  memory ceiling, they doubled a page. And by identity (`identity=person-0042`), an
+  exact match on what the annotations' `attrs.identity` name (docs/data-model.md):
+  typed, with no list, since a face set names thousands; offered only when the
+  version names any (its statistics count them); index format v5, `ident_set`. On data
+  naming none, at 1M items against the build before, back to back (2026-11-21): a
+  release 39.4 against 39.1 s, server CPU for 25 pages 13.7–14.1 against 13.5–14.2 s.
+  Identities are read in a pass of their own over one key: folded into the
+  attributes' pass they cost a 1M release 1.2 s more.
+  *Planned:* size, source (camera, video, feed), author (agent/human), policy version, changed
   since release X, and histograms as clickable filters, like Hugging Face's, for every
   numeric column and attribute.
 - **Search.** *Built:* file paths ("path contains"). *Planned:* text search on text

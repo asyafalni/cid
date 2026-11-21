@@ -181,6 +181,16 @@ CREATE TABLE annotation_revisions (
 );
 ```
 
+**Identities** (decided 2026-11-21). Who or what an annotation shows is the attribute
+`identity` in its `attrs`, a string or number: `{"identity": "person-0042"}`, on a face
+box, or on a whole-item `kind = 'identity'` annotation in a set of crops. Never in
+`class`, which stays the category (a face set would otherwise name thousands of
+classes in every export). cid keeps each item's identities in the browse index for an
+exact-match filter, counts them in a version's statistics, and names them in overlay
+labels; they are content like any annotation, so restricted datasets keep them inside
+the same access, never in git or logs. Every other scalar attribute is offered to the
+attribute filter as `key=value`.
+
 Both revision tables are hypertables on `ts` with 7-day chunks (`create_hypertable`
 also makes its default index on `ts`), plus a lookup index
 `(dataset_id, branch, <path | annotation_id>, rev_id DESC)`. Compression:
@@ -376,7 +386,7 @@ version and kept:
 - a **browse index** per version (`items.parquet` + `anns.parquet`, read by DuckDB),
   prepared ahead of the first visitor by the `version_jobs` background worker
   (`api.prepareNext`), cached locally under `CID_BROWSE_DIR`, and kept in storage at
-  `manifests/<dataset_id>/<commit_id>.v4.{items,anns}.parquet` (`v4` is the index's
+  `manifests/<dataset_id>/<commit_id>.v5.{items,anns}.parquet` (`v5` is the index's
   format, `browse.index_format`: an index in an older format is never read, only
   rebuilt);
 - the version's **items file** and **exports** as the CLI downloads them
@@ -545,7 +555,7 @@ All in the one bucket, `cid`:
 | `uploads/<dataset_id>/<hash>`, `….part-NNNNNN` | staged uploads (whole, or 64 MB pieces) until verified |
 | `previews/<aa>/<hex>/thumb.webp`, `…/blur.webp` | thumbnail and blurred rendition |
 | `manifests/<dataset_id>/<commit_id>.manifest` | a release's canonical manifest |
-| `manifests/<dataset_id>/<commit_id>.v4.items.parquet`, `.v4.anns.parquet` | a version's browse index, in index format `v4` |
+| `manifests/<dataset_id>/<commit_id>.v5.items.parquet`, `.v5.anns.parquet` | a version's browse index, in index format `v5` |
 | `states/<dataset_id>/<commit>-<subset>-<hash>.jsonl.gz` | a version's items file, as the CLI downloads it |
 | `exports/<dataset_id>/<commit>/<format>-<subset>-<hash>.jsonl.gz` | an export, as a bundle of files |
 | `diffs/<dataset_id>/<a>-<b>-<hash>.jsonl.gz` | what changed between two versions, for `cid diff` |

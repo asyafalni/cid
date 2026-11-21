@@ -18,6 +18,7 @@ export type ViewState = {
   type?: string;
   anns?: string;
   attr?: string;
+  identity?: string;
   a?: string;
   b?: string;
   dir?: string;
@@ -45,8 +46,8 @@ export function commandFor(o: Overview, s: ViewState, host: string): Shown | nul
       else clone.push(`--split ${s.split}`);
     }
     if (s.cls !== undefined) clone.push(`--class ${s.cls}`);
-    if (s.q || s.type || s.anns || s.attr)
-      notes.push('The path search and the type, annotations and attribute filters have no clone flag; the folder holds every path.');
+    if (s.q || s.type || s.anns || s.attr || s.identity)
+      notes.push('The path search and the type, annotations, attribute and identity filters have no clone flag; the folder holds every path.');
   }
   const steps = [clone.join(' ')];
   // A version that is no release: the clone, then a checkout of it.

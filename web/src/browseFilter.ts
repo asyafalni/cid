@@ -15,6 +15,8 @@ export type Filters = {
   anns?: string;
   /** An attribute value an annotation of the item carries: 'key=value'. */
   attr?: string;
+  /** An identity an annotation of the item names (`attrs.identity`), exactly. */
+  identity?: string;
 };
 
 /** The URL spelling of each filter, for patches back to the router. */
@@ -26,6 +28,7 @@ export type FilterPatch = {
   type?: string | undefined;
   anns?: string | undefined;
   attr?: string | undefined;
+  identity?: string | undefined;
 };
 
 export function extOf(path: string): string {
@@ -37,5 +40,5 @@ export function extOf(path: string): string {
 export type Facet = { value: string; count: number };
 
 export function anyFilter(f: Filters): boolean {
-  return Boolean(f.q) || f.split !== undefined || f.cls !== undefined || f.type !== undefined || f.anns !== undefined || f.attr !== undefined;
+  return Boolean(f.q) || f.split !== undefined || f.cls !== undefined || f.type !== undefined || f.anns !== undefined || f.attr !== undefined || f.identity !== undefined;
 }

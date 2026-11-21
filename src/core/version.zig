@@ -135,8 +135,11 @@ const PassItem = struct {
     item_id: ?[]const u8,
     ext: []const u8,
     classes: []const u8,
-    /// The item's distinct scalar attribute values, as "key=value".
+    /// The item's distinct scalar attribute values, as "key=value"
+    /// (all but `identity`).
     attrs: []const u8,
+    /// The item's distinct identities: its annotations' `attrs.identity`.
+    idents: []const u8,
 };
 
 const PassAnn = struct {
@@ -201,12 +204,20 @@ pub fn pass(
         "array_to_json(array_agg(coalesce(class, '') ORDER BY annotation_id))::text AS classes FROM v_alive GROUP BY item_id", .{}) catch return error.Db;
     _ = tx.exec(scope, "ANALYZE v_classes", .{}) catch return error.Db;
     // Each item's distinct scalar attribute values ("occluded=true"), for
-    // Browse's attribute filter; only annotations that carry attributes
-    // are read.
+    // Browse's attribute filter, and apart from them its identities (the
+    // attribute `identity`, the convention for who or what an annotation
+    // shows), for the identity filter; only annotations that carry
+    // attributes are read.
+    // Two passes, not one: identities read one key, which costs 0.2 s at
+    // 1.5M annotations, where folding them into the attributes' query
+    // (two aggregates over every key) cost 1.2 s more.
     _ = tx.exec(scope, "CREATE TEMP TABLE v_attrs ON COMMIT DROP AS SELECT a.item_id, " ++
         "array_to_json(array_agg(DISTINCT e.key || '=' || (e.value #>> '{}') ORDER BY e.key || '=' || (e.value #>> '{}')))::text AS attrs " ++
         "FROM v_alive a CROSS JOIN LATERAL jsonb_each(a.attrs) e " ++
-        "WHERE jsonb_typeof(a.attrs) = 'object' AND jsonb_typeof(e.value) IN ('string', 'number', 'boolean') GROUP BY a.item_id", .{}) catch return error.Db;
+        "WHERE jsonb_typeof(a.attrs) = 'object' AND e.key <> 'identity' AND jsonb_typeof(e.value) IN ('string', 'number', 'boolean') GROUP BY a.item_id", .{}) catch return error.Db;
+    _ = tx.exec(scope, "CREATE TEMP TABLE v_idents ON COMMIT DROP AS SELECT item_id, " ++
+        "array_to_json(array_agg(DISTINCT attrs ->> 'identity'))::text AS idents " ++
+        "FROM v_alive WHERE jsonb_typeof(attrs -> 'identity') IN ('string', 'number') GROUP BY item_id", .{}) catch return error.Db;
 
     var hasher = hash.init();
     var written: Written = .{};
@@ -217,7 +228,8 @@ pub fn pass(
 
     _ = tx.exec(scope, "DECLARE pass_items NO SCROLL CURSOR FOR SELECT l.path, encode(l.item_hash, 'hex') AS hash_hex, " ++
         "l.size_bytes, l.split, l.item_id::text AS item_id, " ++ comptime extOf("l.path") ++ " AS ext, coalesce(c.classes, '[]') AS classes, " ++
-        "coalesce(t.attrs, '[]') AS attrs FROM v_live l LEFT JOIN v_classes c USING (item_id) LEFT JOIN v_attrs t USING (item_id) ORDER BY l.path COLLATE \"C\"", .{}) catch return error.Db;
+        "coalesce(t.attrs, '[]') AS attrs, coalesce(n.idents, '[]') AS idents FROM v_live l LEFT JOIN v_classes c USING (item_id) " ++
+        "LEFT JOIN v_attrs t USING (item_id) LEFT JOIN v_idents n USING (item_id) ORDER BY l.path COLLATE \"C\"", .{}) catch return error.Db;
     while (true) {
         var batch = dbx.Run.init(gpa);
         defer batch.deinit();
@@ -237,10 +249,10 @@ pub fn pass(
             m.writeAll(text.items) catch return error.WriteFailed;
         }
         if (outputs.items) |w| for (rows) |r| {
-            w.print("{{\"path\":{f},\"hash\":\"{s}\",\"size\":{d},\"split\":{f},\"item_id\":{f},\"ext\":{f},\"classes\":{s},\"attrs\":{s}}}\n", .{
+            w.print("{{\"path\":{f},\"hash\":\"{s}\",\"size\":{d},\"split\":{f},\"item_id\":{f},\"ext\":{f},\"classes\":{s},\"attrs\":{s},\"idents\":{s}}}\n", .{
                 std.json.fmt(r.path, .{}),  r.hash_hex,                   r.size_bytes,
                 std.json.fmt(r.split, .{}), std.json.fmt(r.item_id, .{}), std.json.fmt(r.ext, .{}),
-                r.classes,                  r.attrs,
+                r.classes,                  r.attrs,                      r.idents,
             }) catch return error.WriteFailed;
         };
         written.items += rows.len;
@@ -329,11 +341,14 @@ pub const Stats = struct {
     classes: []const Count = &.{},
     /// The newest policy version any annotation was made under.
     policy: ?[]const u8 = null,
+    /// Distinct identities the annotations name (`attrs.identity`).
+    identities: u64 = 0,
 };
 
-/// 3: each type carries its bytes. Statistics kept under an older version
-/// are aggregated again the first time they are read, and kept anew.
-pub const stats_version: u32 = 3;
+/// 3: each type carries its bytes; 4: the count of identities. Statistics
+/// kept under an older version are aggregated again the first time they
+/// are read, and kept anew.
+pub const stats_version: u32 = 4;
 
 const visual_types = "('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.mp4', '.mov', '.webm', '.mkv')";
 
@@ -341,7 +356,7 @@ const visual_types = "('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.mp4',
 /// (the state's CTEs, or a pass's temporary tables), after "WITH ".
 fn statsOver(comptime live: []const u8, comptime alive: []const u8) []const u8 {
     return "t AS MATERIALIZED (SELECT x.path, x.split, x.item_hash, x.size_bytes, " ++ comptime extOf("x.path") ++ " AS ext FROM " ++ live ++ " x), " ++
-        "c AS MATERIALIZED (SELECT class, policy_ver FROM " ++ alive ++ ") " ++
+        "c AS MATERIALIZED (SELECT class, policy_ver, attrs ->> 'identity' AS ident FROM " ++ alive ++ ") " ++
         "SELECT json_build_object('v', " ++ std.fmt.comptimePrint("{d}", .{stats_version}) ++ ", " ++
         "'items', (SELECT count(*) FROM t), " ++
         "'bytes', (SELECT coalesce(sum(size_bytes), 0) FROM t), " ++
@@ -355,7 +370,8 @@ fn statsOver(comptime live: []const u8, comptime alive: []const u8) []const u8 {
         "'annotations', (SELECT count(*) FROM c), " ++
         "'classes', (SELECT coalesce(json_agg(json_build_object('name', class, 'count', n) ORDER BY class COLLATE \"C\"), '[]') " ++
         "   FROM (SELECT class, count(*) AS n FROM c WHERE class IS NOT NULL GROUP BY class ORDER BY class COLLATE \"C\" LIMIT 1000) x), " ++
-        "'policy', (SELECT max(policy_ver COLLATE \"C\") FROM c))::text";
+        "'policy', (SELECT max(policy_ver COLLATE \"C\") FROM c), " ++
+        "'identities', (SELECT count(DISTINCT ident) FROM c))::text";
 }
 
 const stats_sql = "WITH " ++ live_cte ++ ", " ++ alive_cte ++

@@ -42,7 +42,8 @@ export function AnnotationOverlay({
     >
       {drawn.map(({ a, shape }) => {
         const color = classColor(a.class);
-        const label = `${a.class ?? 'unlabelled'} — ${a.author}`;
+        const who = identityOf(a.attrs);
+        const label = `${a.class ?? 'unlabelled'}${who ? ` · ${who}` : ''} — ${a.author}`;
         if (shape.kind === 'box') {
           return (
             <rect
@@ -132,4 +133,12 @@ function MaskImage({
       <title>{label}</title>
     </image>
   );
+}
+
+/** Who or what an annotation names: its `attrs.identity`, the convention
+ * (docs/data-model.md), when it is a plain value. */
+function identityOf(attrs: unknown): string | null {
+  if (attrs === null || typeof attrs !== 'object' || Array.isArray(attrs)) return null;
+  const v = (attrs as Record<string, unknown>).identity;
+  return typeof v === 'string' || typeof v === 'number' ? String(v) : null;
 }

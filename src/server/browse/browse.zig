@@ -37,6 +37,8 @@ pub const Query = struct {
     anns: ?[]const u8 = null,
     /// Items with an annotation carrying this attribute value, "key=value".
     attr: ?[]const u8 = null,
+    /// Items with an annotation of this identity (`attrs.identity`), exactly.
+    identity: ?[]const u8 = null,
     /// The open item's path, answered beside the page (it may be on no
     /// page loaded yet: a shared link opens straight onto it).
     item: ?[]const u8 = null,
@@ -176,8 +178,8 @@ fn byValue(_: void, a: Facet, b: Facet) bool {
 /// The browse index's format, in its file names (locally and in storage):
 /// changing the columns changes it, so an index in an older format is
 /// never read, only rebuilt. v2 added `class_set`, v3 `ann_count`, v4
-/// `attr_set`.
-pub const index_format = "v4";
+/// `attr_set`, v5 `ident_set`.
+pub const index_format = "v5";
 
 /// A version's browse index: its items in path order, and its annotations
 /// by item, as two Parquet files — and the JSON lines they are made from.
@@ -229,7 +231,7 @@ pub fn convertIndex(arena: std.mem.Allocator, io: std.Io, db: *duck.Db, files: F
         .{ .lines = files.ann_lines, .out = files.anns, .columns = "id: 'VARCHAR', item_id: 'VARCHAR', kind: 'VARCHAR', class: 'VARCHAR', " ++
             "geometry: 'JSON', attrs: 'JSON', author: 'VARCHAR', policy_ver: 'VARCHAR'" },
         .{ .lines = files.items_lines, .out = files.items, .columns = "path: 'VARCHAR', hash: 'VARCHAR', size: 'BIGINT', split: 'VARCHAR', " ++
-            "item_id: 'VARCHAR', ext: 'VARCHAR', classes: 'VARCHAR[]', attrs: 'VARCHAR[]'" },
+            "item_id: 'VARCHAR', ext: 'VARCHAR', classes: 'VARCHAR[]', attrs: 'VARCHAR[]', idents: 'VARCHAR[]'" },
     };
     for (steps, 0..) |step, i| {
         // Named after this build's lines, so no other build writes it.
@@ -242,7 +244,7 @@ pub fn convertIndex(arena: std.mem.Allocator, io: std.Io, db: *duck.Db, files: F
         // (de-duplicating per page cost a 1M-item page about 100 ms).
         // And their annotation count, for the `anns` filter: one class
         // per annotation, so its length.
-        const extra = if (i == 0) ", " ++ ann_digest ++ " AS digest" else ", list_sort(list_distinct(classes)) AS class_set, len(classes) AS ann_count, coalesce(attrs, []) AS attr_set";
+        const extra = if (i == 0) ", " ++ ann_digest ++ " AS digest" else ", list_sort(list_distinct(classes)) AS class_set, len(classes) AS ann_count, coalesce(attrs, []) AS attr_set, coalesce(idents, []) AS ident_set";
         _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT *{s} FROM read_json('{s}', format = 'newline_delimited', columns = {{{s}}})) TO '{s}' (FORMAT parquet)", .{ extra, step.lines, step.columns, tmp }));
         std.Io.Dir.rename(cwd, tmp, cwd, step.out, io) catch return error.WriteFailed;
     }
@@ -261,7 +263,7 @@ fn quote(arena: std.mem.Allocator, path: []const u8) Error![]const u8 {
 /// reads the lists in a scan of its own, so the shared `m` never carries
 /// them (materialized through `m`, under the browse database's memory
 /// ceiling, they doubled a 1M-item page: 244 to 509 ms; this way 290).
-const other_than_attr_sql = filter_q ++ " AND " ++ filter_s ++ " AND " ++ filter_c ++ " AND " ++ filter_t ++ " AND " ++ filter_a;
+const other_than_attr_sql = filter_q ++ " AND " ++ filter_s ++ " AND " ++ filter_c ++ " AND " ++ filter_t ++ " AND " ++ filter_a ++ " AND " ++ filter_i;
 
 // Each filter, as `m` names it (fq, fs, …) and the attribute facet repeats it.
 const filter_q = "($1::VARCHAR IS NULL OR contains(lower(path), lower($1::VARCHAR)))";
@@ -270,6 +272,9 @@ const filter_c = "($3::VARCHAR IS NULL OR list_contains(class_set, $3::VARCHAR))
 const filter_t = "($4::VARCHAR IS NULL OR ext = $4::VARCHAR)";
 const filter_a = "($8::VARCHAR IS NULL OR ann_count BETWEEN $8::BIGINT AND $9::BIGINT)";
 const filter_x = "($10::VARCHAR IS NULL OR list_contains(attr_set, $10::VARCHAR))";
+// Identities have no facet (a face set names thousands): an exact match,
+// folded into `fq`, the one filter every facet and the selection apply.
+const filter_i = "($11::VARCHAR IS NULL OR list_contains(ident_set, $11::VARCHAR))";
 
 /// A page's counts and facets, over every item of the version (`{0s}` is
 /// its items file): most of a page's cost at 1M items.
@@ -309,7 +314,7 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
     // columns through them would cost seconds at 1M items.
     const sql = try std.fmt.allocPrint(arena,
         \\WITH m AS (SELECT path, split, ext, class_set, ann_count,
-    ++ " " ++ filter_q ++ " AS fq, " ++ filter_s ++ " AS fs, " ++ filter_c ++ " AS fc, " ++ filter_t ++ " AS ft, " ++
+    ++ " " ++ "(" ++ filter_q ++ " AND " ++ filter_i ++ ") AS fq, " ++ filter_s ++ " AS fs, " ++ filter_c ++ " AS fc, " ++ filter_t ++ " AS ft, " ++
         filter_a ++ " AS fa, " ++ filter_x ++ " AS fx " ++
         \\  FROM read_parquet('{0s}')),
         \\sel AS (SELECT path FROM m WHERE fq AND fs AND fc AND ft AND fa AND fx),
@@ -354,6 +359,7 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         .{ .text = if (bounds) |r| try std.fmt.allocPrint(arena, "{d}", .{r[0]}) else null },
         .{ .text = if (bounds) |r| try std.fmt.allocPrint(arena, "{d}", .{r[1]}) else null },
         .{ .text = q.attr },
+        .{ .text = q.identity },
     })) orelse return error.QueryFailed;
 
     const Raw = struct {
@@ -659,7 +665,7 @@ pub fn compareLines(arena: std.mem.Allocator, db: *duck.Db, d: DiffFiles, out: C
 const fixture_items =
     \\{"path":"README","hash":"dd","size":4,"split":null,"item_id":null,"ext":"file","classes":[]}
     \\{"path":"img/a.jpg","hash":"aa","size":1,"split":"train","item_id":"i1","ext":".jpg","classes":["person","person"]}
-    \\{"path":"img/b.JPG","hash":"bb","size":2,"split":"train","item_id":"i2","ext":".jpg","classes":["car"],"attrs":["occluded=true"]}
+    \\{"path":"img/b.JPG","hash":"bb","size":2,"split":"train","item_id":"i2","ext":".jpg","classes":["car"],"attrs":["occluded=true"],"idents":["car-0042"]}
     \\{"path":"img/c.png","hash":"cc","size":3,"split":"val","item_id":"i3","ext":".png","classes":[""]}
     \\
 ;
@@ -758,6 +764,12 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
     try std.testing.expectEqualStrings("img/b.JPG", occluded.items[0].path);
     try std.testing.expectEqual(@as(?u64, 1), countOf(all.facets.attr, "occluded=true"));
     try std.testing.expectEqual(@as(u64, 0), (try queryIndex(arena, &db, v1, .{ .attr = "occluded=false" })).matched);
+    // By identity, exactly: no facet, and it narrows every other count.
+    const who = try queryIndex(arena, &db, v1, .{ .identity = "car-0042" });
+    try std.testing.expectEqual(@as(u64, 1), who.matched);
+    try std.testing.expectEqualStrings("img/b.JPG", who.items[0].path);
+    try std.testing.expectEqual(@as(?u64, 1), countOf(who.facets.split, "train"));
+    try std.testing.expectEqual(@as(u64, 0), (try queryIndex(arena, &db, v1, .{ .identity = "car-004" })).matched);
     // A sample: spread by a hash of the paths, not the first by path, the
     // same every time, in path order, with no cursor.
     for (0..2) |_| {

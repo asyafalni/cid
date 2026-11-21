@@ -5,7 +5,7 @@
 //! The manifest is stored as the canonical text stream itself
 //! (manifests/<dataset_id>/<commit_id>.manifest), which is what the hash
 //! covers, written in one streamed pass over history (version.zig) at any
-//! size. The release's browse index (.v4.items.parquet, .v4.anns.parquet) sits
+//! size. The release's browse index (.v5.items.parquet, .v5.anns.parquet) sits
 //! beside it, written in the same pass by the server: derived,
 //! rebuildable, never hashed, so it cannot break a release.
 

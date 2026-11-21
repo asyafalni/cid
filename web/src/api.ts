@@ -132,6 +132,8 @@ export type Overview = {
   types: { name: string; count: number; bytes: number }[];
   classes: { name: string; count: number }[];
   splits: { name: string; count: number }[];
+  /** Distinct identities the annotations name (`attrs.identity`). */
+  identities?: number;
 };
 
 /** A dataset's overview, its counts those of `release` (the newest when not given). */
@@ -205,6 +207,7 @@ export type BrowseQuery = {
   type?: string;
   anns?: string;
   attr?: string;
+  identity?: string;
   after?: string;
   item?: string;
   limit?: number;
@@ -227,6 +230,7 @@ export function getBrowse(name: string, commit: string, query: BrowseQuery): Pro
   if (query.type !== undefined) params.set('type', query.type);
   if (query.anns !== undefined) params.set('anns', query.anns);
   if (query.attr !== undefined) params.set('attr', query.attr);
+  if (query.identity !== undefined) params.set('identity', query.identity);
   if (query.after !== undefined) params.set('after', query.after);
   if (query.item !== undefined) params.set('item', query.item);
   if (query.limit !== undefined) params.set('limit', String(query.limit));
