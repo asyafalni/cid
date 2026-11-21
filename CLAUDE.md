@@ -749,6 +749,10 @@ a new folder read at configure time needs the same line. On Zig 0.16.0,
 right after a recompile; it has not been seen on 0.17.0. If it returns, run the
 printed test binary directly to see the truth.
 
+CI runs on every push: format, unit and integration tests on Linux x86-64, and unit
+tests plus the installed binary on Linux arm64 and macOS (Apple silicon and Intel).
+It does not run the Playwright suite.
+
 Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
 `zig-pkg/` holds unpacked dependencies), `zig build test`, and
 `zig build integration` when touching `store/`, `core/`, `client/`, `server/`,
@@ -846,8 +850,11 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
   Call them with explicit arguments, never through a shell, with timeouts and memory
   limits; treat their output as untrusted.
 - **One binary, DuckDB beside it**: client and server are one `cid`, always linked
-  against libduckdb (shipped next to it). Only the Linux x86-64 library is pinned
-  today; other platforms need theirs pinned in `build.zig.zon`. No build conditions: a
+  against libduckdb (shipped next to it). One DuckDB release is pinned per platform
+  in `build.zig.zon` (Linux x86-64 and arm64, macOS universal for Apple silicon and
+  Intel), `build.zig` takes the target's and refuses any other target by name, and
+  CI (`.github/workflows/ci.yml`) builds and unit-tests each (Windows is not yet
+  supported). No build conditions: a
   feature never asks whether DuckDB is there. Client code never imports DuckDB, so a
   client-only target could be added later without one. No keychain libraries.
 - `zig fmt`; `snake_case` functions and variables, `PascalCase` types.

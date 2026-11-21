@@ -57,8 +57,21 @@ pub fn build(b: *std.Build) void {
     // Always linked. The C API only, translated once; nothing in cid sees
     // C++. Linked dynamically: the release's static archive is built
     // against libstdc++, which zig's libc++ cannot stand in for, so the
-    // library ships beside the binary and is found there.
-    if (b.lazyDependency("duckdb", .{})) |duck| {
+    // library ships beside the binary and is found there. One pinned
+    // release per platform (build.zig.zon); any other target is refused,
+    // naming the ones there are.
+    const os = target.result.os.tag;
+    const arch = target.result.cpu.arch;
+    const duck_dep: []const u8 = if (os == .linux and arch == .x86_64)
+        "duckdb"
+    else if (os == .linux and arch == .aarch64)
+        "duckdb_linux_arm64"
+    else if (os == .macos and (arch == .aarch64 or arch == .x86_64))
+        "duckdb_macos"
+    else
+        std.debug.panic("cid builds for Linux x86-64 and arm64 and for macOS (Apple silicon and Intel); DuckDB is pinned for those only, not {t}-{t}", .{ arch, os });
+    const duck_file = if (os == .macos) "libduckdb.dylib" else "libduckdb.so";
+    if (b.lazyDependency(duck_dep, .{})) |duck| {
         const header = b.addTranslateC(.{
             .root_source_file = duck.path("duckdb.h"),
             .target = target,
@@ -69,10 +82,12 @@ pub fn build(b: *std.Build) void {
         lib_mod.addLibraryPath(duck.path(""));
         lib_mod.linkSystemLibrary("duckdb", .{});
         lib_mod.link_libc = true;
-        exe_mod.addRPathSpecial("$ORIGIN");
+        // Beside the binary: $ORIGIN on Linux, @loader_path on macOS (the
+        // dylib names itself @rpath/libduckdb.dylib).
+        exe_mod.addRPathSpecial(if (os == .macos) "@loader_path" else "$ORIGIN");
         // Test binaries run from the cache: find it where it was fetched.
         lib_mod.addRPath(duck.path(""));
-        b.getInstallStep().dependOn(&b.addInstallBinFile(duck.path("libduckdb.so"), "libduckdb.so").step);
+        b.getInstallStep().dependOn(&b.addInstallBinFile(duck.path(duck_file), duck_file).step);
     }
 
     const run_step = b.step("run", "Run cid");

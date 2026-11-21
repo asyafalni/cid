@@ -8,10 +8,23 @@
             .url = "git+https://github.com/nevindra/nilo#d3ab2f33bbb8fc2281605c33a12fe3619c63f42d",
             .hash = "nilo-0.8.0-5HEqwq58ogBz1MCJR4WuM7uGdb0PznnQgoANOdGFRbPx",
         },
+        // DuckDB, one release for every platform, linked into every build
+        // and shipped beside the binary; build.zig fetches only the one
+        // for the target. Upgrade them together.
         .duckdb = .{
             .url = "https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-linux-amd64.zip",
             .hash = "N-V-__8AACFXKwnX1RoveZhztd4utbUmLx0lfZgDmWQjZaED",
-            // Linked into every build, shipped beside the binary.
+            .lazy = true,
+        },
+        .duckdb_linux_arm64 = .{
+            .url = "https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-linux-arm64.zip",
+            .hash = "N-V-__8AAFtHYQin4r0z9bEY03bCmA_40uP7qO8H3mN6CPmj",
+            .lazy = true,
+        },
+        // Apple silicon and Intel in one universal library.
+        .duckdb_macos = .{
+            .url = "https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-osx-universal.zip",
+            .hash = "N-V-__8AAHkYIAernNx2RAjYYr731ohYGtHZj4B0GcQxXni_",
             .lazy = true,
         },
     },

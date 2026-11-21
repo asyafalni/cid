@@ -1,0 +1,69 @@
+# Every push and pull request: cid builds and its tests pass on each
+# platform DuckDB is pinned for (build.zig.zon). Linux x86-64 also runs
+# the integration suite against the pinned test services. The Playwright
+# suite (pnpm --dir web test:e2e) is not run here yet.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      - name: Format
+        run: zig fmt --check build.zig src tests
+      - name: Unit tests
+        run: zig build test
+      - name: Test services
+        run: docker compose -f docker-compose.test.yml up -d --wait
+      - name: Tools the integration suite calls (ffmpeg, git)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Integration tests
+        run: zig build integration
+
+  # The everyday commands on the other platforms: the unit tests (DuckDB
+  # included, so the pinned library loads and answers), then the installed
+  # binary run from its folder, finding its library beside it, hashing a
+  # fixture exactly as Linux x86-64 does.
+  others:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-arm64
+            runs-on: ubuntu-24.04-arm
+          - name: macos-arm64
+            runs-on: macos-15
+          - name: macos-x86_64
+            runs-on: macos-15-intel
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      - name: Unit tests
+        run: zig build test
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast --prefix "$RUNNER_TEMP/cid"
+      - name: The installed binary runs and hashes as on Linux
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l "$RUNNER_TEMP/cid/bin"
+          "$RUNNER_TEMP/cid/bin/cid" --version
+          got=$("$RUNNER_TEMP/cid/bin/cid" hash-object tests/fixtures/notes.txt tests/fixtures/people.parquet)
+          want=$'4a8e37d61bf6d65fbf8318ba10bd4cf882be8c308fee96e08f6425a68ca4bffb\nfe91204d70aaa233e4cc1688db72d6ad79e4b5452e8e9c65630283a4da35d57a'
+          if [ "$got" != "$want" ]; then printf 'hashes differ:\n%s\n' "$got"; exit 1; fi
