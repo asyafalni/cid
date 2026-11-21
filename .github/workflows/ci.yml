@@ -24,8 +24,12 @@ jobs:
         run: zig fmt --check build.zig src tests
       - name: Unit tests
         run: zig build test
+      # --wait counts the bucket job exiting, its work done, as a failure:
+      # the two services first, then the one-shot job on its own.
       - name: Test services
-        run: docker compose -f docker-compose.test.yml up -d --wait
+        run: |
+          docker compose -f docker-compose.test.yml up -d --wait timescaledb seaweedfs
+          docker compose -f docker-compose.test.yml run --rm seaweedfs-bucket
       - name: Tools the integration suite calls (ffmpeg, git)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Integration tests
