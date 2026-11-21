@@ -34,6 +34,34 @@ export function comparePair(commits: TapeCommit[], a?: string, b?: string): { a:
   return { a: a ?? label(pool[1] ?? pool[0]), b: b ?? label(pool[0]) };
 }
 
+/** The view state a page's URL and its overview stand for, as the dataset
+ * page derives it (the palette's actions read it this way). */
+export function viewStateOf(o: Overview, search: Record<string, unknown>): ViewState {
+  const str = (k: string) => (typeof search[k] === 'string' ? (search[k] as string) : undefined);
+  const release = str('release');
+  const commit = str('commit');
+  const branch = str('branch');
+  const pinned = commit || (branch && !release) ? o.pinned_release : (release ?? o.commits.find((c) => c.release)?.release ?? null);
+  const views = ['overview', 'browse', 'releases', 'files', 'activity'] as const;
+  const view = views.find((v) => v === str('view')) ?? 'overview';
+  return {
+    view,
+    pinned,
+    commit: o.pinned_commit,
+    pin: { ...(branch ? { branch } : {}), ...(commit ? { commit } : release ? { release } : {}) },
+    split: str('split'),
+    cls: str('class'),
+    q: str('q'),
+    type: str('type'),
+    anns: search.anns === undefined ? undefined : String(search.anns),
+    attr: str('attr'),
+    identity: search.identity === undefined ? undefined : String(search.identity),
+    a: str('a'),
+    b: str('b'),
+    dir: str('dir'),
+  };
+}
+
 export function commandFor(o: Overview, s: ViewState, host: string): Shown | null {
   if (s.view === 'activity') return null;
   const folder = o.name.slice(o.name.lastIndexOf('/') + 1);

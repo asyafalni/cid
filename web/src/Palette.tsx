@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useRouterState } from '@tanstack/react-router';
 import { getBrowse, getOverview, listDatasets } from './api';
+import { commandFor, viewStateOf } from './command';
 
 // The command palette (docs/dashboard.md, design language): ⌘K or Ctrl-K
 // anywhere, then type to jump to a dataset, a release or tab of the one on
@@ -9,7 +10,8 @@ import { getBrowse, getOverview, listDatasets } from './api';
 // Escape closes. Every result is a link the page could show anyway.
 
 type Target = { to: string; params?: Record<string, string>; search?: Record<string, string> };
-type Result = { key: string; label: string; kind: string; target: Target };
+// A place to go, or an action to run (pin, compare, copy).
+type Result = { key: string; label: string; kind: string; target?: Target; run?: () => Promise<string | void> };
 
 const tabs = ['overview', 'browse', 'releases', 'files', 'activity'] as const;
 
@@ -33,6 +35,8 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
   const location = useRouterState({ select: (s) => s.location });
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
+  // What an action did, said for a moment before the palette closes.
+  const [done, setDone] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const listId = useId();
   useEffect(() => input.current?.focus(), []);
@@ -67,6 +71,38 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
       if (matches(t)) results.push({ key: `t:${t}`, label: t, kind: 'tab', target: { to: '/d/$', params: { _splat: name }, search: { ...pin, view: t } } });
     for (const it of items.data?.items ?? [])
       results.push({ key: `i:${it.path}`, label: it.path, kind: 'item', target: { to: '/d/$', params: { _splat: name }, search: { ...pin, view: 'browse', item: it.path } } });
+    // Actions on the page on screen: the version it shows, and what it says.
+    const o = overview.data;
+    const state = viewStateOf(o, here);
+    const shown = commandFor(o, state, window.location.hostname);
+    if (shown && matches('copy the command for this view'))
+      results.push({ key: 'a:command', label: 'Copy the command for this view', kind: 'action', run: () => copy(shown.command, 'Command copied') });
+    if (matches('copy a link to this view'))
+      results.push({ key: 'a:link', label: 'Copy a link to this view', kind: 'action', run: () => copy(window.location.href, 'Link copied') });
+    // Pin: an unpinned page follows the newest version; pinned, it stays.
+    if (!here.release && !here.commit && o.pinned_commit) {
+      const label = state.pinned ? `Pin the page to ${state.pinned}` : `Pin the page to commit ${o.pinned_commit.slice(0, 8)}`;
+      if (matches(label) || matches('pin'))
+        results.push({
+          key: 'a:pin',
+          label,
+          kind: 'action',
+          target: { to: '/d/$', params: { _splat: name }, search: { ...stringSearch(here), ...(state.pinned ? { release: state.pinned } : { commit: o.pinned_commit }) } },
+        });
+    }
+    // Compare the release on screen with the one before it.
+    const releases = o.commits.filter((c) => c.release);
+    const at = releases.findIndex((c) => c.release === state.pinned);
+    if (at >= 0 && at + 1 < releases.length) {
+      const label = `Compare ${releases[at + 1].release} with ${releases[at].release}`;
+      if (matches(label) || matches('compare'))
+        results.push({
+          key: 'a:compare',
+          label,
+          kind: 'action',
+          target: { to: '/d/$', params: { _splat: name }, search: { ...pin, view: 'releases', a: releases[at + 1].release!, b: releases[at].release! } },
+        });
+    }
   }
   for (const d of datasets.data?.datasets ?? [])
     if (matches(d.name)) results.push({ key: `d:${d.name}`, label: d.name, kind: d.kind === 'model' ? 'model' : 'dataset', target: { to: '/d/$', params: { _splat: d.name } } });
@@ -81,6 +117,14 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
 
   const go = (r: Result | undefined) => {
     if (!r) return;
+    if (r.run) {
+      void r.run().then((said) => {
+        if (!said) return onClose();
+        setDone(said);
+        setTimeout(onClose, 900);
+      });
+      return;
+    }
     onClose();
     void navigate(r.target as Parameters<typeof navigate>[0]);
   };
@@ -101,8 +145,8 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
           aria-controls={listId}
           aria-activedescendant={shown.length > 0 ? `${listId}-${at}` : undefined}
           aria-autocomplete="list"
-          aria-label="Jump to a dataset, release, tab, item or page"
-          placeholder="Jump to… (a dataset, release, tab, item or page)"
+          aria-label="Jump to a dataset, release, tab, item or page, or run an action"
+          placeholder="Jump to… (a dataset, release, tab, item or page), or pin, compare, copy"
           value={q}
           onChange={(e) => {
             setQ(e.target.value);
@@ -124,7 +168,10 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
             }
           }}
         />
-        <ul id={listId} role="listbox" aria-label="Places" className="palette-list">
+        <p className="quiet palette-done" role="status">
+          {done}
+        </p>
+        <ul id={listId} role="listbox" aria-label="Places and actions" className="palette-list">
           {shown.map((r, i) => (
             <li
               key={r.key}
@@ -144,4 +191,21 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
       </div>
     </div>
   );
+}
+
+/** Copies text; says what it did, or that the browser would not. */
+async function copy(text: string, said: string): Promise<string> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return said;
+  } catch {
+    return 'The browser did not allow copying here';
+  }
+}
+
+/** The URL's search as strings, for a link that keeps it. */
+function stringSearch(search: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(search)) if (v !== undefined) out[k] = String(v);
+  return out;
 }

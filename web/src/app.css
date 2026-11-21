@@ -2547,6 +2547,15 @@ button.tick-mark:hover {
   padding: var(--space-2) var(--space-3);
 }
 
+.palette-done:empty {
+  display: none;
+}
+
+.palette-done {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+}
+
 /* A subset picker's choices: plain until picked, then filled and ticked,
    so what the command keeps reads at a glance. */
 .subset-chip {

@@ -695,6 +695,40 @@ test('Ctrl-K jumps to a dataset, a release, a tab or an item by typing', async (
   await expect(palette).toHaveCount(0);
 });
 
+test('the palette runs actions too: pin the version, compare it with the release before, copy its command', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/boxes');
+  await page.waitForLoadState('networkidle');
+  const palette = page.getByRole('dialog', { name: 'Jump to' });
+  const field = palette.getByRole('combobox');
+  // Unpinned, the page follows the newest release; pinning keeps it there.
+  await page.keyboard.press('Control+k');
+  await field.fill('pin');
+  await expect(palette.getByRole('option', { name: 'Pin the page to v1.1.0 action' })).toHaveAttribute('aria-selected', 'true');
+  await field.press('Enter');
+  await expect(page).toHaveURL(/release=v1\.1\.0/);
+  // Compare the release on screen with the one before it.
+  await page.keyboard.press('Control+k');
+  await field.fill('compare');
+  await expect(palette.getByRole('option', { name: 'Compare v1.0.0 with v1.1.0 action' })).toHaveAttribute('aria-selected', 'true');
+  await field.press('Enter');
+  await expect(page).toHaveURL(/view=releases/);
+  await expect(page).toHaveURL(/a=v1\.0\.0/);
+  await expect(page).toHaveURL(/b=v1\.1\.0/);
+  // Copy the command for the view on screen: the one Show command shows.
+  await page.goto('/d/e2e/datasets/boxes?release=v1.0.0');
+  await page.waitForLoadState('networkidle');
+  await page.keyboard.press('Control+k');
+  await field.fill('copy the command');
+  await expect(palette.getByRole('option', { name: 'Copy the command for this view action' })).toBeVisible();
+  await field.press('Enter');
+  await expect(palette.getByRole('status')).toHaveText('Command copied');
+  await expect(palette).toHaveCount(0);
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied).toContain('cid clone cid@127.0.0.1:e2e/datasets/boxes --release v1.0.0');
+});
+
 test('home: a card per dataset, the same as rows in List, and search reaches classes and types', async ({ page }) => {
   await signIn(page);
   const demo = page.locator('.ds-card', { has: page.getByRole('link', { name: 'e2e/datasets/demo', exact: true }) });

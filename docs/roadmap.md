@@ -39,7 +39,7 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      annotated split's file at 1M items~~ (done 2026-11-21: prepared ahead for
      releases, and a release of an already prepared head is queued again).
   7. Small gaps left by finished items: comparing a branch with `main` (B7); actions
-     in the `⌘K` palette (B9); ~~per-class change counts in `cid diff` (B5)~~ (done 2026-11-21: counted as the
+     ~~in the `⌘K` palette (B9)~~ (done 2026-11-21: pin, compare, copy the command or a link); ~~per-class change counts in `cid diff` (B5)~~ (done 2026-11-21: counted as the
      diff streams, the 20 most changed classes, and `by_class` in `--json`).
      Found and fixed on the way (2026-11-21): an item moved to another split with its
      bytes unchanged was invisible to `cid diff`, Compare and a release's counts;
@@ -255,7 +255,7 @@ both themes, and works with reduced motion. Beauty never costs a budget.
 - ~~**B8. `coco` and `voc` exports**~~ (done 2026-11-20; checked with pycocotools:
   loads, `annToMask` matches every area; migration 0005).
 - ~~**B9. "Show command" and the `⌘K` palette**~~ (done 2026-11-20; the palette
-  jumps to places; actions in it are not built).
+  jumps to places; actions in it came 2026-11-21).
 
 ## 5. Tier C: the direction (in this order)
 

@@ -167,7 +167,10 @@ the tagline in its three places, and the reduced-motion switch. Items marked
   or model, and on a dataset page to one of its releases, its tabs (at the version on
   screen) or an item by path (opened in Browse); and to the home, SSH keys and Tokens
   pages. Arrows move, Enter goes, Escape closes; an accessible combobox in a dialog.
-  *Planned:* actions (pin, compare, copy a command) beside places.
+  And actions beside places, on a dataset page: pin the page to the version on screen
+  (when it follows the newest), compare the release on screen with the one before it,
+  copy the command for the view (the one "Show command" shows) or a link to it; a copy
+  says so for a moment before the palette closes.
 - **Ship's log.** The Activity page reads like telemetry: monospace timestamps, one
   event per line, narrowed by action or person.
 - **Two small easter eggs, no more:** `cid --version` prints a small original ASCII
