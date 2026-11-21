@@ -386,9 +386,9 @@ Every dataset page (all five tabs) shares one header and the release tape.
     overlays side by side.
   - Table diff (built): under each modified CSV, Parquet or JSONL file, rows added and
     removed, with the first 20 each way one click away; the same answer `cid diff`
-    prints. Whole-row comparison until a dataset can declare a key, so cell-level
-    "changed" (like Dolt's cell diffs) waits for that. A restricted dataset gets
-    counts and columns, never rows.
+    prints. With the table's key in `.cidkeys`, rows changed too, cell by cell, old
+    and new (like Dolt's cell diffs); without one, the page says how to declare it.
+    A restricted dataset gets counts and columns, never rows or cells.
 
 ### 4.5 Dataset › Health (Phase 2: not built)
 
@@ -613,8 +613,8 @@ editing, a parked decision), and keyboard shortcuts outside Browse.
 
 *Built:* the row-level table diff. Compare shows, under each modified CSV, Parquet or
 JSONL file, its rows added and removed, with the rows themselves one click away (the
-first 20 each way); it is the same answer `cid diff` prints. Whole-row comparison
-until a dataset can declare a key, so cell-level "changed" waits for that.
+first 20 each way); it is the same answer `cid diff` prints. A table keyed in
+`.cidkeys` also shows rows changed, cell by cell.
 
 **Phase 3 — find anything**
 Semantic search and "more like this" · embedding map with lasso filter · near-duplicate

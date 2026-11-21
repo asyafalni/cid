@@ -316,7 +316,7 @@ function Comparison({
                 </span>
               )}
               {c.change === 'modified' && isTable(c.path) && (
-                <RowChanges name={name} path={c.path} a={c.hash_a!} b={c.hash_b!} />
+                <RowChanges name={name} path={c.path} a={c.hash_a!} b={c.hash_b!} commitB={bCommit ?? undefined} />
               )}
             </li>
           ))}
@@ -447,10 +447,10 @@ function isTable(path: string): boolean {
 // removed, with the rows themselves one click away. Computed once on the
 // server; when it cannot be, the line says why, and the file line above
 // already says the file changed.
-function RowChanges({ name, path, a, b }: { name: string; path: string; a: string; b: string }) {
+function RowChanges({ name, path, a, b, commitB }: { name: string; path: string; a: string; b: string; commitB?: string }) {
   const answer = useQuery({
-    queryKey: ['rowdiff', name, a, b],
-    queryFn: () => getRowDiff(name, path, a, b),
+    queryKey: ['rowdiff', name, a, b, commitB ?? null],
+    queryFn: () => getRowDiff(name, path, a, b, commitB),
     staleTime: Infinity,
   });
   if (answer.isPending) return <p className="row-changes quiet">Comparing rows…</p>;
@@ -486,24 +486,79 @@ function RowChanges({ name, path, a, b }: { name: string; path: string; a: strin
   }
   const added = d.added ?? 0;
   const removed = d.removed ?? 0;
-  if (added === 0 && removed === 0)
+  const changed = d.changed ?? 0;
+  const key = d.key && d.key.length > 0 ? d.key : null;
+  if (added === 0 && removed === 0 && changed === 0)
     return (
       <p className="row-changes quiet">The same {d.rows_b.toLocaleString()} rows, in another order or format.</p>
     );
   return (
     <div className="row-changes">
       <p className="data">
-        <span className="change-verb--added">{added.toLocaleString()} rows added</span>,{' '}
-        <span className="change-verb--deleted">{removed.toLocaleString()} removed</span>{' '}
+        <span className="change-verb--added">
+          {added.toLocaleString()} {added === 1 ? 'row' : 'rows'} added
+        </span>
+        ,{' '}
+        <span className="change-verb--deleted">{removed.toLocaleString()} removed</span>
+        {key && (
+          <>
+            , <span className="change-verb--modified">{changed.toLocaleString()} changed</span>
+          </>
+        )}{' '}
         <span className="quiet">
-          ({d.rows_a.toLocaleString()} → {d.rows_b.toLocaleString()} rows; an edited row counts as one removed and one added)
+          ({d.rows_a.toLocaleString()} → {d.rows_b.toLocaleString()} rows;{' '}
+          {key ? `paired by ${key.join(', ')}` : 'an edited row counts as one removed and one added'})
         </span>
       </p>
+      {d.key_note ? (
+        <p className="quiet">{d.key_note}.</p>
+      ) : (
+        !key &&
+        added > 0 &&
+        removed > 0 && (
+          <p className="quiet">
+            To see rows changed rather than removed and added, name the table's key in{' '}
+            <code className="data">.cidkeys</code>, e.g. <code className="data">{path} id</code>.
+          </p>
+        )
+      )}
       {r.withheld ? (
         <p className="quiet">The rows themselves are withheld: this dataset is restricted.</p>
       ) : (
         <details>
           <summary>Show the changed rows</summary>
+          {key && (d.changed_sample ?? []).length > 0 && (
+            <div className="table-scroll">
+              <table className="browse-table">
+                <caption className="quiet">
+                  Changed:{' '}
+                  {(d.changed_sample ?? []).length < changed
+                    ? `first ${(d.changed_sample ?? []).length} of ${changed.toLocaleString()}`
+                    : changed.toLocaleString()}
+                </caption>
+                <thead>
+                  <tr>
+                    <th>{key.join(', ')}</th>
+                    <th>column</th>
+                    <th>before</th>
+                    <th>after</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(d.changed_sample ?? []).flatMap((row, i) =>
+                    row.cells.map((cell, j) => (
+                      <tr key={`${i}-${cell.column}`}>
+                        <td className="data">{j === 0 ? Object.values(row.key).map(String).join(', ') : ''}</td>
+                        <td className="data">{cell.column}</td>
+                        <td className="data change-verb--deleted">{cell.before ?? 'null'}</td>
+                        <td className="data change-verb--added">{cell.after ?? 'null'}</td>
+                      </tr>
+                    )),
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
           <SampleTable caption="Removed" total={removed} rows={d.removed_sample ?? []} />
           <SampleTable caption="Added" total={added} rows={d.added_sample ?? []} />
         </details>

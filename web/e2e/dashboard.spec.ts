@@ -945,6 +945,23 @@ test('compare shows a modified table by its rows: counts, then the rows themselv
   await expect(change.locator('table', { hasText: 'Added' })).toContainText('Fajar');
 });
 
+test('a declared key turns a removed-and-added pair into one row changed, cell by cell', async ({ page }) => {
+  await signIn(page);
+  // Without .cidkeys: an edit is one removed and one added, and the page says how to see it changed.
+  await page.goto('/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0');
+  const before = page.locator('.change', { hasText: 'people.csv' });
+  await expect(before).toContainText('2 rows added, 2 removed');
+  await expect(before).toContainText('name the table\'s key in .cidkeys');
+  // With people.csv keyed by id: Budi removed, Fajar added, Citra changed.
+  await page.goto('/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.2.0');
+  const keyed = page.locator('.change', { hasText: 'people.csv' });
+  await expect(keyed).toContainText('1 row added, 1 removed, 1 changed');
+  await expect(keyed).toContainText('paired by id');
+  await keyed.getByText('Show the changed rows').click();
+  const changed = keyed.locator('table', { hasText: 'Changed' });
+  await expect(changed.getByRole('row', { name: /3 score 77(\.0)? 79(\.0)?/ })).toBeVisible();
+});
+
 test('browse pages through a version: one page, then more on scroll, and links past the first page', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/many?view=browse&mode=table');

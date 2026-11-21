@@ -593,13 +593,22 @@ pub const Remote = struct {
             columns_changed: bool,
             added: u64 = 0,
             removed: u64 = 0,
+            changed: u64 = 0,
+            /// The key rows were paired by (`.cidkeys`), or null for whole rows.
+            key: ?[]const []const u8 = null,
+            /// Why a declared key was not used.
+            key_note: ?[]const u8 = null,
+            changed_sample: []const struct {
+                key: std.json.Value,
+                cells: []const struct { column: []const u8, before: ?[]const u8 = null, after: ?[]const u8 = null },
+            } = &.{},
         } = null,
         withheld: bool = false,
     };
 
     /// Row-level diff of two contents of a table file, by the server.
-    pub fn rowDiff(self: *const Remote, arena: std.mem.Allocator, a: []const u8, path_a: []const u8, b: []const u8, path_b: []const u8) Error!RowDiff {
-        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .a = a, .b = b, .path_a = path_a, .path_b = path_b }, .{})});
+    pub fn rowDiff(self: *const Remote, arena: std.mem.Allocator, a: []const u8, path_a: []const u8, b: []const u8, path_b: []const u8, commit_b: ?[]const u8) Error!RowDiff {
+        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .a = a, .b = b, .path_a = path_a, .path_b = path_b, .commit_b = commit_b }, .{})});
         const res = try self.send(arena, "POST", try self.target(arena, "rowdiff", .{}), body);
         if (res.status == .service_unavailable) return .{ .status = "busy" };
         if (res.status == .not_found) return error.NoSuchDataset;

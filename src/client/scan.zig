@@ -5,6 +5,7 @@
 //! comments with #. Generated export sidecars ride on this.
 
 const std = @import("std");
+const pathpattern = @import("../util/pathpattern.zig");
 const index_mod = @import("index.zig");
 
 pub const FileInfo = struct {
@@ -92,14 +93,7 @@ fn loadIgnore(arena: std.mem.Allocator, io: std.Io, work_dir: std.Io.Dir) []cons
 }
 
 fn ignored(patterns: []const []const u8, path: []const u8) bool {
-    for (patterns) |p| {
-        if (std.mem.eql(u8, p, path)) return true;
-        if (std.mem.endsWith(u8, p, "/") and std.mem.startsWith(u8, path, p)) return true;
-        if (std.mem.startsWith(u8, p, "*.")) {
-            const base_start = if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| i + 1 else 0;
-            if (std.mem.endsWith(u8, path[base_start..], p[1..])) return true;
-        }
-    }
+    for (patterns) |p| if (pathpattern.matches(p, path)) return true;
     return false;
 }
 

@@ -4103,7 +4103,7 @@ test "row diffs: rows added and removed between versions, cached, withheld when 
         try std.testing.expectEqualStrings(&hashes[1], seen.table_hash_b.?);
     }
 
-    const rd = try remote.rowDiff(arena, &hashes[0], "people.csv", &hashes[1], "people.csv");
+    const rd = try remote.rowDiff(arena, &hashes[0], "people.csv", &hashes[1], "people.csv", null);
     try std.testing.expectEqualStrings("done", rd.status);
     const d = rd.diff.?;
     try std.testing.expect(!d.columns_changed);
@@ -4115,8 +4115,41 @@ test "row diffs: rows added and removed between versions, cached, withheld when 
     // Kept: asked again, answered from row_diffs, the same.
     const kept = try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM row_diffs WHERE hash_a = decode($1, 'hex') AND status = 'done'", .{@as([]const u8, &hashes[0])});
     try std.testing.expectEqual(@as(i64, 1), kept.?);
-    const again = try remote.rowDiff(arena, &hashes[0], "people.csv", &hashes[1], "people.csv");
+    const again = try remote.rowDiff(arena, &hashes[0], "people.csv", &hashes[1], "people.csv", null);
     try std.testing.expectEqual(@as(u64, 2), again.diff.?.added);
+
+    // A key declared in .cidkeys, committed with the data: asked with the
+    // later version's commit, rows pair up by it, and Citra's edit is one
+    // row changed, its one cell old and new. A separate answer, kept too.
+    try producer.dir.writeFile(io, .{ .sub_path = ".cidkeys", .data = "# people by their id\npeople.csv id\n" });
+    {
+        var pws = try cid.client.workspace.open(arena, io, producer.dir);
+        _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+        _ = try cid.client.workspace.commit(arena, io, &pws, "declare the key", "user:test");
+        _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    }
+    const keyed_at = (try db.rawOne([]const u8, &fscope, "SELECT r.commit_id::text FROM refs r JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/rowdiff' AND r.name = 'main' AND r.kind = 'branch'", .{})).?;
+    const keyed = try remote.rowDiff(arena, &hashes[0], "people.csv", &hashes[1], "people.csv", keyed_at);
+    const kd = keyed.diff.?;
+    try std.testing.expectEqualStrings("id", kd.key.?[0]);
+    try std.testing.expectEqual(@as(u64, 1), kd.added); // Fajar
+    try std.testing.expectEqual(@as(u64, 1), kd.removed); // Budi
+    try std.testing.expectEqual(@as(u64, 1), kd.changed); // Citra
+    try std.testing.expectEqualStrings("score", kd.changed_sample[0].cells[0].column);
+    try std.testing.expectEqual(@as(i64, 2), (try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM row_diffs WHERE hash_a = decode($1, 'hex')", .{@as([]const u8, &hashes[0])})).?);
+    // Before the file existed, the same pair is compared whole.
+    const unkeyed_at = (try db.rawOne([]const u8, &fscope, "SELECT c.commit_id::text FROM commits c JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/rowdiff' ORDER BY c.commit_id LIMIT 1 OFFSET 1", .{})).?;
+    try std.testing.expect((try remote.rowDiff(arena, &hashes[0], "people.csv", &hashes[1], "people.csv", unkeyed_at)).diff.?.key == null);
+    // A restricted dataset gets the counts, never the cells.
+    {
+        const kbody = try std.fmt.allocPrint(arena, "{{\"a\":\"{s}\",\"b\":\"{s}\",\"path_a\":\"people.csv\",\"path_b\":\"people.csv\",\"commit_b\":\"{s}\"}}", .{ &hashes[0], &hashes[1], keyed_at });
+        _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = 'test/datasets/rowdiff'", .{});
+        const hidden = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/rowdiff/-/rowdiff", "Bearer test-token", kbody);
+        _ = try db.exec(&fscope, "UPDATE datasets SET restricted = false WHERE name = 'test/datasets/rowdiff'", .{});
+        try std.testing.expect(std.mem.indexOf(u8, hidden.body, "\"changed\":1") != null);
+        try std.testing.expect(std.mem.indexOf(u8, hidden.body, "changed_sample") == null);
+        try std.testing.expect(std.mem.indexOf(u8, hidden.body, "Citra") == null);
+    }
 
     // The samples carry the rows; a restricted dataset gets counts only.
     const body = try std.fmt.allocPrint(arena, "{{\"a\":\"{s}\",\"b\":\"{s}\",\"path_a\":\"people.csv\",\"path_b\":\"people.csv\"}}", .{ &hashes[0], &hashes[1] });
@@ -4135,7 +4168,7 @@ test "row diffs: rows added and removed between versions, cached, withheld when 
     const foreign = try std.fmt.allocPrint(arena, "{{\"a\":\"{s}\",\"b\":\"{s}\",\"path_a\":\"people.csv\",\"path_b\":\"people.csv\"}}", .{ repeat("ab", 32), &hashes[1] });
     const refused = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/rowdiff/-/rowdiff", "Bearer test-token", foreign);
     try std.testing.expectEqual(std.http.Status.not_found, refused.status);
-    const text = try remote.rowDiff(arena, &hashes[0], "notes.txt", &hashes[1], "notes.txt");
+    const text = try remote.rowDiff(arena, &hashes[0], "notes.txt", &hashes[1], "notes.txt", null);
     try std.testing.expectEqualStrings("not_a_table", text.status);
 }
 

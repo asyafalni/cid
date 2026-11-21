@@ -107,7 +107,7 @@ fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: [
     // The server compares (core/version.zig) and the changes stream in,
     // printed as they arrive: a million-item diff holds one line at a time.
     if (!ctx.json) ctx.out.print("Comparing {s} → {s}\n", .{ a_label, b_label }) catch return .network;
-    var printer: Printer = .{ .ctx = ctx, .remote = remote };
+    var printer: Printer = .{ .ctx = ctx, .remote = remote, .commit_b = b_commit };
     const sum = remote.compare(ctx.arena, a_commit, b_commit, .{ .ctx = &printer, .visit = Printer.visit }) catch |err| switch (err) {
         error.Corrupt => return common.fail(ctx, .integrity, "the diff from the server failed its check; the lines above are void. Run 'cid diff' again.", .{}),
         error.AccessDenied => return common.denied(ctx, "cid diff"),
@@ -137,6 +137,8 @@ fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: [
 const Printer = struct {
     ctx: *const common.Context,
     remote: *const remote_mod.Remote,
+    /// The later version: its `.cidkeys` names each table's key.
+    commit_b: []const u8,
     failed: bool = false,
 
     fn visit(raw: *anyopaque, line: remote_mod.Remote.DiffLine) anyerror!void {
@@ -157,7 +159,7 @@ const Printer = struct {
             } else {
                 try printLine(ctx, change, path, line.size_b);
                 if (std.mem.eql(u8, change, "modified") and isTable(path))
-                    try printRows(ctx, self.remote, path, line.hash_a.?, line.hash_b.?);
+                    try printRows(ctx, self.remote, path, line.hash_a.?, line.hash_b.?, self.commit_b);
             }
         } else if (line.ann) |change| {
             try ctx.out.print("  ann {s: <8} {s} {s} on {s}\n", .{
@@ -179,11 +181,11 @@ fn isTable(path: []const u8) bool {
 /// The row-level line under a modified table file. Whatever the server
 /// cannot say about rows, the file line above already said the file
 /// changed, so this line explains and never fails the command.
-fn printRows(ctx: *const common.Context, remote: *const remote_mod.Remote, path: []const u8, hash_a: []const u8, hash_b: []const u8) !void {
+fn printRows(ctx: *const common.Context, remote: *const remote_mod.Remote, path: []const u8, hash_a: []const u8, hash_b: []const u8, commit_b: []const u8) !void {
     const indent = "              ";
     var tries: u32 = 0;
     const rd = while (true) : (tries += 1) {
-        const got = remote.rowDiff(ctx.arena, hash_a, path, hash_b, path) catch {
+        const got = remote.rowDiff(ctx.arena, hash_a, path, hash_b, path, commit_b) catch {
             try ctx.out.print("{s}rows: the server could not compare them; run 'cid diff' again\n", .{indent});
             return;
         };
@@ -207,9 +209,34 @@ fn formatRows(out: *std.Io.Writer, rd: remote_mod.Remote.RowDiff) !void {
         if (sameSet(d.columns_a, d.columns_b)) try out.writeAll(" reordered");
         return out.print(" ({d} → {d} rows)\n", .{ d.rows_a, d.rows_b });
     }
+    if (d.key) |key| {
+        // Paired by the key: what changed, cell by cell.
+        if (d.added == 0 and d.removed == 0 and d.changed == 0)
+            return out.print("rows: the same {d} rows by {s}, in another order or format\n", .{ d.rows_b, try keyText(key) });
+        try out.print("rows by {s}: {d} added, {d} removed, {d} changed ({d} → {d})\n", .{ try keyText(key), d.added, d.removed, d.changed, d.rows_a, d.rows_b });
+        for (d.changed_sample) |c| {
+            try out.print("                {f}:", .{std.json.fmt(c.key, .{})});
+            for (c.cells, 0..) |cell, i| try out.print("{s} {s} {s} → {s}", .{ if (i > 0) "," else "", cell.column, cell.before orelse "null", cell.after orelse "null" });
+            try out.writeByte('\n');
+        }
+        if (d.changed > d.changed_sample.len) try out.print("                … and {d} more changed rows\n", .{d.changed - d.changed_sample.len});
+        return;
+    }
     if (d.added == 0 and d.removed == 0)
         return out.print("rows: the same {d} rows, in another order or format\n", .{d.rows_b});
     try out.print("rows: {d} added, {d} removed ({d} → {d})\n", .{ d.added, d.removed, d.rows_a, d.rows_b });
+    // Why no row shows as changed, and how to see them.
+    if (d.key_note) |note| {
+        try out.print("              {s}\n", .{note});
+    } else if (d.added > 0 and d.removed > 0) {
+        try out.writeAll("              (an edited row counts as one removed and one added; name the table's key in .cidkeys, e.g. 'people.csv id', to see rows changed)\n");
+    }
+}
+
+/// The key's columns as written in `.cidkeys`.
+fn keyText(key: []const []const u8) error{WriteFailed}![]const u8 {
+    if (key.len == 1) return key[0];
+    return "the declared key";
 }
 
 fn contains(list: []const []const u8, item: []const u8) bool {
@@ -258,10 +285,11 @@ fn plural(n: anytype) []const u8 {
 }
 
 test "row lines: counts, a column change, the same rows, and words when not compared" {
-    var buf: [256]u8 = undefined;
+    var buf: [1024]u8 = undefined;
     const Rd = remote_mod.Remote.RowDiff;
     const cases = [_]struct { rd: Rd, want: []const u8 }{
-        .{ .rd = .{ .status = "done", .diff = .{ .rows_a = 5, .rows_b = 6, .columns_changed = false, .added = 3, .removed = 2 } }, .want = "rows: 3 added, 2 removed (5 → 6)\n" },
+        .{ .rd = .{ .status = "done", .diff = .{ .rows_a = 5, .rows_b = 6, .columns_changed = false, .added = 3, .removed = 2 } }, .want = "rows: 3 added, 2 removed (5 → 6)\n              (an edited row counts as one removed and one added; name the table's key in .cidkeys, e.g. 'people.csv id', to see rows changed)\n" },
+        .{ .rd = .{ .status = "done", .diff = .{ .rows_a = 5, .rows_b = 6, .columns_changed = false, .added = 3, .removed = 2, .key_note = "the key 'id' repeats in this version ({\"id\":6} is on 2 rows); rows compared whole" } }, .want = "rows: 3 added, 2 removed (5 → 6)\n              the key 'id' repeats in this version ({\"id\":6} is on 2 rows); rows compared whole\n" },
         .{ .rd = .{ .status = "done", .diff = .{ .rows_a = 5, .rows_b = 1, .columns_a = &.{ "id BIGINT", "name VARCHAR" }, .columns_b = &.{ "id BIGINT", "name VARCHAR", "team VARCHAR" }, .columns_changed = true } }, .want = "columns changed, so rows are not compared: +team VARCHAR (5 → 1 rows)\n" },
         .{ .rd = .{ .status = "done", .diff = .{ .rows_a = 5, .rows_b = 5, .columns_changed = false } }, .want = "rows: the same 5 rows, in another order or format\n" },
         .{ .rd = .{ .status = "too_large", .reason = "over 128 MB; split large tables into partitioned files to compare them by rows" }, .want = "rows: not compared: over 128 MB; split large tables into partitioned files to compare them by rows\n" },
@@ -271,6 +299,16 @@ test "row lines: counts, a column change, the same rows, and words when not comp
         try formatRows(&w, case.rd);
         try std.testing.expectEqualStrings(case.want, w.buffered());
     }
+    // Paired by a key: the counts, then each changed row's cells.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const keyed = try std.json.parseFromSliceLeaky(Rd, arena_state.allocator(),
+        \\{"status":"done","diff":{"rows_a":5,"rows_b":5,"columns_changed":false,"added":1,"removed":1,"changed":1,"key":["id"],
+        \\ "changed_sample":[{"key":{"id":3},"cells":[{"column":"score","before":"78.0","after":"79.0"}]}]}}
+    , .{ .ignore_unknown_fields = true });
+    var w: std.Io.Writer = .fixed(&buf);
+    try formatRows(&w, keyed);
+    try std.testing.expectEqualStrings("rows by id: 1 added, 1 removed, 1 changed (5 → 5)\n                {\"id\":3}: score 78.0 → 79.0\n", w.buffered());
 }
 
 test "human sizes" {

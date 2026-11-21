@@ -578,19 +578,22 @@ asks the server what it still lacks, whole files and pieces alike, and sends onl
   annotations. Adding a format never touches `core/`.
 
 **Row-level diff** (`cid diff`) for `.csv`, `.parquet` and `.jsonl`: rows added and
-removed, by whole-row comparison (declaring a key column, to see rows changed, is not
-built). Row-level diffs are computed **on the server** (where DuckDB lives); the
+removed, by whole-row comparison; and, for a table whose key is declared in `.cidkeys`
+(committed with the data, read at the later version), rows changed, cell by cell, old
+and new. Row-level diffs are computed **on the server** (where DuckDB lives); the
 CLI itself never reads a table. Comparing two versions is the server's job too: DuckDB
 joins their browse indexes (annotations compared as stored jsonb text, so formatting
 never counts, through a digest the index keeps, so only changed rows are read whole) and the changes are written once to storage as gzip JSON lines, which
 `cid diff` prints as they stream in; the dashboard's compare pages through the same
 join. A merge reads only the paths
 the branch touched; every other path is the base's by construction. Other files are
-compared by hash only everywhere. Until a dataset can declare a key column, an edited
-row shows as one removed plus one added; when the columns changed, the column change
-is the answer and rows are not compared. Each pair of contents is diffed once, ever
+compared by hash only everywhere. Without a declared key an edited row shows as one
+removed plus one added, and the diff says how to declare one; nothing is ever guessed.
+A key that does not hold (a column missing, a value empty or repeated) is said, and
+rows are compared whole. When the columns changed, the column change is the answer and
+rows are not compared. Each pair of contents is diffed once per key, ever
 (`row_diffs`), one at a time, files up to 128 MB; a restricted dataset gets counts and
-columns, never rows.
+columns, never rows or cells.
 
 ---
 
@@ -630,6 +633,10 @@ Rules for every command:
 - Inside a cloned folder the dataset is implied; outside, it is the first argument.
 - `.cidignore` excludes files from `cid add`: a small subset of `.gitignore` (exact
   paths, `dir/`, `*.ext`, `#` comments).
+- `.cidkeys` names each table's key, so a row diff pairs rows by it: one rule a line,
+  a path pattern (as `.cidignore`'s) and its key columns, comma-separated, e.g.
+  `people.csv  id` or `events/  user_id,ts`; the last matching rule wins. It is an
+  ordinary committed file, versioned with the data.
 - `--json` anywhere on the line: the result as one JSON document on stdout (`diff`:
   one line per change, then a summary); errors as `{"error", "exit"}` on stderr.
 - Exit codes: 0 ok, 1 wrong usage (or no server configured), 2 conflict, 3 integrity

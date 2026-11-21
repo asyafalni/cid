@@ -298,6 +298,18 @@ function seedTablesEdited(dir: string) {
   run(`${cid} tag v1.1.0`, folder);
 }
 
+// The tables' third release declares people.csv's key, so a compare
+// pairs its rows by id: Citra's edit is one row changed.
+function seedTablesKeyed(dir: string) {
+  run(`${cid} clone cid@127.0.0.1:e2e/datasets/tables tables-keyed`, dir);
+  const folder = join(dir, 'tables-keyed');
+  writeFileSync(join(folder, '.cidkeys'), '# people are identified by their id\npeople.csv id\n');
+  run(`${cid} add .cidkeys`, folder);
+  run(`${cid} commit -m "Declare people.csv's key"`, folder);
+  run(`${cid} push`, folder);
+  run(`${cid} tag v1.2.0`, folder);
+}
+
 // More items than one browse page holds (120), so paging is exercised.
 function seedMany(dir: string) {
   const many = join(dir, 'many');
@@ -463,6 +475,7 @@ export default function setup() {
       `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/tables/-/releases -H "Authorization: Bearer ${token}"`,
     );
     if (!tableReleases.includes('"v1.1.0"')) seedTablesEdited(dir);
+    if (!tableReleases.includes('"v1.2.0"')) seedTablesKeyed(dir);
     // Sniff, thumbnail and blur every new png. One pass takes a batch, and
     // a migration can requeue many, so drain the queue: until a pass finds
     // nothing at all. A pass that only skips (other suites leave jobs for

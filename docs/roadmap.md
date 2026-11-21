@@ -24,8 +24,8 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
 - **What is left, in the order to take it** (agreed with the owner 2026-11-20):
   1. ~~U3 (no blank waits)~~ (done 2026-11-20: layout shift 0.001–0.074 per page with
      every answer slowed 400 ms; `web/e2e/dashboard.spec.ts`).
-  2. A declared key column for row diffs (Tier D): a design round with the owner
-     first, then built, so an edited row shows as changed, not removed and added.
+  2. ~~A declared key column for row diffs~~ (done 2026-11-21: `.cidkeys`, committed
+     with the data; rows changed cell by cell in `cid diff` and the compare).
   3. U4 (the first minute).
   4. The rest of B6 (attribute and identity filters, histograms, the List view).
   5. U5 to U8 and U10, one between each larger piece.
@@ -353,7 +353,7 @@ Trained on your-org/datasets/person-vehicle v4.2.0.
 
 ## 6. Tier D: larger, each needs its own design
 
-A declared key column for row diffs · per-dataset deploy keys · the Health tab and
+Per-dataset deploy keys · the Health tab and
 Validator tiles · the SQL console · PDF page images (`vips`) · access from other git
 hosts (GitHub first) · DuckDB pinned for other platforms · dashboard Phase 3.
 

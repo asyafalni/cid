@@ -390,6 +390,12 @@ export type RowDiff = {
   removed?: number;
   added_sample?: Record<string, unknown>[];
   removed_sample?: Record<string, unknown>[];
+  /** Rows paired by this key (`.cidkeys`); absent or null when compared whole. */
+  key?: string[] | null;
+  /** Why a declared key was not used. */
+  key_note?: string | null;
+  changed?: number;
+  changed_sample?: { key: Record<string, unknown>; cells: { column: string; before: string | null; after: string | null }[] }[];
 };
 
 export type RowDiffAnswer = {
@@ -402,8 +408,8 @@ export type RowDiffAnswer = {
 
 /** Rows added and removed between two contents of a table file; the
  * server computes it once, ever, and keeps it. */
-export function getRowDiff(name: string, path: string, a: string, b: string): Promise<RowDiffAnswer> {
-  return post(`/v0/datasets/${name}/-/rowdiff`, { a, b, path_a: path, path_b: path });
+export function getRowDiff(name: string, path: string, a: string, b: string, commitB?: string): Promise<RowDiffAnswer> {
+  return post(`/v0/datasets/${name}/-/rowdiff`, { a, b, path_a: path, path_b: path, commit_b: commitB ?? null });
 }
 
 /** The opening of a text item (first 64 KB), for the drawer. */
