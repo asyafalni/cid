@@ -2,11 +2,13 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { comparePair } from '../command';
 import { RowsSkeleton } from '../Skeleton';
-import { getCompare, getRowDiff, getThumbs, type CompareSide, type Overview, type StateAnnotation, type TapeCommit } from '../api';
+import { getCompare, getOverview, getRowDiff, getThumbs, type CompareSide, type Overview, type StateAnnotation, type TapeCommit } from '../api';
 import { AnnotationOverlay } from '../overlays';
 import { Thumb } from '../Thumb';
 import { extOf } from '../browseFilter';
 import { gitTagUrl, humanBytes } from '../format';
+import { DumbbellTable, type PairRow } from '../Bars';
+import { classColor } from '../shapes';
 
 // Releases & history: the timeline, and compare between any two
 // versions. A and B live in the URL, so a comparison is a link.
@@ -299,6 +301,10 @@ function Comparison({
         </table>
       )}
 
+      {aCommit && bCommit && (anyItems || anyAnns) && (
+        <Balance name={name} branch={overview.branch} kind={overview.kind} a={aCommit} b={bCommit} aLabel={aLabel} bLabel={bLabel} />
+      )}
+
       {!anyItems && !anyAnns && <p className="quiet">These two versions hold exactly the same data.</p>}
 
       {changes.length > 0 && (
@@ -394,6 +400,55 @@ function Comparison({
 // One side of a before/after pair. A side whose version lacks the item
 // says so in words; a side with no preview yet says that instead —
 // never a blank box (one bad file never breaks a view).
+// Class balance and split sizes, before and after (U5): each version's
+// statistics, kept on its commit, side by side. Shown only where a count
+// moved; a balance that held needs no chart.
+function Balance({
+  name,
+  branch,
+  kind,
+  a,
+  b,
+  aLabel,
+  bLabel,
+}: {
+  name: string;
+  branch: string;
+  kind: Overview['kind'];
+  a: string;
+  b: string;
+  aLabel: string;
+  bLabel: string;
+}) {
+  const side = (commit: string) => ({
+    queryKey: ['overview', name, null, commit, branch],
+    queryFn: () => getOverview(name, undefined, commit, branch),
+  });
+  const before = useQuery(side(a));
+  const after = useQuery(side(b));
+  if (!before.data || !after.data) return null;
+  const pair = (x: { name: string; count: number }[], y: { name: string; count: number }[], dot: boolean): PairRow[] => {
+    const rows = new Map<string, PairRow>();
+    for (const r of x) rows.set(r.name, { name: r.name, a: r.count, b: 0, dot: dot ? classColor(r.name) : undefined });
+    for (const r of y) {
+      const row = rows.get(r.name) ?? { name: r.name, a: 0, b: 0, dot: dot ? classColor(r.name) : undefined };
+      rows.set(r.name, { ...row, b: r.count });
+    }
+    return [...rows.values()];
+  };
+  const moved = (rows: PairRow[]) => rows.some((r) => r.a !== r.b);
+  const classes = kind === 'annotated' ? pair(before.data.classes, after.data.classes, true) : [];
+  const splits = pair(before.data.splits, after.data.splits, false);
+  return (
+    <>
+      {moved(classes) && (
+        <DumbbellTable caption="Annotations by class" noun="annotations" aLabel={aLabel} bLabel={bLabel} rows={classes} />
+      )}
+      {moved(splits) && <DumbbellTable caption="Items by split" noun="items" aLabel={aLabel} bLabel={bLabel} rows={splits} />}
+    </>
+  );
+}
+
 function DiffSide({
   label,
   item,

@@ -224,7 +224,15 @@ together; keep the roles. Contrast is checked by the axe run in the e2e suite (s
 | `brass` (releases, craft) | `#D9A845` | `#875D0F` (5.4:1 on `bg`) |
 | `sky-1 → sky-2 → sky-3` (gradient) | `#1B2A5A → #6B4E8C → #E08A5B` | `#BFD9F2 → #DCD2E4 → #F6E3C8` |
 | `pass` / `warn` / `fail` | `#4CC38A` / `#F2B84B` / `#FF7A66` | `#1E7F52` / `#8A5A00` / `#B3261E` |
+| `data` / `data-soft` (chart marks: bars; after / before) | `#8EB2EC` / `#3D5A8C` | `#2F5E9E` / `#9DB7DE` |
 | `ann-1` … `ann-8` (overlay classes) | `#5BD8E0` `#FFB454` `#8BE28B` `#FF8FB2` `#B7A5FF` `#FFE066` `#7FB8FF` `#FF9D7A` | `#0C717A` `#A35B00` `#1E7F52` `#B03060` `#5F4BB6` `#8A6D00` `#205FA8` `#B34A22` |
+
+Charts (`web/src/Bars.tsx`) draw magnitude in the one `data` hue, never a class colour:
+a class keeps its `ann-*` colour as a dot beside its name, in the card's bars as in the
+overlays and the filters, so identity and magnitude never share a colour. "Before" and
+"after" are `data-soft` and `data` (a dumbbell), passed by the dataviz validator as an
+ordinal pair against each theme's panel. Every chart is a table with bars in it: the
+numbers stay readable as text, and each row's title gives them in full.
 
 Status colours always come with an icon and a word. Overlay classes map onto the eight
 `ann-*` hues deterministically by class name, and the class is always named in a chip

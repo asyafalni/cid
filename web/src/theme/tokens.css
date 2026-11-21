@@ -12,6 +12,10 @@
   --text-muted: #a2acc6;
   --aether: #5bd8e0;
   --brass: #d9a845;
+  /* Data marks: one hue, two shades (bars; "before" and "after" in a dumbbell),
+     checked with the dataviz validator against this theme's panel. */
+  --data: #8eb2ec;
+  --data-soft: #3d5a8c;
   --sky-1: #1b2a5a;
   --sky-2: #6b4e8c;
   --sky-3: #e08a5b;
@@ -65,6 +69,8 @@
     --text-muted: #545b70;
     --aether: #0c717a; /* 5.3:1 on the daybreak bg — AA with margin */
     --brass: #875d0f; /* 5.4:1 on the daybreak bg — AA with margin */
+    --data: #2f5e9e;
+    --data-soft: #9db7de;
     --sky-1: #bfd9f2;
     --sky-2: #dcd2e4;
     --sky-3: #f6e3c8;
@@ -93,6 +99,8 @@
   --text-muted: #545b70;
   --aether: #0c717a; /* 5.3:1 on the daybreak bg — AA with margin */
   --brass: #875d0f; /* 5.4:1 on the daybreak bg — AA with margin */
+  --data: #2f5e9e;
+  --data-soft: #9db7de;
   --sky-1: #bfd9f2;
   --sky-2: #dcd2e4;
   --sky-3: #f6e3c8;

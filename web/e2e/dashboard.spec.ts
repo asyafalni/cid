@@ -508,6 +508,27 @@ test('the identity filter finds an identity by its exact id, and is offered only
   await expect(page.getByLabel('Filter by identity')).toHaveCount(0);
 });
 
+test('the card draws class balance and split sizes as bars, and compare draws them before and after', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/attrs2?release=v1.1.0');
+  const classes = page.getByRole('table', { name: 'Annotations by class' });
+  // Most first, a bar per class, the number in words beside it.
+  await expect(classes.getByRole('row').nth(0)).toContainText('car');
+  await expect(classes.getByRole('row').nth(0)).toContainText('2');
+  await expect(classes.locator('.bar')).toHaveCount(2);
+  await expect(page.getByRole('table', { name: 'Items by split' }).locator('.bar')).toHaveCount(2);
+  // Compare: only what moved is charted, the change said in numbers too.
+  await page.goto('/d/e2e/datasets/attrs2?view=releases&a=v1.0.0&b=v1.1.0');
+  const balance = page.getByRole('table', { name: /Annotations by class/ });
+  await expect(balance).toContainText('v1.0.0');
+  await expect(balance.getByRole('row', { name: /truck/ })).toContainText('0 → 1');
+  await expect(balance.getByRole('row', { name: /car/ })).toContainText('2');
+  await expect(page.getByRole('table', { name: /Items by split/ }).getByRole('row', { name: /val/ })).toContainText('0 → 1');
+  // A version pair whose counts held draws no chart.
+  await page.goto('/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0');
+  await expect(page.locator('.dumbbell-table')).toHaveCount(0);
+});
+
 test('a class filter keeps the items that carry the class', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/boxes?view=browse');

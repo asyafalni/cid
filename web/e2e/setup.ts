@@ -309,6 +309,29 @@ function seedAttrs(dir: string) {
   api('POST', `/v0/datasets/${name}/-/tag`, { name: 'v1.0.0' });
 }
 
+// A second release of the attrs dataset whose class balance moves: a
+// truck appears on the clear street, and the hidden one moves to val.
+function seedAttrsMoved() {
+  const name = 'e2e/datasets/attrs2';
+  psql(`
+    WITH d AS (SELECT dataset_id FROM datasets WHERE name = '${name}'),
+         i AS (SELECT DISTINCT ON (path) path, item_id, item_hash FROM item_revisions, d
+               WHERE item_revisions.dataset_id = d.dataset_id ORDER BY path, rev_id DESC)
+    INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver)
+      SELECT '${uuid7()}'::uuid, now(), d.dataset_id, 'main', '${uuid7()}'::uuid, i.item_id,
+             'create', 'box', 'truck', '{"x":90,"y":40,"w":50,"h":30}'::jsonb, 'agent:annotator', 'p1'
+      FROM d, i WHERE i.path = 'street/clear.png';
+    WITH d AS (SELECT dataset_id FROM datasets WHERE name = '${name}'),
+         i AS (SELECT DISTINCT ON (path) path, item_id, item_hash FROM item_revisions, d
+               WHERE item_revisions.dataset_id = d.dataset_id ORDER BY path, rev_id DESC)
+    INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author)
+      SELECT '${uuid7()}'::uuid, now(), d.dataset_id, 'main', i.path, 'update', i.item_id, i.item_hash, 'val', 'agent:annotator'
+      FROM d, i WHERE i.path = 'street/hidden.png';
+  `);
+  api('POST', `/v0/datasets/${name}/-/commit`, { message: 'a truck, and one street to val', author: 'agent:annotator' });
+  api('POST', `/v0/datasets/${name}/-/tag`, { name: 'v1.1.0' });
+}
+
 // A file dataset of tables, pushed the CLI way: CSV, Parquet and JSONL.
 function seedTables(dir: string) {
   const tables = join(dir, 'tables');
@@ -516,6 +539,10 @@ export default function setup() {
       `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/tables/-/releases -H "Authorization: Bearer ${token}"`,
     );
     if (!tableReleases.includes('"v1.1.0"')) seedTablesEdited(dir);
+    const attrsReleases = run(
+      `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/attrs2/-/releases -H "Authorization: Bearer ${token}"`,
+    );
+    if (!attrsReleases.includes('"v1.1.0"')) seedAttrsMoved();
     if (!tableReleases.includes('"v1.2.0"')) seedTablesKeyed(dir);
     // Sniff, thumbnail and blur every new png. One pass takes a batch, and
     // a migration can requeue many, so drain the queue: until a pass finds

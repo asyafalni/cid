@@ -2774,3 +2774,87 @@ button.tick-mark:hover {
   aspect-ratio: 4 / 3;
   border-radius: 0;
 }
+
+/* Bars in a count table (Bars.tsx): one hue, thin, from one baseline;
+   the number stays in text ink at the row's end. */
+/* Fixed columns, so every bar table on a page shares one baseline. */
+.bar-table {
+  table-layout: fixed;
+}
+
+.bar-table .bar-name {
+  width: 38%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-right: var(--space-2);
+}
+
+.bar-table .count {
+  width: 7rem;
+}
+
+.dumbbell-table .count {
+  width: 11rem;
+}
+
+.bar-table .bar-name .class-dot {
+  margin-right: var(--space-1);
+}
+
+.bar-table .bar-cell {
+  padding-right: var(--space-2);
+}
+
+.bar {
+  display: block;
+  height: 10px;
+  min-width: 2px;
+  background: var(--data);
+  border-radius: 0 4px 4px 0;
+}
+
+.dumbbell {
+  position: relative;
+  display: block;
+  height: 12px;
+}
+
+.dumbbell-line {
+  position: absolute;
+  top: 5px;
+  height: 2px;
+  background: var(--data-soft);
+}
+
+.dumbbell-dot {
+  position: absolute;
+  top: 0;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--panel);
+}
+
+.dumbbell-dot--a,
+.dumbbell-key--a {
+  background: var(--data-soft);
+}
+
+.dumbbell-dot--b,
+.dumbbell-key--b {
+  background: var(--data);
+}
+
+.dumbbell-legend {
+  margin-left: var(--space-3);
+}
+
+.dumbbell-key {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin: 0 var(--space-1) 0 var(--space-2);
+}

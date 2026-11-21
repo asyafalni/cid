@@ -33,7 +33,7 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
   4. The rest of B6: ~~the attribute filter~~ (done 2026-11-21: index format v4,
      `attr_set`); ~~the List view~~ and ~~the identity filter~~ (done 2026-11-21;
      identities are `attrs.identity`, docs/data-model.md); histograms, with U6.
-  5. U5 to U8 and U10, one between each larger piece.
+  5. ~~U5~~ (done 2026-11-21), then U6 to U8 and U10, one between each larger piece.
   6. C1's two loose ends: the real-client check as an automated test (needs Python
      and the Hugging Face libraries agreed as a test-only dependency), and an
      annotated split's file at 1M items (first request not measured, not prepared
@@ -198,7 +198,9 @@ Close the "behind" rows without giving up an "ahead" one.
   know within one screen what it is, how big, what kind of data, who owns it, and
   the one command to get it. Test it as a script: open a dataset, read only what is
   above the fold at 1440×900, and answer those five questions. Move what fails.
-- **U5. Charts where numbers are compared.** Class balance and split sizes as bars in
+- ~~**U5. Charts where numbers are compared.**~~ (done 2026-11-21: class balance and
+  split sizes as bars on the card, and as before/after dumbbells in compare where a
+  count moved; the class palette was already shared through `classColor`.) Class balance and split sizes as bars in
   the card and in compare; a shared class colour palette, so a class has one colour
   in the card, the overlays and the filters (`docs/dashboard.md`, 3.3). No chart
   where a number alone says it.

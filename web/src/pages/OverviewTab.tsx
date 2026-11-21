@@ -8,6 +8,8 @@ import { AnnotationOverlay } from '../overlays';
 import { Thumb } from '../Thumb';
 import { thumbsFor } from '../thumbs';
 import { Bar } from '../Skeleton';
+import { BarTable } from '../Bars';
+import { classColor } from '../shapes';
 
 export function OverviewTab({
   overview: o,
@@ -85,31 +87,15 @@ export function OverviewTab({
           </table>
         )}
         {o.classes.length > 0 && (
-          <table className="count-table">
-            <caption>Annotations by class</caption>
-            <tbody>
-              {o.classes.map((c, i) => (
-                <tr key={c.name}>
-                  <td className="data">{i}</td>
-                  <td>{c.name}</td>
-                  <td className="data count">{c.count.toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          // Class balance: most first, each class in its overlay colour.
+          <BarTable
+            caption="Annotations by class"
+            noun="annotations"
+            rows={o.classes.map((c) => ({ name: c.name, value: c.count, dot: classColor(c.name) }))}
+          />
         )}
         {o.splits.length > 0 && (
-          <table className="count-table">
-            <caption>Items by split</caption>
-            <tbody>
-              {o.splits.map((s) => (
-                <tr key={s.name}>
-                  <td>{s.name}</td>
-                  <td className="data count">{s.count.toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <BarTable caption="Items by split" noun="items" rows={o.splits.map((s) => ({ name: s.name, value: s.count }))} />
         )}
         <Lineage overview={o} />
         <p className="quiet">
