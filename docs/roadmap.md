@@ -26,7 +26,10 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      every answer slowed 400 ms; `web/e2e/dashboard.spec.ts`).
   2. ~~A declared key column for row diffs~~ (done 2026-11-21: `.cidkeys`, committed
      with the data; rows changed cell by cell in `cid diff` and the compare).
-  3. U4 (the first minute).
+  3. ~~U4 (the first minute)~~ (done 2026-11-21: what, how big, what kind, whose and
+     the clone command all above the fold at 1440×900, checked by an e2e test; a
+     dataset with no Maintainer now says "no owner named". What a dataset is *for*
+     waits on card editing, a parked decision).
   4. The rest of B6 (attribute and identity filters, histograms, the List view).
   5. U5 to U8 and U10, one between each larger piece.
   6. C1's two loose ends: the real-client check as an automated test (needs Python
@@ -189,7 +192,7 @@ Close the "behind" rows without giving up an "ahead" one.
   loads, show the page's shape instead (the header, the tape, tile placeholders of the
   right size), so nothing jumps when the data arrives. Budget: no layout shift on
   load, measured in `web/e2e/bench.spec.ts`.
-- **U4. The first minute.** A person who opens a dataset for the first time should
+- ~~**U4. The first minute.**~~ (done 2026-11-21.) A person who opens a dataset for the first time should
   know within one screen what it is, how big, what kind of data, who owns it, and
   the one command to get it. Test it as a script: open a dataset, read only what is
   above the fold at 1440×900, and answer those five questions. Move what fails.

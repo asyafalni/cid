@@ -125,7 +125,10 @@ export function DatasetOverview() {
               <span className="dataset-fact">
                 {o.items.toLocaleString()} {o.items === 1 ? 'item' : 'items'}, {humanBytes(o.bytes)}
               </span>
-              {o.owners.length > 0 && <span className="dataset-fact">owned by {o.owners.join(', ')}</span>}
+              {/* Who to ask: the Maintainers, or that none is recorded (U4). */}
+              <span className="dataset-fact">
+                {o.owners.length > 0 ? `owned by ${o.owners.join(', ')}` : 'no owner named'}
+              </span>
               <span className="dataset-fact">
                 <a href={gitWebUrl(o.git_url)} target="_blank" rel="noreferrer">
                   View in git

@@ -1157,6 +1157,33 @@ test('pages hold their shape while their data arrives: layout shift under 0.1', 
   }
 });
 
+// U4: the first minute. Opened for the first time at 1440×900, a dataset
+// answers five questions without a scroll: what it is, how big, what kind
+// of data, who owns it, and the one command to get it.
+test('the first screen of a dataset answers what, how big, what kind, whose, and how to get it', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await signIn(page);
+  for (const [path, owner] of [
+    ['/d/e2e/datasets/boxes', 'Olu Owner'],
+    ['/d/e2e/datasets/tables', null],
+    ['/d/e2e/models/tiny-bert', null],
+  ] as const) {
+    await page.goto(path);
+    await page.waitForLoadState('networkidle');
+    const above = async (what: string, locator: import('@playwright/test').Locator) => {
+      await expect(locator, `${path}: ${what}`).toBeVisible();
+      const box = (await locator.boundingBox())!;
+      expect(box.y + box.height, `${path}: ${what} is below the fold`).toBeLessThanOrEqual(900);
+    };
+    const meta = page.locator('.dataset-meta');
+    await above('what it is', meta.getByText(/Annotated dataset|File dataset|Model/));
+    await above('how big', meta.getByText(/\d[\d,]* items?, [\d.]+ (B|KB|MB|GB)/));
+    await above('what kind of data', page.getByRole('table', { name: 'Items by type' }).getByRole('row').nth(1));
+    await above('who owns it', meta.getByText(owner ? `owned by ${owner}` : 'no owner named'));
+    await above('the one command', page.locator('code.command').first());
+  }
+});
+
 test('the theme switch pins a theme across pages and reloads, and System lets go', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'light' });
   await signIn(page);
