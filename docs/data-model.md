@@ -376,7 +376,7 @@ version and kept:
 - a **browse index** per version (`items.parquet` + `anns.parquet`, read by DuckDB),
   prepared ahead of the first visitor by the `version_jobs` background worker
   (`api.prepareNext`), cached locally under `CID_BROWSE_DIR`, and kept in storage at
-  `manifests/<dataset_id>/<commit_id>.v3.{items,anns}.parquet` (`v3` is the index's
+  `manifests/<dataset_id>/<commit_id>.v4.{items,anns}.parquet` (`v4` is the index's
   format, `browse.index_format`: an index in an older format is never read, only
   rebuilt);
 - the version's **items file** and **exports** as the CLI downloads them
@@ -545,7 +545,7 @@ All in the one bucket, `cid`:
 | `uploads/<dataset_id>/<hash>`, `….part-NNNNNN` | staged uploads (whole, or 64 MB pieces) until verified |
 | `previews/<aa>/<hex>/thumb.webp`, `…/blur.webp` | thumbnail and blurred rendition |
 | `manifests/<dataset_id>/<commit_id>.manifest` | a release's canonical manifest |
-| `manifests/<dataset_id>/<commit_id>.v3.items.parquet`, `.v3.anns.parquet` | a version's browse index, in index format `v3` |
+| `manifests/<dataset_id>/<commit_id>.v4.items.parquet`, `.v4.anns.parquet` | a version's browse index, in index format `v4` |
 | `states/<dataset_id>/<commit>-<subset>-<hash>.jsonl.gz` | a version's items file, as the CLI downloads it |
 | `exports/<dataset_id>/<commit>/<format>-<subset>-<hash>.jsonl.gz` | an export, as a bundle of files |
 | `diffs/<dataset_id>/<a>-<b>-<hash>.jsonl.gz` | what changed between two versions, for `cid diff` |

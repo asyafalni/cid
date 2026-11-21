@@ -83,6 +83,7 @@ const datasetRoute = createRoute({
     class?: string;
     type?: string;
     anns?: string;
+    attr?: string;
     what?: string;
     who?: string;
   } => ({
@@ -112,6 +113,7 @@ const datasetRoute = createRoute({
     type: typeof search.type === 'string' ? search.type : undefined,
     // "0" and "1" arrive parsed as numbers; buckets are names.
     anns: typeof search.anns === 'string' || typeof search.anns === 'number' ? String(search.anns) : undefined,
+    attr: typeof search.attr === 'string' ? search.attr : undefined,
     // Activity: the action and the person, when narrowed.
     what: typeof search.what === 'string' ? search.what : undefined,
     who: typeof search.who === 'string' ? search.who : undefined,

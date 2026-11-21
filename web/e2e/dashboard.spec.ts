@@ -474,6 +474,22 @@ test('the annotations filter counts items by how many annotations they have, and
   await expect(page.getByLabel('Filter by annotations')).toHaveCount(0);
 });
 
+test('the attribute filter keeps the items whose annotations carry the value', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/attrs?view=browse&mode=gallery');
+  const filter = page.getByLabel('Filter by attribute');
+  await expect(filter.locator('option', { hasText: 'occluded=true (1)' })).toHaveCount(1);
+  await expect(filter.locator('option', { hasText: 'occluded=false (1)' })).toHaveCount(1);
+  await filter.selectOption('occluded=true');
+  await expect(page).toHaveURL(/attr=occluded(%3D|=)true/);
+  await expect(page.getByText('1 of 2 items')).toBeVisible();
+  await expect(page.getByRole('button', { name: /street\/hidden\.png/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /street\/clear\.png/ })).toHaveCount(0);
+  // A dataset whose annotations carry none offers no such filter.
+  await page.goto('/d/e2e/datasets/boxes?view=browse');
+  await expect(page.getByLabel('Filter by attribute')).toHaveCount(0);
+});
+
 test('a class filter keeps the items that carry the class', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/boxes?view=browse');
@@ -582,7 +598,7 @@ test('"Show command" gives the cid command for the view on screen, and it does t
   // What has no command says so.
   await page.goto('/d/e2e/datasets/demo?view=browse&q=img');
   await page.getByRole('button', { name: 'Show command' }).click();
-  await expect(page.getByRole('region', { name: 'Command' })).toContainText('The path search and the type and annotations filters have no clone flag');
+  await expect(page.getByRole('region', { name: 'Command' })).toContainText('The path search and the type, annotations and attribute filters have no clone flag');
   await page.getByRole('link', { name: 'Activity', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Command' })).toContainText('no command shows it');
 });

@@ -135,6 +135,8 @@ const PassItem = struct {
     item_id: ?[]const u8,
     ext: []const u8,
     classes: []const u8,
+    /// The item's distinct scalar attribute values, as "key=value".
+    attrs: []const u8,
 };
 
 const PassAnn = struct {
@@ -198,6 +200,13 @@ pub fn pass(
     _ = tx.exec(scope, "CREATE TEMP TABLE v_classes ON COMMIT DROP AS SELECT item_id, " ++
         "array_to_json(array_agg(coalesce(class, '') ORDER BY annotation_id))::text AS classes FROM v_alive GROUP BY item_id", .{}) catch return error.Db;
     _ = tx.exec(scope, "ANALYZE v_classes", .{}) catch return error.Db;
+    // Each item's distinct scalar attribute values ("occluded=true"), for
+    // Browse's attribute filter; only annotations that carry attributes
+    // are read.
+    _ = tx.exec(scope, "CREATE TEMP TABLE v_attrs ON COMMIT DROP AS SELECT a.item_id, " ++
+        "array_to_json(array_agg(DISTINCT e.key || '=' || (e.value #>> '{}') ORDER BY e.key || '=' || (e.value #>> '{}')))::text AS attrs " ++
+        "FROM v_alive a CROSS JOIN LATERAL jsonb_each(a.attrs) e " ++
+        "WHERE jsonb_typeof(a.attrs) = 'object' AND jsonb_typeof(e.value) IN ('string', 'number', 'boolean') GROUP BY a.item_id", .{}) catch return error.Db;
 
     var hasher = hash.init();
     var written: Written = .{};
@@ -207,8 +216,8 @@ pub fn pass(
     }
 
     _ = tx.exec(scope, "DECLARE pass_items NO SCROLL CURSOR FOR SELECT l.path, encode(l.item_hash, 'hex') AS hash_hex, " ++
-        "l.size_bytes, l.split, l.item_id::text AS item_id, " ++ comptime extOf("l.path") ++ " AS ext, coalesce(c.classes, '[]') AS classes " ++
-        "FROM v_live l LEFT JOIN v_classes c USING (item_id) ORDER BY l.path COLLATE \"C\"", .{}) catch return error.Db;
+        "l.size_bytes, l.split, l.item_id::text AS item_id, " ++ comptime extOf("l.path") ++ " AS ext, coalesce(c.classes, '[]') AS classes, " ++
+        "coalesce(t.attrs, '[]') AS attrs FROM v_live l LEFT JOIN v_classes c USING (item_id) LEFT JOIN v_attrs t USING (item_id) ORDER BY l.path COLLATE \"C\"", .{}) catch return error.Db;
     while (true) {
         var batch = dbx.Run.init(gpa);
         defer batch.deinit();
@@ -228,10 +237,10 @@ pub fn pass(
             m.writeAll(text.items) catch return error.WriteFailed;
         }
         if (outputs.items) |w| for (rows) |r| {
-            w.print("{{\"path\":{f},\"hash\":\"{s}\",\"size\":{d},\"split\":{f},\"item_id\":{f},\"ext\":{f},\"classes\":{s}}}\n", .{
+            w.print("{{\"path\":{f},\"hash\":\"{s}\",\"size\":{d},\"split\":{f},\"item_id\":{f},\"ext\":{f},\"classes\":{s},\"attrs\":{s}}}\n", .{
                 std.json.fmt(r.path, .{}),  r.hash_hex,                   r.size_bytes,
                 std.json.fmt(r.split, .{}), std.json.fmt(r.item_id, .{}), std.json.fmt(r.ext, .{}),
-                r.classes,
+                r.classes,                  r.attrs,
             }) catch return error.WriteFailed;
         };
         written.items += rows.len;

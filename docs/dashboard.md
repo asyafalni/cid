@@ -340,7 +340,17 @@ Every dataset page (all five tabs) shares one header and the release tape.
   against the other filters, all in the URL. The count is a column of the browse
   index (format v3, `ann_count`); measured at 1M items against the build before it,
   same data, back to back: 5–8% more server CPU for a page with its facets, medians
-  0–10% slower (unfiltered about 360 to 390 ms). *Planned:* attributes, size, source (camera, video, feed), author (agent/human), policy version, changed
+  0–10% slower (unfiltered about 360 to 390 ms). And by attribute value
+  (`attr=occluded=true`): each item keeps the distinct scalar values its
+  annotations' attributes carry, as `key=value` (index format v4, `attr_set`); the
+  facet offers the 50 most common, counted against the other filters, and appears
+  only when the version has any. Measured at 1M items with two attributes on every
+  box (`tests/bench/browse_1m.sh` now seeds them), against the build before, same
+  data, back to back (2026-11-21): a release 32.0 to 36.6 s, background preparation
+  57 to 64 s, 18–26% more server CPU for a page with its facets, pages 0.30–0.38 s,
+  peak memory 388 to 411 MB. The facet reads the attribute lists in a scan of its
+  own: through the shared, materialized filter table, under the browse database's
+  memory ceiling, they doubled a page. *Planned:* size, source (camera, video, feed), author (agent/human), policy version, changed
   since release X, and histograms as clickable filters, like Hugging Face's, for every
   numeric column and attribute.
 - **Search.** *Built:* file paths ("path contains"). *Planned:* text search on text

@@ -269,6 +269,46 @@ function seedMasks(dir: string) {
   api('POST', `/v0/datasets/${name}/-/tag`, { name: 'v1.0.0' });
 }
 
+// Boxes with attributes, the platform's way: one occluded, one not, for
+// Browse's attribute filter.
+function seedAttrs(dir: string) {
+  const name = 'e2e/datasets/attrs';
+  const created = api('POST', '/v0/datasets', { name, kind: 'annotated', git_url: 'g@h:attrs.git' }) as {
+    dataset_id?: string;
+  };
+  const datasetId = created.dataset_id;
+  if (!datasetId) throw new Error('could not create the attrs dataset');
+  const png = join(dir, 'attrs.png');
+  run(`ffmpeg -nostdin -loglevel error -f lavfi -i smptebars=size=200x150:rate=1 -frames:v 1 -y ${png}`);
+  const hash = hashOf(png);
+  const check = api('POST', `/v0/datasets/${name}/-/check-hashes`, { hashes: [hash] }) as {
+    missing: { hash: string; url: string }[];
+  };
+  for (const m of check.missing) run(`curl -s -X PUT --data-binary @${png} '${m.url}'`);
+  api('POST', `/v0/datasets/${name}/-/register-items`, {
+    items: [{ hash, size: statSync(png).size, media_type: 'image/png', width: 200, height: 150 }],
+  });
+  let sql = '';
+  for (const [path, occluded] of [
+    ['street/hidden.png', true],
+    ['street/clear.png', false],
+  ] as const) {
+    const itemId = uuid7();
+    sql += `
+      INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author)
+      VALUES ('${uuid7()}'::uuid, now(), '${datasetId}'::uuid, 'main', '${path}', 'add',
+              '${itemId}'::uuid, decode('${hash}', 'hex'), 'train', 'agent:annotator');
+      INSERT INTO dataset_items (item_id, dataset_id) VALUES ('${itemId}'::uuid, '${datasetId}'::uuid)
+        ON CONFLICT (item_id) DO NOTHING;
+      INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, attrs, author, policy_ver)
+      VALUES ('${uuid7()}'::uuid, now(), '${datasetId}'::uuid, 'main', '${uuid7()}'::uuid, '${itemId}'::uuid,
+              'create', 'box', 'car', '{"x":20,"y":30,"w":60,"h":40}'::jsonb, '{"occluded":${occluded}}'::jsonb, 'agent:annotator', 'p1');`;
+  }
+  psql(sql);
+  api('POST', `/v0/datasets/${name}/-/commit`, { message: 'two cars', author: 'agent:annotator' });
+  api('POST', `/v0/datasets/${name}/-/tag`, { name: 'v1.0.0' });
+}
+
 // A file dataset of tables, pushed the CLI way: CSV, Parquet and JSONL.
 function seedTables(dir: string) {
   const tables = join(dir, 'tables');
@@ -456,6 +496,7 @@ export default function setup() {
     if (!already.includes('e2e/datasets/faces')) seedFaces(dir);
     if (!already.includes('e2e/datasets/masks')) seedMasks(dir);
     if (!already.includes('e2e/datasets/tables')) seedTables(dir);
+    if (!already.includes('e2e/datasets/attrs')) seedAttrs(dir);
     if (!already.includes('e2e/datasets/many')) seedMany(dir);
     const manyLog = run(`curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/many/-/log -H "Authorization: Bearer ${token}"`);
     if (!manyLog.includes('one more row')) seedManyUnreleased(dir);

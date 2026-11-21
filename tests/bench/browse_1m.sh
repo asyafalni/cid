@@ -17,7 +17,7 @@
 set -euo pipefail
 
 N=${N:-1000000}
-NAME=${NAME:-bench/datasets/items-$N}
+NAME=${NAME:-bench/datasets/items-attrs-$N}
 PORT=${PORT:-7179}
 CID=${CID:-./zig-out/bin/cid}
 BROWSE_DIR=${BROWSE_DIR:-/tmp/cid-bench-browse}
@@ -77,10 +77,12 @@ INSERT INTO dataset_items (item_id, dataset_id) SELECT item_id, at.ds FROM seed,
 INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author)
   SELECT pg_temp.rev(at.ms, i), to_timestamp(at.ms / 1000.0), at.ds, 'main', path, 'add', item_id, hash, split, 'agent:bench'
   FROM seed, at;
-INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, author, policy_ver)
+INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, attrs, author, policy_ver)
   SELECT pg_temp.rev(at.ms, $N + 2 * i + k), to_timestamp(at.ms / 1000.0), at.ds, 'main', gen_random_uuid(), item_id,
          'create', 'box', (ARRAY['person', 'car', 'truck'])[1 + (i + k) % 3],
-         jsonb_build_object('x', 10 + k * 50, 'y', 20, 'w', 40, 'h', 30), 'agent:bench', 'p1'
+         jsonb_build_object('x', 10 + k * 50, 'y', 20, 'w', 40, 'h', 30),
+         -- Attributes as an annotator records them, for the attribute filter.
+         jsonb_build_object('occluded', (i + k) % 4 = 0, 'truncated', (i + k) % 7 = 0), 'agent:bench', 'p1'
   FROM seed, at, generate_series(0, 1) k WHERE k = 0 OR i % 2 = 0;
 -- What autovacuum would have done by the time anyone browses.
 ANALYZE items; ANALYZE item_revisions; ANALYZE annotation_revisions;
@@ -150,6 +152,7 @@ timed "first view, empty cache (index from storage)" "$B"
 timed "unfiltered" "$B"
 timed "split=val" "$B&split=val"
 timed "class=truck" "$B&class=truck"
+timed "attr=occluded=true" "$B&attr=occluded%3Dtrue"
 timed "path contains cam7/ + train + car" "$B&q=cam7%2F&split=train&class=car"
 timed "deep page (after cam42/00500000.jpg)" "$B&after=cam42%2F00500000.jpg"
 timed "open item + unfiltered page" "$B&item=cam7%2F00000007.jpg"
