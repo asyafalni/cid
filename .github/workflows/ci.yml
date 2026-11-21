@@ -1,7 +1,8 @@
 # Every push and pull request: cid builds and its tests pass on each
 # platform DuckDB is pinned for (build.zig.zon). Linux x86-64 also runs
-# the integration suite against the pinned test services. The Playwright
-# suite (pnpm --dir web test:e2e) is not run here yet.
+# the integration suite against the pinned test services, and the
+# dashboard's Playwright suite against a real server. (mlugg/setup-zig
+# still targets Node 20; GitHub runs it on Node 24, with a warning.)
 name: ci
 
 on:
@@ -16,7 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
@@ -34,6 +35,50 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Integration tests
         run: zig build integration
+
+  # The dashboard's suite (web/e2e): the real binary with the dashboard
+  # embedded, the test services, a fake GitLab, Chromium.
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.16.1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Dashboard
+        run: |
+          pnpm --dir web install --frozen-lockfile
+          pnpm --dir web lint
+          pnpm --dir web typecheck
+          pnpm --dir web build
+      - name: cid, with the dashboard embedded
+        run: zig build
+      - name: Test services
+        run: |
+          docker compose -f docker-compose.test.yml up -d --wait timescaledb seaweedfs
+          docker compose -f docker-compose.test.yml run --rm seaweedfs-bucket
+      - name: ffmpeg (fixtures and previews) and Chromium
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+          pnpm --dir web exec playwright install --with-deps chromium
+      - name: Playwright
+        run: pnpm --dir web test:e2e
+      - name: The failures' traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-results
+          path: web/test-results
+          retention-days: 7
 
   # The everyday commands on the other platforms: the unit tests (DuckDB
   # included, so the pinned library loads and answers), then the installed
@@ -54,7 +99,7 @@ jobs:
     runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1

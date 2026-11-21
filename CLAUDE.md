@@ -749,9 +749,9 @@ a new folder read at configure time needs the same line. On Zig 0.16.0,
 right after a recompile; it has not been seen on 0.17.0. If it returns, run the
 printed test binary directly to see the truth.
 
-CI runs on every push: format, unit and integration tests on Linux x86-64, and unit
-tests plus the installed binary on Linux arm64 and macOS (Apple silicon and Intel).
-It does not run the Playwright suite.
+CI runs on every push: format, unit and integration tests on Linux x86-64, the
+dashboard's lint, typecheck and Playwright suite, and unit tests plus the installed
+binary on Linux arm64 and macOS (Apple silicon and Intel).
 
 Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
 `zig-pkg/` holds unpacked dependencies), `zig build test`, and
