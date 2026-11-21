@@ -54,7 +54,7 @@ export function BrowseTab({
   filters: Filters;
   onFilters: (patch: FilterPatch) => void;
 }) {
-  const setMode = (m: 'gallery' | 'table') => onFilters({ mode: m });
+  const setMode = (m: 'gallery' | 'table' | 'list') => onFilters({ mode: m });
 
   // The search box commits to the URL after a pause, so typing a word is
   // one history entry, not one per letter.
@@ -131,6 +131,8 @@ export function BrowseTab({
           return onFilters({ mode: 'gallery' });
         case 't':
           return onFilters({ mode: 'table' });
+        case 'l':
+          return onFilters({ mode: 'list' });
         case 'j':
           return step(1);
         case 'k':
@@ -180,7 +182,7 @@ export function BrowseTab({
   // version can have a preview (no picture, video or sound): a wall of
   // identical type tiles says less than a table of paths and sizes. Decided
   // by the version, not the page, so a filter never flips the view.
-  const mode: 'gallery' | 'table' =
+  const mode: 'gallery' | 'table' | 'list' =
     filters.mode ?? (overview.types.length > 0 && !overview.types.some((t) => previewable.has(t.name)) ? 'table' : 'gallery');
   const total = first.total;
   const matched = first.matched;
@@ -199,7 +201,7 @@ export function BrowseTab({
     <div className="browse">
       <div className="browse-bar">
         <div className="format-picker format-picker--ui" role="radiogroup" aria-label="View">
-          {(['gallery', 'table'] as const).map((m) => (
+          {(['gallery', 'table', 'list'] as const).map((m) => (
             <button
               key={m}
               role="radio"
@@ -396,6 +398,16 @@ export function BrowseTab({
               <span className="tile-path data">{item.path}</span>
             </button>
           )}
+        />
+      ) : mode === 'list' ? (
+        <VirtualList
+          name={name}
+          items={items}
+          thumbs={thumbByHash}
+          annotated={overview.kind === 'annotated'}
+          restricted={overview.restricted}
+          openItem={openItem}
+          onOpenItem={onOpenItem}
         />
       ) : (
         <VirtualTable items={items} openItem={openItem} onOpenItem={onOpenItem} />
@@ -717,6 +729,7 @@ const shortcuts: [string, string][] = [
   ['/', 'search paths'],
   ['g', 'gallery'],
   ['t', 'table'],
+  ['l', 'list (audio and text)'],
   ['Esc', 'close the item'],
   ['?', 'this list'],
 ];
@@ -921,6 +934,151 @@ function VirtualTable({
     </table>
   );
 }
+
+// The List view (docs/dashboard.md, 4.3), for audio and text: a row per
+// item that says what it holds without opening it. Audio shows its
+// waveform and plays in place, the sound fetched only when asked (never
+// for a restricted item, whose bytes come with a logged reveal in the
+// drawer); text shows its opening line, read for the rows on screen only;
+// annotated items name their classes.
+function VirtualList({
+  name,
+  items,
+  thumbs,
+  annotated,
+  restricted,
+  openItem,
+  onOpenItem,
+}: {
+  name: string;
+  items: BrowseItem[];
+  thumbs: Map<string, string>;
+  annotated: boolean;
+  restricted: boolean;
+  openItem: string | undefined;
+  onOpenItem: (path: string | undefined) => void;
+}) {
+  const ref = useRef<HTMLUListElement>(null);
+  const pageTop = usePageTop(ref);
+  // oxlint-disable-next-line react/incompatible-library
+  const virtual = useWindowVirtualizer({
+    count: items.length,
+    estimateSize: () => 64,
+    overscan: 8,
+    scrollMargin: pageTop,
+  });
+  useKeepInView(openItem === undefined ? -1 : items.findIndex((i) => i.path === openItem), ref, (i, o) =>
+    virtual.scrollToIndex(i, o),
+  );
+  const rows = virtual.getVirtualItems();
+  const top = rows.length > 0 ? rows[0].start - virtual.options.scrollMargin : 0;
+  const bottom = rows.length > 0 ? virtual.getTotalSize() - (rows[rows.length - 1].end - virtual.options.scrollMargin) : 0;
+  return (
+    <ul className="browse-list" ref={ref} aria-label="Items" style={{ paddingTop: top, paddingBottom: bottom }}>
+      {rows.map((row) => {
+        const item = items[row.index];
+        return (
+          <li
+            key={item.path}
+            data-index={row.index}
+            ref={virtual.measureElement}
+            className={openItem === item.path ? 'list-row list-row--open' : 'list-row'}
+          >
+            <ListRow
+              name={name}
+              item={item}
+              thumb={thumbs.get(item.hash)}
+              annotated={annotated}
+              restricted={restricted}
+              onOpen={() => onOpenItem(item.path)}
+            />
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function ListRow({
+  name,
+  item,
+  thumb,
+  annotated,
+  restricted,
+  onOpen,
+}: {
+  name: string;
+  item: BrowseItem;
+  thumb: string | undefined;
+  annotated: boolean;
+  restricted: boolean;
+  onOpen: () => void;
+}) {
+  const audio = isAudio(item.path);
+  const text = !audio && !isVideo(item.path) && textLike.test(item.path);
+  const [play, setPlay] = useState(false);
+  const sound = useQuery({
+    queryKey: ['download', name, item.hash],
+    queryFn: () => getDownloads(name, [item.hash]),
+    enabled: play && !restricted,
+  });
+  const head = useQuery({ queryKey: ['text', name, item.hash], queryFn: () => getText(name, item.hash), enabled: text });
+  const classes = [...new Set(item.annotations.map((a) => a.class).filter((c): c is string => !!c))];
+  const opening = head.data && !head.data.withheld && !head.data.binary && head.data.text !== null
+    ? head.data.text.split('\n').find((l) => l.trim() !== '') ?? ''
+    : null;
+  const url = sound.data?.downloads[0]?.url;
+  return (
+    <>
+      <span className="list-media">
+        {audio && thumb ? (
+          <Thumb className="list-waveform" src={thumb} alt={`${item.path} waveform`} label={extOf(item.path)} lazy />
+        ) : thumb ? (
+          <Thumb className="list-thumb" src={thumb} alt={item.path} label={extOf(item.path)} lazy />
+        ) : (
+          <span className="tile-type data">{extOf(item.path)}</span>
+        )}
+      </span>
+      <button className="list-main" onClick={onOpen} aria-label={`Open ${item.path}`}>
+        <span className="data list-path">{item.path}</span>
+        <span className="quiet data list-facts">
+          {humanBytes(item.size)}
+          {item.split ? ` · ${item.split}` : ''}
+          {annotated ? ` · ${item.annotations.length} ${item.annotations.length === 1 ? 'annotation' : 'annotations'}` : ''}
+          {classes.length > 0 ? ` · ${classes.slice(0, 5).join(', ')}${classes.length > 5 ? ` +${classes.length - 5}` : ''}` : ''}
+        </span>
+        {text && (
+          <span className="list-opening data">
+            {head.data?.withheld
+              ? 'Restricted: the text is withheld until revealed.'
+              : head.data?.binary
+                ? 'Not text after all.'
+                : opening === null
+                  ? '…'
+                  : opening === ''
+                    ? '(empty)'
+                    : opening}
+          </span>
+        )}
+      </button>
+      {audio && !restricted && (
+        <span className="list-play">
+          {url ? (
+            // oxlint-disable-next-line jsx-a11y/media-has-caption
+            <audio controls autoPlay preload="none" src={url} aria-label={`Play ${item.path}`} />
+          ) : (
+            <button className="filter-clear" onClick={() => setPlay(true)} aria-label={`Play ${item.path}`}>
+              {play ? '…' : '▶ play'}
+            </button>
+          )}
+        </span>
+      )}
+    </>
+  );
+}
+
+/** Files whose opening line says what they are: plain text and its kin. */
+const textLike = /\.(txt|md|json|jsonl|csv|tsv|srt|vtt|xml|ya?ml|log|ini|toml|html?)$/i;
 
 // The next page: fetched while the button is still two screens below the
 // view, so a quick scroll finds the items already there instead of

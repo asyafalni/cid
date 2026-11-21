@@ -4,7 +4,7 @@
 
 export type Filters = {
   /** Asked for; with none, the gallery, or the table when nothing on the first page has a preview. */
-  mode?: 'table' | 'gallery';
+  mode?: 'table' | 'gallery' | 'list';
   q?: string;
   split?: string;
   /** Items carrying at least one annotation of this class. */
@@ -19,7 +19,7 @@ export type Filters = {
 
 /** The URL spelling of each filter, for patches back to the router. */
 export type FilterPatch = {
-  mode?: 'table' | 'gallery' | undefined;
+  mode?: 'table' | 'gallery' | 'list' | undefined;
   q?: string | undefined;
   split?: string | undefined;
   class?: string | undefined;

@@ -49,6 +49,7 @@ const pages: [string, string][] = [
   ['item-table-broken', `${media}?view=browse&item=broken.csv`],
   ['item-audio', `${media}?view=browse&item=tone.wav`],
   ['item-text', `${media}?view=browse&item=notes.txt`],
+  ['browse-list', `${media}?view=browse&mode=list`],
   ['item-restricted', `${faces}?view=browse&item=person-01.png`],
   ['releases-files', `${demo}?view=releases`],
   ['releases-annotated', `${boxes}?view=releases&a=v1.0.0&b=v1.1.0`],

@@ -29,7 +29,7 @@ export function DatasetOverview() {
     a?: string;
     b?: string;
     dir?: string;
-    mode?: 'table' | 'gallery';
+    mode?: 'table' | 'gallery' | 'list';
     q?: string;
     split?: string;
     class?: string;

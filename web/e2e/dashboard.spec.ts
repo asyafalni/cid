@@ -1003,6 +1003,27 @@ test('browse pages through a version: one page, then more on scroll, and links p
   await expect(page.getByRole('complementary', { name: 'rows/0130.txt' })).toBeVisible();
 });
 
+test('the List view plays sound in place and reads text\'s opening line', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/media?view=browse');
+  await page.waitForLoadState('networkidle');
+  // `l` switches to it, and the URL says so.
+  await page.keyboard.press('l');
+  await expect(page).toHaveURL(/mode=list/);
+  const list = page.getByRole('list', { name: 'Items' });
+  const tone = list.getByRole('listitem').filter({ hasText: 'tone.wav' });
+  const notes = list.getByRole('listitem').filter({ hasText: 'notes.txt' });
+  await expect(notes).toContainText('A note on this dataset.');
+  // Nothing is fetched until asked: a play button, then the player.
+  await expect(tone.locator('audio')).toHaveCount(0);
+  await tone.getByRole('button', { name: 'Play tone.wav' }).click();
+  await expect(tone.locator('audio')).toHaveAttribute('src', /^http/);
+  // The row's words open the drawer, as everywhere else.
+  await notes.getByRole('button', { name: 'Open notes.txt' }).click();
+  await expect(page).toHaveURL(/item=notes\.txt/);
+  await expect(page.getByRole('complementary', { name: 'notes.txt' })).toBeVisible();
+});
+
 test('the keyboard moves through items, searches, and lists its shortcuts', async ({ page }) => {
   const at = (n: string) => new RegExp(`item=rows(%2F|/)${n}\\.txt`);
   await signIn(page);
@@ -1090,7 +1111,7 @@ test('a malformed CSV shows its own error, in words, and the rest of the dataset
   await expect(page.getByRole('row', { name: /tone\.wav/ })).toBeVisible();
 });
 
-const axePages = ['/no/such/page', '/d/e2e/datasets/nope', '/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/keys', '/tokens'];
+const axePages = ['/no/such/page', '/d/e2e/datasets/nope', '/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/d/e2e/datasets/media?view=browse&mode=list', '/keys', '/tokens'];
 
 // Both themes: Daybreak as Playwright's default light scheme, Night flight
 // as the dark one. Each must pass on its own (docs/dashboard.md §3.4).

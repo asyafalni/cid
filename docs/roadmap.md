@@ -31,7 +31,7 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      dataset with no Maintainer now says "no owner named". What a dataset is *for*
      waits on card editing, a parked decision).
   4. The rest of B6: ~~the attribute filter~~ (done 2026-11-21: index format v4,
-     `attr_set`); identity filters, histograms, the List view.
+     `attr_set`); ~~the List view~~ (done 2026-11-21); identity filters, histograms.
   5. U5 to U8 and U10, one between each larger piece.
   6. C1's two loose ends: the real-client check as an automated test (needs Python
      and the Hugging Face libraries agreed as a test-only dependency), and an
@@ -234,7 +234,7 @@ both themes, and works with reduced motion. Beauty never costs a budget.
 - ~~**B5. Compare, per class**~~ (done 2026-11-20; the dashboard only, not `cid diff`).
 - **B6. More Browse filters:** ~~annotation count~~ (done 2026-11-20: buckets, index
   format v3); ~~attributes~~ (done 2026-11-21: index format v4); identities; then
-  histograms and the List view.
+  histograms; ~~the List view~~ (done 2026-11-21).
 - ~~**B7. Branches on the tape and pinning a commit**~~ (done 2026-11-20: `?commit=`,
   `?branch=`). Comparing a branch with `main` across the two is not built: the
   compare pickers list the shown branch's commits.

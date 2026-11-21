@@ -39,7 +39,7 @@ only).
 
 **Not built yet** (the spec below says so where it applies): the health badge, Health
 tab and Validator tiles; card completeness; most Browse filters,
-histograms and the List view; keyboard shortcuts outside Browse (besides `⌘K`);
+histograms; keyboard shortcuts outside Browse (besides `⌘K`);
 charts and gauges; PDF page
 images (`vips`); the SQL console; semantic
 search.
@@ -328,8 +328,11 @@ Every dataset page (all five tabs) shares one header and the release tape.
 ### 4.3 Dataset › Browse (the viewer)
 - **Views.** *Built:* Gallery (every item: a thumbnail where the worker built one —
   images, video posters, audio waveforms — else a type tile) and Table (any dataset as
-  rows), toggled with `g` / `t`; table mode is in the URL. *Planned:* a List view for
-  audio and text, on `l`.
+  rows), and List (a row per item for audio and text: the waveform, path, size,
+  split, an annotated item's classes, a text file's opening line read for the rows on
+  screen only, and audio that plays in place, its bytes fetched only on a click and
+  never for a restricted item, whose sound comes with the drawer's logged reveal),
+  toggled with `g` / `t` / `l`; the view is in the URL.
 - **Annotation overlays.** *Built:* boxes, polygons and points drawn as SVG over the
   media, masks (including COCO RLE) painted once into a canvas in the class colour;
   toggle per class; opacity slider; labels on hover. A shape that does not parse loses
