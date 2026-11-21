@@ -130,6 +130,7 @@ fn serveAsset(deps: *api.Deps, c: *nilo.Ctx) !void {
     // door's, at the root as on the Hub; dashboard pages start /d/.
     if (hf.isModelFile(path)) return hfDispatch(deps, c);
     const rel = if (path.len > 0 and path[0] == '/') path[1..] else path;
+    noFraming(c);
     inline for (assets.files) |f| {
         if (std.mem.eql(u8, f.path, rel)) {
             // Hashed asset names never change content: cache hard.
@@ -143,7 +144,17 @@ fn serveAsset(deps: *api.Deps, c: *nilo.Ctx) !void {
     try sendAsset(c, "index.html");
 }
 
+/// The dashboard is never framed by another site: a framed page could be
+/// clicked through by a page laid over it (clickjacking), the Tokens and
+/// SSH keys pages included. Both the CSP directive and the older header,
+/// for browsers that know only one.
+fn noFraming(c: *nilo.Ctx) void {
+    c.setStaticHeader("Content-Security-Policy", "frame-ancestors 'self'") catch {};
+    c.setStaticHeader("X-Frame-Options", "SAMEORIGIN") catch {};
+}
+
 fn sendAsset(c: *nilo.Ctx, name: []const u8) !void {
+    noFraming(c);
     inline for (assets.files) |f| {
         if (std.mem.eql(u8, f.path, name)) {
             try c.send(200, f.mime, f.bytes);

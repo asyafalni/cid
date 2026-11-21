@@ -387,7 +387,8 @@ export function getTable(name: string, hash: string): Promise<TableAnswer> {
 }
 
 /** One column's row filter: a bin of a number column, a value, or empty. */
-export type RowFilter = { column: string; bin?: number; value?: string; null?: boolean };
+/** `column: '*'` with `contains`: rows where any text column holds the words. */
+export type RowFilter = { column: string; bin?: number; value?: string; null?: boolean; contains?: string };
 
 export type ColumnHist =
   | { kind: 'bins'; lo: number | null; hi: number | null; counts: number[]; nulls: number }

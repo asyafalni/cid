@@ -25,13 +25,20 @@ pub const max_hist_columns = 30;
 pub const max_limit = 200;
 
 /// One column's filter: a bin of a number column, a value of any other,
-/// or the rows where the column holds nothing.
+/// or the rows where the column holds nothing. Or, with the column `*`,
+/// a search: rows where any text column contains `contains`, ignoring
+/// case (U8: search inside tables; text files are never indexed, by
+/// invariant 15).
 pub const Filter = struct {
     column: []const u8,
     bin: ?u32 = null,
     value: ?[]const u8 = null,
     null: bool = false,
+    contains: ?[]const u8 = null,
 };
+
+/// The pseudo-column a search filter names.
+pub const any_text = "*";
 
 /// A page, or a filter the table cannot answer (a column it does not have,
 /// or a bin on a column that is not a number), said as such.
@@ -66,7 +73,26 @@ pub fn page(arena: std.mem.Allocator, db: *duck.Db, parquet: []const u8, filters
     // One condition per filter, its values bound as parameters.
     var args: std.ArrayList(duck.Db.Arg) = .empty;
     const conds = try arena.alloc([]const u8, filters.len);
+    // A search reads every text column of every row; its matching rows
+    // are found once (`hits`), so the counts below join on row numbers
+    // rather than read the text again for every column: 0.85 s a page at
+    // 1M rows the other way.
+    var hits: ?[]const u8 = null;
     for (filters, conds) |f, *cond| {
+        if (std.mem.eql(u8, f.column, any_text)) {
+            const words = f.contains orelse return .{ .refused = f.column };
+            if (hits != null) return .{ .refused = f.column };
+            try args.append(arena, .{ .text = words });
+            var any: std.ArrayList(u8) = .empty;
+            try any.appendSlice(arena, "(false");
+            for (columns) |c| if (std.mem.startsWith(u8, c.type, "VARCHAR")) {
+                try any.print(arena, " OR contains(lower({s}), lower(${d}))", .{ try sql.ident(arena, c.name), args.items.len });
+            };
+            try any.append(arena, ')');
+            hits = any.items;
+            cond.* = "__row IN (SELECT __row FROM hits)";
+            continue;
+        }
         const col = for (columns) |c| {
             if (std.mem.eql(u8, c.name, f.column)) break c;
         } else return .{ .refused = f.column };
@@ -95,16 +121,20 @@ pub fn page(arena: std.mem.Allocator, db: *duck.Db, parquet: []const u8, filters
         }
     };
     // The page that holds row `at`: as many filtered rows come before it.
+    const with = try std.fmt.allocPrint(arena, "WITH t AS (SELECT * EXCLUDE (file_row_number), file_row_number AS __row FROM {s}){s}", .{
+        src,
+        if (hits) |h| try std.fmt.allocPrint(arena, ", hits AS MATERIALIZED (SELECT __row FROM t WHERE {s})", .{h}) else "",
+    });
     const offset = if (at) |row| blk: {
-        const before = (try db.scalarTextArgs(arena, try std.fmt.allocPrint(arena, "WITH t AS (SELECT * EXCLUDE (file_row_number), file_row_number AS __row FROM {s}) SELECT count(*)::VARCHAR FROM t WHERE __row < {d} AND {s}", .{ src, row, try w.all(arena, conds, null) }), args.items)) orelse return error.QueryFailed;
+        const before = (try db.scalarTextArgs(arena, try std.fmt.allocPrint(arena, "{s} SELECT count(*)::VARCHAR FROM t WHERE __row < {d} AND {s}", .{ with, row, try w.all(arena, conds, null) }), args.items)) orelse return error.QueryFailed;
         const n = std.fmt.parseInt(u64, before, 10) catch return error.QueryFailed;
         break :blk n / limit * limit;
     } else start;
     var out: std.ArrayList(u8) = .empty;
-    try out.print(arena, "WITH t AS (SELECT * EXCLUDE (file_row_number), file_row_number AS __row FROM {s}) SELECT json_object(" ++
+    try out.print(arena, "{s} SELECT json_object(" ++
         "'total', (SELECT count(*) FROM t), 'matched', (SELECT count(*) FROM t WHERE {s}), 'offset', {d}, " ++
         "'rows', (SELECT coalesce(json_group_array(to_json(r)), '[]') FROM (SELECT * FROM t WHERE {s} ORDER BY __row LIMIT {d} OFFSET {d}) r), " ++
-        "'columns', json_array(", .{ src, try w.all(arena, conds, null), offset, try w.all(arena, conds, null), limit, offset });
+        "'columns', json_array(", .{ with, try w.all(arena, conds, null), offset, try w.all(arena, conds, null), limit, offset });
     for (columns, 0..) |col, i| {
         if (i > 0) try out.appendSlice(arena, ", ");
         const id = try sql.ident(arena, col.name);
@@ -190,6 +220,14 @@ test "rows a page at a time, narrowed by a bin or a value, each column counted a
     try std.testing.expectEqual(@as(u64, 0), one.matched);
     try std.testing.expectEqualStrings("nope", (try page(arena, &db, parquet, &.{.{ .column = "nope", .value = "1" }}, 0, 50, null)).refused);
     try std.testing.expectEqualStrings("name", (try page(arena, &db, parquet, &.{.{ .column = "name", .bin = 0 }}, 0, 50, null)).refused);
+    // A search over the text columns, ignoring case; counted in every
+    // column's distribution, its own included.
+    const found = try std.json.parseFromSliceLeaky(Page, arena, (try page(arena, &db, parquet, &.{.{ .column = any_text, .contains = "BANDUNG" }}, 0, 50, null)).page, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(@as(u64, 2), found.matched);
+    try std.testing.expectEqual(@as(usize, 1), found.columns[2].hist.?.top.?.len);
+    const wij = try std.json.parseFromSliceLeaky(Page, arena, (try page(arena, &db, parquet, &.{.{ .column = any_text, .contains = "wij" }}, 0, 50, null)).page, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(@as(u64, 1), wij.matched);
+
     // A link to row 3 (the fourth), two rows a page: the page from row 2.
     const linked = try std.json.parseFromSliceLeaky(struct { offset: u64, rows: []const std.json.Value }, arena, (try page(arena, &db, parquet, &.{}, 0, 2, 3)).page, .{ .ignore_unknown_fields = true });
     try std.testing.expectEqual(@as(u64, 2), linked.offset);

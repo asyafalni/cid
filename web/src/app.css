@@ -2997,3 +2997,8 @@ button.tick-mark:hover {
   cursor: pointer;
   text-decoration: underline dotted;
 }
+
+.row-search {
+  flex: 1 1 14rem;
+  max-width: 22rem;
+}

@@ -33,7 +33,7 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
   4. ~~The rest of B6~~ (done 2026-11-21): ~~the attribute filter~~ (done 2026-11-21: index format v4,
      `attr_set`); ~~the List view~~ and ~~the identity filter~~ (done 2026-11-21;
      identities are `attrs.identity`, docs/data-model.md); ~~histograms~~ (done with U6).
-  5. ~~U5~~, ~~U6~~ and ~~U7~~ (done 2026-11-21), then U8 and U10, one between each larger piece.
+  5. ~~U5~~, ~~U6~~, ~~U7~~ and ~~U8~~ (done 2026-11-21); U10 parked (below).
   6. C1's two loose ends: the real-client check as an automated test (needs Python
      and the Hugging Face libraries agreed as a test-only dependency), and an
      annotated split's file at 1M items (first request not measured, not prepared
@@ -210,14 +210,19 @@ Close the "behind" rows without giving up an "ahead" one.
 - ~~**U7. A link to one row.**~~ (done 2026-11-21: `row=` opens the rows at the page
   holding it, under any filters, marked and scrolled to; a row's number makes the link.) Opening a table item at a row (`row=` in the URL),
   highlighted and scrolled to.
-- **U8. Search inside text.** Text files and string columns, per version. Needs an
-  index decision first (DuckDB full-text search over the browse index, or not at
-  all); write that decision up before building.
+- ~~**U8. Search inside text.**~~ (done 2026-11-21, as decided that day: tables only.
+  A table's rows are searched across its text columns, on request; text files are not
+  indexed across a version, since that would widen invariant 15. docs/dashboard.md,
+  Search.)
 - ~~**U9. Keyboard everywhere, and "Show command"**~~ (done 2026-11-20 with A2 and
   B9: Browse's keys, the command for the view on screen, the `⌘K` palette).
-- **U10. Embedding.** A chrome-less view of Browse and of one item (`embed=1`), for
-  wikis and merge requests, under the same access rules. Never for a restricted
-  dataset.
+- **U10. Embedding.** *Parked 2026-11-21.* A chrome-less view of Browse and of one item
+  (`embed=1`), for wikis and merge requests, under the same access rules, never for a
+  restricted dataset. Parked because GitLab strips iframes from merge requests and its
+  wikis, and the SameSite=Lax sign-in cookie never reaches a frame on another site, so
+  an embed would only work on pages of cid's own site. Decided with it: no other site
+  may frame the dashboard at all (`frame-ancestors 'self'`), which closed a
+  clickjacking gap. Reopen with an allow-list of origins if a same-site wiki wants it.
 - **U11. Ask people.** Once U1 to U4 are in, sit three engineers who use Hugging Face
   in front of a dataset they know, give them four tasks (find an item, see what
   changed in the last release, get a subset onto their machine, say whether the

@@ -1022,6 +1022,21 @@ test('a table\'s rows: each column\'s distribution above it, a click narrows the
   await expect(page.getByRole('region', { name: 'Rows' })).toContainText('1 of 5 rows');
 });
 
+test('searching a table\'s rows finds the words in any text column, ignoring case', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/tables?view=browse&release=v1.1.0&item=people.csv');
+  const rows = page.getByRole('region', { name: 'Rows' });
+  const box = rows.getByLabel("Search the rows' text");
+  await box.fill('BANDUNG');
+  await box.press('Enter');
+  await expect(rows).toContainText('2 of 5 rows');
+  await expect(rows.getByRole('row', { name: /Eko/ })).toHaveCount(0);
+  await expect(page).toHaveURL(/rows=/);
+  // Gone with its chip.
+  await rows.getByRole('button', { name: 'Remove the filter contains “BANDUNG”' }).click();
+  await expect(rows).toContainText('5 rows');
+});
+
 test('a link to one row opens the table there, marked, and a row\'s number makes that link', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/tables?view=browse&release=v1.1.0&item=people.csv');
@@ -1296,6 +1311,14 @@ test('the first screen of a dataset answers what, how big, what kind, whose, and
     await above('what kind of data', page.getByRole('table', { name: 'Items by type' }).getByRole('row').nth(1));
     await above('who owns it', meta.getByText(owner ? `owned by ${owner}` : 'no owner named'));
     await above('the one command', page.locator('code.command').first());
+  }
+});
+
+test('no other site may frame the dashboard', async ({ page }) => {
+  for (const path of ['/', '/tokens', '/d/e2e/datasets/demo?view=browse']) {
+    const response = await page.goto(path);
+    expect(response!.headers()['content-security-policy'], path).toBe("frame-ancestors 'self'");
+    expect(response!.headers()['x-frame-options'], path).toBe('SAMEORIGIN');
   }
 });
 

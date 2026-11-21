@@ -373,8 +373,13 @@ Every dataset page (all five tabs) shares one header and the release tape.
   *Planned:* size, source (camera, video, feed), author (agent/human), policy version, changed
   since release X, and histograms as clickable filters, like Hugging Face's, for every
   numeric column and attribute.
-- **Search.** *Built:* file paths ("path contains"). *Planned:* text search on text
-  fields; semantic search ("forklift at night", or "more like this item") when an
+- **Search.** *Built:* file paths ("path contains"), and the rows of a table: the
+  words in any of its text columns, ignoring case, in the rows view (`rows=` holds it
+  as `{"column": "*", "contains": …}`); the matching rows are found once a page, so
+  the counts join on them (1M rows: 0.14–0.27 s a page, 210 MB). Text files are not
+  searched across a version, by decision (2026-11-21): that would mean reading and
+  indexing their contents, which invariant 15 forbids; a drawer shows a text file's
+  opening, and the browser finds within it. *Planned:* semantic search ("forklift at night", or "more like this item") when an
   embedding service is configured (Phase 3).
 - **Item drawer.** *Built:* large media with annotations (or the audio player beside
   its waveform, the video player with its poster, a table's statistics and first rows,
@@ -580,6 +585,9 @@ There is no Health tab yet. Per-file table statistics already exist (in the draw
   checked against the `access` table, so a person sees exactly the datasets their
   GitLab role lets them read. Session cookie: nilo's sealed `__Host-session`, HttpOnly,
   Secure, SameSite=Lax, 12-hour expiry sealed inside it, nothing stored on the server.
+  No other site may frame the dashboard (`Content-Security-Policy: frame-ancestors
+  'self'` and `X-Frame-Options: SAMEORIGIN` on every page), so no page laid over it
+  can click through it, the Tokens and SSH keys pages included.
   Configure with `CID_GITLAB_OAUTH_ID`, `CID_GITLAB_OAUTH_SECRET`, `CID_PUBLIC_URL`
   (the GitLab application's redirect URI is `<it>/auth/gitlab/callback`) and
   `CID_SESSION_SECRET` (32 bytes, base64). Where there is no GitLab, the server token

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { getRows, type ColumnHist, type RowFilter, type TableStats } from './api';
 
@@ -81,6 +81,10 @@ export function TableRows({
   return (
     <section className="table-rows" aria-label="Rows">
       <div className="row-filter-bar">
+        <RowSearch
+          value={filters.find((f) => f.column === '*')?.contains}
+          onSearch={(words) => set([...filters.filter((f) => f.column !== '*'), ...(words ? [{ column: '*', contains: words }] : [])])}
+        />
         <p className="quiet data" aria-live="polite">
           {filters.length > 0
             ? `${head.matched.toLocaleString()} of ${head.total.toLocaleString()} rows`
@@ -168,6 +172,36 @@ export function TableRows({
         </button>
       )}
     </section>
+  );
+}
+
+// Search inside the table (U8): the words in any text column, ignoring
+// case; committed on Enter or when the box is left, so a half-typed word
+// never reads the table.
+function RowSearch({ value, onSearch }: { value: string | undefined; onSearch: (words: string | undefined) => void }) {
+  const [typed, setTyped] = useState(value ?? '');
+  const [seen, setSeen] = useState(value);
+  if (value !== seen) {
+    setSeen(value);
+    setTyped(value ?? '');
+  }
+  const commit = () => {
+    const v = typed.trim();
+    if (v !== (value ?? '')) onSearch(v === '' ? undefined : v);
+  };
+  return (
+    <input
+      type="search"
+      className="filter-q row-search"
+      placeholder="Search the rows"
+      aria-label="Search the rows' text"
+      value={typed}
+      onChange={(e) => setTyped(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') commit();
+      }}
+      onBlur={commit}
+    />
   );
 }
 
@@ -306,10 +340,11 @@ function parseWhere(where: string | undefined): RowFilter[] {
 }
 
 function sameFilter(a: RowFilter, b: RowFilter): boolean {
-  return a.bin === b.bin && a.value === b.value && (a.null ?? false) === (b.null ?? false);
+  return a.bin === b.bin && a.value === b.value && (a.null ?? false) === (b.null ?? false) && a.contains === b.contains;
 }
 
 function describe(f: RowFilter, cols: { name: string; hist: ColumnHist | null }[]): string {
+  if (f.column === '*') return `contains “${f.contains ?? ''}”`;
   if (f.null) return `${f.column} is empty`;
   if (f.value !== undefined) return `${f.column} = ${f.value}`;
   const h = cols.find((c) => c.name === f.column)?.hist;
