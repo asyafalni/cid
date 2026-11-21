@@ -423,9 +423,12 @@ Every dataset page (all five tabs) shares one header and the release tape.
   A release touched by `cid admin purge` says "intact except N purged items": a
   count, never the paths (`docs/data-model.md`), counted only for a dataset that holds
   purged content. *Planned:* release notes and quality numbers per release.
-- **Compare** any two versions on `main` (releases or commits, picked as A and B; the
-  pair is in the URL; by default the two newest releases):
-  - Summary (built): items added/modified/deleted and, for annotated datasets,
+- **Compare** any two versions (releases or commits, picked as A and B; the pair is in
+  the URL; by default the two newest releases). On a branch, main's versions are on
+  offer too, grouped by branch, and "Compare with main" sets main's head against the
+  branch's:
+  - Summary (built): items added/modified/deleted and moved to another split (the
+    same bytes, train → val, listed with both splits) and, for annotated datasets,
     annotations added/changed/removed, as totals, and the same per class (a changed
     annotation counts under its class at the later version).
   - Change list (built): a flat list of changed paths with their sizes, small

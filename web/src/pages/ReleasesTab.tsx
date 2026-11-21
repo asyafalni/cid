@@ -26,11 +26,28 @@ export function ReleasesTab({
   onPick: (patch: { a?: string; b?: string }) => void;
 }) {
   const commits = overview.commits; // newest first
+  // On a branch, main's versions are on offer too (B7): a branch is
+  // reviewed against where it would merge.
+  const onBranch = overview.branch !== 'main';
+  const main = useQuery({
+    queryKey: ['overview', name, null, null, 'main'],
+    queryFn: () => getOverview(name, undefined, undefined, 'main'),
+    enabled: onBranch,
+  });
+  const mainCommits = onBranch ? (main.data?.commits ?? []).filter((c) => !commits.some((x) => x.id === c.id)) : [];
+  const groups = onBranch
+    ? [
+        { label: overview.branch, commits },
+        { label: 'main', commits: mainCommits },
+      ]
+    : [{ label: null, commits }];
+  const every = [...commits, ...mainCommits];
 
   // Default comparison: the two newest releases, else newest two commits.
   const pair = comparePair(commits, a, b);
   const aSel = pair.a ?? '';
   const bSel = pair.b ?? '';
+  const mainHead = main.data?.commits[0];
 
   return (
     <div className="releases">
@@ -39,20 +56,26 @@ export function ReleasesTab({
           <h2>Compare</h2>
           <VersionSelect
             label="Compare from"
-            commits={commits}
+            groups={groups}
             value={aSel}
             onChange={(v) => onPick({ a: v })}
           />
           <span className="compare-with">with</span>
           <VersionSelect
             label="Compare to"
-            commits={commits}
+            groups={groups}
             value={bSel}
             onChange={(v) => onPick({ b: v })}
           />
+          {onBranch && mainHead && commits[0] && (
+            // Both ends in the URL, so the link and Show command say it too.
+            <button className="filter-clear" onClick={() => onPick({ a: labelOf(mainHead), b: labelOf(commits[0]) })}>
+              Compare with main
+            </button>
+          )}
         </div>
         {aSel && bSel && aSel !== bSel && (
-          <Comparison name={name} overview={overview} aLabel={aSel} bLabel={bSel} />
+          <Comparison name={name} overview={overview} commits={every} aLabel={aSel} bLabel={bSel} />
         )}
         {aSel === bSel && <p className="quiet">Pick two different versions to compare.</p>}
       </section>
@@ -173,23 +196,34 @@ function Count({ n }: { n: number }) {
 
 function VersionSelect({
   label,
-  commits,
+  groups,
   value,
   onChange,
 }: {
   label: string;
-  commits: TapeCommit[];
+  /** The versions on offer, grouped by branch when there is more than one. */
+  groups: { label: string | null; commits: TapeCommit[] }[];
   value: string;
   onChange: (v: string) => void;
 }) {
+  const options = (commits: TapeCommit[]) =>
+    commits.map((c) => (
+      <option key={c.id} value={labelOf(c)}>
+        {c.release ?? `${c.id.slice(0, 13)} — ${c.message.slice(0, 32)}`}
+      </option>
+    ));
   return (
     <label className="compare-select">
       <select aria-label={label} value={value} onChange={(e) => onChange(e.target.value)}>
-        {commits.map((c) => (
-          <option key={c.id} value={labelOf(c)}>
-            {c.release ?? `${c.id.slice(0, 13)} — ${c.message.slice(0, 32)}`}
-          </option>
-        ))}
+        {groups.map((g) =>
+          g.label === null ? (
+            options(g.commits)
+          ) : g.commits.length > 0 ? (
+            <optgroup key={g.label} label={g.label}>
+              {options(g.commits)}
+            </optgroup>
+          ) : null,
+        )}
       </select>
     </label>
   );
@@ -198,16 +232,19 @@ function VersionSelect({
 function Comparison({
   name,
   overview,
+  commits,
   aLabel,
   bLabel,
 }: {
   name: string;
   overview: Overview;
+  /** Every version on offer: the branch's, and main's when on a branch. */
+  commits: TapeCommit[];
   aLabel: string;
   bLabel: string;
 }) {
-  const aCommit = resolve(overview.commits, aLabel);
-  const bCommit = resolve(overview.commits, bLabel);
+  const aCommit = resolve(commits, aLabel);
+  const bCommit = resolve(commits, bLabel);
   // Compared on the server (DuckDB over both versions' indexes): the
   // summary and the visual diff come with the first page; further item
   // changes a page at a time. Nothing here holds either version.

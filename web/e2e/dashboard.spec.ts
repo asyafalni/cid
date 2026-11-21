@@ -9,6 +9,20 @@ import { fileURLToPath } from 'node:url';
 
 const token = 'e2e-dashboard-token';
 
+// Rewrites the dataset's overview answers. The page asks for several (the
+// compare's balance reads each side's); one whose answer is gone by the
+// time it is read (the page moved on) passes through as it is.
+async function patchOverview(page: import('@playwright/test').Page, name: string, patch: () => Record<string, unknown>) {
+  await page.route(`**/v0/datasets/${name}/-/overview*`, async (route) => {
+    try {
+      const res = await route.fetch();
+      await route.fulfill({ response: res, json: { ...(await res.json()), ...patch() } });
+    } catch {
+      await route.continue().catch(() => {});
+    }
+  });
+}
+
 async function signIn(page: import('@playwright/test').Page) {
   await page.goto('/signin');
   await page.getByLabel(/server token|access token/i).fill(token);
@@ -132,10 +146,7 @@ test('a release written to a GitLab or GitHub repository links to its tag there'
   await signIn(page);
   // The fixtures' repositories are on no real host; answer as if on GitLab, then GitHub.
   let gitUrl = 'git@gitlab.com:your-org/datasets/demo.git';
-  await page.route('**/v0/datasets/e2e/datasets/demo/-/overview*', async (route) => {
-    const res = await route.fetch();
-    await route.fulfill({ response: res, json: { ...(await res.json()), git_url: gitUrl } });
-  });
+  await patchOverview(page, 'e2e/datasets/demo', () => ({ git_url: gitUrl }));
   await page.goto('/d/e2e/datasets/demo?view=releases');
   const history = page.getByRole('region', { name: 'History' });
   // v1.0.0 is in git: linked. v1.1.0 is not there yet: no link to a missing tag.
@@ -162,16 +173,7 @@ test('a release touched by a purge says it is intact except its purged items', a
   // A purge is irreversible, so the shared fixtures never get one: the
   // answer is given as if v1.0.0 had lost one item (the server's count is
   // checked by the integration suite).
-  // The page asks for more than one overview (compare reads each side's);
-  // one whose answer is gone by the time it is read passes through as it is.
-  await page.route('**/v0/datasets/e2e/datasets/demo/-/overview*', async (route) => {
-    try {
-      const res = await route.fetch();
-      await route.fulfill({ response: res, json: { ...(await res.json()), purged: [{ release: 'v1.0.0', items: 1 }] } });
-    } catch {
-      await route.continue().catch(() => {});
-    }
-  });
+  await patchOverview(page, 'e2e/datasets/demo', () => ({ purged: [{ release: 'v1.0.0', items: 1 }] }));
   await page.goto('/d/e2e/datasets/demo?view=releases');
   const history = page.getByRole('region', { name: 'History' });
   const older = history.locator('.moment--release').filter({ has: page.locator('.release-tag', { hasText: 'v1.0.0' }) });
@@ -693,6 +695,22 @@ test('Ctrl-K jumps to a dataset, a release, a tab or an item by typing', async (
   await page.keyboard.press('Control+k');
   await field.press('Escape');
   await expect(palette).toHaveCount(0);
+});
+
+test('on a branch, compare offers main\'s versions too, and compares the branch with main in one click', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/many?view=releases&branch=fix');
+  const from = page.getByRole('combobox', { name: 'Compare from' });
+  await expect(from.locator('optgroup[label="main"] option').first()).toBeAttached();
+  await expect(from.locator('optgroup[label="fix"] option').first()).toBeAttached();
+  await page.getByRole('button', { name: 'Compare with main' }).click();
+  await expect(page).toHaveURL(/a=[0-9a-f-]{36}/);
+  await expect(page).toHaveURL(/b=[0-9a-f-]{36}/);
+  await expect(page.locator('.change', { hasText: 'rows/fix.txt' })).toContainText('added');
+  // On main, nothing else is offered.
+  await page.goto('/d/e2e/datasets/many?view=releases');
+  await expect(page.getByRole('combobox', { name: 'Compare from' }).locator('optgroup')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Compare with main' })).toHaveCount(0);
 });
 
 test('the palette runs actions too: pin the version, compare it with the release before, copy its command', async ({ page, context }) => {

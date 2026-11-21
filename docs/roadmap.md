@@ -38,7 +38,7 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      and the Hugging Face libraries agreed as a test-only dependency), and ~~an
      annotated split's file at 1M items~~ (done 2026-11-21: prepared ahead for
      releases, and a release of an already prepared head is queued again).
-  7. Small gaps left by finished items: comparing a branch with `main` (B7); actions
+  7. ~~Small gaps left by finished items~~ (done 2026-11-21): ~~comparing a branch with `main` (B7)~~; actions
      ~~in the `⌘K` palette (B9)~~ (done 2026-11-21: pin, compare, copy the command or a link); ~~per-class change counts in `cid diff` (B5)~~ (done 2026-11-21: counted as the
      diff streams, the 20 most changed classes, and `by_class` in `--json`).
      Found and fixed on the way (2026-11-21): an item moved to another split with its
@@ -250,8 +250,9 @@ both themes, and works with reduced motion. Beauty never costs a budget.
   (done 2026-11-21: index format v5); ~~the List view~~ (done 2026-11-21);
   ~~histograms~~ (done with U6).
 - ~~**B7. Branches on the tape and pinning a commit**~~ (done 2026-11-20: `?commit=`,
-  `?branch=`). Comparing a branch with `main` across the two is not built: the
-  compare pickers list the shown branch's commits.
+  `?branch=`). Comparing a branch with `main` came 2026-11-21: on a branch the compare
+  pickers offer main's versions too, grouped, and "Compare with main" puts main's head
+  and the branch's in the URL.
 - ~~**B8. `coco` and `voc` exports**~~ (done 2026-11-20; checked with pycocotools:
   loads, `annToMask` matches every area; migration 0005).
 - ~~**B9. "Show command" and the `⌘K` palette**~~ (done 2026-11-20; the palette
