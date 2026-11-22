@@ -23,6 +23,32 @@ export default defineConfig({
       reuseExistingServer: true,
     },
     {
+      // GitHub, faked as strictly, for the second server's sign-in.
+      command: 'node e2e/fake-github.mjs',
+      url: 'http://127.0.0.1:7191/health',
+      reuseExistingServer: true,
+    },
+    {
+      // A second server, signing people in with GitHub (one host per
+      // server): the same database, so the same datasets.
+      command: `${process.env.CID_BIN ?? '../zig-out/bin/cid'} admin serve --port 7179`,
+      url: 'http://127.0.0.1:7179/v0/ping',
+      reuseExistingServer: true,
+      env: {
+        CID_DB: 'host=127.0.0.1 port=5433 user=cid password=cid-test dbname=cid_test',
+        CID_S3_ENDPOINT: 'http://127.0.0.1:8333',
+        CID_S3_ACCESS_KEY: 'cid-test-key',
+        CID_S3_SECRET_KEY: 'cid-test-secret',
+        CID_TOKEN: 'e2e-dashboard-token',
+        CID_GITHUB_URL: 'http://127.0.0.1:7191',
+        CID_GITHUB_OAUTH_ID: 'cid-e2e-github',
+        CID_GITHUB_OAUTH_SECRET: 'cid-e2e-github-secret',
+        CID_PUBLIC_URL: 'http://127.0.0.1:7179',
+        CID_SESSION_SECRET: 'ZTJlLXNlc3Npb24tc2VjcmV0LTMyLWJ5dGVzLWxvbmc=',
+        CID_BROWSE_DIR: '/tmp/cid-e2e-github-browse',
+      },
+    },
+    {
       // CID_BIN picks another build (benchmarks run a ReleaseFast one).
       command: `${process.env.CID_BIN ?? '../zig-out/bin/cid'} admin serve --port ${port}`,
       url: `http://127.0.0.1:${port}/v0/ping`,

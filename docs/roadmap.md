@@ -377,8 +377,9 @@ Trained on your-org/datasets/person-vehicle v4.2.0.
 
 ~~Per-dataset deploy keys~~ (done 2026-11-22: SSH, read or write, owners add them
 with `cid deploy-key`; docs/access.md) · the Health tab and
-Validator tiles · the SQL console · PDF page images (`vips`) · access from other git
-hosts (GitHub first) · ~~DuckDB pinned for other platforms~~ (done 2026-11-21: Linux
+Validator tiles · the SQL console · PDF page images (`vips`) · ~~access from other git
+hosts (GitHub first)~~ (done 2026-11-22: GitHub sync, create check and sign-in, one
+host per server; the live check, `tests/github_live.sh`, waits on a real token) · ~~DuckDB pinned for other platforms~~ (done 2026-11-21: Linux
 arm64 and macOS, built and tested in CI; Windows not yet) · dashboard Phase 3.
 
 ## 7. Parked, not planned

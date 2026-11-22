@@ -10,7 +10,8 @@ const api = @import("../server/api.zig");
 const release = @import("../core/release.zig");
 const git_writer = @import("../gitrepo/writer.zig");
 const keys_mod = @import("../access/keys.zig");
-const gitlab_sync = @import("../access/gitlab_sync.zig");
+const host = @import("../access/host.zig");
+const github_sync = @import("../access/github_sync.zig");
 const purge_mod = @import("../core/purge.zig");
 const gc_mod = @import("../core/gc.zig");
 const preview_worker = @import("../preview/worker.zig");
@@ -34,10 +35,11 @@ const admin_help =
     \\             default 30); --apply deletes them
     \\  purge <dataset> <path|hash> --reason "why"   audited erasure of one item
     \\  previews   one pass of the preview worker (serve also runs it)
-    \\  sync-gitlab  sync members and SSH keys now
+    \\  sync       sync members and SSH keys from the host now (GitLab or
+    \\             GitHub; sync-gitlab is the same)
     \\  add-key <account> <name> <public-key>   register an SSH key by hand
     \\  grant <dataset> <account> <read|write|maintain>   give access by hand
-    \\  rename <dataset> <new-name> [--git <git-url>]   after its GitLab project
+    \\  rename <dataset> <new-name> [--git <git-url>]   after its repository
     \\             moved; the old address stops answering, as in git, and
     \\             its git repository's files are rewritten to name it.
     \\             The same name with --git: only the repository moved
@@ -49,8 +51,9 @@ const admin_help =
     \\  CID_S3_PUBLIC_ENDPOINT  where clients reach the store, when not at
     \\             CID_S3_ENDPOINT: the URLs they are given are signed
     \\             for it (optional; deploy/proxy/README.md) (serve)
-    \\  CID_GITLAB_OAUTH_ID, CID_GITLAB_OAUTH_SECRET, CID_PUBLIC_URL,
-    \\  CID_SESSION_SECRET  "Sign in with GitLab" on the dashboard (serve)
+    \\  CID_GITLAB_OAUTH_ID, CID_GITLAB_OAUTH_SECRET (or CID_GITHUB_OAUTH_ID,
+    \\  CID_GITHUB_OAUTH_SECRET), CID_PUBLIC_URL, CID_SESSION_SECRET
+    \\             "Sign in with GitLab" (or GitHub) on the dashboard (serve)
     \\  CID_BROWSE_DIR  where the server keeps browse indexes, one
     \\             Parquet file per version (default /tmp/cid-browse) (serve)
     \\  CID_WORK_DIR  files in flight: manifests going up, tables a row
@@ -59,10 +62,13 @@ const admin_help =
     \\             (serve, ssh-auth)
     \\  CID_GIT_WORKDIR  turns the git writer on: clones of dataset
     \\             repositories live here (serve)
-    \\  CID_GITLAB_TOKEN, CID_GITLAB_URL  member and key sync (serve,
-    \\             sync-gitlab); who may create a dataset (ssh-auth)
+    \\  CID_GITLAB_TOKEN, CID_GITLAB_URL  take access from GitLab: member
+    \\             and key sync (serve, sync); who may create a dataset (ssh-auth)
+    \\  CID_GITHUB_TOKEN, CID_GITHUB_URL  the same from GitHub (a fine-grained
+    \\             token, Metadata: read; the URL defaults to https://github.com).
+    \\             One host per server: set one of the two
     \\  CID_SYNC_INTERVAL_SECS  the background loop's period: previews,
-    \\             GitLab sync, git retries (default 600) (serve)
+    \\             host sync, git retries (default 600) (serve)
     \\  The bucket is always named 'cid'; create it on the store first
     \\  (docker-compose.test.yml shows how).
     \\
@@ -107,8 +113,8 @@ pub fn run(
     if (eql(sub, "rename")) {
         return runRename(arena, io, out, env, args[1..]);
     }
-    if (eql(sub, "sync-gitlab")) {
-        return runSyncGitlab(arena, io, out, env);
+    if (eql(sub, "sync") or eql(sub, "sync-gitlab")) {
+        return runSync(arena, io, out, env);
     }
     if (eql(sub, "purge")) {
         return runPurge(arena, io, out, env, args[1..]);
@@ -202,7 +208,13 @@ fn runServe(
     }) catch return fail(io, .usage, "CID_S3_ENDPOINT and CID_S3_PUBLIC_ENDPOINT must look like http://host:port. Fix them, then run 'cid admin serve' again.", .{});
     defer s3_client.deinit();
 
-    // The background loop: GitLab sync and git-write retries, every 10
+    // The host access comes from (one per server), or the manual tier.
+    const host_config = host.fromEnv(arena, env) catch |err| switch (err) {
+        error.BothHosts => return fail(io, .usage, "{s}", .{host.both_hosts_message}),
+        error.OutOfMemory => return .network,
+    };
+
+    // The background loop: host sync and git-write retries, every 10
     // minutes (CID_SYNC_INTERVAL_SECS overrides). Each tick opens its own
     // database connection, so a hiccup never poisons the server's.
     {
@@ -220,10 +232,7 @@ fn runServe(
                 .secret_key = s3_secret,
                 .region = s3_region,
             },
-            .gitlab = if (env.get("CID_GITLAB_TOKEN")) |t| .{
-                .base_url = env.get("CID_GITLAB_URL") orelse "https://gitlab.com",
-                .token = t,
-            } else null,
+            .host = host_config,
             .git = if (env.get("CID_GIT_WORKDIR")) |w| .{
                 .workdir = w,
                 .server_url = env.get("CID_PUBLIC_URL") orelse "http://127.0.0.1:7070",
@@ -232,13 +241,13 @@ fn runServe(
         // Previews always drain in the background; gitlab/git only when configured.
         {
             const thread = std.Thread.spawn(.{}, backgroundLoop, .{bg}) catch |err| {
-                std.log.warn("background loop not started: {t}; use 'cid admin sync-gitlab' and 'cid admin git --resync' by hand", .{err});
+                std.log.warn("background loop not started: {t}; use 'cid admin sync' and 'cid admin git --resync' by hand", .{err});
                 return fail(io, .network, "could not start the background loop: {t}", .{err});
             };
             thread.detach();
-            std.log.info("background loop every {d}s (gitlab: {s}, git: {s})", .{
+            std.log.info("background loop every {d}s (host sync: {s}, git: {s})", .{
                 interval,
-                if (bg.gitlab != null) "on" else "off",
+                if (bg.host) |h| @tagName(h.kind()) else "off",
                 if (bg.git != null) "on" else "off",
             });
         }
@@ -247,10 +256,7 @@ fn runServe(
     var deps: api.Deps = .{ .db = &db, .s3 = &s3_client, .io = io, .gpa = std.heap.smp_allocator, .token = token, .token_secret = token_secret };
     if (env.get("CID_BROWSE_DIR")) |dir| deps.browse_dir = dir;
     if (env.get("CID_WORK_DIR")) |dir| deps.work_dir = dir;
-    if (env.get("CID_GITLAB_TOKEN")) |t| deps.gitlab = .{
-        .base_url = env.get("CID_GITLAB_URL") orelse "https://gitlab.com",
-        .token = t,
-    };
+    deps.host = host_config;
     if (env.get("CID_GIT_WORKDIR")) |git_workdir| {
         deps.git = .{
             .workdir = git_workdir,
@@ -259,24 +265,49 @@ fn runServe(
     } else {
         std.log.info("CID_GIT_WORKDIR not set: releases queue their git copy for 'cid admin git --resync'", .{});
     }
-    // Dashboard sign-in. GitLab OAuth when its application is configured;
+    // Dashboard sign-in: OAuth on the host access comes from, when its
+    // application is configured (CID_GITLAB_OAUTH_* or CID_GITHUB_OAUTH_*);
     // sessions are sealed with CID_SESSION_SECRET, which must then be set
     // (a per-start secret would sign everybody out on every deploy).
-    const signin_cfg: ?signin_mod.Config = if (env.get("CID_GITLAB_OAUTH_ID")) |client_id| blk: {
-        const client_secret = env.get("CID_GITLAB_OAUTH_SECRET") orelse
-            return fail(io, .usage, "CID_GITLAB_OAUTH_ID is set but CID_GITLAB_OAUTH_SECRET is not. Export the GitLab application's secret, then run 'cid admin serve' again.", .{});
+    const gl_oauth = env.get("CID_GITLAB_OAUTH_ID");
+    const gh_oauth = env.get("CID_GITHUB_OAUTH_ID");
+    if (gl_oauth != null and gh_oauth != null)
+        return fail(io, .usage, "both CID_GITLAB_OAUTH_ID and CID_GITHUB_OAUTH_ID are set; the dashboard signs people in with one host. Unset one, then run 'cid admin serve' again.", .{});
+    const signin_cfg: ?signin_mod.Config = if (gl_oauth orelse gh_oauth) |client_id| blk: {
+        const kind: host.Kind = if (gl_oauth != null) .gitlab else .github;
+        // One host per server: who signs in is who the access rows name.
+        if (host_config) |h| if (h.kind() != kind)
+            return fail(io, .usage, "the dashboard would sign people in with {s} while access comes from {s}; a server uses one host. Configure the OAuth application on {s}, then run 'cid admin serve' again.", .{ kind.name(), h.kind().name(), h.kind().name() });
+        const secret_var = if (kind == .gitlab) "CID_GITLAB_OAUTH_SECRET" else "CID_GITHUB_OAUTH_SECRET";
+        const client_secret = env.get(secret_var) orelse
+            return fail(io, .usage, "{s}_OAUTH_ID is set but {s} is not. Export the OAuth application's secret, then run 'cid admin serve' again.", .{ if (kind == .gitlab) "CID_GITLAB" else "CID_GITHUB", secret_var });
         const public_url = env.get("CID_PUBLIC_URL") orelse
-            return fail(io, .usage, "GitLab sign-in needs CID_PUBLIC_URL (where browsers reach this server; the GitLab application's redirect URI is <it>/auth/gitlab/callback). Export it, then run 'cid admin serve' again.", .{});
+            return fail(io, .usage, "{s} sign-in needs CID_PUBLIC_URL (where browsers reach this server; the OAuth application's redirect URI is <it>/auth/{t}/callback). Export it, then run 'cid admin serve' again.", .{ kind.name(), kind });
         if (env.get("CID_SESSION_SECRET") == null)
-            return fail(io, .usage, "GitLab sign-in needs CID_SESSION_SECRET (32 random bytes, base64; e.g. from 'head -c 32 /dev/urandom | base64'), the same on every instance and across restarts. Export it, then run 'cid admin serve' again.", .{});
-        break :blk .{
-            .gitlab_url = env.get("CID_GITLAB_URL") orelse "https://gitlab.com",
-            .client_id = client_id,
-            .client_secret = client_secret,
-            .public_url = public_url,
+            return fail(io, .usage, "{s} sign-in needs CID_SESSION_SECRET (32 random bytes, base64; e.g. from 'head -c 32 /dev/urandom | base64'), the same on every instance and across restarts. Export it, then run 'cid admin serve' again.", .{kind.name()});
+        break :blk switch (kind) {
+            .gitlab => .{
+                .kind = .gitlab,
+                .web_url = env.get("CID_GITLAB_URL") orelse "https://gitlab.com",
+                .api_url = env.get("CID_GITLAB_URL") orelse "https://gitlab.com",
+                .client_id = client_id,
+                .client_secret = client_secret,
+                .public_url = public_url,
+            },
+            .github => gh: {
+                const urls = github_sync.Config.of(arena, env.get("CID_GITHUB_URL") orelse "https://github.com", "") catch return .network;
+                break :gh .{
+                    .kind = .github,
+                    .web_url = urls.web_url,
+                    .api_url = urls.api_url,
+                    .client_id = client_id,
+                    .client_secret = client_secret,
+                    .public_url = public_url,
+                };
+            },
         };
     } else null;
-    deps.gitlab_signin = signin_cfg != null;
+    deps.signin = if (signin_cfg) |c| c.kind else null;
 
     var secret: [32]u8 = undefined;
     if (env.get("CID_SESSION_SECRET")) |text| {
@@ -612,10 +643,9 @@ fn runRename(
 
     // On a server that takes access from GitLab, the repository must be
     // there, as at init: access comes from the repository the URL names.
-    if (git_url) |url| if (env.get("CID_GITLAB_TOKEN")) |_| {
-        const base = env.get("CID_GITLAB_URL") orelse "https://gitlab.com";
-        if (gitlab_sync.projectOf(url, base) == null)
-            return fail(io, .usage, "this server takes access from {s}, and {s} is not a repository there; nothing was renamed. Move the repository to {s}, then run 'cid admin rename' again with its URL.", .{ gitlab_sync.hostOf(base), url, gitlab_sync.hostOf(base) });
+    if (git_url) |url| if (host.fromEnv(arena, env) catch return fail(io, .usage, "{s}", .{host.both_hosts_message})) |cfg| {
+        if (cfg.projectOf(url) == null)
+            return fail(io, .usage, "this server takes access from {s}, and {s} is not a repository there; nothing was renamed. Move the repository to {s}, then run 'cid admin rename' again with its URL.", .{ cfg.hostName(), url, cfg.hostName() });
     };
 
     // A new git URL must take a push before anything moves, as at init.
@@ -669,34 +699,38 @@ fn runRename(
     return code;
 }
 
-fn runSyncGitlab(
+fn runSync(
     arena: std.mem.Allocator,
     io: std.Io,
     out: *std.Io.Writer,
     env: *const std.process.Environ.Map,
 ) ExitCode {
-    const token = env.get("CID_GITLAB_TOKEN") orelse
-        return fail(io, .usage, "CID_GITLAB_TOKEN is not set (a token with read_api scope). Export it, then run 'cid admin sync-gitlab' again.", .{});
-    const base_url = env.get("CID_GITLAB_URL") orelse "https://gitlab.com";
+    const cfg = (host.fromEnv(arena, env) catch |err| switch (err) {
+        error.BothHosts => return fail(io, .usage, "{s}", .{host.both_hosts_message}),
+        error.OutOfMemory => return .network,
+    }) orelse return fail(io, .usage, "no host to sync from: set CID_GITLAB_TOKEN (read_api) or CID_GITHUB_TOKEN (fine-grained, Metadata: read), then run 'cid admin sync' again.", .{});
 
     var standalone: dbx.Standalone = undefined;
     standalone.open(arena, env.get("CID_DB") orelse "") catch
-        return fail(io, .network, "cannot connect to the database. Check CID_DB, then run 'cid admin sync-gitlab' again.", .{});
+        return fail(io, .network, "cannot connect to the database. Check CID_DB, then run 'cid admin sync' again.", .{});
     defer standalone.close();
     var scope = dbx.Run.init(arena);
     defer scope.deinit();
 
-    const outcome = gitlab_sync.syncAll(arena, io, &standalone.db, &scope, .{ .base_url = base_url, .token = token }) catch |err| switch (err) {
-        error.GitLabUnreachable => return fail(io, .network, "cannot reach {s}. Check the network, then run 'cid admin sync-gitlab' again.", .{base_url}),
-        else => return fail(io, .network, "sync failed: {t}. Check CID_GITLAB_TOKEN has read_api on the datasets group, then run it again.", .{err}),
+    const outcome = cfg.syncAll(arena, io, &standalone.db, &scope) catch |err| switch (err) {
+        error.HostUnreachable => return fail(io, .network, "cannot reach {s}. Check the network, then run 'cid admin sync' again.", .{cfg.hostName()}),
+        else => return fail(io, .network, "sync failed: {t}. Check the token can read the dataset repositories ({s}), then run it again.", .{ err, switch (cfg.kind()) {
+            .gitlab => "CID_GITLAB_TOKEN with read_api",
+            .github => "CID_GITHUB_TOKEN with Metadata: read",
+        } }),
     };
     out.print("Synced {d} dataset{s} from {s}: {d} members ({d} removed), {d} keys ({d} removed).", .{
-        outcome.datasets,     plural(outcome.datasets), base_url,
+        outcome.datasets,     plural(outcome.datasets), cfg.hostName(),
         outcome.members,      outcome.access_removed,   outcome.keys,
         outcome.keys_removed,
     }) catch return .network;
     if (outcome.datasets_failed > 0)
-        out.print(" {d} project{s} could not be read (see the log).", .{ outcome.datasets_failed, plural(outcome.datasets_failed) }) catch return .network;
+        out.print(" {d} repositor{s} could not be read (see the log).", .{ outcome.datasets_failed, plural(outcome.datasets_failed) }) catch return .network;
     out.writeAll("\n") catch return .network;
     out.flush() catch return .network;
     return .ok;
@@ -817,7 +851,7 @@ const BackgroundConfig = struct {
     io: std.Io,
     conninfo: [:0]const u8,
     interval_secs: u64,
-    gitlab: ?gitlab_sync.Config,
+    host: ?host.Config,
     git: ?git_writer.Config,
     s3: blob.Config,
 };
@@ -858,12 +892,12 @@ fn backgroundLoop(bg: BackgroundConfig) void {
                 std.log.warn("background: preview pass failed: {t}", .{err});
             }
         }
-        if (bg.gitlab) |config| {
-            if (gitlab_sync.syncAll(arena, bg.io, db, &scope, config)) |outcome| {
+        if (bg.host) |config| {
+            if (config.syncAll(arena, bg.io, db, &scope)) |outcome| {
                 if (outcome.members > 0 or outcome.keys > 0 or outcome.access_removed > 0)
-                    std.log.info("background: gitlab sync {d} members, {d} keys", .{ outcome.members, outcome.keys });
+                    std.log.info("background: {t} sync {d} members, {d} keys", .{ config.kind(), outcome.members, outcome.keys });
             } else |err| {
-                std.log.warn("background: gitlab sync failed: {t}", .{err});
+                std.log.warn("background: {t} sync failed: {t}", .{ config.kind(), err });
             }
         }
         if (bg.git) |config| {

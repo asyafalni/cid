@@ -64,10 +64,11 @@ test "git URLs match whatever their ending" {
 
 /// Every error ends with the command to run next.
 /// The server refused this identity or this action (exit 5). Roles come
-/// from the dataset's GitLab project: Reporter reads, Developer pushes,
-/// Maintainer tags, branches and merges.
+/// from the dataset's repository on the server's git host (docs/access.md):
+/// read clones and pulls, write pushes, maintain tags, branches and merges.
+/// The client does not know which host, so both hosts' role names are said.
 pub fn denied(ctx: *const Context, comptime command: []const u8) ExitCode {
-    return fail(ctx, .access, "access denied: the server refused this for your key or token. Ask a Maintainer of the dataset's project for the role you need (Reporter to read, Developer to push, Maintainer to tag, branch or merge), then run '" ++ command ++ "' again.", .{});
+    return fail(ctx, .access, "access denied: the server refused this for your key or token. Ask an owner of the dataset's repository for the access you need (read to clone or pull, write to push, maintain to tag, branch or merge; GitLab's Reporter, Developer, Maintainer; GitHub's Read, Write, Maintain), then run '" ++ command ++ "' again.", .{});
 }
 
 pub fn fail(ctx: *const Context, code: ExitCode, comptime fmt: []const u8, args: anytype) ExitCode {

@@ -522,7 +522,8 @@ export function ping(): Promise<{ ok: boolean }> {
 }
 
 export type Me = {
-  via: 'gitlab' | 'token';
+  /** How the dashboard was opened: a person signed in with their host, or a token. */
+  via: 'gitlab' | 'github' | 'token';
   account: string | null;
   display_name: string;
 };
@@ -533,7 +534,8 @@ export function getMe(): Promise<Me> {
   return request('/v0/me');
 }
 
-export function getAuthConfig(): Promise<{ gitlab: boolean }> {
+/** Which host the dashboard signs people in with, if any (one per server). */
+export function getAuthConfig(): Promise<{ gitlab: boolean; github?: boolean }> {
   return request('/v0/auth/config');
 }
 
@@ -543,7 +545,7 @@ export type SshKey = {
   key_type: string;
   /** gitlab: synced from GitLab, removed there; dashboard: added here,
    *  removed here; admin: registered by an administrator. */
-  source: 'gitlab' | 'dashboard' | 'admin';
+  source: 'gitlab' | 'github' | 'dashboard' | 'admin';
   added_at: string;
 };
 

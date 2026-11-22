@@ -32,7 +32,7 @@ export function Shell() {
               <div className="account-menu panel">
                 <Link to="/keys">SSH keys</Link>
                 <Link to="/tokens">Tokens</Link>
-                {me.data.via === 'gitlab' ? (
+                {me.data.via !== 'token' ? (
                   // A POST, so no link elsewhere can sign anybody out.
                   <form method="post" action="/auth/signout">
                     <button type="submit">Sign out</button>

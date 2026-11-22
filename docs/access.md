@@ -125,17 +125,23 @@ account, or the front door has no GitLab to ask (`CID_GITLAB_TOKEN` unset in
 moment). An administrator can always create a dataset with the server's static token
 (`CID_SERVER`/`CID_TOKEN`); the repository must still be on the server's GitLab.
 
-## Other git hosts (planned)
+## Other git hosts
 
-GitLab is the first host cid takes access from, not the only target: GitHub, Gitea,
-SourceForge or a plain git server should all work. The dataset repository already
-does (it is plain git, `docs/git-repository.md`). Access is the part git cannot do,
-having no members or roles, so it comes from a host's API through an adapter. Decided
-2026-10-08; built when a team on another host needs it, GitHub first.
+GitLab was the first host cid takes access from, GitHub the second (built 2026-11-22),
+and Gitea, SourceForge or a plain git server work through the manual tier. The
+dataset repository already does (it is plain git, `docs/git-repository.md`). Access
+is the part git cannot do, having no members or roles, so it comes from a host's API
+through an adapter (`src/access/host.zig`, with `gitlab_sync.zig` and
+`github_sync.zig`). Decided 2026-10-08.
 
 - **One host per server.** A deployment takes access from one host, set by that
-  host's own variables (`CID_GITLAB_*` today, `CID_GITHUB_*` later); the server refuses
-  to start with more than one set. Several hosts on one server is parked, for a
+  host's own variables: `CID_GITLAB_TOKEN` (read_api) and `CID_GITLAB_URL`, or
+  `CID_GITHUB_TOKEN` (a fine-grained token, `Metadata: read` on the dataset
+  repositories) and `CID_GITHUB_URL` (default `https://github.com`; a GitHub
+  Enterprise Server's address works too, its API at `<it>/api/v3`). Sign-in takes the
+  same host's OAuth application (`CID_GITLAB_OAUTH_*` or `CID_GITHUB_OAUTH_*`). The
+  server refuses to start with both hosts set, or with sign-in on one and access
+  from the other. Several hosts on one server is parked, for a
   possible multi-tenant service (`CLAUDE.md`, explicitly not now).
 - **An adapter does four things**, exactly what the GitLab code does now:
   1. a repository's members, each with a level (the sync);
@@ -143,7 +149,17 @@ having no members or roles, so it comes from a host's API through an adapter. De
   3. a person's public SSH keys (the sync);
   4. sign-in: an OAuth authorize URL, the token exchange, and who signed in, as
      `<host>:<user id>` with a display name.
-  Whatever a host cannot do falls back to the manual tier below.
+  Whatever a host cannot do falls back to the manual tier below. On GitHub: the
+  sync reads `GET /repos/{owner}/{repo}/collaborators?affiliation=all` (direct, team
+  and organization members) and `GET /users/{login}/keys`; a level comes from each
+  collaborator's permission flags, so custom roles map by their base role. Creating a
+  dataset asks `GET /user/{id}` for the person's login, then
+  `GET /repos/{owner}/{repo}/collaborators/{login}/permission`, and needs Admin or
+  Maintain. Sign-in is GitHub's OAuth with PKCE (S256) and no scope: the public
+  profile is all cid reads; a person without a name is their login. Each request
+  carries GitHub's API version and a User-Agent, and the token rides only to the API
+  host. A repository's access is source `github` (migration 0009), which only the
+  GitHub sync adds and removes.
 - **Levels.** cid has three, read, write and maintain ("owner"); each adapter maps
   its host's roles onto them:
 
@@ -160,9 +176,14 @@ having no members or roles, so it comes from a host's API through an adapter. De
   host works. An administrator grants access (`cid admin grant`), people add keys on
   the dashboard's SSH keys page (or `cid admin add-key`), and the dashboard signs in
   with a token. This is how SourceForge, Gitolite or a bare git server are used.
-- **When the second adapter is built,** user-facing text moves from GitLab's role
-  names to cid's levels, each adapter adding its host's name ("needs maintain access
-  (Maintainer on GitLab)").
+- **User-facing text** names the server's host and its roles ("Admin or Maintain on
+  GitHub", "the Maintainer role on GitLab"), or cid's levels on a server that grants
+  access by hand; the CLI, which cannot know the host, names the levels and both
+  hosts' roles. `cid admin sync` syncs from whichever host is set (`sync-gitlab` is
+  the same command).
+- **Verified** against strict fakes of both hosts (integration and e2e). A live
+  check against real GitHub is one script, `tests/github_live.sh`: it syncs a real
+  repository with a real token into the test database and prints what cid recorded.
 
 ## CI, scripts and machines
 

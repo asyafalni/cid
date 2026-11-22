@@ -182,7 +182,7 @@ test "a dataset's git repository: any host on a server that grants access by han
     // repository must be there from the start; the server's own token
     // still needs no role, and GitLab is not asked (nothing listens there).
     _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name LIKE 'test/datasets/host-%'", .{});
-    deps.gitlab = .{ .base_url = "https://gitlab.com", .token = "t" };
+    deps.host = .{ .gitlab = .{ .base_url = "https://gitlab.com", .token = "t" } };
     inline for (urls) |c| {
         const body = try std.fmt.allocPrint(arena, "{{\"name\":\"{s}\",\"git_url\":\"{s}\"}}", .{ c[0], c[1] });
         const res = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", body);
@@ -231,13 +231,13 @@ test "ssh create: a GitLab Maintainer of the repository its git URL names create
     const base = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}", .{port});
     const gl: cid.access.gitlab.Config = .{ .base_url = base, .token = "t" };
     const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
-    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token", .token_secret = secret, .gitlab = gl };
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token", .token_secret = secret, .host = .{ .gitlab = gl } };
 
     // The SSH step hands a GitLab account a token for the name; the role is
     // checked when the dataset is made, on the repository its git URL names
     // (a path of its own, not the dataset's).
     const req = try cid.access.auth.parseOriginalCommand("cid-auth " ++ name ++ " create", "gitlab:8101");
-    const grant = (try cid.access.auth.authorizeCreate(arena, io, &standalone.db, &scope, secret, "http://cid", now, gl, req)).granted;
+    const grant = (try cid.access.auth.authorizeCreate(arena, io, &standalone.db, &scope, secret, "http://cid", now, .{ .gitlab = gl }, req)).granted;
     const header = try std.fmt.allocPrint(arena, "Bearer {s}", .{grant.token});
     const repo_url = "git@127.0.0.1:org/datasets/repo-x.git";
     const res = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", header, "{\"name\":\"" ++ name ++ "\",\"git_url\":\"" ++ repo_url ++ "\"}");
@@ -246,12 +246,12 @@ test "ssh create: a GitLab Maintainer of the repository its git URL names create
     try std.testing.expectEqualStrings("maintain", level.?);
 
     // It exists now: asked again, refused without asking GitLab.
-    try std.testing.expectEqual(cid.access.auth.CreateRefusal.exists, (try cid.access.auth.authorizeCreate(arena, io, &standalone.db, &scope, secret, "http://cid", now, gl, req)).refused);
+    try std.testing.expectEqual(cid.access.auth.CreateRefusal.exists, (try cid.access.auth.authorizeCreate(arena, io, &standalone.db, &scope, secret, "http://cid", now, .{ .gitlab = gl }, req)).refused);
 
     // A repository on another host is refused before GitLab is asked:
     // cid and git agree from the start.
     const req2 = try cid.access.auth.parseOriginalCommand("cid-auth " ++ name2 ++ " create", "gitlab:8101");
-    const header2 = try std.fmt.allocPrint(arena, "Bearer {s}", .{(try cid.access.auth.authorizeCreate(arena, io, &standalone.db, &scope, secret, "http://cid", now, gl, req2)).granted.token});
+    const header2 = try std.fmt.allocPrint(arena, "Bearer {s}", .{(try cid.access.auth.authorizeCreate(arena, io, &standalone.db, &scope, secret, "http://cid", now, .{ .gitlab = gl }, req2)).granted.token});
     const elsewhere = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", header2, "{\"name\":\"" ++ name2 ++ "\",\"git_url\":\"git@github.com:org/x.git\"}");
     try std.testing.expectEqual(std.http.Status.unprocessable_entity, elsewhere.status);
     try std.testing.expect(std.mem.indexOf(u8, elsewhere.body, "this server takes access from 127.0.0.1") != null);
@@ -268,11 +268,114 @@ test "ssh create: a GitLab Maintainer of the repository its git URL names create
 
     // Not a GitLab account, or no GitLab configured: refused, saying why.
     const local = try cid.access.auth.parseOriginalCommand("cid-auth " ++ name2 ++ " create", "local:5");
-    try std.testing.expectEqual(cid.access.auth.CreateRefusal.not_gitlab_account, (try cid.access.auth.authorizeCreate(arena, io, &standalone.db, &scope, secret, "http://cid", now, gl, local)).refused);
-    try std.testing.expectEqual(cid.access.auth.CreateRefusal.no_gitlab, (try cid.access.auth.authorizeCreate(arena, io, &standalone.db, &scope, secret, "http://cid", now, null, req2)).refused);
+    try std.testing.expectEqual(cid.access.auth.CreateRefusal.not_host_account, (try cid.access.auth.authorizeCreate(arena, io, &standalone.db, &scope, secret, "http://cid", now, .{ .gitlab = gl }, local)).refused);
+    try std.testing.expectEqual(cid.access.auth.CreateRefusal.no_host, (try cid.access.auth.authorizeCreate(arena, io, &standalone.db, &scope, secret, "http://cid", now, null, req2)).refused);
 
     _ = try db.exec(&fscope, "DELETE FROM access WHERE account_id = 'gitlab:8101'", .{});
     _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name IN ($1, $2)", .{ name, name2 });
+}
+
+test "github: collaborators become access, their keys keys, and only an Admin or Maintain creates a dataset" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+
+    // The sync: one dataset on this GitHub (owner/name), one elsewhere.
+    _ = try db.exec(&fscope, "DELETE FROM ssh_keys WHERE account_id LIKE 'github:%'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM access WHERE account_id LIKE 'github:%' OR dataset_id IN (SELECT dataset_id FROM datasets WHERE name LIKE 'test/datasets/gh-%')", .{});
+    _ = try db.exec(&fscope, "DELETE FROM auth_events WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name LIKE 'test/datasets/gh-%')", .{});
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name LIKE 'test/datasets/gh-%'", .{});
+    _ = try db.exec(&fscope, "INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES " ++
+        "(gen_random_uuid(), 'test/datasets/gh-alpha', 'files', 'git@localhost:team/alpha.git'), " ++
+        "(gen_random_uuid(), 'test/datasets/gh-beta', 'files', 'git@gitlab.com:team/beta.git')", .{});
+    const key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPwm/k8CgafNJDzrJE9cxz0SZdCa9pnK+EG5vlohtMMR fixture-b@cid";
+    var fake: FakeGitLab = .{ .server = undefined, .replies = &.{
+        .{ .status = "200 OK", .body = "[{\"login\":\"ana\",\"id\":7101,\"role_name\":\"maintain\",\"permissions\":{\"admin\":false,\"maintain\":true,\"push\":true,\"triage\":true,\"pull\":true}}," ++
+            "{\"login\":\"budi\",\"id\":7102,\"role_name\":\"write\",\"permissions\":{\"admin\":false,\"maintain\":false,\"push\":true,\"triage\":true,\"pull\":true}}]" },
+        .{ .status = "200 OK", .body = "[{\"id\":1,\"key\":\"" ++ key ++ "\"}]" },
+        .{ .status = "200 OK", .body = "[]" },
+    } };
+    const port = try fake.start(io);
+    const gh = try cid.access.github.Config.of(arena, try std.fmt.allocPrint(arena, "http://localhost:{d}", .{port}), "t");
+    const outcome = try (cid.access.host.Config{ .github = gh }).syncAll(arena, io, &standalone.db, &scope);
+    fake.stop(io);
+    try std.testing.expect(std.mem.startsWith(u8, fake.request(0), "GET /api/v3/repos/team/alpha/collaborators?affiliation=all&per_page=100&page=1 "));
+    try std.testing.expect(std.mem.startsWith(u8, fake.request(1), "GET /api/v3/users/ana/keys?per_page=100&page=1 "));
+    try std.testing.expect(std.mem.startsWith(u8, fake.request(2), "GET /api/v3/users/budi/keys?"));
+    try std.testing.expect(outcome.datasets >= 1);
+    const Level = struct {
+        pub const nilo_table = .projection;
+        account_id: []const u8,
+        level: []const u8,
+        source: []const u8,
+    };
+    const levels = try db.raw(Level, &fscope, "SELECT a.account_id, a.level, a.source FROM access a JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/gh-alpha' ORDER BY a.account_id", .{});
+    try std.testing.expectEqual(@as(usize, 2), levels.len);
+    try std.testing.expectEqualStrings("github:7101", levels[0].account_id);
+    try std.testing.expectEqualStrings("maintain", levels[0].level);
+    try std.testing.expectEqualStrings("github", levels[0].source);
+    try std.testing.expectEqualStrings("write", levels[1].level);
+    const keyed = try db.rawOne([]const u8, &fscope, "SELECT account_id FROM ssh_keys WHERE source = 'github'", .{});
+    try std.testing.expectEqualStrings("github:7101", keyed.?);
+    try std.testing.expectEqual(@as(i64, 0), (try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM access a JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/gh-beta'", .{})).?);
+
+    // Creating a dataset: the person's login, then their permission there.
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+    const secret = "github-create-secret-github-create!!";
+    var fake2: FakeGitLab = .{ .server = undefined, .replies = &.{
+        .{ .status = "200 OK", .body = "{\"login\":\"ana\",\"id\":7101}" },
+        .{ .status = "200 OK", .body = "{\"permission\":\"write\",\"role_name\":\"maintain\"}" },
+        .{ .status = "200 OK", .body = "{\"login\":\"budi\",\"id\":7102}" },
+        .{ .status = "200 OK", .body = "{\"permission\":\"write\",\"role_name\":\"write\"}" },
+    } };
+    const port2 = try fake2.start(io);
+    const gh2 = try cid.access.github.Config.of(arena, try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}", .{port2}), "t");
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token", .token_secret = secret, .host = .{ .github = gh2 } };
+    const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
+    const create = struct {
+        fn as(a: std.mem.Allocator, d: *cid.api.Deps, sc: anytype, sdb: *cid.db.sql.Db, sec: []const u8, t: u64, account: []const u8, name: []const u8) !cid.api.Response {
+            const req = try cid.access.auth.parseOriginalCommand(try std.fmt.allocPrint(a, "cid-auth {s} create", .{name}), account);
+            const grant = (try cid.access.auth.authorizeCreate(a, std.testing.io, sdb, sc, sec, "http://cid", t, d.host, req)).granted;
+            const body = try std.fmt.allocPrint(a, "{{\"name\":\"{s}\",\"git_url\":\"git@127.0.0.1:team/alpha.git\"}}", .{name});
+            return cid.api.handle(a, d, sc, "POST", "/v0/datasets", try std.fmt.allocPrint(a, "Bearer {s}", .{grant.token}), body);
+        }
+    }.as;
+    const made = try create(arena, &deps, &scope, &standalone.db, secret, now, "github:7101", "test/datasets/gh-made");
+    try std.testing.expectEqual(std.http.Status.created, made.status);
+    const owner = try db.rawOne([]const u8, &fscope, "SELECT a.source FROM access a JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/gh-made' AND a.account_id = 'github:7101' AND a.level = 'maintain'", .{});
+    try std.testing.expectEqualStrings("github", owner.?);
+    const refused = try create(arena, &deps, &scope, &standalone.db, secret, now, "github:7102", "test/datasets/gh-refused");
+    fake2.stop(io);
+    try std.testing.expectEqual(std.http.Status.forbidden, refused.status);
+    try std.testing.expect(std.mem.indexOf(u8, refused.body, "Admin or Maintain role on team/alpha") != null);
+    try std.testing.expect(std.mem.startsWith(u8, fake2.request(0), "GET /api/v3/user/7101 "));
+    try std.testing.expect(std.mem.startsWith(u8, fake2.request(1), "GET /api/v3/repos/team/alpha/collaborators/ana/permission "));
+    // A GitLab account on a GitHub server is no account here.
+    const gl_req = try cid.access.auth.parseOriginalCommand("cid-auth test/datasets/gh-x create", "gitlab:1");
+    try std.testing.expectEqual(cid.access.auth.CreateRefusal.not_host_account, (try cid.access.auth.authorizeCreate(arena, io, &standalone.db, &scope, secret, "http://cid", now, deps.host, gl_req)).refused);
+    try std.testing.expect(std.mem.indexOf(u8, try cid.access.auth.createRefusalText(arena, .not_host_account, "x", .github), "only GitHub accounts") != null);
+
+    _ = try db.exec(&fscope, "DELETE FROM ssh_keys WHERE account_id LIKE 'github:%'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM access WHERE account_id LIKE 'github:%'", .{});
+    // Other tests sync every dataset: none of these may be left for them.
+    _ = try db.exec(&fscope, "DELETE FROM access WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name LIKE 'test/datasets/gh-%')", .{});
+    _ = try db.exec(&fscope, "DELETE FROM auth_events WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name LIKE 'test/datasets/gh-%')", .{});
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name LIKE 'test/datasets/gh-%'", .{});
 }
 
 test "gitlab sync: access comes from the repository each dataset's git URL names; others are left to hand grants" {
@@ -2139,7 +2242,7 @@ test "access: key lookup, forced command, scoped tokens enforced by routes" {
     for ([_][]const u8{ "tag", "branch", "merge" }) |action| {
         const res = cid.api.handle(arena, &deps, &scope, "POST", try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/access/-/{s}", .{action}), write_auth, "{}");
         try std.testing.expectEqual(std.http.Status.forbidden, res.status);
-        try std.testing.expect(std.mem.indexOf(u8, res.body, "Maintainer") != null);
+        try std.testing.expect(std.mem.indexOf(u8, res.body, "only the dataset's owners") != null);
     }
     const wade_maintain = try cid.access.auth.parseOriginalCommand("cid-auth test/datasets/access maintain", "gitlab:7002");
     try std.testing.expectError(error.AccessDenied, cid.access.auth.authorize(arena, ndb, &scope, secret, "x", now, wade_maintain));

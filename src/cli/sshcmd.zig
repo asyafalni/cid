@@ -17,7 +17,7 @@ const std = @import("std");
 const root = @import("../cid.zig");
 const dbx = @import("../store/db.zig");
 const auth = @import("../access/auth.zig");
-const gitlab = @import("../access/gitlab_sync.zig");
+const host = @import("../access/host.zig");
 
 const ExitCode = root.ExitCode;
 
@@ -75,18 +75,18 @@ pub fn runAuth(
         return quietFail(io, "refused. This endpoint only answers: cid-auth <dataset> <read|write|maintain|create>");
     const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
     const grant = if (req.create) blk: {
-        const gitlab_config: ?gitlab.Config = if (env.get("CID_GITLAB_TOKEN")) |t| .{
-            .base_url = env.get("CID_GITLAB_URL") orelse "https://gitlab.com",
-            .token = t,
-        } else null;
-        const answer = auth.authorizeCreate(arena, io, &standalone.db, &scope, secret, server_url, now, gitlab_config, req) catch
+        const host_config = host.fromEnv(arena, env) catch |err| switch (err) {
+            error.BothHosts => return quietFail(io, host.both_hosts_message),
+            error.OutOfMemory => return quietFail(io, "the server could not answer; try again or tell the administrator"),
+        };
+        const answer = auth.authorizeCreate(arena, io, &standalone.db, &scope, secret, server_url, now, host_config, req) catch
             return quietFail(io, "the server could not answer; try again or tell the administrator");
         switch (answer) {
             .granted => |g| break :blk g,
-            .refused => |why| return quietFail(io, auth.createRefusalText(arena, why, req.dataset) catch "refused"),
+            .refused => |why| return quietFail(io, auth.createRefusalText(arena, why, req.dataset, if (host_config) |c| c.kind() else null) catch "refused"),
         }
     } else auth.authorize(arena, &standalone.db, &scope, secret, server_url, now, req) catch |err| switch (err) {
-        error.AccessDenied => return quietFail(io, "access denied. Ask for access to the dataset's project, then try again."),
+        error.AccessDenied => return quietFail(io, "access denied. Ask an owner of the dataset's repository for access, then try again."),
         else => return quietFail(io, "the server could not answer; try again or tell the administrator"),
     };
 

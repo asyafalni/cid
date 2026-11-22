@@ -351,8 +351,10 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   Postgres and S3 all go through **Nilo** (see Zig conventions); TLS terminates at a
   reverse proxy in front of both the server and the file store (`deploy/proxy/`: a
   Caddyfile and an nginx config, checked by `tests/proxy.sh`). The dashboard also
-  signs people in with GitLab (OAuth: `CID_GITLAB_OAUTH_ID`, `CID_GITLAB_OAUTH_SECRET`,
-  `CID_PUBLIC_URL`, `CID_SESSION_SECRET`).
+  signs people in with the server's git host, GitLab or GitHub (OAuth:
+  `CID_GITLAB_OAUTH_ID`/`_SECRET` or `CID_GITHUB_OAUTH_ID`/`_SECRET`, plus
+  `CID_PUBLIC_URL`, `CID_SESSION_SECRET`); access comes from the same host
+  (`CID_GITLAB_TOKEN` or `CID_GITHUB_TOKEN`), one per server (`docs/access.md`).
 - **DuckDB** (C API, in-process on the server) answers every question asked of a
   version: browse pages, subset sizes, folder listings, comparing two versions, table
   statistics, a table's rows (filtered, with each column's distribution) and row-level
@@ -659,9 +661,10 @@ Rules for every command:
 - Errors end with the command to run next. Never print tokens or keys.
 - `cid --version` prints the version, plus a small original ASCII airship when attached
   to a terminal (plain version only when piped, so scripts can parse it).
-- Permissions come from the GitLab role on the dataset's project (`docs/access.md`):
-  Reporter = read, Developer = push, Maintainer (= owner) = tag, branch, merge (token
-  levels read, write, maintain). Anyone can `add` and `commit` locally; the server
+- Permissions come from the role on the dataset's repository on the server's git host
+  (`docs/access.md`): GitLab's Reporter, or GitHub's Read or Triage = read; Developer,
+  or Write = push; Maintainer, or Maintain or Admin (= owner) = tag, branch, merge
+  (token levels read, write, maintain). Anyone can `add` and `commit` locally; the server
   checks permission at `push`.
 
 There is no user config to write. SSH settings come from the user's normal

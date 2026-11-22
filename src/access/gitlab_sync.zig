@@ -8,9 +8,9 @@
 
 const std = @import("std");
 const dbx = @import("../store/db.zig");
-const keys_mod = @import("keys.zig");
+const host = @import("host.zig");
 
-pub const Error = error{ Db, GitLabUnreachable, BadResponse, OutOfMemory };
+pub const Error = host.SyncError;
 
 /// GitLab access levels: 10 guest, 20 reporter, 30 developer,
 /// 40 maintainer, 50 owner. Reporter reads, Developer writes,
@@ -36,14 +36,11 @@ pub const UserKey = struct {
     title: []const u8 = "",
 };
 
-pub const MemberOutcome = struct {
-    upserted: u32 = 0,
-    removed: u32 = 0,
-};
+pub const MemberOutcome = host.MemberOutcome;
+pub const KeyOutcome = host.KeyOutcome;
 
-/// Applies one project's member list to one dataset: accounts are
-/// created or refreshed, access set to the mapped level, and
-/// gitlab-sourced access rows for members no longer present are removed.
+/// Applies one project's member list to one dataset (host.applyMembers):
+/// active members whose level gives cid access, as `gitlab:<id>`.
 pub fn applyMembers(
     arena: std.mem.Allocator,
     db: *dbx.sql.Db,
@@ -51,55 +48,16 @@ pub fn applyMembers(
     dataset_name: []const u8,
     members: []const Member,
 ) Error!MemberOutcome {
-    var outcome: MemberOutcome = .{};
-    var keep_ids: std.ArrayList(u8) = .empty; // comma-joined for the removal query
-
+    var kept: std.ArrayList(host.Member) = .empty;
     for (members) |m| {
         const level = levelFor(m.access_level) orelse continue;
         if (!std.mem.eql(u8, m.state, "active")) continue;
-        const account = try accountId(arena, m.id);
-        const display = if (m.name.len > 0) m.name else m.username;
-        _ = db.exec(
-            scope,
-            "INSERT INTO accounts (account_id, display_name, source, synced_at) VALUES ($1, $2, 'gitlab', now()) " ++
-                "ON CONFLICT (account_id) DO UPDATE SET display_name = excluded.display_name, synced_at = now()",
-            .{ account, display },
-        ) catch return error.Db;
-        _ = db.exec(
-            scope,
-            "INSERT INTO access (dataset_id, account_id, level, source) " ++
-                "SELECT d.dataset_id, $2, $3, 'gitlab' FROM datasets d WHERE d.name = $1 " ++
-                "ON CONFLICT (dataset_id, account_id) DO UPDATE SET level = excluded.level, source = 'gitlab'",
-            .{ dataset_name, account, level },
-        ) catch return error.Db;
-        outcome.upserted += 1;
-        if (keep_ids.items.len > 0) try keep_ids.append(arena, ',');
-        try keep_ids.appendSlice(arena, account);
+        try kept.append(arena, .{ .id = m.id, .display = if (m.name.len > 0) m.name else m.username, .level = level });
     }
-
-    // Removing someone from GitLab removes their cid access at the next
-    // sync. Only gitlab-sourced rows: dashboard grants are not GitLab's.
-    const removed = db.exec(
-        scope,
-        "DELETE FROM access a USING datasets d " ++
-            "WHERE a.dataset_id = d.dataset_id AND d.name = $1 AND a.source = 'gitlab' " ++
-            "AND a.account_id <> ALL (string_to_array($2, ','))",
-        .{ dataset_name, keep_ids.items },
-    ) catch return error.Db;
-    outcome.removed = @intCast(removed);
-    return outcome;
+    return host.applyMembers(arena, db, scope, .gitlab, dataset_name, kept.items);
 }
 
-pub const KeyOutcome = struct {
-    upserted: u32 = 0,
-    removed: u32 = 0,
-    skipped_invalid: u32 = 0,
-};
-
-/// Applies one user's key list: fingerprints computed here, stale
-/// gitlab-synced keys for that account removed. Keys the person added in
-/// the dashboard are theirs to remove and stay; GitLab, which keeps each
-/// key on one account, wins a key some other account holds.
+/// Applies one GitLab user's keys (host.applyKeys).
 pub fn applyKeys(
     arena: std.mem.Allocator,
     db: *dbx.sql.Db,
@@ -107,40 +65,9 @@ pub fn applyKeys(
     gitlab_user_id: u64,
     user_keys: []const UserKey,
 ) Error!KeyOutcome {
-    const account = try accountId(arena, gitlab_user_id);
-    var outcome: KeyOutcome = .{};
-    var keep: std.ArrayList(u8) = .empty;
-
-    for (user_keys) |k| {
-        const fp = keys_mod.fingerprint(arena, k.key) orelse {
-            outcome.skipped_invalid += 1;
-            continue;
-        };
-        _ = db.exec(
-            scope,
-            "INSERT INTO ssh_keys (fingerprint, account_id, public_key, title, source, synced_at) VALUES ($1, $2, $3, $4, 'gitlab', now()) " ++
-                "ON CONFLICT (fingerprint) DO UPDATE SET account_id = excluded.account_id, " ++
-                "public_key = excluded.public_key, title = excluded.title, source = 'gitlab', synced_at = now()",
-            .{ fp, account, k.key, k.title },
-        ) catch return error.Db;
-        outcome.upserted += 1;
-        if (keep.items.len > 0) try keep.append(arena, ',');
-        try keep.appendSlice(arena, fp);
-    }
-
-    const removed = db.exec(
-        scope,
-        "DELETE FROM ssh_keys WHERE account_id = $1 AND source = 'gitlab' " ++
-            "AND fingerprint <> ALL (string_to_array($2, ','))",
-        .{ account, keep.items },
-    ) catch return error.Db;
-    outcome.removed = @intCast(removed);
-    return outcome;
-}
-
-fn accountId(arena: std.mem.Allocator, gitlab_user_id: u64) Error![]const u8 {
-    return std.fmt.allocPrint(arena, "gitlab:{d}", .{gitlab_user_id}) catch
-        error.OutOfMemory;
+    const keys = try arena.alloc(host.Key, user_keys.len);
+    for (keys, user_keys) |*k, u| k.* = .{ .key = u.key, .title = u.title };
+    return host.applyKeys(arena, db, scope, .gitlab, gitlab_user_id, keys);
 }
 
 pub fn parseMembers(arena: std.mem.Allocator, json: []const u8) Error![]const Member {
@@ -185,7 +112,7 @@ pub fn fetchPaged(
             .keep_alive = false,
             .response_writer = &aw.writer,
             .extra_headers = &.{.{ .name = "PRIVATE-TOKEN", .value = config.token }},
-        }) catch return error.GitLabUnreachable;
+        }) catch return error.HostUnreachable;
         if (res.status != .ok) return error.BadResponse;
         const body = std.mem.trim(u8, aw.writer.buffered(), " \n");
         if (body.len < 2 or body[0] != '[') return error.BadResponse;
@@ -200,7 +127,7 @@ pub fn fetchPaged(
 }
 
 /// One GET of a single object, for an answer whose status matters as
-/// much as its body (a 404 that means "not protected"). The body is
+/// much as its body (a 404 that means "not a member"). The body is
 /// whatever came back, read in full.
 pub fn fetchOne(
     arena: std.mem.Allocator,
@@ -219,21 +146,13 @@ pub fn fetchOne(
         .keep_alive = false,
         .response_writer = &aw.writer,
         .extra_headers = &.{.{ .name = "PRIVATE-TOKEN", .value = config.token }},
-    }) catch return error.GitLabUnreachable;
+    }) catch return error.HostUnreachable;
     return .{ .status = @backingInt(res.status), .body = aw.writer.buffered() };
 }
 
 /// Everything, for every dataset: members of the project its git URL
-/// names, then each member's keys. Datasets whose project cannot be read are reported
-/// and skipped — one broken project never stops the sync.
-pub const SyncOutcome = struct {
-    datasets: u32 = 0,
-    datasets_failed: u32 = 0,
-    members: u32 = 0,
-    access_removed: u32 = 0,
-    keys: u32 = 0,
-    keys_removed: u32 = 0,
-};
+/// names, then each member's keys (host.SyncOutcome).
+pub const SyncOutcome = host.SyncOutcome;
 
 pub fn syncAll(
     arena: std.mem.Allocator,
@@ -322,6 +241,27 @@ pub fn projectOf(git_url: []const u8, base_url: []const u8) ?[]const u8 {
     path = std.mem.trimEnd(u8, path, "/");
     if (path.len == 0 or std.mem.indexOfScalar(u8, path, '/') == null) return null;
     return path;
+}
+
+/// Whether the user is a Maintainer or Owner of the project at `path`,
+/// directly or through a group (`members/all`), asked live.
+pub fn maintainerOf(arena: std.mem.Allocator, io: std.Io, cfg: Config, path: []const u8, user_id: u64) error{OutOfMemory}!host.Answer {
+    const project = urlEncodePath(arena, path) catch return error.OutOfMemory;
+    const got = fetchOne(arena, io, cfg, "/api/v4/projects/{s}/members/all/{d}", .{ project, user_id }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return .unknown,
+    };
+    return judgeMember(arena, got.status, got.body);
+}
+
+/// GitLab's answer about one member: 404 is "not a member" (or no such
+/// project, which is the same refusal); Maintainer is 40, Owner 50.
+pub fn judgeMember(arena: std.mem.Allocator, status: u16, body: []const u8) host.Answer {
+    if (status == 404) return .no;
+    if (status != 200) return .unknown;
+    const M = struct { access_level: u32 = 0 };
+    const m = std.json.parseFromSliceLeaky(M, arena, body, .{ .ignore_unknown_fields = true }) catch return .unknown;
+    return if (m.access_level >= 40) .yes else .no;
 }
 
 /// The host of a URL or git URL, for messages ("gitlab.example").

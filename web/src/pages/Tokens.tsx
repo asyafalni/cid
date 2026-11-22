@@ -10,7 +10,7 @@ const lifetimes = [30, 90, 180, 365];
 
 export function Tokens() {
   const me = useQuery({ queryKey: ['me'], queryFn: getMe });
-  const person = me.data?.via === 'gitlab';
+  const person = me.data?.via !== undefined && me.data.via !== 'token';
   const tokens = useQuery({ queryKey: ['tokens'], queryFn: listTokens, enabled: person });
   const client = useQueryClient();
   const [name, setName] = useState('');
@@ -43,7 +43,7 @@ export function Tokens() {
       {me.data && !person && (
         <div className="panel notice" role="status">
           <p>You are signed in with the server token, which belongs to no one and makes no tokens.</p>
-          <p className="quiet">Sign out, then choose Sign in with GitLab to manage your own.</p>
+          <p className="quiet">Sign out, then sign in with your git host to manage your own.</p>
         </div>
       )}
 

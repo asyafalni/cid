@@ -64,6 +64,8 @@ pub const access = struct {
     pub const auth = @import("access/auth.zig");
     pub const keys = @import("access/keys.zig");
     pub const gitlab = @import("access/gitlab_sync.zig");
+    pub const github = @import("access/github_sync.zig");
+    pub const host = @import("access/host.zig");
 };
 pub const cli_ssh = @import("cli/sshcmd.zig");
 pub const client = struct {
@@ -119,6 +121,8 @@ test {
     _ = access.auth;
     _ = access.keys;
     _ = access.gitlab;
+    _ = access.github;
+    _ = access.host;
     _ = gitrepo.writer;
     _ = uuid7;
     _ = progress;

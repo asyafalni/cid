@@ -27,7 +27,7 @@ export function Home() {
   const navigate = useNavigate();
   const query = useQuery({ queryKey: ['datasets'], queryFn: listDatasets });
   const me = useQuery({ queryKey: ['me'], queryFn: getMe });
-  const person = me.data?.via === 'gitlab';
+  const person = me.data?.via !== undefined && me.data.via !== 'token';
   const client = useQueryClient();
   const toggleStar = useMutation({
     mutationFn: ({ name, on }: { name: string; on: boolean }) => setStar(name, on),

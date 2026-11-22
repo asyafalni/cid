@@ -805,6 +805,19 @@ test('a reader does not see a dataset\'s deploy keys', async ({ page }) => {
   await expect(page.getByRole('region', { name: 'Deploy keys' })).toHaveCount(0);
 });
 
+test('sign in with GitHub on a server that takes access from GitHub', async ({ page }) => {
+  await page.goto('http://127.0.0.1:7179/');
+  await expect(page).toHaveURL(/\/signin/);
+  // The server's host, named: GitHub's button, not GitLab's.
+  await expect(page.getByRole('link', { name: 'Sign in with GitLab' })).toHaveCount(0);
+  await page.getByRole('link', { name: 'Sign in with GitHub' }).click();
+  // Through the strict fake GitHub and back; a person with no name is their login.
+  await expect(page.getByRole('heading', { name: 'Datasets' })).toBeVisible();
+  await expect(page.locator('.account-name')).toHaveText('octo');
+  const me = await page.evaluate(async () => (await fetch('/v0/me')).json());
+  expect(me).toMatchObject({ via: 'github', account: 'github:5353' });
+});
+
 test('sign in with GitLab: the round trip, the cookie, and only what the role allows', async ({ page, context }) => {
   await page.goto('/');
   await expect(page).toHaveURL(/\/signin/);

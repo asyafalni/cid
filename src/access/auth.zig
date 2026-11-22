@@ -6,7 +6,7 @@
 const std = @import("std");
 const dbx = @import("../store/db.zig");
 const token_mod = @import("token.zig");
-const gitlab = @import("gitlab_sync.zig");
+const host_mod = @import("host.zig");
 
 const KeyRow = struct {
     pub const nilo_table = .projection;
@@ -113,17 +113,18 @@ pub fn authorize(
 }
 
 /// Why a create over SSH was refused, in the words the person sees.
-pub const CreateRefusal = enum { exists, no_gitlab, not_gitlab_account };
+pub const CreateRefusal = enum { exists, no_host, not_host_account };
 
-pub fn createRefusalText(arena: std.mem.Allocator, why: CreateRefusal, dataset: []const u8) error{OutOfMemory}![]const u8 {
+/// The refusal in words; `kind` is the host the server takes access from.
+pub fn createRefusalText(arena: std.mem.Allocator, why: CreateRefusal, dataset: []const u8, kind: ?host_mod.Kind) error{OutOfMemory}![]const u8 {
     return switch (why) {
         .exists => std.fmt.allocPrint(arena, "{s} already exists. Run 'cid clone' to work with it.", .{dataset}),
-        .no_gitlab => std.fmt.allocPrint(arena, "this server cannot check GitLab roles (CID_GITLAB_TOKEN unset), so it cannot create {s} over SSH. Ask the administrator to create it, then run 'cid clone' on it.", .{dataset}),
-        .not_gitlab_account => std.fmt.allocPrint(arena, "only GitLab accounts can create datasets over SSH. Ask the administrator to create {s}, then run 'cid clone' on it.", .{dataset}),
+        .no_host => std.fmt.allocPrint(arena, "this server takes access from no git host (neither CID_GITLAB_TOKEN nor CID_GITHUB_TOKEN is set), so it cannot check roles to create {s} over SSH. Ask the administrator to create it, then run 'cid clone' on it.", .{dataset}),
+        .not_host_account => std.fmt.allocPrint(arena, "only {s} accounts can create datasets over SSH. Ask the administrator to create {s}, then run 'cid clone' on it.", .{ if (kind) |k| k.name() else "git host", dataset }),
     };
 }
 
-/// A token to create `req.dataset`, for a GitLab account. The role itself
+/// A token to create `req.dataset`, for an account on the server's host. The role itself
 /// is checked when the dataset is created (checkCreate), where the git
 /// URL that names its repository is known: `cid-auth` sees only the name.
 /// A dataset that already exists is refused; its owners have their way in.
@@ -135,15 +136,15 @@ pub fn authorizeCreate(
     secret: []const u8,
     server_url: []const u8,
     now_unix: u64,
-    gitlab_config: ?gitlab.Config,
+    host_config: ?host_mod.Config,
     req: AuthRequest,
 ) AuthError!union(enum) { granted: Grant, refused: CreateRefusal } {
     std.debug.assert(req.create);
     const refused: ?CreateRefusal = blk: {
         const exists = db.rawOne(i64, scope, "SELECT 1::bigint FROM datasets WHERE name = $1", .{req.dataset}) catch return error.Db;
         if (exists != null) break :blk .exists;
-        _ = gitlab_config orelse break :blk .no_gitlab;
-        _ = gitlabUserId(req.account) orelse break :blk .not_gitlab_account;
+        const cfg = host_config orelse break :blk .no_host;
+        _ = cfg.userIdOf(req.account) orelse break :blk .not_host_account;
         break :blk null;
     };
     _ = io;
@@ -158,12 +159,6 @@ pub fn authorizeCreate(
     return .{ .granted = .{ .token = tok, .url = server_url, .expires_in_secs = token_mod.default_ttl_secs } };
 }
 
-/// The GitLab user id of a `gitlab:<id>` account.
-fn gitlabUserId(account: []const u8) ?u64 {
-    if (!std.mem.startsWith(u8, account, "gitlab:")) return null;
-    return std.fmt.parseInt(u64, account["gitlab:".len..], 10) catch null;
-}
-
 /// Why creating a dataset was refused: what, and what to do next.
 pub const Refused = struct {
     why: enum { other_host, not_an_account, not_maintainer, no_answer },
@@ -172,59 +167,40 @@ pub const Refused = struct {
 };
 
 /// Whether a dataset may be created with this git URL, on a server that
-/// takes access from GitLab (docs/access.md): its repository must be on
-/// that GitLab, so cid and git agree from the start, and a person
-/// creating it (`account`; null for the server's own token) must hold
-/// Maintainer or Owner on that repository's project, asked live.
-pub fn checkCreate(arena: std.mem.Allocator, io: std.Io, cfg: gitlab.Config, dataset: []const u8, git_url: []const u8, account: ?[]const u8) error{OutOfMemory}!?Refused {
-    const host = gitlab.hostOf(cfg.base_url);
-    const project = gitlab.projectOf(git_url, cfg.base_url) orelse return .{
+/// takes access from a git host (docs/access.md): its repository must be
+/// on that host, so cid and git agree from the start, and a person
+/// creating it (`account`; null for the server's own token) must own that
+/// repository there (GitLab Maintainer or Owner, GitHub Admin or
+/// Maintain), asked live.
+pub fn checkCreate(arena: std.mem.Allocator, io: std.Io, cfg: host_mod.Config, dataset: []const u8, git_url: []const u8, account: ?[]const u8) error{OutOfMemory}!?Refused {
+    const where = cfg.hostName();
+    const project = cfg.projectOf(git_url) orelse return .{
         .why = .other_host,
-        .what = try std.fmt.allocPrint(arena, "this server takes access from {s}, and {s} is not a repository there", .{ host, git_url }),
-        .next = try std.fmt.allocPrint(arena, "Create the dataset's repository on {s}, then run 'cid init' again with its URL.", .{host}),
+        .what = try std.fmt.allocPrint(arena, "this server takes access from {s}, and {s} is not a repository there", .{ where, git_url }),
+        .next = try std.fmt.allocPrint(arena, "Create the dataset's repository on {s}, then run 'cid init' again with its URL.", .{where}),
     };
     const who = account orelse return null;
-    const user_id = gitlabUserId(who) orelse return .{
+    const user_id = cfg.userIdOf(who) orelse return .{
         .why = .not_an_account,
-        .what = try std.fmt.allocPrint(arena, "only {s} accounts can create datasets", .{host}),
+        .what = try std.fmt.allocPrint(arena, "only {s} accounts can create datasets", .{cfg.kind().name()}),
         .next = try std.fmt.allocPrint(arena, "Ask the administrator to create {s}, then run 'cid clone' on it.", .{dataset}),
     };
-    return switch (try maintainerOf(arena, io, cfg, project, user_id)) {
+    return switch (try cfg.maintainerOf(arena, io, project, user_id)) {
         .yes => null,
         .no => .{
             .why = .not_maintainer,
-            .what = try std.fmt.allocPrint(arena, "creating {s} needs the Maintainer role on {s} on {s}", .{ dataset, project, host }),
+            .what = try std.fmt.allocPrint(arena, "creating {s} needs the {s} role on {s} on {s}", .{ dataset, switch (cfg.kind()) {
+                .gitlab => "Maintainer",
+                .github => "Admin or Maintain",
+            }, project, where }),
             .next = "Ask the repository's owner for that role, then run 'cid init' again.",
         },
         .unknown => .{
             .why = .no_answer,
-            .what = try std.fmt.allocPrint(arena, "{s} did not answer, so the server cannot check your role on {s}", .{ host, project }),
+            .what = try std.fmt.allocPrint(arena, "{s} did not answer, so the server cannot check your role on {s}", .{ where, project }),
             .next = "Run 'cid init' again in a moment.",
         },
     };
-}
-
-const Answer = enum { yes, no, unknown };
-
-/// Whether the user is a Maintainer or Owner of the project at `path`,
-/// directly or through a group (`members/all`).
-fn maintainerOf(arena: std.mem.Allocator, io: std.Io, cfg: gitlab.Config, path: []const u8, user_id: u64) error{OutOfMemory}!Answer {
-    const project = gitlab.urlEncodePath(arena, path) catch return error.OutOfMemory;
-    const got = gitlab.fetchOne(arena, io, cfg, "/api/v4/projects/{s}/members/all/{d}", .{ project, user_id }) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return .unknown,
-    };
-    return judgeMember(arena, got.status, got.body);
-}
-
-/// GitLab's answer about one member: 404 is "not a member" (or no such
-/// project, which is the same refusal); Maintainer is 40, Owner 50.
-fn judgeMember(arena: std.mem.Allocator, status: u16, body: []const u8) Answer {
-    if (status == 404) return .no;
-    if (status != 200) return .unknown;
-    const Member = struct { access_level: u32 = 0 };
-    const m = std.json.parseFromSliceLeaky(Member, arena, body, .{ .ignore_unknown_fields = true }) catch return .unknown;
-    return if (m.access_level >= 40) .yes else .no;
 }
 
 fn logAuthEvent(db: *dbx.sql.Db, scope: anytype, req: AuthRequest, granted: bool) void {
@@ -264,11 +240,12 @@ test "a GitLab member answer: Maintainer and Owner may create, others may not" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    try std.testing.expectEqual(Answer.yes, judgeMember(a, 200, "{\"id\":7,\"access_level\":40}"));
-    try std.testing.expectEqual(Answer.yes, judgeMember(a, 200, "{\"id\":7,\"access_level\":50}"));
-    try std.testing.expectEqual(Answer.no, judgeMember(a, 200, "{\"id\":7,\"access_level\":30}"));
-    try std.testing.expectEqual(Answer.no, judgeMember(a, 404, "{\"message\":\"404 Not found\"}"));
-    try std.testing.expectEqual(Answer.unknown, judgeMember(a, 500, ""));
-    try std.testing.expectEqual(@as(?u64, 42), gitlabUserId("gitlab:42"));
-    try std.testing.expectEqual(@as(?u64, null), gitlabUserId("local:42"));
+    const gitlab = @import("gitlab_sync.zig");
+    try std.testing.expectEqual(host_mod.Answer.yes, gitlab.judgeMember(a, 200, "{\"id\":7,\"access_level\":40}"));
+    try std.testing.expectEqual(host_mod.Answer.yes, gitlab.judgeMember(a, 200, "{\"id\":7,\"access_level\":50}"));
+    try std.testing.expectEqual(host_mod.Answer.no, gitlab.judgeMember(a, 200, "{\"id\":7,\"access_level\":30}"));
+    try std.testing.expectEqual(host_mod.Answer.no, gitlab.judgeMember(a, 404, "{\"message\":\"404 Not found\"}"));
+    try std.testing.expectEqual(host_mod.Answer.unknown, gitlab.judgeMember(a, 500, ""));
+    try std.testing.expectEqual(@as(?u64, 42), host_mod.userId(.gitlab, "gitlab:42"));
+    try std.testing.expectEqual(@as(?u64, null), host_mod.userId(.gitlab, "local:42"));
 }

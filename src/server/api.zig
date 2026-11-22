@@ -28,7 +28,7 @@ const blob = @import("../store/blob.zig");
 const release_mod = @import("../core/release.zig");
 const git_writer = @import("../gitrepo/writer.zig");
 const auth = @import("../access/auth.zig");
-const gitlab_sync = @import("../access/gitlab_sync.zig");
+const host_mod = @import("../access/host.zig");
 const keys_mod = @import("../access/keys.zig");
 const preview_worker = @import("../preview/worker.zig");
 const duck = @import("../store/duck.zig");
@@ -57,12 +57,13 @@ pub const Deps = struct {
     /// after tagging; otherwise git_writes rows wait for
     /// 'cid admin git <dataset> --resync'.
     git: ?git_writer.Config = null,
-    /// Whether "Sign in with GitLab" is configured (the sign-in page asks).
-    gitlab_signin: bool = false,
-    /// The GitLab the server syncs members from (CID_GITLAB_URL and
-    /// CID_GITLAB_TOKEN): also asked, at creation, whether a dataset
-    /// repository on it protects main.
-    gitlab: ?gitlab_sync.Config = null,
+    /// The host the dashboard signs people in with, when configured (the
+    /// sign-in page asks): "Sign in with GitLab" or "with GitHub".
+    signin: ?host_mod.Kind = null,
+    /// The host the server takes access from (CID_GITLAB_* or
+    /// CID_GITHUB_*; docs/access.md): members synced from it, and asked
+    /// at creation whether the creator owns the dataset's repository.
+    host: ?host_mod.Config = null,
     /// The server's one DuckDB database for browse queries,
     /// confined to browse_dir, opened by `cid admin serve`: every query
     /// takes a connection, so one memory ceiling covers them all at once.
@@ -126,6 +127,26 @@ pub fn browseQuery(deps: *Deps, comptime func: anytype, args: std.meta.ArgsTuple
 fn offload(deps: *const Deps, comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) @typeInfo(@TypeOf(func)).@"fn".return_type.? {
     if (deps.offload) return nilo.blocking(func, args);
     return @call(.auto, func, args);
+}
+
+/// Who owns a dataset, in the words of the host the server takes access
+/// from: "the Maintainer role on GitLab", "Admin or Maintain on GitHub", or
+/// cid's own level on a server that grants access by hand.
+fn ownerRole(deps: *const Deps) []const u8 {
+    const h = deps.host orelse return "maintain access, granted by the administrator";
+    return switch (h.kind()) {
+        .gitlab => "the Maintainer role on GitLab",
+        .github => "Admin or Maintain on GitHub",
+    };
+}
+
+/// The dashboard's sign-in, as its button says.
+fn signInWords(deps: *const Deps) []const u8 {
+    const kind = deps.signin orelse return "the sign-in";
+    return switch (kind) {
+        .gitlab => "'Sign in with GitLab'",
+        .github => "'Sign in with GitHub'",
+    };
 }
 
 pub const Response = struct {
@@ -203,14 +224,14 @@ fn handleInner(
         return json(arena, .ok, .{ .ok = true });
     // Public: the sign-in page asks which ways in this server offers.
     if (eql(method, "GET") and eql(target, "/v0/auth/config"))
-        return json(arena, .ok, .{ .gitlab = deps.gitlab_signin });
+        return json(arena, .ok, .{ .gitlab = deps.signin == .gitlab, .github = deps.signin == .github });
     if (eql(method, "GET") and eql(target, "/v0/me")) return me(arena, deps, scope, caller);
     if (std.mem.startsWith(u8, target, "/v0/me/keys")) return myKeys(arena, deps, scope, caller, method, target, body);
     if (std.mem.startsWith(u8, target, "/v0/me/tokens")) return myTokens(arena, deps, scope, caller, method, target, body);
 
     if (eql(method, "POST") and eql(target, "/v0/datasets")) {
         if (caller.personal)
-            return errorResponse(arena, .forbidden, "a personal token cannot create a dataset", "Run 'cid init' with your SSH key (a GitLab Maintainer of its repository may), or ask the administrator.");
+            return errorResponse(arena, .forbidden, "a personal token cannot create a dataset", try std.fmt.allocPrint(arena, "Run 'cid init' with your SSH key (an owner of its repository may: {s}), or ask the administrator.", .{ownerRole(deps)}));
         // The dataset's name is in the body; createDataset checks scope.
         return createDataset(arena, deps, scope, auth_header, body);
     }
@@ -219,7 +240,7 @@ fn handleInner(
         // the static token only, until OAuth brings account-level views.
         if (tokenOk(deps.token, auth_header)) return listDatasets(arena, deps, scope, null);
         if (caller.account) |account| return listDatasets(arena, deps, scope, account);
-        return errorResponse(arena, .unauthorized, "listing needs you signed in", "Run the sign-in again: 'Sign in with GitLab' on the dashboard, or the server token.");
+        return errorResponse(arena, .unauthorized, "listing needs you signed in", try std.fmt.allocPrint(arena, "Run the sign-in again: {s} on the dashboard, or the server token.", .{signInWords(deps)}));
     }
 
     const route = parseDatasetRoute(target) orelse
@@ -239,7 +260,7 @@ fn handleInner(
         .read;
     if (!authorized(arena, deps, scope, caller, route.name, needed)) {
         if (needed == .maintain and authorized(arena, deps, scope, caller, route.name, .write))
-            return errorResponse(arena, .forbidden, "only the dataset's owners (Maintainers of its project) tag, branch, merge, edit the card and manage deploy keys", "Ask a Maintainer of the dataset's project to do it, or for the Maintainer role.");
+            return errorResponse(arena, .forbidden, try std.fmt.allocPrint(arena, "only the dataset's owners ({s} on its repository) tag, branch, merge, edit the card and manage deploy keys", .{ownerRole(deps)}), "Ask an owner of the dataset's repository to do it, or for that role.");
         return errorResponse(arena, .unauthorized, "missing, wrong or expired token for this dataset", "Run the command again; cid fetches a fresh token over SSH. CI: check CID_TOKEN.");
     }
 
@@ -1504,7 +1525,7 @@ fn reveal(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller,
 /// server token, which administers everything.
 fn activity(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset) HandleError!Response {
     if (!(try isOwner(deps, scope, caller, ds)))
-        return errorResponse(arena, .forbidden, "the activity log is for the dataset's owners", "Ask an owner (a Maintainer of the dataset's GitLab project) if you need to see it.");
+        return errorResponse(arena, .forbidden, "the activity log is for the dataset's owners", try std.fmt.allocPrint(arena, "Ask an owner ({s} on the dataset's repository) if you need to see it.", .{ownerRole(deps)}));
     const Event = struct {
         pub const nilo_table = .projection;
         at: []const u8,
@@ -1583,7 +1604,7 @@ pub fn logActivity(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Da
 /// dashboard session. The shared server token has no account to star from.
 fn star(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, on: bool) HandleError!Response {
     const account = caller.account orelse
-        return errorResponse(arena, .unprocessable_entity, "a star belongs to a person, and the server token is not one", "Run 'Sign in with GitLab' on the dashboard, then star it again.");
+        return errorResponse(arena, .unprocessable_entity, "a star belongs to a person, and the server token is not one", try std.fmt.allocPrint(arena, "Use {s} on the dashboard, then star it again.", .{signInWords(deps)}));
     if (on) {
         _ = deps.db.exec(scope, "INSERT INTO stars (account_id, dataset_id) VALUES ($1, $2::uuid) ON CONFLICT DO NOTHING", .{ account, ds.id }) catch return error.Db;
     } else {
@@ -1605,7 +1626,9 @@ fn splitLines(arena: std.mem.Allocator, text: []const u8) HandleError![]const []
 fn me(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller) HandleError!Response {
     if (caller.account) |account| {
         const name = deps.db.rawOne([]const u8, scope, "SELECT display_name FROM accounts WHERE account_id = $1", .{account}) catch return error.Db;
-        return json(arena, .ok, .{ .via = "gitlab", .account = account, .display_name = name orelse account });
+        // A person's session: signed in with their host.
+        const via: []const u8 = if (host_mod.userId(.github, account) != null) "github" else "gitlab";
+        return json(arena, .ok, .{ .via = via, .account = account, .display_name = name orelse account });
     }
     if (tokenOk(deps.token, caller.header))
         return json(arena, .ok, .{ .via = "token", .account = @as(?[]const u8, null), .display_name = "server token" });
@@ -1659,9 +1682,9 @@ const NewTokenBody = struct { name: []const u8, days: u32 = token_days_default }
 /// one (shown this once), `DELETE ?id=` revokes.
 fn myTokens(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, method: []const u8, target: []const u8, body: []const u8) HandleError!Response {
     const account = caller.account orelse
-        return errorResponse(arena, .unprocessable_entity, "tokens belong to a person, and the server token is not one", "Run 'Sign in with GitLab' on the dashboard, then open your tokens again.");
+        return errorResponse(arena, .unprocessable_entity, "tokens belong to a person, and the server token is not one", try std.fmt.allocPrint(arena, "Use {s} on the dashboard, then open your tokens again.", .{signInWords(deps)}));
     if (caller.personal)
-        return errorResponse(arena, .forbidden, "a token cannot manage tokens", "Open the dashboard's Tokens page, signed in with GitLab, to do this.");
+        return errorResponse(arena, .forbidden, "a token cannot manage tokens", try std.fmt.allocPrint(arena, "Open the dashboard's Tokens page, signed in ({s}), to do this.", .{signInWords(deps)}));
     const Row = struct {
         pub const nilo_table = .projection;
         id: []const u8,
@@ -1812,10 +1835,10 @@ fn validDeployKeyName(name: []const u8) bool {
 /// removes.
 fn myKeys(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, method: []const u8, target: []const u8, body: []const u8) HandleError!Response {
     const account = caller.account orelse
-        return errorResponse(arena, .unprocessable_entity, "SSH keys belong to a person, and the server token is not one", "Run 'Sign in with GitLab' on the dashboard, then open your keys again.");
+        return errorResponse(arena, .unprocessable_entity, "SSH keys belong to a person, and the server token is not one", try std.fmt.allocPrint(arena, "Use {s} on the dashboard, then open your keys again.", .{signInWords(deps)}));
     // A key outlives any token, so a token, which can leak, may not add one.
     if (caller.personal)
-        return errorResponse(arena, .forbidden, "a token cannot manage SSH keys", "Open the dashboard's SSH keys page, signed in with GitLab, to do this.");
+        return errorResponse(arena, .forbidden, "a token cannot manage SSH keys", try std.fmt.allocPrint(arena, "Open the dashboard's SSH keys page, signed in ({s}), to do this.", .{signInWords(deps)}));
     const Row = struct {
         pub const nilo_table = .projection;
         fingerprint: []const u8,
@@ -1863,7 +1886,12 @@ fn myKeys(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller,
         const source = deps.db.rawOne([]const u8, scope, "SELECT source FROM ssh_keys WHERE fingerprint = $1 AND account_id = $2", .{ fp, account }) catch return error.Db;
         const from = source orelse return errorResponse(arena, .not_found, "you have no key with that fingerprint", "Reload your keys and try again.");
         if (!eql(from, "dashboard"))
-            return errorResponse(arena, .conflict, if (eql(from, "gitlab")) "that key comes from your GitLab account" else "an administrator registered that key", if (eql(from, "gitlab")) "Remove it in GitLab (Preferences > SSH Keys); cid drops it at the next sync." else "Ask the administrator to remove it.");
+            return if (eql(from, "gitlab"))
+                errorResponse(arena, .conflict, "that key comes from your GitLab account", "Remove it in GitLab (Preferences > SSH Keys); cid drops it at the next sync.")
+            else if (eql(from, "github"))
+                errorResponse(arena, .conflict, "that key comes from your GitHub account", "Remove it in GitHub (Settings > SSH and GPG keys); cid drops it at the next sync.")
+            else
+                errorResponse(arena, .conflict, "an administrator registered that key", "Ask the administrator to remove it.");
         _ = deps.db.exec(scope, "DELETE FROM ssh_keys WHERE fingerprint = $1 AND account_id = $2 AND source = 'dashboard'", .{ fp, account }) catch return error.Db;
         const rows = deps.db.raw(Row, scope, list_sql, .{account}) catch return error.Db;
         return json(arena, .ok, .{ .keys = rows });
@@ -1922,10 +1950,10 @@ fn createDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, auth_hea
     if (lookupDataset(arena, deps, scope, req.name) != null)
         return errorResponse(arena, .conflict, "the dataset already exists", "Run 'cid clone' to work with it.");
 
-    // A server that takes access from GitLab takes it from the repository
+    // A server that takes access from a host takes it from the repository
     // the git URL names: that repository must be there, and a person
     // creating the dataset must own it (docs/access.md).
-    if (deps.gitlab) |cfg| {
+    if (deps.host) |cfg| {
         if (try offload(deps, auth.checkCreate, .{ arena, deps.io, cfg, req.name, req.git_url, tokenAccount(arena, deps, auth_header) })) |refused| {
             const status: std.http.Status = switch (refused.why) {
                 .other_host => .unprocessable_entity,
@@ -1954,13 +1982,15 @@ fn createDataset(arena: std.mem.Allocator, deps: *Deps, scope: anytype, auth_hea
         "INSERT INTO datasets (dataset_id, name, kind, git_url) VALUES ($1::uuid, $2, $3, $4)",
         .{ @as([]const u8, &id), req.name, req.kind, req.git_url },
     ) catch return error.Db;
-    // Made with a token the SSH front door minted for a GitLab Maintainer
-    // (cid-auth <dataset> create): its creator owns it from now, not from
-    // the next GitLab sync, which will find the same role.
+    // Made with a token the SSH front door minted for an owner of the
+    // repository (cid-auth <dataset> create): its creator owns it from now,
+    // not from the next sync, which will find the same role and keeps the
+    // row as its own (source: the account's host).
     if (tokenAccount(arena, deps, auth_header)) |account| {
+        const source: []const u8 = if (host_mod.userId(.gitlab, account) != null) "gitlab" else if (host_mod.userId(.github, account) != null) "github" else "dashboard";
         _ = deps.db.exec(scope, "INSERT INTO access (dataset_id, account_id, level, source) " ++
-            "SELECT $1::uuid, $2, 'maintain', 'gitlab' WHERE EXISTS (SELECT 1 FROM accounts WHERE account_id = $2) " ++
-            "ON CONFLICT (dataset_id, account_id) DO UPDATE SET level = 'maintain'", .{ @as([]const u8, &id), account }) catch return error.Db;
+            "SELECT $1::uuid, $2, 'maintain', $3 WHERE EXISTS (SELECT 1 FROM accounts WHERE account_id = $2) " ++
+            "ON CONFLICT (dataset_id, account_id) DO UPDATE SET level = 'maintain'", .{ @as([]const u8, &id), account, source }) catch return error.Db;
     }
     return json(arena, .created, .{ .name = req.name, .dataset_id = &id, .git_checked = deps.git != null });
 }

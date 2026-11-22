@@ -1,14 +1,16 @@
-//! "Sign in with GitLab" for the dashboard (docs/dashboard.md, Sign-in;
-//! docs/access.md): OAuth with scope `read_user`, the same `gitlab:<id>`
-//! account the SSH front door maps keys to, so the dashboard and the CLI
-//! always agree on who may see what. Permission is never stored here: the
-//! session only says who you are, and every request is checked against the
-//! `access` table, which GitLab sync keeps true.
+//! "Sign in with GitLab" or "Sign in with GitHub" for the dashboard
+//! (docs/dashboard.md, Sign-in; docs/access.md): OAuth on the host the
+//! server takes access from, the same `<host>:<id>` account the SSH front
+//! door maps keys to, so the dashboard and the CLI always agree on who may
+//! see what. Permission is never stored here: the session only says who
+//! you are, and every request is checked against the `access` table, which
+//! the host's sync keeps true. GitLab asks for `read_user`; GitHub for no
+//! scope at all, its public profile being all cid reads.
 //!
 //! The session is nilo's `Session(T)` (ADR 033 there): sealed into one
 //! encrypted, signed cookie, `__Host-session`, HttpOnly, Secure,
 //! SameSite=Lax, twelve hours. Nothing is kept on the server. Outbound
-//! calls to GitLab go through `nilo_fetch`, so a slow GitLab costs a fiber
+//! calls to the host go through `nilo_fetch`, so a slow host costs a fiber
 //! a deadline, never a worker thread. PKCE (S256) and a state value guard
 //! the round trip; both ride in the session while it is in flight.
 
@@ -16,22 +18,30 @@ const std = @import("std");
 const nilo = @import("nilo_http");
 const fetch = @import("nilo_fetch");
 const api = @import("api.zig");
+const host = @import("../access/host.zig");
 
 pub const Config = struct {
-    /// e.g. https://gitlab.com (CID_GITLAB_URL).
-    gitlab_url: []const u8,
+    kind: host.Kind,
+    /// Where people reach the host: https://gitlab.com (CID_GITLAB_URL),
+    /// https://github.com (CID_GITHUB_URL).
+    web_url: []const u8,
+    /// Its API: the same for GitLab; https://api.github.com, or <web>/api/v3
+    /// on a GitHub Enterprise Server.
+    api_url: []const u8,
     client_id: []const u8,
     client_secret: []const u8,
     /// Where browsers reach this server (CID_PUBLIC_URL); the redirect URI
-    /// registered on the GitLab application is `<public_url>/auth/gitlab/callback`.
+    /// registered on the host's OAuth application is
+    /// `<public_url>/auth/<gitlab|github>/callback`.
     public_url: []const u8,
 };
 
-/// What the session cookie holds. Fixed-size by nilo's rule, so a GitLab
-/// user id rather than an account string; `gitlab:<id>` is rebuilt per use.
+/// What the session cookie holds. Fixed-size by nilo's rule, so a user id
+/// on the server's host rather than an account string; `<host>:<id>` is
+/// rebuilt per use (one host per server).
 pub const Signed = struct {
-    /// The signed-in GitLab user, 0 when nobody is.
-    gitlab_user: u64 = 0,
+    /// The signed-in person's id on the host, 0 when nobody is.
+    user: u64 = 0,
     /// The OAuth round trip in flight: the state echoed back, and the
     /// PKCE verifier the token exchange proves possession of.
     state: [state_len]u8 = @splat(0),
@@ -43,17 +53,17 @@ pub const Session = nilo.Session(Signed);
 /// Twelve hours (docs/dashboard.md): sealed inside the cookie too, so a
 /// copied cookie stops opening on time whatever the browser does.
 pub const session_secs: i64 = 12 * 60 * 60;
-/// The sign-in round trip: long enough to type a GitLab password.
+/// The sign-in round trip: long enough to type a password on the host.
 const pending_secs: i64 = 10 * 60;
 
 const state_len = 22; // base64url of 16 random bytes
 const verifier_len = 43; // base64url of 32 random bytes, RFC 7636's minimum
 
-pub fn accountOf(gitlab_user: u64, arena: std.mem.Allocator) ![]const u8 {
-    return std.fmt.allocPrint(arena, "gitlab:{d}", .{gitlab_user});
+pub fn accountOf(kind: host.Kind, user: u64, arena: std.mem.Allocator) ![]const u8 {
+    return host.accountId(arena, kind, user);
 }
 
-/// GET /auth/gitlab: start the round trip and send the browser to GitLab.
+/// GET /auth/<host>: start the round trip and send the browser there.
 pub fn start(c: *nilo.Ctx, s: Session, cfg: *const Config) !void {
     var pending: Signed = .{};
     const state_raw = try c.entropy(16);
@@ -63,20 +73,31 @@ pub fn start(c: *nilo.Ctx, s: Session, cfg: *const Config) !void {
     try s.setWith(pending, .{ .max_age = pending_secs });
 
     const challenge = challengeOf(&pending.verifier);
-    const location = try fetch.withQuery(c, try std.fmt.allocPrint(c.arena(), "{s}/oauth/authorize", .{cfg.gitlab_url}), .{
-        .client_id = cfg.client_id,
-        .redirect_uri = try redirectUri(c.arena(), cfg),
-        .response_type = "code",
-        .scope = "read_user",
-        .state = @as([]const u8, &pending.state),
-        .code_challenge = @as([]const u8, &challenge),
-        .code_challenge_method = "S256",
-    });
+    const location = switch (cfg.kind) {
+        .gitlab => try fetch.withQuery(c, try std.fmt.allocPrint(c.arena(), "{s}/oauth/authorize", .{cfg.web_url}), .{
+            .client_id = cfg.client_id,
+            .redirect_uri = try redirectUri(c.arena(), cfg),
+            .response_type = "code",
+            .scope = "read_user",
+            .state = @as([]const u8, &pending.state),
+            .code_challenge = @as([]const u8, &challenge),
+            .code_challenge_method = "S256",
+        }),
+        // No scope: the public profile, all cid reads.
+        .github => try fetch.withQuery(c, try std.fmt.allocPrint(c.arena(), "{s}/login/oauth/authorize", .{cfg.web_url}), .{
+            .client_id = cfg.client_id,
+            .redirect_uri = try redirectUri(c.arena(), cfg),
+            .response_type = "code",
+            .state = @as([]const u8, &pending.state),
+            .code_challenge = @as([]const u8, &challenge),
+            .code_challenge_method = "S256",
+        }),
+    };
     try c.redirect(303, location);
 }
 
-/// GET /auth/gitlab/callback: check the state, trade the code for a token,
-/// ask GitLab who this is, and seal the session. Any failure lands on the
+/// GET /auth/<host>/callback: check the state, trade the code for a token,
+/// ask the host who this is, and seal the session. Any failure lands on the
 /// sign-in page with a reason a person can act on; no token is logged.
 pub fn callback(c: *nilo.Ctx, s: Session, cfg: *const Config, client: *fetch.Client, deps: *api.Deps) !void {
     const pending = s.get() orelse return fail(c, "expired");
@@ -92,38 +113,59 @@ pub fn callback(c: *nilo.Ctx, s: Session, cfg: *const Config, client: *fetch.Cli
         .redirect_uri = try redirectUri(c.arena(), cfg),
         .code_verifier = @as([]const u8, &pending.verifier),
     });
-    const token_url = try std.fmt.allocPrint(c.arena(), "{s}/oauth/token", .{cfg.gitlab_url});
+    const token_url = try std.fmt.allocPrint(c.arena(), "{s}{s}", .{ cfg.web_url, switch (cfg.kind) {
+        .gitlab => "/oauth/token",
+        .github => "/login/oauth/access_token",
+    } });
+    // GitHub answers the exchange as a form unless asked for JSON.
     const token_res = client.post(c, token_url, form[1..], .{
-        .headers = &.{.{ .name = "content-type", .value = "application/x-www-form-urlencoded" }},
-    }) catch return fail(c, "gitlab");
+        .headers = &.{
+            .{ .name = "content-type", .value = "application/x-www-form-urlencoded" },
+            .{ .name = "accept", .value = "application/json" },
+        },
+    }) catch return fail(c, "host");
     if (!token_res.ok()) {
-        std.log.warn("gitlab sign-in: the token exchange answered {d}", .{@backingInt(token_res.status)});
-        return fail(c, "gitlab");
+        std.log.warn("{t} sign-in: the token exchange answered {d}", .{ cfg.kind, @backingInt(token_res.status) });
+        return fail(c, "host");
     }
-    const Token = struct { access_token: []const u8 };
-    const token = token_res.json(Token, c) catch return fail(c, "gitlab");
+    const Token = struct { access_token: []const u8 = "" };
+    const token = token_res.json(Token, c) catch return fail(c, "host");
+    // GitHub reports a refused exchange (a code used twice, a wrong
+    // verifier) as 200 with an error and no token.
+    if (token.access_token.len == 0) return fail(c, "host");
 
     const bearer = try std.fmt.allocPrint(c.arena(), "Bearer {s}", .{token.access_token});
-    const user_url = try std.fmt.allocPrint(c.arena(), "{s}/api/v4/user", .{cfg.gitlab_url});
+    const user_url = try std.fmt.allocPrint(c.arena(), "{s}{s}", .{ cfg.api_url, switch (cfg.kind) {
+        .gitlab => "/api/v4/user",
+        .github => "/user",
+    } });
     const user_res = client.get(c, user_url, .{
-        .headers = &.{.{ .name = "authorization", .value = bearer }},
-    }) catch return fail(c, "gitlab");
-    if (!user_res.ok()) return fail(c, "gitlab");
-    const User = struct { id: u64, username: []const u8 = "", name: []const u8 = "" };
-    const user = user_res.json(User, c) catch return fail(c, "gitlab");
+        .headers = &.{
+            .{ .name = "authorization", .value = bearer },
+            // GitHub refuses a request without one.
+            .{ .name = "user-agent", .value = "cid" },
+            .{ .name = "accept", .value = "application/json" },
+        },
+    }) catch return fail(c, "host");
+    if (!user_res.ok()) return fail(c, "host");
+    // GitLab: username and name; GitHub: login and a name that may be null.
+    const User = struct { id: u64, username: []const u8 = "", login: []const u8 = "", name: ?[]const u8 = null };
+    const user = user_res.json(User, c) catch return fail(c, "host");
+    const handle = if (user.username.len > 0) user.username else user.login;
+    const display = if (user.name) |n| (if (n.len > 0) n else handle) else handle;
 
     // The account the SSH front door would map this person's keys to.
-    // Access is not granted here — sync and owners do that — so a GitLab
-    // user nobody gave a dataset to signs in and sees an empty home.
-    const account = try accountOf(user.id, c.arena());
+    // Access is not granted here — the sync and owners do that — so a
+    // person nobody gave a dataset to signs in and sees an empty home.
+    const account = try accountOf(cfg.kind, user.id, c.arena());
     _ = deps.db.exec(
         c,
-        "INSERT INTO accounts (account_id, display_name, source, synced_at) VALUES ($1, $2, 'gitlab', now()) " ++
+        "INSERT INTO accounts (account_id, display_name, source, synced_at) VALUES ($1, $2, $3, now()) " ++
             "ON CONFLICT (account_id) DO UPDATE SET display_name = excluded.display_name",
-        .{ account, if (user.name.len > 0) user.name else user.username },
+        .{ account, display, @tagName(cfg.kind) },
     ) catch return fail(c, "server");
 
-    try s.setWith(.{ .gitlab_user = user.id }, .{ .max_age = session_secs });
+    try s.setWith(.{ .user = user.id }, .{ .max_age = session_secs });
     try c.redirect(303, "/");
 }
 
@@ -141,7 +183,7 @@ fn fail(c: *nilo.Ctx, why: []const u8) !void {
 
 fn redirectUri(arena: std.mem.Allocator, cfg: *const Config) ![]const u8 {
     const base = std.mem.trimEnd(u8, cfg.public_url, "/");
-    return std.fmt.allocPrint(arena, "{s}/auth/gitlab/callback", .{base});
+    return std.fmt.allocPrint(arena, "{s}/auth/{t}/callback", .{ base, cfg.kind });
 }
 
 /// RFC 7636 S256: base64url(sha256(verifier)), no padding.
@@ -181,6 +223,7 @@ test "the state check refuses a missing round trip, a wrong value and a short on
 test "a session fits a cookie and names the account the SSH door uses" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    try std.testing.expectEqualStrings("gitlab:4242", try accountOf(4242, arena_state.allocator()));
+    try std.testing.expectEqualStrings("gitlab:4242", try accountOf(.gitlab, 4242, arena_state.allocator()));
+    try std.testing.expectEqualStrings("github:4242", try accountOf(.github, 4242, arena_state.allocator()));
     _ = Session; // its size is checked while compiling (nilo refuses an oversized cookie)
 }

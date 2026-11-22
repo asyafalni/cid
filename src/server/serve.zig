@@ -20,7 +20,7 @@ pub const Options = struct {
     port: u16,
     /// Seals dashboard sessions; exactly 32 bytes (nilo's rule).
     session_secret: []const u8,
-    /// "Sign in with GitLab", when configured.
+    /// "Sign in with GitLab" or "with GitHub", when configured.
     signin: ?signin.Config = null,
 };
 
@@ -68,15 +68,23 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
     try app.provide(&deps.s3.items);
     if (deps.s3.public) |signer| try app.provide(signer);
     try app.provide(deps);
-    // One outbound client for the whole server (nilo_fetch): GitLab's
+    // One outbound client for the whole server (nilo_fetch): the host's
     // OAuth calls ride it, under a deadline, never blocking a thread.
     var client: fetch.Client = .init(gpa, .{});
     defer client.deinit();
     try app.provide(&client);
     if (options.signin) |*cfg| {
         try app.provide(cfg);
-        try app.get("/auth/gitlab", signin.start);
-        try app.get("/auth/gitlab/callback", signin.callback);
+        switch (cfg.kind) {
+            .gitlab => {
+                try app.get("/auth/gitlab", signin.start);
+                try app.get("/auth/gitlab/callback", signin.callback);
+            },
+            .github => {
+                try app.get("/auth/github", signin.start);
+                try app.get("/auth/github/callback", signin.callback);
+            },
+        }
     }
     try app.post("/auth/signout", signin.signout);
     // Refuse to start without the 'cid' bucket, with the fix named,
@@ -183,7 +191,7 @@ fn dispatch(deps: *api.Deps, s: signin.Session, c: *nilo.Ctx) !void {
     // mutex is gone).
     // A session names its account; the access table decides the rest.
     const account: ?[]const u8 = if (s.get()) |signed|
-        (if (signed.gitlab_user != 0) try signin.accountOf(signed.gitlab_user, arena) else null)
+        (if (signed.user != 0) if (deps.signin) |kind| try signin.accountOf(kind, signed.user, arena) else null else null)
     else
         null;
     const response = api.handleAs(arena, deps, c, @tagName(c.method), target, .{ .header = auth, .account = account }, body);

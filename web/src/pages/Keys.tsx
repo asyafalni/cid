@@ -8,7 +8,7 @@ import { ApiError, addKey, getMe, listKeys, removeKey, type SshKey } from '../ap
 // to one account, so a key someone already registered is refused.
 export function Keys() {
   const me = useQuery({ queryKey: ['me'], queryFn: getMe });
-  const person = me.data?.via === 'gitlab';
+  const person = me.data?.via !== undefined && me.data.via !== 'token';
   const keys = useQuery({ queryKey: ['keys'], queryFn: listKeys, enabled: person });
   const client = useQueryClient();
   const [title, setTitle] = useState('');
@@ -40,7 +40,7 @@ export function Keys() {
       {me.data && !person && (
         <div className="panel notice" role="status">
           <p>You are signed in with the server token, which belongs to no one and has no keys.</p>
-          <p className="quiet">Sign out, then choose Sign in with GitLab to manage your own.</p>
+          <p className="quiet">Sign out, then sign in with your git host to manage your own.</p>
         </div>
       )}
 
@@ -129,12 +129,12 @@ function KeyRow({ k, removing, onRemove }: { k: SshKey; removing: boolean; onRem
         <span
           className="chip"
           title={
-            k.source === 'gitlab'
-              ? 'Remove it in GitLab; cid drops it at the next sync.'
+            hostOf(k.source)
+              ? `Remove it in ${hostOf(k.source)}; cid drops it at the next sync.`
               : 'Ask the administrator to remove it.'
           }
         >
-          {k.source === 'gitlab' ? 'from GitLab' : 'by an administrator'}
+          {hostOf(k.source) ? `from ${hostOf(k.source)}` : 'by an administrator'}
         </span>
       )}
     </li>
@@ -167,4 +167,9 @@ function Problem({ error }: { error: unknown }) {
       {error instanceof ApiError && error.next && <p className="quiet">{error.next}</p>}
     </div>
   );
+}
+
+/** The git host a synced key came from, as people write it. */
+function hostOf(source: string): string | null {
+  return source === 'gitlab' ? 'GitLab' : source === 'github' ? 'GitHub' : null;
 }
