@@ -228,7 +228,7 @@ fn handleInner(
     // Owners' actions need a maintain-scoped token (Maintainer), writes a
     // write one (Developer), reads a read one (Reporter).
     const needed: token_mod.Level = if (eql(route.action, "tag") or
-        eql(route.action, "branch") or eql(route.action, "merge") or
+        eql(route.action, "branch") or eql(route.action, "merge") or eql(route.action, "deploy-keys") or
         (eql(method, "PUT") and eql(route.action, "card")))
         .maintain
     else if (eql(route.action, "push") or eql(route.action, "check-hashes") or
@@ -239,7 +239,7 @@ fn handleInner(
         .read;
     if (!authorized(arena, deps, scope, caller, route.name, needed)) {
         if (needed == .maintain and authorized(arena, deps, scope, caller, route.name, .write))
-            return errorResponse(arena, .forbidden, "only the dataset's owners (Maintainers of its project) tag, branch, merge and edit the card", "Ask a Maintainer of the dataset's project to do it, or for the Maintainer role.");
+            return errorResponse(arena, .forbidden, "only the dataset's owners (Maintainers of its project) tag, branch, merge, edit the card and manage deploy keys", "Ask a Maintainer of the dataset's project to do it, or for the Maintainer role.");
         return errorResponse(arena, .unauthorized, "missing, wrong or expired token for this dataset", "Run the command again; cid fetches a fresh token over SSH. CI: check CID_TOKEN.");
     }
 
@@ -258,6 +258,8 @@ fn handleInner(
         return tableStats(arena, deps, scope, ds, route.queryParam("hash") orelse "");
     if (eql(method, "GET") and eql(route.action, "rows"))
         return tableRows(arena, deps, scope, ds, route);
+    if (eql(route.action, "deploy-keys"))
+        return deployKeys(arena, deps, scope, caller, ds, method, route, body);
     if (eql(method, "GET") and eql(route.action, "browse"))
         return browse(arena, deps, scope, ds, route);
     if (eql(method, "GET") and eql(route.action, "browse/size"))
@@ -1717,6 +1719,91 @@ fn myTokens(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Calle
 }
 
 const AddKeyBody = struct { title: []const u8 = "", key: []const u8 };
+
+const AddDeployKeyBody = struct { name: []const u8, key: []const u8, write: bool = false };
+
+/// A dataset's deploy keys (docs/access.md): SSH keys its owners register
+/// so a machine reaches it as itself, never as a person. Each key is an
+/// account of its own ('deploy:<fingerprint>') with access rows at read or
+/// write, source 'deploy', which the GitLab sync leaves alone; one key may
+/// serve several datasets, named per dataset. Never maintain: releases,
+/// branches and merges stay with people. Owners only (the route needs a
+/// maintain token); listed, added and removed here, by `cid deploy-key`.
+fn deployKeys(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, method: []const u8, route: DatasetRoute, body: []const u8) HandleError!Response {
+    const Row = struct {
+        pub const nilo_table = .projection;
+        name: []const u8,
+        fingerprint: []const u8,
+        level: []const u8,
+        added_by: []const u8,
+        added_at: []const u8,
+        last_used_at: ?[]const u8,
+    };
+    const list_sql = "SELECT k.name, s.fingerprint, a.level, k.added_by, " ++
+        "to_char(k.added_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS added_at, " ++
+        "to_char(s.last_used_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS last_used_at " ++
+        "FROM deploy_keys k JOIN ssh_keys s USING (account_id) JOIN access a ON a.dataset_id = k.dataset_id AND a.account_id = k.account_id " ++
+        "WHERE k.dataset_id = $1::uuid ORDER BY k.name";
+    if (eql(method, "GET")) {
+        const rows = deps.db.raw(Row, scope, list_sql, .{ds.id}) catch return error.Db;
+        return json(arena, .ok, .{ .keys = rows });
+    }
+    const actor = try actorOf(arena, deps, caller);
+    if (eql(method, "POST")) {
+        const req = parseBody(AddDeployKeyBody, arena, body) orelse return error.BadRequest;
+        if (!validDeployKeyName(req.name))
+            return errorResponse(arena, .unprocessable_entity, "a deploy key's name is letters, digits, dot, dash and underscore, up to 64", "Name it after what uses it, e.g. cid deploy-key add ci-runner <key>.");
+        const key = keys_mod.parse(arena, req.key) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.UnsupportedType => errorResponse(arena, .unprocessable_entity, "cid does not accept that key type", "Make one with 'ssh-keygen -t ed25519 -f ci_key' and add ci_key.pub."),
+            error.WeakKey => errorResponse(arena, .unprocessable_entity, "that RSA key is shorter than 2048 bits", "Make one with 'ssh-keygen -t ed25519 -f ci_key' and add ci_key.pub."),
+            error.NotAKey, error.TypeMismatch => errorResponse(arena, .unprocessable_entity, "that is not an OpenSSH public key", "Give the .pub file (or its one line, starting 'ssh-'), e.g. cid deploy-key add ci-runner ci_key.pub."),
+        };
+        const account = try std.fmt.allocPrint(arena, "deploy:{s}", .{key.fingerprint});
+        const level: []const u8 = if (req.write) "write" else "read";
+        var tx = deps.db.begin(scope, .{}) catch return error.Db;
+        defer tx.deinit();
+        // A person's key, here or from GitLab, is that person: a machine
+        // needs a key of its own.
+        const owner = tx.rawOne([]const u8, scope, "SELECT account_id FROM ssh_keys WHERE fingerprint = $1", .{key.fingerprint}) catch return error.Db;
+        if (owner) |o| if (!eql(o, account))
+            return errorResponse(arena, .conflict, "that key is already a person's SSH key on this server; a deploy key needs a key of its own", "Make one with 'ssh-keygen -t ed25519 -f ci_key' and add ci_key.pub.");
+        _ = tx.exec(scope, "INSERT INTO accounts (account_id, display_name, source) VALUES ($1, $2, 'deploy') ON CONFLICT (account_id) DO NOTHING", .{ account, try std.fmt.allocPrint(arena, "deploy key {s}", .{req.name}) }) catch return error.Db;
+        _ = tx.exec(scope, "INSERT INTO ssh_keys (fingerprint, account_id, public_key, title, source) VALUES ($1, $2, $3, $4, 'deploy') ON CONFLICT (fingerprint) DO NOTHING", .{ key.fingerprint, account, key.line, req.name }) catch return error.Db;
+        const named = tx.rawOne([]const u8, scope, "SELECT name FROM deploy_keys WHERE dataset_id = $1::uuid AND (name = $2 OR account_id = $3)", .{ ds.id, req.name, account }) catch return error.Db;
+        if (named) |n| return if (eql(n, req.name))
+            errorResponse(arena, .conflict, try std.fmt.allocPrint(arena, "this dataset already has a deploy key named '{s}'", .{n}), try std.fmt.allocPrint(arena, "Run 'cid deploy-key remove {s}' first, or pick another name.", .{n}))
+        else
+            errorResponse(arena, .conflict, try std.fmt.allocPrint(arena, "that key is already this dataset's deploy key '{s}'", .{n}), try std.fmt.allocPrint(arena, "Run 'cid deploy-key remove {s}', then add it again to change its name or access.", .{n}));
+        _ = tx.exec(scope, "INSERT INTO deploy_keys (dataset_id, name, account_id, added_by) VALUES ($1::uuid, $2, $3, $4)", .{ ds.id, req.name, account, actor }) catch return error.Db;
+        _ = tx.exec(scope, "INSERT INTO access (dataset_id, account_id, level, source) VALUES ($1::uuid, $2, $3, 'deploy')", .{ ds.id, account, level }) catch return error.Db;
+        tx.commit() catch return error.Db;
+        noteActivity(arena, deps, scope, caller, ds, "deploy-key-add", req.name, .{ .level = level, .fingerprint = key.fingerprint });
+        const rows = deps.db.raw(Row, scope, list_sql, .{ds.id}) catch return error.Db;
+        return json(arena, .created, .{ .fingerprint = key.fingerprint, .level = level, .keys = rows });
+    }
+    if (eql(method, "DELETE")) {
+        const name = (try param(arena, route, "name")) orelse return error.BadRequest;
+        var tx = deps.db.begin(scope, .{}) catch return error.Db;
+        defer tx.deinit();
+        const account = (tx.rawOne([]const u8, scope, "DELETE FROM deploy_keys WHERE dataset_id = $1::uuid AND name = $2 RETURNING account_id", .{ ds.id, name }) catch return error.Db) orelse
+            return errorResponse(arena, .not_found, try std.fmt.allocPrint(arena, "this dataset has no deploy key named '{s}'", .{name}), "Run 'cid deploy-key list' to see its keys.");
+        _ = tx.exec(scope, "DELETE FROM access WHERE dataset_id = $1::uuid AND account_id = $2 AND source = 'deploy'", .{ ds.id, account }) catch return error.Db;
+        // A key no dataset uses any more no longer authenticates at all.
+        _ = tx.exec(scope, "DELETE FROM ssh_keys WHERE account_id = $1 AND source = 'deploy' AND NOT EXISTS (SELECT 1 FROM deploy_keys WHERE account_id = $1)", .{account}) catch return error.Db;
+        tx.commit() catch return error.Db;
+        noteActivity(arena, deps, scope, caller, ds, "deploy-key-remove", name, null);
+        const rows = deps.db.raw(Row, scope, list_sql, .{ds.id}) catch return error.Db;
+        return json(arena, .ok, .{ .keys = rows });
+    }
+    return errorResponse(arena, .not_found, "no such route", "Update cid and try again.");
+}
+
+fn validDeployKeyName(name: []const u8) bool {
+    if (name.len == 0 or name.len > 64 or !std.ascii.isAlphanumeric(name[0])) return false;
+    for (name) |c| if (!(std.ascii.isAlphanumeric(c) or c == '.' or c == '-' or c == '_')) return false;
+    return true;
+}
 
 /// A signed-in person's own SSH keys, the identity `cid clone` and the rest
 /// use (invariant 17 allows the dashboard to change these). Listed with

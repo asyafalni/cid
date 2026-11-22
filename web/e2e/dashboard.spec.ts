@@ -787,6 +787,24 @@ test('home: a visited dataset appears under Recently viewed', async ({ page }) =
   await expect(recent.getByRole('link', { name: 'e2e/datasets/boxes' })).toBeVisible();
 });
 
+test('owners see a dataset\'s deploy keys on its overview; a reader does not', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/faces');
+  const section = page.getByRole('region', { name: 'Deploy keys' });
+  await expect(section).toContainText('cid deploy-key add');
+});
+
+test('a reader does not see a dataset\'s deploy keys', async ({ page }) => {
+  // Rhea reads faces (GitLab Reporter): the server refuses her the list.
+  await page.goto('/');
+  await page.getByRole('link', { name: 'Sign in with GitLab' }).click();
+  await expect(page.locator('.account-name')).toHaveText('Rhea Reviewer');
+  await page.goto('/d/e2e/datasets/faces');
+  await expect(page.getByRole('heading', { name: 'Dataset card' })).toBeVisible();
+  await page.waitForLoadState('networkidle');
+  await expect(page.getByRole('region', { name: 'Deploy keys' })).toHaveCount(0);
+});
+
 test('sign in with GitLab: the round trip, the cookie, and only what the role allows', async ({ page, context }) => {
   await page.goto('/');
   await expect(page).toHaveURL(/\/signin/);

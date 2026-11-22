@@ -186,9 +186,22 @@ Revoked or expired, it is refused with a pointer to the Tokens page.
 The server's static token (`CID_SERVER`/`CID_TOKEN`, see "Overrides" above) still
 works, for administrators and trusted automation.
 
-Not built yet: deploy keys, i.e. an SSH key registered for one dataset (read-only or
-read-write) in the dashboard, so CI can use SSH like git does. The `accounts` table
-allows source `deploy`, but `access` does not, and nothing creates them.
+**Deploy keys** (built 2026-11-22) are SSH keys a dataset's owners register so a
+machine reaches that one dataset as itself, never as a person: a CI job keeps working
+when whoever set it up leaves. An owner adds one in a clone (`cid deploy-key add
+<name> <key.pub> [--write]`, `list`, `remove <name>`; `POST`/`GET`/`DELETE
+/v0/datasets/<name>/-/deploy-keys`, maintain); the dashboard lists them for owners,
+read-only (invariant 17). Each key is an account of its own, `deploy:<fingerprint>`,
+with one SSH key and `access` rows at `read` (clone, pull) or `write` (push too),
+source `deploy`, which the GitLab sync never touches; never `maintain`, so releases,
+branches and merges stay with people, and never `create`. The same key may serve
+several datasets, named per dataset (`deploy_keys`); a key that is already a
+person's, here or from GitLab, is refused, since it already is someone. The front door
+treats it like anyone: its key, its forced command, a token for its level, and its
+last use recorded (`ssh_keys.last_used_at`). Removing it from the last dataset that
+had it deletes the key, so it no longer logs in at all. Adding and removing are
+activity events (`deploy-key-add`, `deploy-key-remove`). No expiry, as on GitLab:
+the list shows when each was last used. Migration 0008.
 
 ## Rules
 

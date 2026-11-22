@@ -237,8 +237,18 @@ cd speech-id && CID_TOKEN=$CID_PAT cid pull   # a folder never keeps the token
 ```
 
 Administrators can still use `CID_SERVER` + `CID_TOKEN` with the server's static token
-(full access; it wins over everything). The CLI writes no credentials file. Per-dataset
-deploy keys are planned, not built.
+(full access; it wins over everything). The CLI writes no credentials file.
+
+A machine can also have an SSH key of its own on one dataset, a **deploy key**, added
+by an owner in a clone; the CI job then uses the dataset's ordinary `cid@host:` address,
+as a person would, and acts as itself, never as whoever set it up:
+
+```bash
+cid deploy-key add ci-runner ci_key.pub          # read: clone, pull
+cid deploy-key add publisher ci_key.pub --write  # write: push too (never tag)
+cid deploy-key list                              # names, access, last use
+cid deploy-key remove ci-runner
+```
 
 ### Hugging Face clients (read only)
 
@@ -619,7 +629,9 @@ For dataset owners (`cid help --all`): `init <address> --git <url> [--model]` (b
 addresses required; `--model` when the folder holds a model's files),
 `tag` (a model's release may add `--trained-on <dataset>@<release>`, repeatable: what it
 was trained on, recorded once, shown on both pages and in git), `branch`,
-`merge [--continue]`, and `remote` (the folder's address and git URL;
+`merge [--continue]`, `deploy-key add <name> <key.pub> [--write]|list|remove <name>`
+(a machine's own SSH key on this dataset: read, or write with `--write`, never
+maintain; a person's key is refused), and `remote` (the folder's address and git URL;
 `remote set-url [<address>] [--git <url>]` after a rename, as in git: the old address
 stops answering, nothing redirects; server commands warn when the folder's git URL is
 not the dataset's). Without SSH (scripts, CI), any address may be

@@ -489,8 +489,11 @@ CREATE TABLE activity_events (           -- push, commit, tag, branch, merge, ca
 CREATE INDEX activity_by_dataset ON activity_events (dataset_id, ts DESC);
 ```
 
-Not built yet: deploy keys. The `'deploy'` value of `accounts.source` is reserved for
-them; nothing creates such accounts.
+Deploy keys (docs/access.md, migration 0008): an account `deploy:<fingerprint>`
+(source `deploy`) with one `ssh_keys` row (source `deploy`) and `access` rows (source
+`deploy`, read or write), plus `deploy_keys (dataset_id, name, account_id, added_by,
+added_at)`, which names the key per dataset (unique by name and by key). `ssh_keys`
+gained `last_used_at`, set when the front door hands the key a token.
 
 Restricted-dataset reveals are `activity_events` rows with `action = 'reveal'`; the
 Activity page and the owners' reveal log read from here.

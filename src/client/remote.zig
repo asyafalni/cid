@@ -443,6 +443,40 @@ pub const Remote = struct {
         return .{ .made = parse(TagResult, arena, res.body) orelse return error.ServerRefused };
     }
 
+    /// A dataset's deploy key, as its owners list it.
+    pub const DeployKey = struct {
+        name: []const u8,
+        fingerprint: []const u8,
+        level: []const u8,
+        added_by: []const u8,
+        added_at: []const u8,
+        last_used_at: ?[]const u8 = null,
+    };
+
+    /// The dataset's deploy keys after a change, or the server's refusal in
+    /// its own words (a name taken, a person's key, a bad key).
+    pub const DeployKeys = union(enum) {
+        keys: struct { keys: []const DeployKey, fingerprint: ?[]const u8 = null, level: ?[]const u8 = null },
+        refused: struct { what: []const u8, next: []const u8 },
+    };
+
+    pub fn deployKeys(self: *const Remote, arena: std.mem.Allocator, method: []const u8, name: ?[]const u8, add: ?struct { key: []const u8, write: bool }) Error!DeployKeys {
+        const path = if (name != null and add == null)
+            try self.target(arena, "deploy-keys?name={s}", .{try escapeQuery(arena, name.?)})
+        else
+            try self.target(arena, "deploy-keys", .{});
+        const body = if (add) |a| try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .name = name.?, .key = a.key, .write = a.write }, .{})}) else "";
+        const res = try self.send(arena, method, path, body);
+        if (res.status == .not_found and std.mem.indexOf(u8, res.body, "no such dataset") != null) return error.NoSuchDataset;
+        if (res.status == .ok or res.status == .created) {
+            const Keys = @FieldType(DeployKeys, "keys");
+            return .{ .keys = parse(Keys, arena, res.body) orelse return error.ServerRefused };
+        }
+        const Refusal = struct { @"error": []const u8, next: []const u8 = "" };
+        const r = parse(Refusal, arena, res.body) orelse return error.ServerRefused;
+        return .{ .refused = .{ .what = r.@"error", .next = r.next } };
+    }
+
     pub const Release = struct { name: []const u8, commit: []const u8, manifest_hash: []const u8 };
 
     pub fn releases(self: *const Remote, arena: std.mem.Allocator) Error![]const Release {
@@ -873,4 +907,15 @@ pub fn placeFromCache(
 test {
     _ = Transport;
     _ = index_mod;
+}
+
+/// A query value, percent-encoded (letters, digits and -._~ pass as they are).
+fn escapeQuery(arena: std.mem.Allocator, text: []const u8) error{OutOfMemory}![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (text) |c| {
+        if (std.ascii.isAlphanumeric(c) or c == '-' or c == '.' or c == '_' or c == '~') {
+            try out.append(arena, c);
+        } else try out.print(arena, "%{X:0>2}", .{c});
+    }
+    return out.items;
 }

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { commitAlias, getBrowse, getSubsetSize, type Overview, type Pin } from '../api';
+import { ApiError, commitAlias, getBrowse, getDeployKeys, getSubsetSize, type Overview, type Pin } from '../api';
 import { extOf } from '../browseFilter';
 import { hfRepoId, humanBytes } from '../format';
 import { AnnotationOverlay } from '../overlays';
@@ -98,6 +98,7 @@ export function OverviewTab({
           <BarTable caption="Items by split" noun="items" rows={o.splits.map((s) => ({ name: s.name, value: s.count }))} />
         )}
         <Lineage overview={o} />
+        <DeployKeys name={o.name} />
         <p className="quiet">
           Purpose, collection method and known gaps are written by the owners in the dataset's
           card; each release keeps a copy, shown in its git repository's README.
@@ -438,4 +439,36 @@ function pythonFor(format: string, folder: string): string {
     return `import json\n\nitems = [json.loads(line) for line in open("${folder}/annotations.jsonl")]`;
   }
   return `from pathlib import Path\n\nfiles = sorted(p for p in Path("${folder}").rglob("*")\n               if p.is_file() and ".cid" not in p.parts)`;
+}
+
+// A dataset's deploy keys, for its owners: read here, changed with
+// `cid deploy-key` (invariant 17: the dashboard changes no data). Anyone
+// else is refused by the server, and sees nothing of them.
+function DeployKeys({ name }: { name: string }) {
+  const keys = useQuery({
+    queryKey: ['deploy-keys', name],
+    queryFn: () => getDeployKeys(name),
+    retry: (count, err) => !(err instanceof ApiError && (err.status === 401 || err.status === 403)) && count < 2,
+  });
+  if (!keys.data) return null;
+  return (
+    <section className="deploy-keys" aria-label="Deploy keys">
+      <table className="count-table">
+        <caption>Deploy keys (owners only)</caption>
+        <tbody>
+          {keys.data.keys.map((k) => (
+            <tr key={k.name} title={k.fingerprint}>
+              <td className="data">{k.name}</td>
+              <td>{k.level}</td>
+              <td className="quiet">last used {k.last_used_at ? k.last_used_at.slice(0, 10) : 'never'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="quiet">
+        {keys.data.keys.length === 0 ? 'None yet. ' : ''}A machine (CI) reaches this dataset with its own SSH key:{' '}
+        <code className="data">cid deploy-key add &lt;name&gt; &lt;key.pub&gt; [--write]</code> in a clone.
+      </p>
+    </section>
+  );
 }

@@ -18,6 +18,7 @@ pub const cli_tag = @import("cli/tag.zig");
 pub const cli_restore = @import("cli/restore.zig");
 pub const cli_hash_object = @import("cli/hash_object.zig");
 pub const cli_remote = @import("cli/remote.zig");
+pub const cli_deploy_key = @import("cli/deploy_key.zig");
 pub const cli_diff = @import("cli/diff.zig");
 pub const cli_branch = @import("cli/branch.zig");
 pub const cli_merge = @import("cli/merge.zig");
@@ -133,6 +134,7 @@ test {
     _ = cli_log;
     _ = cli_diff;
     _ = cli_remote;
+    _ = cli_deploy_key;
     _ = common;
     _ = hf;
 }

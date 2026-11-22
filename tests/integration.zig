@@ -411,6 +411,87 @@ test "dashboard keys: a person adds and removes their own, one key per account, 
     _ = try db.exec(&fscope, "DELETE FROM ssh_keys WHERE account_id IN ('gitlab:9301', 'gitlab:9302')", .{});
 }
 
+test "deploy keys: owners add a machine's own key to one dataset, read or write, never a person's, removed for good" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token" };
+    const now: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toSeconds()));
+    const secret = "deploy-key-secret-deploy-key-secret!";
+
+    const person_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHHl0xIHijNwXo6AjVvQDeqCWMAbWwBjnSVkLiS1mfzx fixture-a@cid";
+    const machine_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPwm/k8CgafNJDzrJE9cxz0SZdCa9pnK+EG5vlohtMMR fixture-b@cid";
+    const machine_fp = "SHA256:KtA/YfxknM55ZVuMIlCZ1rJ+QUHlhzkaorosiIekKHc";
+    const machine = "deploy:" ++ machine_fp;
+    const name = "test/datasets/deploy-keys";
+    const base = "/v0/datasets/" ++ name ++ "/-/deploy-keys";
+    _ = try db.exec(&fscope, "DELETE FROM ssh_keys WHERE fingerprint IN ($1, 'SHA256:pSL6q+Ep5ziz6I2Y3Vk6EWL26D3tGhZlWjii1otEiuI')", .{@as([]const u8, machine_fp)});
+    _ = try db.exec(&fscope, "INSERT INTO accounts (account_id, display_name, source) VALUES ('gitlab:9401', 'Dev Eloper', 'gitlab') ON CONFLICT DO NOTHING", .{});
+    _ = try db.exec(&fscope, "INSERT INTO ssh_keys (fingerprint, account_id, public_key, source) VALUES ('SHA256:pSL6q+Ep5ziz6I2Y3Vk6EWL26D3tGhZlWjii1otEiuI', 'gitlab:9401', $1, 'dashboard')", .{@as([]const u8, person_key)});
+    const created = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"" ++ name ++ "\",\"kind\":\"files\",\"git_url\":\"g@h:dk.git\"}");
+    try std.testing.expect(created.status == .created or created.status == .conflict);
+    _ = try db.exec(&fscope, "INSERT INTO access (dataset_id, account_id, level, source) SELECT dataset_id, 'gitlab:9401', 'write', 'dashboard' FROM datasets WHERE name = $1 ON CONFLICT DO NOTHING", .{@as([]const u8, name)});
+
+    const body = struct {
+        fn of(a: std.mem.Allocator, n: []const u8, key: []const u8, write: bool) ![]const u8 {
+            return std.fmt.allocPrint(a, "{f}", .{std.json.fmt(.{ .name = n, .key = key, .write = write }, .{})});
+        }
+    }.of;
+    // An owner adds the machine's key: read unless asked.
+    const added = cid.api.handle(arena, &deps, &scope, "POST", base, "Bearer test-token", try body(arena, "ci-runner", machine_key, false));
+    try std.testing.expectEqual(std.http.Status.created, added.status);
+    try std.testing.expect(std.mem.indexOf(u8, added.body, "\"level\":\"read\"") != null);
+    // A person's key is that person; a name or a key twice is said so.
+    const person = cid.api.handle(arena, &deps, &scope, "POST", base, "Bearer test-token", try body(arena, "laptop", person_key, false));
+    try std.testing.expectEqual(std.http.Status.conflict, person.status);
+    try std.testing.expect(std.mem.indexOf(u8, person.body, "a person's SSH key") != null);
+    try std.testing.expectEqual(std.http.Status.conflict, cid.api.handle(arena, &deps, &scope, "POST", base, "Bearer test-token", try body(arena, "ci-runner", machine_key, true)).status);
+    const twice = cid.api.handle(arena, &deps, &scope, "POST", base, "Bearer test-token", try body(arena, "other", machine_key, false));
+    try std.testing.expect(std.mem.indexOf(u8, twice.body, "already this dataset's deploy key 'ci-runner'") != null);
+    try std.testing.expectEqual(std.http.Status.unprocessable_entity, cid.api.handle(arena, &deps, &scope, "POST", base, "Bearer test-token", try body(arena, "bad name!", machine_key, false)).status);
+
+    // The front door: its own account, a read token, never write.
+    const line = (try cid.access.auth.authorizedKeysLine(arena, db, &fscope, machine_fp)).?;
+    try std.testing.expect(std.mem.indexOf(u8, line, machine) != null);
+    const read_req = try cid.access.auth.parseOriginalCommand("cid-auth " ++ name ++ " read", machine);
+    _ = try cid.access.auth.authorize(arena, db, &fscope, secret, "http://cid", now, read_req);
+    const write_req = try cid.access.auth.parseOriginalCommand("cid-auth " ++ name ++ " write", machine);
+    try std.testing.expectError(error.AccessDenied, cid.access.auth.authorize(arena, db, &fscope, secret, "http://cid", now, write_req));
+    const listed = cid.api.handle(arena, &deps, &scope, "GET", base, "Bearer test-token", "");
+    try std.testing.expect(std.mem.indexOf(u8, listed.body, "\"last_used_at\":\"20") != null);
+
+    // A GitLab sync leaves it alone; a Developer may not manage keys.
+    _ = try cid.access.gitlab.applyMembers(arena, db, &fscope, name, &.{});
+    _ = try cid.access.auth.authorize(arena, db, &fscope, secret, "http://cid", now, read_req);
+    const dev = cid.api.handleAs(arena, &deps, &scope, "DELETE", base ++ "?name=ci-runner", .{ .account = "gitlab:9401" }, "");
+    try std.testing.expectEqual(std.http.Status.forbidden, dev.status);
+
+    // Removed: no access here, and a key no dataset uses no longer logs in.
+    const removed = cid.api.handle(arena, &deps, &scope, "DELETE", base ++ "?name=ci-runner", "Bearer test-token", "");
+    try std.testing.expectEqual(std.http.Status.ok, removed.status);
+    try std.testing.expectError(error.AccessDenied, cid.access.auth.authorize(arena, db, &fscope, secret, "http://cid", now, read_req));
+    try std.testing.expect((try cid.access.auth.authorizedKeysLine(arena, db, &fscope, machine_fp)) == null);
+    try std.testing.expectEqual(std.http.Status.not_found, cid.api.handle(arena, &deps, &scope, "DELETE", base ++ "?name=ci-runner", "Bearer test-token", "").status);
+    const logged = try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM activity_events e JOIN datasets d USING (dataset_id) WHERE d.name = $1 AND e.action IN ('deploy-key-add', 'deploy-key-remove')", .{@as([]const u8, name)});
+    try std.testing.expect(logged.? >= 2);
+}
+
 test "personal tokens: made on the dashboard, act as their maker, Bearer or Basic, until expired or revoked" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

@@ -21,7 +21,7 @@ const text =
     \\  commit -m <msg>    save staged changes locally (instant, offline)
     \\  push               upload local commits and their files
     \\
-    \\'cid help --all' also lists owner commands (init, tag, branch, merge).
+    \\'cid help --all' also lists owner commands (init, tag, branch, merge, deploy-key).
     \\
 ;
 
@@ -37,6 +37,9 @@ const owner_text =
     \\  merge <name>       merge a branch into main; conflicts are listed
     \\  remote [set-url [<address>] [--git <git-url>]]   the folder's address
     \\                     and git URL; set-url follows a renamed dataset
+    \\  deploy-key add <name> <key.pub> [--write]   let a machine (CI) reach this
+    \\                     dataset with its own SSH key: read, or push with --write
+    \\  deploy-key list | remove <name>
     \\
     \\Without SSH (scripts, CI): a token from the dashboard, in the address
     \\(every command but init, which needs SSH):

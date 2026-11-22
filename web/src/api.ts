@@ -595,3 +595,18 @@ export function makeToken(name: string, days: number): Promise<{ id: string; tok
 export function revokeToken(id: string): Promise<{ tokens: PersonalToken[] }> {
   return send(`/v0/me/tokens?id=${encodeURIComponent(id)}`, 'DELETE');
 }
+
+/** A dataset's deploy key (docs/access.md), as its owners see it. */
+export type DeployKey = {
+  name: string;
+  fingerprint: string;
+  level: 'read' | 'write';
+  added_by: string;
+  added_at: string;
+  last_used_at: string | null;
+};
+
+/** The dataset's deploy keys: owners only (anyone else is refused, 403). */
+export function getDeployKeys(name: string): Promise<{ keys: DeployKey[] }> {
+  return request(`/v0/datasets/${name}/-/deploy-keys`);
+}

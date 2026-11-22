@@ -99,6 +99,9 @@ pub fn authorize(
     };
     logAuthEvent(db, scope, req, granted);
     if (!granted) return error.AccessDenied;
+    // A deploy key's last use, which its owners see (`cid deploy-key list`).
+    if (std.mem.startsWith(u8, req.account, "deploy:"))
+        _ = db.exec(scope, "UPDATE ssh_keys SET last_used_at = now() WHERE account_id = $1 AND source = 'deploy'", .{req.account}) catch {};
 
     const tok = token_mod.mint(arena, secret, .{
         .expiry_unix = now_unix + token_mod.default_ttl_secs,
