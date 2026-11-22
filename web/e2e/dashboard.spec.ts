@@ -1147,6 +1147,38 @@ test('a link to one row opens the table there, marked, and a row\'s number makes
   await expect(page.getByRole('region', { name: 'Rows' })).toContainText('Row 4 is not among these rows');
 });
 
+test('the Health tab marks each check, names what it found, and links to it', async ({ page }) => {
+  await signIn(page);
+  // attrs2 holds one picture twice: at v1.0.0 both in train (a duplicate),
+  // at v1.1.0 one moved to val (the same content in two splits).
+  await page.goto('/d/e2e/datasets/attrs2?view=health&release=v1.1.0');
+  const checks = page.getByRole('list', { name: 'Checks' });
+  const leakage = checks.getByRole('listitem').filter({ hasText: 'Splits kept apart' });
+  await expect(leakage).toContainText('fail');
+  await expect(leakage).toContainText('in more than one split');
+  await expect(page.getByRole('status')).toContainText('1 failed');
+  await leakage.getByRole('link', { name: /street\/clear\.png/ }).click();
+  await expect(page).toHaveURL(/view=browse/);
+  await expect(page).toHaveURL(/item=street(%2F|\/)clear\.png/);
+  await expect(page).toHaveURL(/release=v1\.1\.0/);
+  await page.goto('/d/e2e/datasets/attrs2?view=health&release=v1.0.0');
+  await expect(checks.getByRole('listitem').filter({ hasText: 'Splits kept apart' })).toContainText('pass');
+  await expect(checks.getByRole('listitem').filter({ hasText: 'No duplicate files' })).toContainText('warning');
+  // Where the boxes sit, as a table with its counts.
+  await expect(page.getByRole('table', { name: /Box centres/ })).toBeVisible();
+  // A file dataset gets the file checks only; a table the worker could
+  // not read is named, and one it read is not.
+  await page.goto('/d/e2e/datasets/tables?view=health');
+  await expect(checks.locator('.health-check')).toHaveCount(4);
+  await page.goto('/d/e2e/datasets/media?view=health');
+  const tables = checks.locator('.health-check').filter({ hasText: 'Tables read' });
+  await expect(tables).toContainText('warning');
+  await expect(tables).toContainText('1 table could not be read as its file name says.');
+  await expect(tables.getByRole('link')).toHaveText(['broken.csv']);
+  await page.getByRole('button', { name: 'Show command' }).click();
+  await expect(page.getByRole('region', { name: 'Command' })).toContainText('no command shows it');
+});
+
 test('a declared key turns a removed-and-added pair into one row changed, cell by cell', async ({ page }) => {
   await signIn(page);
   // Without .cidkeys: an edit is one removed and one added, and the page says how to see it changed.
@@ -1298,7 +1330,7 @@ test('a malformed CSV shows its own error, in words, and the rest of the dataset
   await expect(page.getByRole('row', { name: /tone\.wav/ })).toBeVisible();
 });
 
-const axePages = ['/no/such/page', '/d/e2e/datasets/nope', '/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/d/e2e/datasets/media?view=browse&mode=list', '/keys', '/tokens'];
+const axePages = ['/no/such/page', '/d/e2e/datasets/nope', '/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/d/e2e/datasets/media?view=browse&mode=list', '/d/e2e/datasets/attrs2?view=health&release=v1.1.0', '/keys', '/tokens'];
 
 // Both themes: Daybreak as Playwright's default light scheme, Night flight
 // as the dark one. Each must pass on its own (docs/dashboard.md §3.4).

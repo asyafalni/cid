@@ -13,7 +13,7 @@ type Target = { to: string; params?: Record<string, string>; search?: Record<str
 // A place to go, or an action to run (pin, compare, copy).
 type Result = { key: string; label: string; kind: string; target?: Target; run?: () => Promise<string | void> };
 
-const tabs = ['overview', 'browse', 'releases', 'files', 'activity'] as const;
+const tabs = ['overview', 'browse', 'releases', 'health', 'files', 'activity'] as const;
 
 export function Palette() {
   const [open, setOpen] = useState(false);

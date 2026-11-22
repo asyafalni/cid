@@ -56,6 +56,8 @@ const pages: [string, string][] = [
   ['releases-tables', `${tables}?view=releases&a=v1.0.0&b=v1.1.0`],
   ['releases-balance', '/d/e2e/datasets/attrs2?view=releases&a=v1.0.0&b=v1.1.0'],
   ['overview-balance', '/d/e2e/datasets/attrs2?release=v1.1.0'],
+  ['health-annotated', '/d/e2e/datasets/attrs2?view=health&release=v1.1.0'],
+  ['health-files', `${tables}?view=health`],
   ['releases-same', `${demo}?view=releases&a=v1.0.0&b=v1.0.0`],
   ['files-root', `${demo}?view=files`],
   ['files-folder', `${many}?view=files&dir=rows`],

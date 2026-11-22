@@ -544,6 +544,10 @@ export default function setup() {
     );
     if (!attrsReleases.includes('"v1.1.0"')) seedAttrsMoved();
     if (!tableReleases.includes('"v1.2.0"')) seedTablesKeyed(dir);
+    // The integration suite parks the previews it leaves unbuilt as
+    // 'test reset' in the shared database; give them back to the worker,
+    // so every file here has its real verdict (Health reads it).
+    psql("UPDATE previews SET status = 'pending', attempts = 0, reason = NULL WHERE status = 'skipped' AND reason = 'test reset'");
     // Sniff, thumbnail and blur every new png. One pass takes a batch, and
     // a migration can requeue many, so drain the queue: until a pass finds
     // nothing at all. A pass that only skips (other suites leave jobs for

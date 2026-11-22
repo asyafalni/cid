@@ -5097,6 +5097,32 @@ test "the Hugging Face door: a file dataset's releases, files and trees, as hugg
             "WHERE r.dataset_id = $1::uuid AND r.name = 'v1.0.0' AND f.kind = 'hf'", .{ann_id});
         try std.testing.expectEqual(@as(?i64, 3), files);
     }
+    // Its health, prepared with it and kept: one content in three splits
+    // fails (leakage); three small boxes, all near the top left.
+    {
+        const v1 = (try db.rawOne([]const u8, &fscope, "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = 'v1.0.0'", .{ann_id})).?;
+        try std.testing.expect((try db.rawOne(i64, &fscope, "SELECT 1::bigint FROM commits WHERE commit_id = $1::uuid AND health IS NOT NULL", .{v1})) != null);
+        const res = cid.api.handle(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/hfann/-/health?commit={s}", .{v1}), bearer, "");
+        try std.testing.expectEqual(std.http.Status.ok, res.status);
+        const Health = struct {
+            checks: []const struct { id: []const u8, status: []const u8, sample: []const []const u8 },
+            box_sizes: []const struct { b: []const u8, n: u64 },
+            heat: []const u64,
+        };
+        const h = try std.json.parseFromSliceLeaky(Health, arena, res.body, .{ .ignore_unknown_fields = true });
+        for (h.checks) |c| {
+            if (std.mem.eql(u8, c.id, "leakage")) {
+                try std.testing.expectEqualStrings("fail", c.status);
+                try std.testing.expectEqualStrings("img/a.jpg", c.sample[0]);
+            } else if (std.mem.eql(u8, c.id, "balance")) {
+                try std.testing.expectEqualStrings("info", c.status); // one class
+            } else try std.testing.expectEqualStrings("pass", c.status);
+        }
+        try std.testing.expectEqual(@as(usize, 1), h.box_sizes.len);
+        try std.testing.expectEqualStrings("0.1-1%", h.box_sizes[0].b);
+        try std.testing.expectEqual(@as(usize, 100), h.heat.len);
+        try std.testing.expectEqual(@as(u64, 3), h.heat[0]);
+    }
 
     const ann_readme = hfCall(arena, &deps, &scope, "GET", "/datasets/test/datasets__hfann/resolve/v1.0.0/README.md", bearer, "");
     try std.testing.expectEqual(std.http.Status.ok, ann_readme.status);

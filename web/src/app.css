@@ -3011,3 +3011,100 @@ button.tick-mark:hover {
   flex: 1 1 14rem;
   max-width: 22rem;
 }
+
+/* Dataset › Health: a mark per check (icon and word, never colour alone),
+   then the distributions. */
+.health-summary {
+  margin: 0 0 var(--space-3);
+}
+
+.health-checks {
+  list-style: none;
+  margin: 0 0 var(--space-5);
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.health-check {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--panel);
+}
+
+.health-check h3 {
+  margin: 0 0 var(--space-1);
+  font-size: 1rem;
+}
+
+.health-check p {
+  margin: 0;
+}
+
+.health-mark {
+  font-family: var(--font-data);
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+.health-check--pass .health-mark { color: var(--pass); }
+.health-check--warn .health-mark { color: var(--warn); }
+.health-check--fail .health-mark { color: var(--fail); }
+.health-check--info .health-mark { color: var(--text-muted); }
+
+.health-check--fail {
+  border-color: var(--fail);
+}
+
+.health-sample {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  font-size: 0.8125rem;
+}
+
+.health-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  gap: var(--space-4);
+}
+
+.heat-map {
+  border-collapse: separate;
+  border-spacing: 2px;
+  width: 100%;
+  table-layout: fixed;
+}
+
+.heat-map caption {
+  text-align: left;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  margin-bottom: var(--space-1);
+}
+
+.heat-map td {
+  height: 1.75rem;
+  text-align: center;
+  font-family: var(--font-data);
+  font-size: 0.6875rem;
+  border-radius: 2px;
+}
+
+/* On the darkest cells of either theme, the page's own ink reads. */
+.heat-map td.heat-dark {
+  color: var(--bg);
+}
+
+@media (max-width: 640px) {
+  .health-check {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

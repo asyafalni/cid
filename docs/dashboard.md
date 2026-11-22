@@ -37,9 +37,8 @@ diff); Files tab (folder tree, sizes, download); Activity (owners only); restric
 blur and logged reveal; your SSH keys and personal tokens; the preview worker (ffmpeg
 only).
 
-**Not built yet** (the spec below says so where it applies): the health badge, Health
-tab and Validator tiles; card completeness; most Browse filters,
-histograms; keyboard shortcuts outside Browse (besides `⌘K`);
+**Not built yet** (the spec below says so where it applies): the health badge and the
+Validator's tiles (the Health tab's own checks are built); card completeness; keyboard shortcuts outside Browse (besides `⌘K`);
 charts and gauges; PDF page
 images (`vips`); the SQL console; semantic
 search.
@@ -443,10 +442,30 @@ Every dataset page (all five tabs) shares one header and the release tape.
     and new (like Dolt's cell diffs); without one, the page says how to declare it.
     A restricted dataset gets counts and columns, never rows or cells.
 
-### 4.5 Dataset › Health (Phase 2: not built)
+### 4.5 Dataset › Health
 
-There is no Health tab yet. Per-file table statistics already exist (in the drawer,
-§4.3); everything below is planned.
+*Built (2026-11-22): cid's own checks.* The Health tab checks the version on screen:
+one SQL aggregate over its live items and annotations (`src/core/health.zig`), kept on
+the commit (`commits.health`, migration 0010) and prepared in the background with its
+statistics; never computed on page load. Each check is a mark (✓ pass, ! warning,
+✕ fail, i note: an icon and a word, never colour alone), what it found in words, and up
+to 20 of the paths, each a link into Browse at the same version. The rules are fixed
+and conservative (decided 2026-11-22): **fail** only for the same content in two splits
+(leakage); **warning** for duplicate content within a split, empty files, tables the
+preview worker could not read, and, in annotated datasets, items with no annotation,
+pictures with no recorded size (the image exports fail on them), boxes a pixel thin or
+outside their image, and a class under a tenth of the most common. Then, for annotated
+datasets: annotations by class and by class and split, items by objects held, boxes by
+their share of the image, images by shape, and a 10×10 heat map of box centres (a
+table with its counts, one hue light to dark). The raw counts are kept, the marks
+judged when read, so a rule can change without recomputing. Health is kept only once
+no table of the version waits for the preview worker; until then the table check is a
+note ("not read yet") and the rest is computed afresh. Measured at 1M items and 1.5M
+boxes (2026-11-23): 14.9 s the first time, inside Postgres (server at 45 MB), 0.7 ms
+after; background preparation of a head about 15 s longer. Show command says no
+command shows it.
+
+*Planned:*
 
 - Annotated datasets: class balance per split, objects per item, object size
   distribution, **annotation heat map**, aspect ratios, items without annotations,

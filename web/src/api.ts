@@ -612,3 +612,30 @@ export type DeployKey = {
 export function getDeployKeys(name: string): Promise<{ keys: DeployKey[] }> {
   return request(`/v0/datasets/${name}/-/deploy-keys`);
 }
+
+/** One of a version's health checks, marked by the server's fixed rules. */
+export type HealthCheck = {
+  id: string;
+  status: 'pass' | 'warn' | 'fail' | 'info';
+  title: string;
+  says: string;
+  sample: string[];
+};
+
+export type Health = {
+  checks: HealthCheck[];
+  items: number;
+  images: number;
+  annotations: number;
+  class_split: { class: string; split: string; n: number }[];
+  objects_per_item: { b: string; n: number }[];
+  box_sizes: { b: string; n: number }[];
+  aspect: { b: string; n: number }[];
+  /** Box centres on a 10×10 grid over the image, row by row. */
+  heat: number[];
+};
+
+/** A version's health (docs/dashboard.md, 4.5), computed once and kept. */
+export function getHealth(name: string, commit: string): Promise<Health> {
+  return request(`/v0/datasets/${name}/-/health?commit=${commit}`);
+}

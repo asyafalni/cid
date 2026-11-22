@@ -10,6 +10,7 @@ import { OverviewTab } from './OverviewTab';
 import { BrowseTab } from './BrowseTab';
 import { ReleasesTab } from './ReleasesTab';
 import { FilesTab } from './FilesTab';
+import { HealthTab } from './HealthTab';
 import { ActivityTab } from './ActivityTab';
 import { noteVisit } from '../recent';
 import { NotFound } from './NotFound';
@@ -21,7 +22,7 @@ import { NotFound } from './NotFound';
 export function DatasetOverview() {
   const { _splat: name = '' } = useParams({ strict: false });
   const search = useSearch({ strict: false }) as {
-    view?: 'overview' | 'browse' | 'releases' | 'files' | 'activity';
+    view?: 'overview' | 'browse' | 'releases' | 'health' | 'files' | 'activity';
     release?: string;
     commit?: string;
     branch?: string;
@@ -223,6 +224,15 @@ export function DatasetOverview() {
         <Link
           to="/d/$"
           params={{ _splat: name }}
+          search={{ view: 'health', ...pin }}
+          className={view === 'health' ? 'tab on' : 'tab'}
+          aria-current={view === 'health' ? 'page' : undefined}
+        >
+          Health
+        </Link>
+        <Link
+          to="/d/$"
+          params={{ _splat: name }}
           search={{ view: 'files', ...pin }}
           className={view === 'files' ? 'tab on' : 'tab'}
           aria-current={view === 'files' ? 'page' : undefined}
@@ -249,6 +259,7 @@ export function DatasetOverview() {
       </nav>
       {showCommand && (
         <CommandBar
+          view={view}
           shown={commandFor(
             o,
             {
@@ -297,6 +308,8 @@ export function DatasetOverview() {
           b={search.b}
           onPick={(patch) => setSearch(patch)}
         />
+      ) : view === 'health' ? (
+        <HealthTab name={name} overview={o} commit={pinnedCommit} pin={pin} />
       ) : view === 'activity' ? (
         <ActivityTab
           name={name}
@@ -321,12 +334,16 @@ export function DatasetOverview() {
 
 // The command for the view on screen, ready to paste (docs/dashboard.md:
 // every action shows its command).
-function CommandBar({ shown }: { shown: Shown | null }) {
+function CommandBar({ shown, view }: { shown: Shown | null; view: string }) {
   const [copied, setCopied] = useState(false);
   if (!shown) {
     return (
       <section className="command-bar" aria-label="Command">
-        <p className="quiet">The activity log is the server's own record; no command shows it.</p>
+        <p className="quiet">
+          {view === 'health'
+            ? "A version's health is checked on the server; no command shows it."
+            : "The activity log is the server's own record; no command shows it."}
+        </p>
       </section>
     );
   }

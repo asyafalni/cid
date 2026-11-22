@@ -156,7 +156,7 @@ fn buildTable(
     // A file that is not the table its name claims is skipped, in words,
     // never retried: the content will not change (invariant 18).
     const stats = table_stats.compute(arena, &tables.*.?, in_path, kind) catch |err| switch (err) {
-        error.QueryFailed => return .{ .skipped = "not a readable table: DuckDB could not read it as its file name says" },
+        error.QueryFailed => return .{ .skipped = table_stats.unreadable_reason },
         else => return .{ .failed = "table statistics could not be computed" },
     };
     _ = db.exec(scope, "UPDATE previews SET table_stats = $2::jsonb WHERE item_hash = decode($1, 'hex')", .{ hash, stats }) catch

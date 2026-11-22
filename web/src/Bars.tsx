@@ -10,9 +10,20 @@ export type BarRow = { name: string; value: number; dot?: string };
 
 const shown = 12;
 
-export function BarTable({ caption, rows, noun }: { caption: string; rows: BarRow[]; noun: string }) {
+export function BarTable({
+  caption,
+  rows,
+  noun,
+  keepOrder = false,
+}: {
+  caption: string;
+  rows: BarRow[];
+  noun: string;
+  /** Buckets in their own order (0, 1, 2–4…), not most first. */
+  keepOrder?: boolean;
+}) {
   const [all, setAll] = useState(false);
-  const sorted = [...rows].sort((x, y) => y.value - x.value || x.name.localeCompare(y.name));
+  const sorted = keepOrder ? rows : [...rows].sort((x, y) => y.value - x.value || x.name.localeCompare(y.name));
   const max = Math.max(1, ...sorted.map((r) => r.value));
   const total = sorted.reduce((sum, r) => sum + r.value, 0);
   const visible = all ? sorted : sorted.slice(0, shown);

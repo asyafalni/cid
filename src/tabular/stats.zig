@@ -35,6 +35,10 @@ pub fn compute(arena: std.mem.Allocator, db: *duck.Db, path: []const u8, kind: K
     unreachable;
 }
 
+/// Why the preview worker skipped a table it could not read: the one
+/// reason the Health tab counts as an unreadable table (core/health.zig).
+pub const unreadable_reason = "not a readable table: DuckDB could not read it as its file name says";
+
 /// What one table's statistics may weigh in `previews.table_stats`.
 pub const max_bytes = 64 * 1024;
 

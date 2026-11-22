@@ -40,6 +40,7 @@ const hf = @import("hf.zig");
 const browse_mod = @import("browse/browse.zig");
 const bundle_mod = @import("../export/bundle.zig");
 const versions = @import("../core/version.zig");
+const health_mod = @import("../core/health.zig");
 const nilo = @import("nilo_http");
 const token_mod = @import("../access/token.zig");
 const Uuid = @import("../util/uuid7.zig").Uuid;
@@ -281,6 +282,8 @@ fn handleInner(
         return tableRows(arena, deps, scope, ds, route);
     if (eql(route.action, "deploy-keys"))
         return deployKeys(arena, deps, scope, caller, ds, method, route, body);
+    if (eql(method, "GET") and eql(route.action, "health"))
+        return health(arena, deps, scope, ds, route);
     if (eql(method, "GET") and eql(route.action, "browse"))
         return browse(arena, deps, scope, ds, route);
     if (eql(method, "GET") and eql(route.action, "browse/size"))
@@ -512,6 +515,11 @@ fn prepare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, c
     // Each step said as it starts, so a stuck one names itself.
     std.log.scoped(.prepare).debug("{s}: statistics", .{commit_id});
     _ = versions.stats(arena, deps.db, scope, ds.id, commit_id) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.Db,
+    };
+    std.log.scoped(.prepare).debug("{s}: health", .{commit_id});
+    _ = health_mod.of(arena, deps.db, scope, ds.id, commit_id) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.Db,
     };
@@ -799,6 +807,34 @@ fn tableStats(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset
         return json(arena, .ok, .{ .status = "skipped", .reason = @as(?[]const u8, "the stored statistics could not be read") });
     if (!ds.restricted) return json(arena, .ok, .{ .status = "done", .stats = stats, .withheld = false });
     return json(arena, .ok, .{ .status = "done", .stats = try shapeOnly(arena, stats), .withheld = true });
+}
+
+/// A version's health (core/health.zig): its checks, marked by the fixed
+/// rules, and the distributions the Health tab draws. Kept on the commit,
+/// so asking twice costs one lookup; prepared ahead for releases and heads.
+fn health(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, route: DatasetRoute) HandleError!Response {
+    const commit = route.queryParam("commit") orelse
+        return errorResponse(arena, .bad_request, "this needs a version", "Pick a version from the version picker.");
+    if (Uuid.parse(commit) == error.InvalidUuid)
+        return errorResponse(arena, .bad_request, "that is not a commit id", "Pick a version from the version picker.");
+    const mine = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM commits WHERE commit_id = $1::uuid AND dataset_id = $2::uuid", .{ commit, ds.id }) catch return error.Db;
+    if (mine == null) return errorResponse(arena, .not_found, "no such version in this dataset", "Pick a version from the version picker.");
+    const raw = health_mod.of(arena, deps.db, scope, ds.id, commit) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.Db,
+    };
+    const annotated = eql(ds.kind, "annotated");
+    return json(arena, .ok, .{
+        .checks = try health_mod.checks(arena, raw, annotated),
+        .items = raw.items,
+        .images = raw.images,
+        .annotations = raw.annotations,
+        .class_split = raw.class_split,
+        .objects_per_item = raw.objects_per_item,
+        .box_sizes = raw.box_sizes,
+        .aspect = raw.aspect,
+        .heat = raw.heat,
+    });
 }
 
 /// A table item's rows, a page at a time, narrowed by its columns, with

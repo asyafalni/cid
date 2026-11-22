@@ -3,7 +3,7 @@
 // terminal. Pure, so the page and its tests compute the same thing.
 import type { Overview, Pin, TapeCommit } from './api';
 
-export type View = 'overview' | 'browse' | 'releases' | 'files' | 'activity';
+export type View = 'overview' | 'browse' | 'releases' | 'health' | 'files' | 'activity';
 
 export type ViewState = {
   view: View;
@@ -42,7 +42,7 @@ export function viewStateOf(o: Overview, search: Record<string, unknown>): ViewS
   const commit = str('commit');
   const branch = str('branch');
   const pinned = commit || (branch && !release) ? o.pinned_release : (release ?? o.commits.find((c) => c.release)?.release ?? null);
-  const views = ['overview', 'browse', 'releases', 'files', 'activity'] as const;
+  const views = ['overview', 'browse', 'releases', 'health', 'files', 'activity'] as const;
   const view = views.find((v) => v === str('view')) ?? 'overview';
   return {
     view,
@@ -63,7 +63,7 @@ export function viewStateOf(o: Overview, search: Record<string, unknown>): ViewS
 }
 
 export function commandFor(o: Overview, s: ViewState, host: string): Shown | null {
-  if (s.view === 'activity') return null;
+  if (s.view === 'activity' || s.view === 'health') return null;
   const folder = o.name.slice(o.name.lastIndexOf('/') + 1);
   const notes: string[] = [];
   const clone = ['cid clone', `cid@${host}:${o.name}`];

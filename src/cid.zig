@@ -38,6 +38,7 @@ pub const signin = @import("server/signin.zig");
 pub const migrate = @import("core/migrate.zig");
 pub const release = @import("core/release.zig");
 pub const state = @import("core/version.zig");
+pub const health = @import("core/health.zig");
 pub const purge = @import("core/purge.zig");
 pub const gc = @import("core/gc.zig");
 pub const preview = @import("preview/worker.zig");
@@ -100,6 +101,7 @@ test {
     _ = rowdiff;
     _ = table_keys;
     _ = table_rows;
+    _ = health;
     _ = pathpattern;
     _ = api;
     _ = serve;
