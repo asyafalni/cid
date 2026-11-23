@@ -406,8 +406,9 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   the integration suite passes over compressed chunks (2026-10-12).
 - **The preview worker** builds thumbnails, audio waveforms, video posters and table
   statistics, sniffing each file's real type and image dimensions as it goes, by
-  calling `ffmpeg` as an external program (PDF page images, which need `vips`, are not
-  built yet). **ffmpeg never scales with users**: the `previews` queue holds one row
+  calling `ffmpeg` as an external program, and `vips` for a PDF's first page (drawn,
+  then thumbnailed like a picture; its page count kept, never a width: a PDF is not an
+  image to the exports; a server without `vips` leaves PDFs as type tiles, in words). **ffmpeg never scales with users**: the `previews` queue holds one row
   per content hash, filled at ingest (push, register-items) and drained only by the
   worker — `cid admin serve`'s background loop, or one pass of `cid admin previews` —
   one file at a time, nice -19, -threads 1, hard timeouts, size guards, bounded
@@ -860,8 +861,8 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
   bucket, naming the fix. `CID_S3_PUBLIC_ENDPOINT`, when set, is the name
   presigned URLs are signed for (where clients reach the store behind a
   proxy, `deploy/proxy/`); a second Store that only signs (`blob.Signer`).
-- **External programs allowed:** on the server, `ffmpeg` (preview worker; `vips` when
-  PDF page images arrive),
+- **External programs allowed:** on the server, `ffmpeg` (preview worker), `vips` and
+  `vipsheader` (libvips-tools: a PDF's first page and page count, approved 2026-11-23),
   `git` (dataset repository writer) and OpenSSH `sshd` (front door, runs as its own
   service). In the CLI, the system `ssh` client, exactly as git uses it, plus the
   system `git` for the one `.cid`-marker fetch in `cid clone <git-url>`.

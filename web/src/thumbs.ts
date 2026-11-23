@@ -12,7 +12,8 @@ export async function thumbsFor(name: string, items: StateItem[]): Promise<{ has
   }
 }
 
-// Items that get a thumbnail: pictures, video posters, audio waveforms.
+// Items that get a thumbnail: pictures, video posters, audio waveforms,
+// a PDF's first page (drawn by vips on the server).
 export function looksVisual(path: string): boolean {
-  return /\.(png|jpe?g|gif|webp|bmp|mp4|mov|mkv|webm|avi|wav|mp3|flac|ogg|oga|m4a)$/i.test(path);
+  return /\.(png|jpe?g|gif|webp|bmp|mp4|mov|mkv|webm|avi|wav|mp3|flac|ogg|oga|m4a|pdf)$/i.test(path);
 }

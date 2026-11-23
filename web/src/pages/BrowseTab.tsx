@@ -29,7 +29,7 @@ import { anyFilter, extOf, type FilterPatch, type Filters } from '../browseFilte
 
 // The file types the preview worker draws: pictures, video posters and
 // sound waveforms (src/preview/).
-const previewable = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.mp4', '.mov', '.webm', '.mkv', '.avi', '.wav', '.mp3', '.flac', '.ogg', '.m4a']);
+const previewable = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.mp4', '.mov', '.webm', '.mkv', '.avi', '.wav', '.mp3', '.flac', '.ogg', '.m4a', '.pdf']);
 
 // A page of the gallery or table: what the server answers per request,
 // and what one scroll to the bottom asks for next.

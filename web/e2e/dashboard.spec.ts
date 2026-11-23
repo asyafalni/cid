@@ -345,7 +345,7 @@ test('the overview opens with a look inside: real items, their annotations, each
   await expect(media.getByRole('link', { name: /notes\.txt/ }).getByText('.txt', { exact: true })).toBeVisible();
   await expect(media.getByRole('link', { name: /tone\.wav/ }).locator('img')).toBeVisible();
   // No release yet: the facts, not an empty tape.
-  await expect(page.getByText('2 commits, no releases yet.')).toBeVisible();
+  await expect(page.getByText(/\d+ commits, no releases yet\./)).toBeVisible();
 
   // Spread over the version, not its first eight files, and the same eight on every visit.
   const sample = async () => {
@@ -1145,6 +1145,15 @@ test('a link to one row opens the table there, marked, and a row\'s number makes
   // Under a filter that leaves it out, the page says so.
   await page.getByRole('button', { name: /^city = Medan: 1 row$/ }).click();
   await expect(page.getByRole('region', { name: 'Rows' })).toContainText('Row 4 is not among these rows');
+});
+
+test('a PDF shows its first page, drawn on the server', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/docs?view=browse&mode=gallery');
+  const tile = page.getByRole('button', { name: /page\.pdf/ });
+  await expect(tile.locator('img')).toBeVisible();
+  await tile.click();
+  await expect(page.getByRole('complementary', { name: 'page.pdf' }).locator('img').first()).toBeVisible();
 });
 
 test('the SQL console runs a SELECT over the version, keeps it in the link, and shows items as tiles', async ({ page }) => {

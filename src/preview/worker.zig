@@ -37,7 +37,8 @@ pub const Outcome = struct {
 };
 
 /// Why an item has no thumbnail: in words, for the drawer.
-const no_thumbnail = "no thumbnail: images, video and audio get one; text and tables show in the drawer";
+const no_thumbnail = "no thumbnail: images, video, audio and PDFs get one; text and tables show in the drawer";
+const no_vips = "no thumbnail: a PDF's page is drawn by vips, which this server does not have (install libvips-tools)";
 
 pub fn thumbKey(arena: std.mem.Allocator, hash_hex: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "previews/{s}/{s}/thumb.webp", .{ hash_hex[0..2], hash_hex });
@@ -184,8 +185,9 @@ fn buildOne(
     var is_image = std.mem.startsWith(u8, media_type, "image/");
     var is_video = std.mem.startsWith(u8, media_type, "video/");
     var is_audio = std.mem.startsWith(u8, media_type, "audio/");
+    var is_pdf = std.mem.eql(u8, media_type, "application/pdf");
     const unknown = std.mem.eql(u8, media_type, "application/octet-stream");
-    if (!is_image and !is_video and !is_audio and !unknown) return .{ .skipped = no_thumbnail };
+    if (!is_image and !is_video and !is_audio and !is_pdf and !unknown) return .{ .skipped = no_thumbnail };
     if (size > config.max_input_bytes)
         return .{ .skipped = "too large to preview; raise the worker's limit to include it" };
 
@@ -204,7 +206,8 @@ fn buildOne(
         is_image = std.mem.startsWith(u8, found.media_type, "image/");
         is_video = std.mem.startsWith(u8, found.media_type, "video/");
         is_audio = std.mem.startsWith(u8, found.media_type, "audio/");
-        if (!is_image and !is_video and !is_audio) return .{ .skipped = no_thumbnail };
+        is_pdf = std.mem.eql(u8, found.media_type, "application/pdf");
+        if (!is_image and !is_video and !is_audio and !is_pdf) return .{ .skipped = no_thumbnail };
     }
 
     const in_path = std.fmt.allocPrint(arena, "{s}/{s}.in", .{ config.tmpdir, hash }) catch
@@ -219,6 +222,47 @@ fn buildOne(
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = in_path, .data = bytes }) catch
         return .{ .failed = "could not write scratch input" };
 
+    // A PDF's first page, drawn by vips (the one other program the worker
+    // calls, with the same discipline), becomes the picture the thumbnail
+    // and its blur are made from; its page count goes on the item. Never
+    // its width and height: a PDF is not an image to the exports.
+    var source = in_path;
+    const page_path = std.fmt.allocPrint(arena, "{s}/{s}.page.png", .{ config.tmpdir, hash }) catch
+        return .{ .failed = "out of memory" };
+    defer std.Io.Dir.cwd().deleteFile(io, page_path) catch {};
+    if (is_pdf) {
+        const page_arg = std.fmt.allocPrint(arena, "{s}[page=0]", .{in_path}) catch return .{ .failed = "out of memory" };
+        const drawn = std.process.run(arena, io, .{
+            .argv = &.{ "nice", "-n", "19", "vips", "thumbnail", page_arg, page_path, "640" },
+            .timeout = .{ .duration = .{ .clock = .awake, .raw = .{ .nanoseconds = config.timeout_ns } } },
+            .stdout_limit = .limited(64 * 1024),
+            .stderr_limit = .limited(64 * 1024),
+        }) catch return .{ .skipped = no_vips };
+        if (drawn.term != .exited or drawn.term.exited != 0) {
+            // `nice` answers 127 when the program it was to run is missing.
+            if (drawn.term == .exited and drawn.term.exited == 127) return .{ .skipped = no_vips };
+            const tail = std.mem.trim(u8, drawn.stderr, " \n");
+            const reason = std.fmt.allocPrint(arena, "vips could not draw the PDF's first page: {s}", .{
+                tail[if (tail.len > 160) tail.len - 160 else 0..],
+            }) catch "vips could not draw the PDF's first page";
+            return .{ .failed = reason };
+        }
+        const counted = std.process.run(arena, io, .{
+            .argv = &.{ "nice", "-n", "19", "vipsheader", "-f", "n-pages", in_path },
+            .timeout = .{ .duration = .{ .clock = .awake, .raw = .{ .nanoseconds = config.timeout_ns } } },
+            .stdout_limit = .limited(1024),
+            .stderr_limit = .limited(64 * 1024),
+        }) catch null;
+        if (counted) |c| if (c.term == .exited and c.term.exited == 0) {
+            if (std.fmt.parseInt(u32, std.mem.trim(u8, c.stdout, " \n"), 10)) |pages| {
+                const meta = std.fmt.allocPrint(arena, "{{\"pages\":{d}}}", .{pages}) catch return .{ .failed = "out of memory" };
+                _ = db.exec(scope, "UPDATE items SET meta = meta || $2::jsonb WHERE item_hash = decode($1, 'hex')", .{ hash, meta }) catch {};
+            } else |_| {}
+        };
+        source = page_path;
+        is_image = true;
+    }
+
     // The disciplined invocation. -frames:v 1 makes images and posters
     // the same shape; video seeks fast to its first second.
     var argv: std.ArrayList([]const u8) = .empty;
@@ -230,7 +274,7 @@ fn buildOne(
     // works on 320 pixels, not the original. Audio's thumbnail is its
     // waveform, drawn the same size, so it shows wherever a picture would.
     argv.appendSlice(arena, &.{
-        "-i",              in_path,
+        "-i",              source,
         "-filter_complex",
         if (is_audio)
             "[0:a]aformat=channel_layouts=mono,showwavespic=s=320x96:colors=0x6f86a6,split=2[thumb][src];[src]boxblur=12:4[blur]"

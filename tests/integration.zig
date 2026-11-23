@@ -4414,15 +4414,17 @@ test "media: audio gets its waveform, text reads as text, restricted text withhe
     const fixtures = try std.Io.Dir.cwd().openDir(io, "tests/fixtures", .{});
     const wav = try fixtures.readFileAlloc(io, "tone.wav", arena, .limited(1 << 20));
     const notes = try fixtures.readFileAlloc(io, "notes.txt", arena, .limited(1 << 20));
+    const pdf = try fixtures.readFileAlloc(io, "page.pdf", arena, .limited(1 << 20));
     try producer.dir.createDirPath(io, "audio");
+    try producer.dir.writeFile(io, .{ .sub_path = "page.pdf", .data = pdf });
     try producer.dir.writeFile(io, .{ .sub_path = "audio/tone.wav", .data = wav });
     try producer.dir.writeFile(io, .{ .sub_path = "notes.txt", .data = notes });
     try producer.dir.writeFile(io, .{ .sub_path = "blob.bin", .data = "\x00\x01\x02binary\x00" });
     const long = try arena.alloc(u8, 70 * 1024);
     for (long, 0..) |*ch, i| ch.* = if (i % 64 == 63) '\n' else 'a' + @as(u8, @intCast(i % 26));
     try producer.dir.writeFile(io, .{ .sub_path = "long.txt", .data = long });
-    var hashes: [4][64]u8 = undefined;
-    for ([_][]const u8{ wav, notes, "\x00\x01\x02binary\x00", long }, 0..) |bytes, i| {
+    var hashes: [5][64]u8 = undefined;
+    for ([_][]const u8{ wav, notes, "\x00\x01\x02binary\x00", long, pdf }, 0..) |bytes, i| {
         var dg: [32]u8 = undefined;
         cid.hash.Hasher.hash(bytes, &dg, .{});
         hashes[i] = std.fmt.bytesToHex(dg, .lower);
@@ -4454,6 +4456,17 @@ test "media: audio gets its waveform, text reads as text, restricted text withhe
     const words = (try db.rawOne(Prev, &fscope, "SELECT i.media_type, p.status, p.reason FROM items i JOIN previews p USING (item_hash) WHERE i.item_hash = decode($1, 'hex')", .{@as([]const u8, &hashes[1])})).?;
     try std.testing.expectEqualStrings("text/plain", words.media_type);
     try std.testing.expectEqualStrings("skipped", words.status);
+    // The PDF: sniffed, its first page drawn by vips into the thumbnail
+    // (and the blur), its page count kept; never a width, so no export
+    // takes it for an image.
+    const paper = (try db.rawOne(Prev, &fscope, "SELECT i.media_type, p.status, p.reason FROM items i JOIN previews p USING (item_hash) WHERE i.item_hash = decode($1, 'hex')", .{@as([]const u8, &hashes[4])})).?;
+    try std.testing.expectEqualStrings("application/pdf", paper.media_type);
+    try std.testing.expectEqualStrings("done", paper.status);
+    try std.testing.expect(std.mem.startsWith(u8, try s3c.getObjectAlloc(&scope, try cid.preview.thumbKey(arena, &hashes[4])), "RIFF"));
+    try std.testing.expect((try s3c.headObject(&scope, try cid.preview.blurKey(arena, &hashes[4]))) != null);
+    const meta = (try db.rawOne([]const u8, &fscope, "SELECT meta::text FROM items WHERE item_hash = decode($1, 'hex')", .{@as([]const u8, &hashes[4])})).?;
+    try std.testing.expect(std.mem.indexOf(u8, meta, "\"pages\": 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, meta, "width") == null);
 
     // The drawer's text: the note whole; the binary file said so; the long
     // file's first 64 KB, marked as such.

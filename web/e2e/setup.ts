@@ -437,6 +437,17 @@ function seedMediaBroken(dir: string) {
   run(`${cid} push`, folder);
 }
 
+// A dataset of documents: a PDF, for its first page drawn by vips.
+function seedDocs(dir: string) {
+  const folder = join(dir, 'docs');
+  execSync(`mkdir -p ${folder}`);
+  writeFileSync(join(folder, 'page.pdf'), readFileSync(join(resolve(here, '../../tests/fixtures'), 'page.pdf')));
+  run(`${cid} init cid@127.0.0.1:e2e/datasets/docs --git g@h:docs.git`, folder);
+  run(`${cid} add .`, folder);
+  run(`${cid} commit -m "a one-page PDF"`, folder);
+  run(`${cid} push`, folder);
+}
+
 // A model: a file dataset by another name, made with `cid init --model`.
 function seedModel(dir: string) {
   const model = join(dir, 'model');
@@ -520,6 +531,7 @@ export default function setup() {
     if (!already.includes('e2e/datasets/masks')) seedMasks(dir);
     if (!already.includes('e2e/datasets/tables')) seedTables(dir);
     if (!already.includes('e2e/datasets/attrs2')) seedAttrs(dir);
+    if (!already.includes('e2e/datasets/docs')) seedDocs(dir);
     if (!already.includes('e2e/datasets/many')) seedMany(dir);
     const manyLog = run(`curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/many/-/log -H "Authorization: Bearer ${token}"`);
     if (!manyLog.includes('one more row')) seedManyUnreleased(dir);
@@ -530,6 +542,7 @@ export default function setup() {
       `curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/media/-/log -H "Authorization: Bearer ${token}"`,
     );
     if (!mediaLog.includes('one broken table')) seedMediaBroken(dir);
+
     if (!already.includes('e2e/models/tiny-bert')) seedModel(dir);
     const modelReleases = run(
       `curl -s http://127.0.0.1:7178/v0/datasets/e2e/models/tiny-bert/-/releases -H "Authorization: Bearer ${token}"`,

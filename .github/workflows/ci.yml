@@ -31,8 +31,8 @@ jobs:
         run: |
           docker compose -f docker-compose.test.yml up -d --wait timescaledb seaweedfs
           docker compose -f docker-compose.test.yml run --rm seaweedfs-bucket
-      - name: Tools the integration suite calls (ffmpeg, git)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Tools the integration suite calls (ffmpeg, vips, git)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libvips-tools
       - name: Integration tests
         run: zig build integration
 
@@ -97,9 +97,9 @@ jobs:
         run: ./zig-out/bin/cid admin setup
         env:
           CID_DB: host=127.0.0.1 port=5433 user=cid password=cid-test dbname=cid_test
-      - name: ffmpeg (fixtures and previews) and Chromium
+      - name: ffmpeg and vips (fixtures and previews) and Chromium
         run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libvips-tools
           pnpm --dir web exec playwright install --with-deps chromium
       - name: Playwright
         run: pnpm --dir web test:e2e
