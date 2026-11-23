@@ -34,8 +34,9 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      `attr_set`); ~~the List view~~ and ~~the identity filter~~ (done 2026-11-21;
      identities are `attrs.identity`, docs/data-model.md); ~~histograms~~ (done with U6).
   5. ~~U5~~, ~~U6~~, ~~U7~~ and ~~U8~~ (done 2026-11-21); U10 parked (below).
-  6. C1's two loose ends: the real-client check as an automated test (needs Python
-     and the Hugging Face libraries agreed as a test-only dependency), and ~~an
+  6. ~~C1's two loose ends~~: ~~the real-client check as an automated test~~ (done
+     2026-11-23: `tests/hf_client.sh`, huggingface_hub 2.4.0 and datasets 5.2.0,
+     test-only, in CI), and ~~an
      annotated split's file at 1M items~~ (done 2026-11-21: prepared ahead for
      releases, and a release of an already prepared head is queued again).
   7. ~~Small gaps left by finished items~~ (done 2026-11-21): ~~comparing a branch with `main` (B7)~~; actions
@@ -282,7 +283,9 @@ annotated release ahead of its first reader, and a release is queued again even
 when its commit was prepared as a head (2026-11-21: after preparation, 1–4 ms).
 Branch heads and commits are still built on a first request.
 **Models: done with C2 (2026-11-20),** on `/api/models/…` and at the root.
-**Still to do:** the real-client check as an automated test (section 0, item 6).
+**Checked by the real clients in CI** (`tests/hf_client.sh`, 2026-11-23): refs, files,
+downloads, `snapshot_download`, `load_dataset` (a table's splits, streaming, an annotated
+dataset's items with their boxes) and a model's files.
 
 Facts read from `huggingface_hub` 2.4.0, `datasets` 5.2.0 and `transformers` 5.23.0
 on 2026-11-20. Check them against the versions current when building.

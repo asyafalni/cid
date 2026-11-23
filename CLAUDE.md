@@ -739,6 +739,8 @@ zig build integration              # needs the services
 
 sh tests/usability.sh              # the scripted CLI session (services + `zig build`)
 sh tests/proxy.sh                  # deploy/proxy/ configs carry a push, clone, release (docker)
+sh tests/hf_client.sh              # the Hugging Face door read by huggingface_hub and datasets
+                                   # (Python with tests/hf_requirements.txt; test-only)
 
 pnpm --dir web install
 pnpm --dir web dev                 # dashboard dev server, proxies /v0 to cid serve
@@ -765,7 +767,8 @@ right after a recompile; it has not been seen on 0.17.0. If it returns, run the
 printed test binary directly to see the truth.
 
 CI runs on every push: format, unit and integration tests on Linux x86-64, the
-dashboard's lint, typecheck and Playwright suite, and unit tests plus the installed
+dashboard's lint, typecheck and Playwright suite, the Hugging Face door read by the real
+clients (`tests/hf_client.sh`), and unit tests plus the installed
 binary on Linux arm64 and macOS (Apple silicon and Intel).
 
 Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:

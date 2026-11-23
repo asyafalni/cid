@@ -1,0 +1,4 @@
+# The Hugging Face clients tests/hf_client.sh checks the read door against
+# (test-only: cid itself never needs Python). Pinned; bump on purpose.
+huggingface_hub==2.4.0
+datasets==5.2.0
