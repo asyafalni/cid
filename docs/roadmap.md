@@ -45,8 +45,14 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      Found and fixed on the way (2026-11-21): an item moved to another split with its
      bytes unchanged was invisible to `cid diff`, Compare and a release's counts;
      it is now a change of its own (`split`, old → new), migration 0007.
-  8. U11 (watch three engineers use it), once U1 to U4 are in.
-  9. The rest of Tier D, each with its own design first.
+  8. U11 (watch three engineers use it), once U1 to U4 are in: it needs people, so it
+     is the user's to run.
+  9. The rest of Tier D, each with its own design first. Done 2026-11-22/23: the
+     Health tab (cid's own checks; a card shows its marks), the SQL console, PDF
+     first pages (`vips`). Waiting: the Validator's tiles (its report format) and
+     semantic search (Phase 3, parked 2026-11-23 until the platform's embedder
+     exists). Small ones done 2026-11-23: dashboard links written as typed
+     (`anns=0`, never `%220%22`).
 - Running the e2e suite needs Playwright's browser:
   `pnpm --dir web exec playwright install chromium`.
 - The e2e database is seeded once and kept. A fixture change must be its own
