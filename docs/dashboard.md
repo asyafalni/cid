@@ -694,8 +694,9 @@ words.
 
 *Not built yet in Phase 2:* transcript segments on audio, the video segment/track
 timeline, text span highlights, PDF page images (they wait for `vips` on the worker),
-the Health tab, the SQL console, the card completeness checklist (it also needs card
-editing, a parked decision), and keyboard shortcuts outside Browse.
+the Validator's health tiles (they wait on its report format), the card completeness
+checklist (it also needs card editing, a parked decision), and keyboard shortcuts
+outside Browse. The Health tab's own checks and the SQL console are built (§4.5, §4.3).
 
 *Built:* the row-level table diff. Compare shows, under each modified CSV, Parquet or
 JSONL file, its rows added and removed, with the rows themselves one click away (the
