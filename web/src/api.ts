@@ -20,6 +20,8 @@ export type DatasetSummary = {
   starred: boolean;
   /** Display names of the dataset's owners (Maintainers). */
   owners: string[];
+  /** The head's health checks that did not pass, once they are kept; null before. */
+  health: { fail: number; warn: number } | null;
 };
 
 export async function setStar(name: string, on: boolean): Promise<void> {

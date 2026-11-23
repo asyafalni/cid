@@ -1215,6 +1215,19 @@ test('the Health tab marks each check, names what it found, and links to it', as
   await expect(page.getByRole('region', { name: 'Command' })).toContainText('no command shows it');
 });
 
+test('a dataset card says how its checks went, once kept, and links to them', async ({ page }) => {
+  await signIn(page);
+  // Kept by the visit (or by the background preparation before it).
+  await page.goto('/d/e2e/datasets/media?view=health');
+  await expect(page.getByRole('list', { name: 'Checks' })).toBeVisible();
+  await page.goto('/');
+  const card = page.locator('.ds-card', { hasText: 'e2e/datasets/media' }).first();
+  const mark = card.getByRole('link', { name: /^Health: / });
+  await expect(mark).toHaveText(/1 warning/);
+  await mark.click();
+  await expect(page).toHaveURL(/\/d\/e2e\/datasets\/media\?.*view=health/);
+});
+
 test('a declared key turns a removed-and-added pair into one row changed, cell by cell', async ({ page }) => {
   await signIn(page);
   // Without .cidkeys: an edit is one removed and one added, and the page says how to see it changed.

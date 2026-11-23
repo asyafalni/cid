@@ -586,6 +586,7 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
         last_push: ?[]const u8,
         head: ?[]const u8,
         stats: ?[]const u8,
+        health: ?[]const u8,
     };
     const rows = deps.db.raw(Row, scope, "SELECT d.dataset_id::text AS dataset_id, d.name, d.kind, d.restricted, d.default_format, " ++
         "  EXISTS (SELECT 1 FROM stars s WHERE s.dataset_id = d.dataset_id AND s.account_id = $1) AS starred, " ++
@@ -597,7 +598,7 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
         "   ORDER BY r.commit_id DESC LIMIT 1) AS latest_release, " ++
         "  (SELECT to_char(max(c.recorded_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') " ++
         "   FROM commits c WHERE c.dataset_id = d.dataset_id) AS last_push, " ++
-        "  h.commit_id::text AS head, c.stats::text AS stats " ++
+        "  h.commit_id::text AS head, c.stats::text AS stats, c.health::text AS health " ++
         "FROM datasets d " ++
         "LEFT JOIN refs h ON h.dataset_id = d.dataset_id AND h.name = 'main' AND h.kind = 'branch' " ++
         "LEFT JOIN commits c ON c.commit_id = h.commit_id " ++
@@ -608,6 +609,7 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
 
     const Thumb = struct { hash: []const u8, url: []const u8 };
     const Type = struct { ext: []const u8, count: u64 };
+    const Marks = struct { fail: u32 = 0, warn: u32 = 0 };
     const Entry = struct {
         name: []const u8,
         kind: []const u8,
@@ -622,6 +624,9 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
         mosaic: []const Thumb,
         starred: bool,
         owners: []const []const u8,
+        /// The head's checks, only when already kept (prepared in the
+        /// background); never computed for a listing.
+        health: ?Marks,
     };
     const list = try arena.alloc(Entry, rows.len);
     for (list, rows) |*e, row| {
@@ -666,6 +671,18 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
             .mosaic = mosaic.items,
             .starred = row.starred,
             .owners = try splitLines(arena, row.owners orelse ""),
+            .health = health: {
+                const text = row.health orelse break :health null;
+                const raw = std.json.parseFromSliceLeaky(health_mod.Raw, arena, text, .{ .ignore_unknown_fields = true }) catch break :health null;
+                if (raw.v != health_mod.health_version) break :health null;
+                var marks: Marks = .{};
+                for (try health_mod.checks(arena, raw, eql(row.kind, "annotated"))) |c| switch (c.status) {
+                    .fail => marks.fail += 1,
+                    .warn => marks.warn += 1,
+                    .pass, .info => {},
+                };
+                break :health marks;
+            },
         };
     }
     return json(arena, .ok, .{ .datasets = list });

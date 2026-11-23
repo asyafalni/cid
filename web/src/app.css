@@ -2145,6 +2145,19 @@
   font-size: 0.8125rem;
 }
 
+/* The head's checks, a link of its own above the card's target area. */
+.ds-card-health {
+  position: relative;
+  z-index: 1;
+  margin-left: auto;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+.ds-card-health:hover { text-decoration: underline; }
+.ds-card-health--pass span { color: var(--pass); }
+.ds-card-health--warn span { color: var(--warn); }
+.ds-card-health--fail span { color: var(--fail); }
+
 .empty-airship {
   width: 10rem;
   color: var(--text-muted);

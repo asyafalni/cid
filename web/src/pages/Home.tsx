@@ -289,7 +289,33 @@ function Release({ d }: { d: DatasetSummary }) {
         <span className="quiet">no releases yet</span>
       )}
       {d.last_push && <span className="quiet data">{d.last_push.slice(0, 10)}</span>}
+      <HealthMark d={d} />
     </>
+  );
+}
+
+// The head's checks, as an icon and words (never colour alone), a link to
+// the Health tab; nothing until the server has kept them.
+function HealthMark({ d }: { d: DatasetSummary }) {
+  const h = d.health;
+  if (!h) return null;
+  const words =
+    h.fail === 0 && h.warn === 0
+      ? 'checks pass'
+      : [h.fail > 0 ? `${h.fail} failed` : null, h.warn > 0 ? `${h.warn} ${h.warn === 1 ? 'warning' : 'warnings'}` : null]
+          .filter(Boolean)
+          .join(', ');
+  const level = h.fail > 0 ? 'fail' : h.warn > 0 ? 'warn' : 'pass';
+  return (
+    <Link
+      to="/d/$"
+      params={{ _splat: d.name }}
+      search={{ view: 'health' }}
+      className={`ds-card-health ds-card-health--${level} data`}
+      aria-label={`Health: ${words}`}
+    >
+      <span aria-hidden="true">{level === 'pass' ? '✓' : level === 'warn' ? '!' : '✕'}</span> {words}
+    </Link>
   );
 }
 

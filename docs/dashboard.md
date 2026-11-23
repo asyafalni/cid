@@ -259,7 +259,9 @@ are cid's own for now.
 ### 4.1 Datasets (home)
 - Cards: thumbnail mosaic (or a type tile for non-visual data), name, kind (file or
   annotated), file types, item and class counts, size, owners, restricted badge, star,
-  latest release, date of the last push. A grid of cards, each led by its mosaic edge
+  latest release, date of the last push, and the head's health (its checks' marks as an
+  icon and words, e.g. "! 1 warning", a link to the Health tab; shown only once the
+  checks are kept, never computed for the listing). A grid of cards, each led by its mosaic edge
   to edge; **List** (`?layout=list`) shows the same as compact rows.
 - The page opens on the sky: "Datasets" in Fraunces, the count, the search as the one
   glass panel, cid's own airship line drawing, and a cloud bank that drifts one tile
