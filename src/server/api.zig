@@ -1079,7 +1079,7 @@ fn browseCompare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Data
     return json(arena, .ok, page);
 }
 
-const Dims = struct { width: ?u32, height: ?u32 };
+const Dims = struct { width: ?u32, height: ?u32, pages: ?u32 = null };
 
 /// Image dimensions by content hash, from the items' media metadata.
 fn dimsOf(arena: std.mem.Allocator, deps: *Deps, scope: anytype, hashes: []const []const u8) HandleError!std.StringHashMapUnmanaged(Dims) {
@@ -1095,12 +1095,14 @@ fn dimsOf(arena: std.mem.Allocator, deps: *Deps, scope: anytype, hashes: []const
         hash: []const u8,
         width: ?i32,
         height: ?i32,
+        pages: ?i32,
     };
-    const metas = deps.db.raw(Meta, scope, "SELECT encode(item_hash, 'hex') AS hash, (meta->>'width')::int AS width, (meta->>'height')::int AS height " ++
+    const metas = deps.db.raw(Meta, scope, "SELECT encode(item_hash, 'hex') AS hash, (meta->>'width')::int AS width, (meta->>'height')::int AS height, (meta->>'pages')::int AS pages " ++
         "FROM items WHERE item_hash IN (SELECT decode(h, 'hex') FROM unnest(string_to_array($1, ',')) h)", .{joined.items}) catch return error.Db;
     for (metas) |m| try out.put(arena, try arena.dupe(u8, m.hash), .{
         .width = if (m.width) |w| (if (w > 0) @intCast(w) else null) else null,
         .height = if (m.height) |h| (if (h > 0) @intCast(h) else null) else null,
+        .pages = if (m.pages) |n| (if (n > 0) @intCast(n) else null) else null,
     });
     return out;
 }
@@ -1117,11 +1119,13 @@ fn withMedia(arena: std.mem.Allocator, deps: *Deps, scope: anytype, answer: brow
     for (items) |*item| if (dims.get(item.hash)) |d| {
         item.width = d.width;
         item.height = d.height;
+        item.pages = d.pages;
     };
     out.items = items;
     if (out.open) |*item| if (dims.get(item.hash)) |d| {
         item.width = d.width;
         item.height = d.height;
+        item.pages = d.pages;
     };
     return out;
 }

@@ -232,7 +232,7 @@ export function BrowseTab({
         <p className="quiet data" aria-live="polite">
           {filtered
             ? `${matched.toLocaleString()} of ${total.toLocaleString()} items`
-            : `${total.toLocaleString()} items`}
+            : `${total.toLocaleString()} ${total === 1 ? 'item' : 'items'}`}
         </p>
         <button
           className="shortcuts-toggle data"
@@ -321,7 +321,7 @@ export function BrowseTab({
         </div>
       )}
 
-      {classes.length > 0 && (
+      {classes.length > 0 && mode !== 'sql' && (
         <div className="overlay-bar">
           <ul className="class-chips" aria-label="Annotation classes">
             {classes.map(({ name: cls, count }) => (
@@ -628,6 +628,12 @@ function ItemDrawer({
             </dd>
           </>
         )}
+        {item.pages ? (
+          <>
+            <dt>pages</dt>
+            <dd className="data">{item.pages.toLocaleString()}</dd>
+          </>
+        ) : null}
         <dt>blake3</dt>
         <dd>
           <HashChip hash={item.hash} />

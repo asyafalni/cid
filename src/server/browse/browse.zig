@@ -76,6 +76,8 @@ pub const Item = struct {
     /// Filled per page from the items' metadata (see the top of the file).
     width: ?u32 = null,
     height: ?u32 = null,
+    /// A PDF's page count, from the same metadata.
+    pages: ?u32 = null,
     annotations: []const Ann,
 };
 

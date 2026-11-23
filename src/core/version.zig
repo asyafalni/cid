@@ -348,9 +348,9 @@ pub const Stats = struct {
 /// 3: each type carries its bytes; 4: the count of identities. Statistics
 /// kept under an older version are aggregated again the first time they
 /// are read, and kept anew.
-pub const stats_version: u32 = 4;
+pub const stats_version: u32 = 5;
 
-const visual_types = "('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.mp4', '.mov', '.webm', '.mkv')";
+const visual_types = "('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.mp4', '.mov', '.webm', '.mkv', '.pdf')";
 
 /// The statistics aggregate over an item source and an annotation source
 /// (the state's CTEs, or a pass's temporary tables), after "WITH ".

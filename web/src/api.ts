@@ -172,6 +172,8 @@ export type StateItem = {
   item_id: string | null;
   width: number | null;
   height: number | null;
+  /** A PDF's page count, once the preview worker has read it. */
+  pages?: number | null;
 };
 
 export type StateAnnotation = {

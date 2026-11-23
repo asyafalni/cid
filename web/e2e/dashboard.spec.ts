@@ -1160,7 +1160,17 @@ test('a PDF shows its first page, drawn on the server', async ({ page }) => {
   const tile = page.getByRole('button', { name: /page\.pdf/ });
   await expect(tile.locator('img')).toBeVisible();
   await tile.click();
-  await expect(page.getByRole('complementary', { name: 'page.pdf' }).locator('img').first()).toBeVisible();
+  const drawer = page.getByRole('complementary', { name: 'page.pdf' });
+  await expect(drawer.locator('img').first()).toBeVisible();
+  // Its page count, never dimensions: a PDF is not an image.
+  await expect(drawer.locator('dt', { hasText: 'pages' })).toBeVisible();
+  await expect(drawer.locator('dt', { hasText: 'dimensions' })).toHaveCount(0);
+  // The page leads the dataset's card, as a picture would.
+  await page.goto('/');
+  await expect(page.locator('.ds-card', { hasText: 'e2e/datasets/docs' }).locator('.mosaic img')).toHaveCount(1);
+  // One item is one item.
+  await page.goto('/d/e2e/datasets/docs?view=browse');
+  await expect(page.getByText('1 item', { exact: true })).toBeVisible();
 });
 
 test('the SQL console runs a SELECT over the version, keeps it in the link, and shows items as tiles', async ({ page }) => {

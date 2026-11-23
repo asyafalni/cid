@@ -2138,11 +2138,17 @@
 
 .ds-card-foot {
   display: flex;
+  flex-wrap: wrap;
+  row-gap: var(--space-1);
   align-items: baseline;
   gap: var(--space-3);
   margin-top: auto;
   padding-top: var(--space-3);
   font-size: 0.8125rem;
+}
+
+.ds-card-foot > * {
+  white-space: nowrap;
 }
 
 /* The head's checks, a link of its own above the card's target area. */
@@ -3154,4 +3160,10 @@ button.tick-mark:hover {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
   gap: var(--space-2);
+}
+
+/* A PDF's thumbnail is its first page: cropped, keep its top, where the
+   title is, not its middle. */
+img[alt$='.pdf' i] {
+  object-position: top;
 }

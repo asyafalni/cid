@@ -147,7 +147,11 @@ Close the "behind" rows without giving up an "ahead" one.
   theme, 1024 and 390 px added: the Files tab overflowing a phone, "Show command" cut
   off at the end of the tabs, Browse's count adrift mid-toolbar. The measured
   overflow report is empty in both themes at every width; rerun it after any layout
-  change.) The first pass read every page in the light theme at 1440 px; the list is
+  change.) A second pass (2026-11-23) took the pages added since (Health, the SQL
+  console, a PDF and its drawer) and fixed what it found: "1 items"; the class chips
+  and overlay slider shown over the SQL console; a PDF tile cropped to its middle; no
+  page count in a PDF's drawer; a PDF never leading its card's mosaic; card feet
+  wrapping into three ragged lines once they carried health. The first pass read every page in the light theme at 1440 px; the list is
   below. Run
   `SCREENS=<folder> pnpm --dir web exec playwright test screens` with nothing else
   using the test database, read the pictures, and add to this list. The page names
