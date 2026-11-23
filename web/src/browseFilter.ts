@@ -4,7 +4,7 @@
 
 export type Filters = {
   /** Asked for; with none, the gallery, or the table when nothing on the first page has a preview. */
-  mode?: 'table' | 'gallery' | 'list';
+  mode?: 'table' | 'gallery' | 'list' | 'sql';
   q?: string;
   split?: string;
   /** Items carrying at least one annotation of this class. */
@@ -17,11 +17,13 @@ export type Filters = {
   attr?: string;
   /** An identity an annotation of the item names (`attrs.identity`), exactly. */
   identity?: string;
+  /** The SQL console's query (mode 'sql'), so a query is a link. */
+  sql?: string;
 };
 
 /** The URL spelling of each filter, for patches back to the router. */
 export type FilterPatch = {
-  mode?: 'table' | 'gallery' | 'list' | undefined;
+  mode?: 'table' | 'gallery' | 'list' | 'sql' | undefined;
   q?: string | undefined;
   split?: string | undefined;
   class?: string | undefined;
@@ -29,6 +31,7 @@ export type FilterPatch = {
   anns?: string | undefined;
   attr?: string | undefined;
   identity?: string | undefined;
+  sql?: string | undefined;
 };
 
 export function extOf(path: string): string {

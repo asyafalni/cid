@@ -121,7 +121,7 @@ Where cid stands against Hugging Face today:
 | Column histograms, click to filter | Yes | **Level:** a table's rows, each column's distribution above it, a click to filter (U6) |
 | Search inside text and string columns | Yes | **Behind:** paths only |
 | A link to one row of a table | Yes | **Behind:** a link to a file, not a row |
-| SQL over a version | Yes, in the browser | **Behind:** not built |
+| SQL over a version | Yes, in the browser | **Level:** on the server, sandboxed, any size (2026-11-23) |
 | Embedding the viewer elsewhere | Yes (iframe) | **Behind:** not built |
 | One line of code to load | `load_dataset(...)` | **Level** since C1: the same line, with `HF_ENDPOINT` set |
 
@@ -378,7 +378,8 @@ Trained on your-org/datasets/person-vehicle v4.2.0.
 ~~Per-dataset deploy keys~~ (done 2026-11-22: SSH, read or write, owners add them
 with `cid deploy-key`; docs/access.md) · the Health tab (~~cid's own checks~~ done
 2026-11-22, docs/dashboard.md 4.5) and Validator tiles (wait on the platform's report
-format) · the SQL console · PDF page images (`vips`) · ~~access from other git
+format) · ~~the SQL console~~ (done 2026-11-23: on the server, sandboxed; docs/dashboard.md
+4.3) · PDF page images (`vips`) · ~~access from other git
 hosts (GitHub first)~~ (done 2026-11-22: GitHub sync, create check and sign-in, one
 host per server; the live check, `tests/github_live.sh`, waits on a real token) · ~~DuckDB pinned for other platforms~~ (done 2026-11-21: Linux
 arm64 and macOS, built and tested in CI; Windows not yet) · dashboard Phase 3.

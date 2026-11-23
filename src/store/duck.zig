@@ -13,6 +13,9 @@ pub const Error = error{ OpenFailed, QueryFailed, OutOfMemory };
 pub const Limits = struct {
     /// The one directory queries may read and write files in.
     allowed_dir: []const u8,
+    /// Files, besides, that queries may read: exactly these (the SQL
+    /// console's two index files).
+    allowed_paths: []const []const u8 = &.{},
     memory_limit: []const u8 = "256MB",
     threads: u8 = 1,
 };
@@ -66,8 +69,22 @@ pub const Db = struct {
         }
         // A join larger than the memory ceiling spills here, inside the
         // folder, rather than failing.
-        const confine = std.fmt.allocPrintSentinel(arena, "SET allowed_directories = ['{0s}/']; SET temp_directory = '{0s}/.duckdb-spill'; " ++
-            "SET enable_external_access = false; SET lock_configuration = true;", .{quoted.items}, 0) catch return error.OutOfMemory;
+        var paths: std.ArrayList(u8) = .empty;
+        if (limits.allowed_paths.len > 0) {
+            paths.appendSlice(arena, "SET allowed_paths = [") catch return error.OutOfMemory;
+            for (limits.allowed_paths, 0..) |path, i| {
+                if (i > 0) paths.append(arena, ',') catch return error.OutOfMemory;
+                paths.append(arena, '\'') catch return error.OutOfMemory;
+                for (path) |ch| {
+                    if (ch == '\'') paths.append(arena, '\'') catch return error.OutOfMemory;
+                    paths.append(arena, ch) catch return error.OutOfMemory;
+                }
+                paths.append(arena, '\'') catch return error.OutOfMemory;
+            }
+            paths.appendSlice(arena, "]; ") catch return error.OutOfMemory;
+        }
+        const confine = std.fmt.allocPrintSentinel(arena, "SET allowed_directories = ['{0s}/']; {1s}SET temp_directory = '{0s}/.duckdb-spill'; " ++
+            "SET enable_external_access = false; SET lock_configuration = true;", .{ quoted.items, paths.items }, 0) catch return error.OutOfMemory;
         var locked: c.duckdb_result = undefined;
         defer c.duckdb_destroy_result(&locked);
         if (c.duckdb_query(self.conn, confine, &locked) != c.DuckDBSuccess) {
@@ -142,6 +159,53 @@ pub const Db = struct {
         return firstText(arena, &result);
     }
 
+    /// Stops the query running on this connection, from another thread.
+    pub fn interrupt(self: *Db) void {
+        c.duckdb_interrupt(self.conn);
+    }
+
+    /// A query someone wrote, checked before it runs: exactly one
+    /// statement, and that a SELECT (a WITH … SELECT is one), by DuckDB's
+    /// own reading of it, never by matching text. Its error, if any, is
+    /// theirs to read, so it is answered, not logged.
+    pub const Checked = union(enum) { select, not_select, invalid: []const u8 };
+
+    pub fn checkSelect(self: *Db, arena: std.mem.Allocator, sql: []const u8) Error!Checked {
+        // Parsed first, never bound: DuckDB serializes only SELECTs, so a
+        // DELETE on a view is "not a SELECT", not a binder's complaint, and
+        // two statements are two.
+        const parsed = (try self.scalarTextArgs(arena, "SELECT json_serialize_sql($1::VARCHAR)", &.{.{ .text = sql }})) orelse return error.QueryFailed;
+        const Tree = struct { @"error": bool = false, error_message: []const u8 = "", statements: []const std.json.Value = &.{} };
+        const tree = std.json.parseFromSliceLeaky(Tree, arena, parsed, .{ .ignore_unknown_fields = true }) catch return error.QueryFailed;
+        if (tree.@"error") return if (std.mem.indexOf(u8, tree.error_message, "Only SELECT") != null)
+            .not_select
+        else
+            .{ .invalid = tree.error_message };
+        if (tree.statements.len != 1) return .not_select;
+        const sql_z = arena.dupeSentinel(u8, sql, 0) catch return error.OutOfMemory;
+        var stmt: c.duckdb_prepared_statement = null;
+        defer c.duckdb_destroy_prepare(&stmt);
+        if (c.duckdb_prepare(self.conn, sql_z, &stmt) != c.DuckDBSuccess) {
+            const why = c.duckdb_prepare_error(stmt);
+            return .{ .invalid = arena.dupe(u8, if (why != null) std.mem.span(why) else "the query could not be read") catch return error.OutOfMemory };
+        }
+        return if (c.duckdb_prepared_statement_type(stmt) == c.DUCKDB_STATEMENT_TYPE_SELECT) .select else .not_select;
+    }
+
+    /// scalarText for a query someone wrote: its error answered, not logged.
+    pub const Quiet = union(enum) { text: ?[]const u8, failed: []const u8 };
+
+    pub fn scalarTextQuiet(self: *Db, arena: std.mem.Allocator, sql: []const u8) Error!Quiet {
+        const sql_z = arena.dupeSentinel(u8, sql, 0) catch return error.OutOfMemory;
+        var result: c.duckdb_result = undefined;
+        defer c.duckdb_destroy_result(&result);
+        if (c.duckdb_query(self.conn, sql_z, &result) != c.DuckDBSuccess) {
+            const why = c.duckdb_result_error(&result);
+            return .{ .failed = arena.dupe(u8, if (why != null) std.mem.span(why) else "the query failed") catch return error.OutOfMemory };
+        }
+        return .{ .text = try firstText(arena, &result) };
+    }
+
     fn firstText(arena: std.mem.Allocator, result: *c.duckdb_result) Error!?[]const u8 {
         if (c.duckdb_row_count(result) == 0 or c.duckdb_column_count(result) == 0) return null;
         if (c.duckdb_value_is_null(result, 0, 0)) return null;
@@ -171,4 +235,30 @@ test "a query runs under its limits, confined and locked" {
     // Bound values stay values: a quote is just a character.
     const echoed = try db.scalarTextArgs(arena, "SELECT $1::VARCHAR || '/' || ($2 + 1)::VARCHAR || '/' || coalesce($3::VARCHAR, 'null')", &.{ .{ .text = "it's'; DROP" }, .{ .int = 41 }, .{ .text = null } });
     try std.testing.expectEqualStrings("it's'; DROP/42/null", echoed.?);
+}
+
+test "a database that may read exactly two files, and only a SELECT" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(io, ".", arena);
+    try tmp.dir.writeFile(io, .{ .sub_path = "mine.csv", .data = "a\n1\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "other.csv", .data = "a\n2\n" });
+    try tmp.dir.createDirPath(io, "scratch");
+    const mine = try std.fmt.allocPrint(arena, "{s}/mine.csv", .{dir});
+    var db = try Db.open(arena, .{ .allowed_dir = try std.fmt.allocPrint(arena, "{s}/scratch", .{dir}), .allowed_paths = &.{mine} });
+    defer db.close();
+    const got = try db.scalarTextQuiet(arena, try std.fmt.allocPrint(arena, "SELECT a FROM read_csv('{s}')", .{mine}));
+    try std.testing.expectEqualStrings("1", got.text.?);
+    // Its neighbour in the same folder is out of reach, and said so.
+    const other = try db.scalarTextQuiet(arena, try std.fmt.allocPrint(arena, "SELECT a FROM read_csv('{s}/other.csv')", .{dir}));
+    try std.testing.expect(other == .failed);
+    try std.testing.expect(try db.checkSelect(arena, "WITH x AS (SELECT 1) SELECT * FROM x") == .select);
+    try std.testing.expect(try db.checkSelect(arena, "CREATE TABLE t (a int)") == .not_select);
+    try std.testing.expect(try db.checkSelect(arena, "COPY (SELECT 1) TO 'x.csv'") != .select);
+    try std.testing.expect(try db.checkSelect(arena, "SELECT 1; SELECT 2") != .select);
+    try std.testing.expect(try db.checkSelect(arena, "SELEC 1") == .invalid);
 }

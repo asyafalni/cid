@@ -38,6 +38,7 @@ const table_keys = @import("../tabular/keys.zig");
 const table_rows = @import("../tabular/rows.zig");
 const hf = @import("hf.zig");
 const browse_mod = @import("browse/browse.zig");
+const console_mod = @import("browse/console.zig");
 const bundle_mod = @import("../export/bundle.zig");
 const versions = @import("../core/version.zig");
 const health_mod = @import("../core/health.zig");
@@ -86,6 +87,8 @@ pub const Deps = struct {
     rowdiff_busy: std.atomic.Value(bool) = .init(false),
     /// A table being converted for its rows view (one at a time).
     table_busy: std.atomic.Value(bool) = .init(false),
+    /// A SQL console query running (one at a time, beside Browse's).
+    console_busy: std.atomic.Value(bool) = .init(false),
     /// The server's browse indexes, two Parquet files per version
     /// (named by commit id), kept here and in storage for releases.
     browse_dir: []const u8 = "/tmp/cid-browse",
@@ -284,6 +287,8 @@ fn handleInner(
         return deployKeys(arena, deps, scope, caller, ds, method, route, body);
     if (eql(method, "GET") and eql(route.action, "health"))
         return health(arena, deps, scope, ds, route);
+    if (eql(method, "POST") and eql(route.action, "sql"))
+        return sqlConsole(arena, deps, scope, ds, body);
     if (eql(method, "GET") and eql(route.action, "browse"))
         return browse(arena, deps, scope, ds, route);
     if (eql(method, "GET") and eql(route.action, "browse/size"))
@@ -807,6 +812,40 @@ fn tableStats(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset
         return json(arena, .ok, .{ .status = "skipped", .reason = @as(?[]const u8, "the stored statistics could not be read") });
     if (!ds.restricted) return json(arena, .ok, .{ .status = "done", .stats = stats, .withheld = false });
     return json(arena, .ok, .{ .status = "done", .stats = try shapeOnly(arena, stats), .withheld = true });
+}
+
+const SqlBody = struct { commit: []const u8, sql: []const u8 };
+
+/// The SQL console (browse/console.zig): one SELECT over a version's
+/// items and annotations, in a sandbox of its own, one query at a time.
+/// No console on a restricted dataset (docs/dashboard.md, 4.3): its
+/// annotations and paths are content, and a query could read them all.
+fn sqlConsole(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
+    const req = parseBody(SqlBody, arena, body) orelse return error.BadRequest;
+    if (ds.restricted)
+        return errorResponse(arena, .forbidden, "this dataset is restricted: it has no SQL console", "Browse it instead; its views and reveals are logged.");
+    const index = switch (try indexFor(arena, deps, scope, ds, req.commit)) {
+        .ready => |ix| ix,
+        .refused => |res| return res,
+    };
+    if (deps.console_busy.swap(true, .acquire))
+        return errorResponse(arena, .service_unavailable, "another SQL query is running", "Run yours again in a moment.");
+    defer deps.console_busy.store(false, .release);
+    // A scratch folder of its own, where only this query may spill.
+    var token: [8]u8 = undefined;
+    deps.io.random(&token);
+    const scratch = try std.fmt.allocPrint(arena, "{s}/.console/{x}", .{ index.dir, &token });
+    const cwd = std.Io.Dir.cwd();
+    cwd.createDirPath(deps.io, scratch) catch return error.Storage;
+    defer cwd.deleteTree(deps.io, scratch) catch {};
+    const answer = offload(deps, console_mod.run, .{ arena, deps.io, scratch, index.files, req.sql }) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.Storage,
+    };
+    return switch (answer) {
+        .result => |text| .{ .status = .ok, .body = text },
+        .refused => |why| errorResponse(arena, .unprocessable_entity, why, "Change the query, then run it again."),
+    };
 }
 
 /// A version's health (core/health.zig): its checks, marked by the fixed

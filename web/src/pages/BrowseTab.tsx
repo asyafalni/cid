@@ -20,6 +20,7 @@ import {
 import { humanBytes } from '../format';
 import { AnnotationOverlay } from '../overlays';
 import { classColor } from '../shapes';
+import { SqlConsole } from '../SqlConsole';
 import { timeline } from '../history';
 import { TableView } from '../TableView';
 import { Thumb } from '../Thumb';
@@ -64,7 +65,7 @@ export function BrowseTab({
   row?: string;
   onRow?: (row: string | undefined) => void;
 }) {
-  const setMode = (m: 'gallery' | 'table' | 'list') => onFilters({ mode: m });
+  const setMode = (m: 'gallery' | 'table' | 'list' | 'sql') => onFilters({ mode: m });
 
   // The search box commits to the URL after a pause, so typing a word is
   // one history entry, not one per letter.
@@ -192,7 +193,7 @@ export function BrowseTab({
   // version can have a preview (no picture, video or sound): a wall of
   // identical type tiles says less than a table of paths and sizes. Decided
   // by the version, not the page, so a filter never flips the view.
-  const mode: 'gallery' | 'table' | 'list' =
+  const mode: 'gallery' | 'table' | 'list' | 'sql' =
     filters.mode ?? (overview.types.length > 0 && !overview.types.some((t) => previewable.has(t.name)) ? 'table' : 'gallery');
   const total = first.total;
   const matched = first.matched;
@@ -211,7 +212,9 @@ export function BrowseTab({
     <div className="browse">
       <div className="browse-bar">
         <div className="format-picker format-picker--ui" role="radiogroup" aria-label="View">
-          {(['gallery', 'table', 'list'] as const).map((m) => (
+          {/* The SQL console: never on a restricted dataset (its paths and
+              annotations are content, and a query could read them all). */}
+          {(overview.restricted ? (['gallery', 'table', 'list'] as const) : (['gallery', 'table', 'list', 'sql'] as const)).map((m) => (
             <button
               key={m}
               role="radio"
@@ -244,7 +247,7 @@ export function BrowseTab({
 
       {help && <Shortcuts onClose={() => setHelp(false)} />}
 
-      {total > 0 && (
+      {total > 0 && mode !== 'sql' && (
         <div className="filter-bar" role="search">
           <input
             ref={searchRef}
@@ -356,7 +359,15 @@ export function BrowseTab({
         </div>
       )}
 
-      {total === 0 ? (
+      {mode === 'sql' ? (
+        <SqlConsole
+          name={name}
+          commit={commit}
+          sql={filters.sql}
+          onSql={(sql) => onFilters({ sql })}
+          onOpenItem={onOpenItem}
+        />
+      ) : total === 0 ? (
         <div className="empty blueprint">
           <h2>This version is empty</h2>
           <p>Every item was deleted by this point in history.</p>
@@ -428,7 +439,7 @@ export function BrowseTab({
         <VirtualTable items={items} openItem={openItem} onOpenItem={onOpenItem} />
       )}
 
-      {pages.hasNextPage && (
+      {pages.hasNextPage && mode !== 'sql' && (
         <MoreItems
           shown={items.length}
           matched={matched}

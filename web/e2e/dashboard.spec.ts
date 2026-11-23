@@ -1147,6 +1147,33 @@ test('a link to one row opens the table there, marked, and a row\'s number makes
   await expect(page.getByRole('region', { name: 'Rows' })).toContainText('Row 4 is not among these rows');
 });
 
+test('the SQL console runs a SELECT over the version, keeps it in the link, and shows items as tiles', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/boxes?view=browse');
+  await page.getByRole('radio', { name: 'sql' }).click();
+  const console_ = page.getByRole('region', { name: 'SQL console' });
+  const input = console_.getByLabel('SQL query');
+  await input.fill("SELECT path, hash, annotations FROM items WHERE path LIKE 'frames/%'");
+  await input.press('Control+Enter');
+  await expect(page).toHaveURL(/mode=sql/);
+  await expect(page).toHaveURL(/sql=/);
+  await expect(console_.getByRole('status')).toContainText('1 row');
+  await expect(console_.getByRole('table')).toContainText('frames/street.png');
+  // The link opens the same query, already run.
+  await page.reload();
+  await expect(page.getByRole('region', { name: 'SQL console' }).getByRole('table')).toContainText('frames/street.png');
+  // Rows naming items, as tiles; a tile opens its item.
+  await page.getByRole('radio', { name: 'gallery' }).last().click();
+  await page.getByRole('region', { name: 'SQL console' }).getByRole('button', { name: /frames\/street\.png/ }).click();
+  await expect(page).toHaveURL(/item=frames(%2F|\/)street\.png/);
+  // Only a SELECT: anything else is refused in words.
+  await page.goto('/d/e2e/datasets/boxes?view=browse&mode=sql&sql=DELETE%20FROM%20items');
+  await expect(page.getByRole('alert')).toContainText('only a single SELECT');
+  // A restricted dataset has no console.
+  await page.goto('/d/e2e/datasets/faces?view=browse');
+  await expect(page.getByRole('radio', { name: 'sql' })).toHaveCount(0);
+});
+
 test('the Health tab marks each check, names what it found, and links to it', async ({ page }) => {
   await signIn(page);
   // attrs2 holds one picture twice: at v1.0.0 both in train (a duplicate),
@@ -1330,7 +1357,7 @@ test('a malformed CSV shows its own error, in words, and the rest of the dataset
   await expect(page.getByRole('row', { name: /tone\.wav/ })).toBeVisible();
 });
 
-const axePages = ['/no/such/page', '/d/e2e/datasets/nope', '/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/d/e2e/datasets/media?view=browse&mode=list', '/d/e2e/datasets/attrs2?view=health&release=v1.1.0', '/keys', '/tokens'];
+const axePages = ['/no/such/page', '/d/e2e/datasets/nope', '/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/d/e2e/datasets/media?view=browse&mode=list', '/d/e2e/datasets/attrs2?view=health&release=v1.1.0', '/d/e2e/datasets/boxes?view=browse&mode=sql&sql=SELECT%20split%2C%20count(*)%20FROM%20items%20GROUP%20BY%20split', '/keys', '/tokens'];
 
 // Both themes: Daybreak as Playwright's default light scheme, Night flight
 // as the dark one. Each must pass on its own (docs/dashboard.md §3.4).

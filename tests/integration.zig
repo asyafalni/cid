@@ -5123,6 +5123,28 @@ test "the Hugging Face door: a file dataset's releases, files and trees, as hugg
         try std.testing.expectEqual(@as(usize, 100), h.heat.len);
         try std.testing.expectEqual(@as(u64, 3), h.heat[0]);
     }
+    // The SQL console over the same version: a SELECT, answered as rows;
+    // anything else refused in words; a restricted dataset has none.
+    {
+        const v1 = (try db.rawOne([]const u8, &fscope, "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = 'v1.0.0'", .{ann_id})).?;
+        const ask = struct {
+            fn sql(a: std.mem.Allocator, d: *cid.api.Deps, sc: anytype, b: []const u8, commit: []const u8, q: []const u8) !cid.api.Response {
+                const body = try std.fmt.allocPrint(a, "{f}", .{std.json.fmt(.{ .commit = commit, .sql = q }, .{})});
+                return cid.api.handle(a, d, sc, "POST", "/v0/datasets/test/datasets/hfann/-/sql", b, body);
+            }
+        }.sql;
+        const got = try ask(arena, &deps, &scope, bearer, v1, "SELECT split, count(*) AS n FROM items GROUP BY split ORDER BY split");
+        try std.testing.expectEqual(std.http.Status.ok, got.status);
+        try std.testing.expect(std.mem.indexOf(u8, got.body, "\"split\":\"train\",\"n\":1") != null);
+        const boxes = try ask(arena, &deps, &scope, bearer, v1, "SELECT count(*) AS boxes FROM annotations WHERE kind = 'box'");
+        try std.testing.expect(std.mem.indexOf(u8, boxes.body, "\"boxes\":3") != null);
+        const drop = try ask(arena, &deps, &scope, bearer, v1, "DELETE FROM items");
+        try std.testing.expectEqual(std.http.Status.unprocessable_entity, drop.status);
+        _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE dataset_id = $1::uuid", .{ann_id});
+        const hidden = try ask(arena, &deps, &scope, bearer, v1, "SELECT count(*) FROM items");
+        _ = try db.exec(&fscope, "UPDATE datasets SET restricted = false WHERE dataset_id = $1::uuid", .{ann_id});
+        try std.testing.expectEqual(std.http.Status.forbidden, hidden.status);
+    }
 
     const ann_readme = hfCall(arena, &deps, &scope, "GET", "/datasets/test/datasets__hfann/resolve/v1.0.0/README.md", bearer, "");
     try std.testing.expectEqual(std.http.Status.ok, ann_readme.status);

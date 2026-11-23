@@ -34,6 +34,7 @@ pub const api = @import("server/api.zig");
 pub const hf = @import("server/hf.zig");
 pub const serve = @import("server/serve.zig");
 pub const browse = @import("server/browse/browse.zig");
+pub const console = @import("server/browse/console.zig");
 pub const signin = @import("server/signin.zig");
 pub const migrate = @import("core/migrate.zig");
 pub const release = @import("core/release.zig");
@@ -106,6 +107,7 @@ test {
     _ = api;
     _ = serve;
     _ = browse;
+    _ = console;
     _ = signin;
     _ = migrate;
     _ = release;

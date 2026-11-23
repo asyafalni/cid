@@ -40,8 +40,7 @@ only).
 **Not built yet** (the spec below says so where it applies): the health badge and the
 Validator's tiles (the Health tab's own checks are built); card completeness; keyboard shortcuts outside Browse (besides `⌘K`);
 charts and gauges; PDF page
-images (`vips`); the SQL console; semantic
-search.
+images (`vips`); semantic search.
 
 **Parked, needs a decision first:** editing the card and making releases from the
 dashboard.
@@ -405,12 +404,24 @@ Every dataset page (all five tabs) shares one header and the release tape.
   rule) and attribute fields.
 - **Virtualised infinite scroll** (built): the next page loads as its button scrolls
   into view; no 100-row pages.
-- *Phase 2, not built:* **SQL console**: DuckDB SQL against the release manifest,
-  results as a table and, for items, as a gallery. The console is sandboxed, non-negotiably:
-  `enable_external_access = false` with the setting locked, only the manifest views
-  attached (never raw files, never other datasets), per-query time and memory limits,
-  and read-only. Restricted datasets get no SQL console until it obeys the same blur
-  and reveal rules as the gallery.
+- *Built (2026-11-23):* **SQL console**, Browse's fourth view (`mode=sql`, the query in
+  the URL as `sql=`, so a query is a link and opens already run): one `SELECT` over the
+  version on screen, as two views, `items` (path, hash, size, split, type, item_id,
+  annotations, classes, attributes, identities) and `annotations` (id, item_id, kind,
+  class, geometry, attributes, author, policy_ver); results as a table, and as tiles
+  when they name items (a `path` and a `hash`), each opening its item. Run on the
+  server (decided 2026-11-23: nothing to download, works at 1M items), sandboxed,
+  non-negotiably (`src/server/browse/console.zig`): a fresh in-memory DuckDB per query
+  that may read exactly the version's two index files (`allowed_paths`) and write only
+  in a scratch folder of its own, external access off and the configuration locked;
+  exactly one statement, and that a SELECT, parsed before it is bound
+  (`json_serialize_sql`) and checked again by DuckDB's statement type; one thread,
+  256 MB, stopped at 10 s; at most 1,000 rows and about 2 MB back, said when cut; one
+  console query at a time, beside Browse's queue, never in it. A query's errors are
+  answered to its writer, never logged. Restricted datasets have no console. Measured
+  at 1M items and 1.5M boxes (2026-11-23): counts by split or class 62–66 ms, the
+  annotations joined to their items 0.47 s, a runaway cross join stopped at 10.0 s,
+  server memory at most 186 MB.
 
 ### 4.4 Dataset › Releases & history
 - **Timeline.** *Built:* the same `main` commits as the tape, newest first, each with

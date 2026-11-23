@@ -513,7 +513,19 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new ApiError(res.status, `the server answered ${res.status}`, null);
+  if (!res.ok) {
+    // The server's own words, as for a GET: what went wrong, what to do.
+    let message = `the server answered ${res.status}`;
+    let next: string | null = null;
+    try {
+      const body = (await res.json()) as { error?: string; next?: string };
+      if (body.error) message = body.error;
+      if (body.next) next = body.next;
+    } catch {
+      // not JSON: keep the status message
+    }
+    throw new ApiError(res.status, message, next);
+  }
   return (await res.json()) as T;
 }
 
@@ -638,4 +650,17 @@ export type Health = {
 /** A version's health (docs/dashboard.md, 4.5), computed once and kept. */
 export function getHealth(name: string, commit: string): Promise<Health> {
   return request(`/v0/datasets/${name}/-/health?commit=${commit}`);
+}
+
+/** A SQL console result: the query's columns and at most 1,000 rows. */
+export type SqlResult = {
+  columns: { name: string; type: string }[];
+  rows: Record<string, unknown>[];
+  /** Rows were left off: more than 1,000, or more than about 2 MB. */
+  truncated: boolean;
+};
+
+/** One SELECT over a version's `items` and `annotations` (on the server, sandboxed). */
+export function runSql(name: string, commit: string, sql: string): Promise<SqlResult> {
+  return post(`/v0/datasets/${name}/-/sql`, { commit, sql });
 }
