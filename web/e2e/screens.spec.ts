@@ -63,6 +63,8 @@ const pages: [string, string][] = [
   ['sql-refused', `${boxes}?view=browse&mode=sql&sql=${encodeURIComponent('DELETE FROM items')}`],
   ['browse-gallery-pdf', '/d/e2e/datasets/docs?view=browse'],
   ['item-pdf', '/d/e2e/datasets/docs?view=browse&item=page.pdf'],
+  ['item-clip', '/d/e2e/datasets/clips?view=browse&item=talk%2Fclip.wav'],
+  ['item-spans', '/d/e2e/datasets/clips?view=browse&item=docs%2Fnotes.txt'],
   ['releases-same', `${demo}?view=releases&a=v1.0.0&b=v1.0.0`],
   ['files-root', `${demo}?view=files`],
   ['files-folder', `${many}?view=files&dir=rows`],

@@ -208,7 +208,7 @@ strictly above `floor` (the random tail is stepped when the clock has not moved)
 `cid_rev_time(rev)` reads the millisecond inside an id, so a search for revisions
 above an id can start at that moment.
 
-### Geometry, per kind (image annotations)
+### Geometry, per kind
 
 Coordinates are pixels of the item as stored (its recorded `width` × `height`), origin
 top-left. The platform writes these shapes; the dashboard draws them and the exports
@@ -223,6 +223,20 @@ read them, so both sides hold to exactly this:
 
 COCO RLE was chosen so a mask stays a few hundred bytes of `jsonb` and a COCO export
 needs no conversion; every detection tool reads it.
+
+Annotations on time and text (decided 2026-11-24) are ranges, not pixels:
+
+| kind | geometry |
+|---|---|
+| `segment` | `{"start": 1.25, "end": 3.5}` — seconds from the start of the audio or video, `end` not before `start` |
+| `transcript` | `{"start": 1.25, "end": 3.5, "text": "hello there"}` — a segment with its words: the words are the annotation, so they live in the geometry, not in `attrs` |
+| `span` | `{"start": 120, "end": 134}` — Unicode code points into the file's text read as UTF-8, from its first (a byte-order mark counts), `end` exclusive and after `start` |
+
+Code points, not bytes, so a span can be checked by eye ("naïve" is five, whatever its
+bytes) and Python's `text[start:end]` reads it back exactly. A track across video frames is
+not a kind of its own: it is boxes sharing an `attrs.track` id. The dashboard draws
+segments as lanes under the player and the transcript as lines (each seeks the player), and marks spans in
+the text; a range it cannot read is counted and said, never guessed.
 
 ---
 

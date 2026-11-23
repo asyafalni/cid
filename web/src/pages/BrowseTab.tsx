@@ -20,7 +20,9 @@ import {
 } from '../api';
 import { humanBytes } from '../format';
 import { AnnotationOverlay } from '../overlays';
-import { classColor } from '../shapes';
+import { classColor, clock, parseSpan, parseTime } from '../shapes';
+import { MediaTimeline } from '../MediaTimeline';
+import { SpannedText } from '../SpannedText';
 import { SqlConsole } from '../SqlConsole';
 import { timeline } from '../history';
 import { TableView } from '../TableView';
@@ -555,6 +557,8 @@ function ItemDrawer({
   const [revealing, setRevealing] = useState(false);
   const url = restricted ? revealed?.download : download.data?.downloads[0]?.url;
   const shownThumb = revealed?.thumb ?? thumb;
+  const [media, setMedia] = useState<HTMLMediaElement | null>(null);
+  const timed = isVideo(item.path) || isAudio(item.path);
 
   return (
     <aside className="drawer panel" aria-label={item.path}>
@@ -566,7 +570,7 @@ function ItemDrawer({
       </div>
       {isVideo(item.path) && url ? (
         // Video plays where it is, its poster the thumbnail.
-        <video className="drawer-media" controls preload="metadata" poster={shownThumb} src={url}>
+        <video ref={setMedia} className="drawer-media" controls preload="metadata" poster={shownThumb} src={url}>
           <track kind="captions" />
         </video>
       ) : isAudio(item.path) ? (
@@ -577,7 +581,7 @@ function ItemDrawer({
           ) : (
             <p className="quiet">The waveform appears when the preview worker reaches this file.</p>
           )}
-          {url && <audio controls preload="none" src={url} aria-label={item.path} />}
+          {url && <audio ref={setMedia} controls preload="none" src={url} aria-label={item.path} />}
         </div>
       ) : extOf(item.path) === '.pdf' ? (
         <PdfView name={name} hash={item.hash} path={item.path} thumb={shownThumb} />
@@ -612,8 +616,16 @@ function ItemDrawer({
           onRow={onRow}
         />
       ) : (
-        <TextView name={name} path={item.path} hash={item.hash} revealed={revealed?.text} />
+        <TextView
+          name={name}
+          path={item.path}
+          hash={item.hash}
+          revealed={revealed?.text}
+          annotations={annotations}
+          hidden={hidden}
+        />
       )}
+      {timed && <MediaTimeline annotations={annotations} hidden={hidden} media={url ? media : null} />}
       <dl className="drawer-facts">
         <dt>size</dt>
         <dd className="data">{humanBytes(item.size)}</dd>
@@ -653,6 +665,7 @@ function ItemDrawer({
                 <li key={a.id}>
                   <span className="class-dot" style={{ background: classColor(a.class) }} />
                   <span className="chip">{a.kind ?? '?'}</span> {a.class ?? '—'}
+                  <AnnWhere a={a} />
                   <span className="quiet"> — {a.author}</span>
                 </li>
               ))}
@@ -1227,11 +1240,15 @@ function TextView({
   path,
   hash,
   revealed,
+  annotations,
+  hidden,
 }: {
   name: string;
   path: string;
   hash: string;
   revealed: TextHead | null | undefined;
+  annotations: StateAnnotation[];
+  hidden: ReadonlySet<string>;
 }) {
   const answer = useQuery({ queryKey: ['text', name, hash], queryFn: () => getText(name, hash) });
   const head = revealed ?? answer.data;
@@ -1248,7 +1265,11 @@ function TextView({
     return <NoPreview path={path} why="A binary file: no preview for its type; the bytes are one click away." />;
   return (
     <section className="drawer-text" aria-label="Text">
-      <pre className="data">{head.text}</pre>
+      {annotations.some((a) => a.kind === 'span') ? (
+        <SpannedText text={head.text} annotations={annotations} hidden={hidden} />
+      ) : (
+        <pre className="data">{head.text}</pre>
+      )}
       {head.truncated && (
         <p className="quiet">
           The first {humanBytes(head.text.length)} of {humanBytes(head.size)}; download the file for the rest.
@@ -1256,6 +1277,25 @@ function TextView({
       )}
     </section>
   );
+}
+
+// Where an annotation sits, beside its class in the drawer's list, for
+// the kinds whose place is not drawn on a picture: a time range, a
+// transcript's words, a span's code points.
+function AnnWhere({ a }: { a: StateAnnotation }) {
+  const t = parseTime(a);
+  if (t) {
+    return (
+      <span className="data">
+        {' '}
+        {clock(t.start)}–{clock(t.end)}
+        {t.text !== null && <span className="ann-text"> “{t.text}”</span>}
+      </span>
+    );
+  }
+  const s = parseSpan(a);
+  if (s) return <span className="data"> {`characters ${s.start.toLocaleString()}–${s.end.toLocaleString()}`}</span>;
+  return null;
 }
 
 function NoPreview({ path, why }: { path: string; why: string }) {

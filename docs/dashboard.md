@@ -701,8 +701,15 @@ poster. Anything else that is text opens as text: its first 64 KB, read with a r
 GET (withheld in a restricted dataset until a logged reveal); a binary file says so in
 words.
 
-*Not built yet in Phase 2:* transcript segments on audio, the video segment/track
-timeline, text span highlights, the Validator's health tiles (they wait on its report format), the card completeness
+*Built (2026-11-24):* annotations on time and text (geometry in
+`docs/data-model.md`). Under an audio or video item's player, each class's segments
+lie on a lane of their own and the transcript reads as lines; a segment or a line
+plays from where it starts, and the line being heard is marked. A text item's spans
+are marked in their class's colour, counted in code points; a span past the first
+64 KB shown is counted, a range that cannot be read is said, and the rest still show.
+
+*Not built yet in Phase 2:* tracks drawn across a video's frames (boxes sharing
+`attrs.track`), the Validator's health tiles (they wait on its report format), the card completeness
 checklist (it also needs card editing, a parked decision), and keyboard shortcuts
 outside Browse. The Health tab's own checks and the SQL console are built (§4.5, §4.3).
 

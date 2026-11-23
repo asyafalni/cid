@@ -61,3 +61,38 @@ export function classColorValue(name: string | null): string {
   const v = classColor(name).slice('var('.length, -1);
   return getComputedStyle(document.documentElement).getPropertyValue(v).trim() || '#5bd8e0';
 }
+
+// Time and text annotations (docs/data-model.md, "Geometry, per kind"):
+// a `segment` or `transcript` is a time range in seconds, a transcript
+// with its words; a `span` is a range of Unicode code points into the
+// file's text, end exclusive.
+
+export type TimeRange = { start: number; end: number; text: string | null };
+
+export function parseTime(a: StateAnnotation): TimeRange | null {
+  if (a.kind !== 'segment' && a.kind !== 'transcript') return null;
+  const g = a.geometry;
+  if (g === null || typeof g !== 'object') return null;
+  const { start, end, text } = g as Record<string, unknown>;
+  if (typeof start !== 'number' || typeof end !== 'number' || !(start >= 0) || !(end >= start)) return null;
+  if (a.kind === 'transcript' && typeof text !== 'string') return null;
+  return { start, end, text: typeof text === 'string' ? text : null };
+}
+
+export function parseSpan(a: StateAnnotation): { start: number; end: number } | null {
+  if (a.kind !== 'span') return null;
+  const g = a.geometry;
+  if (g === null || typeof g !== 'object') return null;
+  const { start, end } = g as Record<string, unknown>;
+  if (!Number.isInteger(start) || !Number.isInteger(end) || (start as number) < 0 || (end as number) <= (start as number)) return null;
+  return { start: start as number, end: end as number };
+}
+
+/** Seconds as people read a player's clock: 0:04.2, 1:02:03.0. */
+export function clock(seconds: number): string {
+  const tenths = Math.round(seconds * 10);
+  const h = Math.floor(tenths / 36000);
+  const m = Math.floor((tenths % 36000) / 600);
+  const s = ((tenths % 600) / 10).toFixed(1).padStart(4, '0');
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
+}

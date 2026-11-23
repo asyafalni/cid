@@ -448,6 +448,68 @@ function seedDocs(dir: string) {
   run(`${cid} push`, folder);
 }
 
+// Annotations that are not drawn on a picture, the platform's way: a
+// six-second clip with segments and transcript lines (one segment whose
+// end comes before its start, which must not break the rest), and a note
+// with a span over "naïve", counted in code points.
+function seedClips(dir: string) {
+  const name = 'e2e/datasets/clips';
+  const created = api('POST', '/v0/datasets', { name, kind: 'annotated', git_url: 'g@h:clips.git' }) as {
+    dataset_id?: string;
+  };
+  const datasetId = created.dataset_id;
+  if (!datasetId) throw new Error('could not create the clips dataset');
+  const wav = join(dir, 'clip.wav');
+  run(`ffmpeg -nostdin -loglevel error -f lavfi -i sine=frequency=440:duration=6 -y ${wav}`);
+  const txt = join(dir, 'clip-notes.txt');
+  writeFileSync(txt, readFileSync(join(resolve(here, '../../tests/fixtures'), 'notes.txt')));
+  const text = readFileSync(txt, 'utf8');
+  const at = Array.from(text.slice(0, text.indexOf('naïve'))).length;
+  const files = [
+    { file: wav, path: 'talk/clip.wav', type: 'audio/wav' },
+    { file: txt, path: 'docs/notes.txt', type: 'text/plain' },
+  ].map((f) => ({ ...f, hash: hashOf(f.file), size: statSync(f.file).size }));
+  const check = api('POST', `/v0/datasets/${name}/-/check-hashes`, { hashes: files.map((f) => f.hash) }) as {
+    missing: { hash: string; url: string }[];
+  };
+  for (const m of check.missing) run(`curl -s -X PUT --data-binary @${files.find((f) => f.hash === m.hash)!.file} '${m.url}'`);
+  api('POST', `/v0/datasets/${name}/-/register-items`, {
+    items: files.map((f) => ({ hash: f.hash, size: f.size, media_type: f.type })),
+  });
+  const anns: Record<string, [string, string, unknown][]> = {
+    'talk/clip.wav': [
+      ['segment', 'speech', { start: 0.5, end: 2 }],
+      ['segment', 'music', { start: 3, end: 5.5 }],
+      ['segment', 'music', { start: 4, end: 1 }],
+      ['transcript', 'speech', { start: 0.5, end: 2, text: 'hello there' }],
+      ['transcript', 'speech', { start: 3, end: 4, text: 'and then a tune' }],
+    ],
+    'docs/notes.txt': [
+      ['span', 'word', { start: at, end: at + 5 }],
+      ['span', 'word', { start: 100000, end: 100004 }],
+    ],
+  };
+  let sql = '';
+  for (const f of files) {
+    const itemId = uuid7();
+    sql += `
+      INSERT INTO item_revisions (rev_id, ts, dataset_id, branch, path, op, item_id, item_hash, split, author)
+      VALUES ('${uuid7()}'::uuid, now(), '${datasetId}'::uuid, 'main', '${f.path}', 'add',
+              '${itemId}'::uuid, decode('${f.hash}', 'hex'), 'train', 'agent:annotator');
+      INSERT INTO dataset_items (item_id, dataset_id) VALUES ('${itemId}'::uuid, '${datasetId}'::uuid)
+        ON CONFLICT (item_id) DO NOTHING;`;
+    for (const [kind, cls, geometry] of anns[f.path]) {
+      sql += `
+      INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id, item_id, op, kind, class, geometry, attrs, author, policy_ver)
+      VALUES ('${uuid7()}'::uuid, now(), '${datasetId}'::uuid, 'main', '${uuid7()}'::uuid, '${itemId}'::uuid,
+              'create', '${kind}', '${cls}', '${JSON.stringify(geometry).replace(/'/g, "''")}'::jsonb, NULL, 'agent:annotator', 'p1');`;
+    }
+  }
+  psql(sql);
+  api('POST', `/v0/datasets/${name}/-/commit`, { message: 'a clip and a note', author: 'agent:annotator' });
+  api('POST', `/v0/datasets/${name}/-/tag`, { name: 'v1.0.0' });
+}
+
 // A model: a file dataset by another name, made with `cid init --model`.
 function seedModel(dir: string) {
   const model = join(dir, 'model');
@@ -532,6 +594,7 @@ export default function setup() {
     if (!already.includes('e2e/datasets/tables')) seedTables(dir);
     if (!already.includes('e2e/datasets/attrs2')) seedAttrs(dir);
     if (!already.includes('e2e/datasets/docs')) seedDocs(dir);
+    if (!already.includes('e2e/datasets/clips')) seedClips(dir);
     if (!already.includes('e2e/datasets/many')) seedMany(dir);
     const manyLog = run(`curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/many/-/log -H "Authorization: Bearer ${token}"`);
     if (!manyLog.includes('one more row')) seedManyUnreleased(dir);

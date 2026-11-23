@@ -1176,6 +1176,34 @@ test('a PDF shows its first page, drawn on the server', async ({ page }) => {
   await expect(page.getByText('1 item', { exact: true })).toBeVisible();
 });
 
+test('a clip shows its segments and transcript on a timeline, and a note its spans', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/clips?view=browse&item=talk%2Fclip.wav');
+  const drawer = page.getByRole('complementary', { name: 'talk/clip.wav' });
+  const timeline = drawer.getByRole('region', { name: 'Timeline' });
+  // One lane per class, each segment where it falls, named in words.
+  await expect(timeline.getByRole('button', { name: 'speech, 0:00.5 to 0:02.0' })).toBeVisible();
+  await expect(timeline.getByRole('button', { name: 'music, 0:03.0 to 0:05.5' })).toBeVisible();
+  // A segment whose end comes first is said, and breaks nothing else.
+  await expect(timeline).toContainText('One time annotation could not be read');
+  // The transcript, as lines; a line plays from where it starts.
+  const transcript = timeline.getByRole('list', { name: 'Transcript' });
+  await expect(transcript.getByRole('listitem')).toHaveCount(2);
+  await transcript.getByRole('button', { name: /and then a tune/ }).click();
+  await expect
+    .poll(() => drawer.locator('audio').evaluate((a: HTMLAudioElement) => a.currentTime))
+    .toBeGreaterThanOrEqual(3);
+  // The list beside them says when.
+  await expect(drawer.getByRole('region', { name: 'Annotations' })).toContainText('0:00.5–0:02.0');
+
+  // A note's span marks exactly its five code points, "naïve".
+  await page.goto('/d/e2e/datasets/clips?view=browse&item=docs%2Fnotes.txt');
+  const note = page.getByRole('complementary', { name: 'docs/notes.txt' });
+  await expect(note.locator('mark')).toHaveText('naïve');
+  await expect(note.locator('mark')).toHaveAttribute('title', 'word');
+  await expect(note).toContainText('One span lies past the part shown');
+});
+
 test('the SQL console runs a SELECT over the version, keeps it in the link, and shows items as tiles', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/boxes?view=browse');
