@@ -138,8 +138,8 @@ fn collect(gpa: std.mem.Allocator, db: *dbx.sql.Db, s3: *blob.Client, days: i64,
             _ = tx.exec(&batch, "INSERT INTO collected_items (item_hash) VALUES (decode($1, 'hex'))", .{r.hash_hex}) catch return error.Db;
             _ = tx.exec(&batch, "DELETE FROM previews WHERE item_hash = decode($1, 'hex')", .{r.hash_hex}) catch return error.Db;
             const key = try content_hash.itemKey(arena, r.hash_hex);
-            inline for (.{ worker.thumbKey, worker.blurKey }) |keyOf| {
-                s3.deleteObject(&batch, try keyOf(arena, r.hash_hex)) catch |err| switch (err) {
+            for (try worker.previewKeys(arena, r.hash_hex)) |preview_key| {
+                s3.deleteObject(&batch, preview_key) catch |err| switch (err) {
                     error.NotFound => {},
                     else => return error.Storage,
                 };

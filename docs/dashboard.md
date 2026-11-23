@@ -39,8 +39,7 @@ only).
 
 **Not built yet** (the spec below says so where it applies): the health badge and the
 Validator's tiles (the Health tab's own checks are built); card completeness; keyboard shortcuts outside Browse (besides `⌘K`);
-charts and gauges; a PDF's other pages (its first is built);
-semantic search.
+charts and gauges; semantic search.
 
 **Parked, needs a decision first:** editing the card and making releases from the
 dashboard.
@@ -610,7 +609,12 @@ command shows it.
   discipline: nice, a timeout, output limits, no shell) and thumbnailed like a picture;
   its page count is kept in the item's metadata, never a width or height, so no export
   takes it for an image. A server without vips leaves PDFs as type tiles, the reason in
-  words. *Planned:* short video previews, and a PDF's other pages in the drawer.
+  words. The worker also draws a PDF's first ten pages at 640 px
+  (`previews/<aa>/<hex>/page-NN.webp`), which the drawer shows one under another,
+  each named "page 3 of 12", saying when a longer document has more ("the first 10
+  of 12 pages; download the file for the rest"). Never for a restricted dataset: a
+  document's pages are its text, withheld as its text is. Purge and cleanup delete
+  them with the thumbnail. *Planned:* short video previews.
   **Generation is ingest-driven, never request-driven**: a page view can only read
   previews that exist (or show a placeholder), so a thousand concurrent viewers cost
   object reads, not ffmpeg runs. The queue is keyed by content hash — one build per
@@ -698,8 +702,7 @@ GET (withheld in a restricted dataset until a logged reveal); a binary file says
 words.
 
 *Not built yet in Phase 2:* transcript segments on audio, the video segment/track
-timeline, text span highlights, a PDF's pages past its first,
-the Validator's health tiles (they wait on its report format), the card completeness
+timeline, text span highlights, the Validator's health tiles (they wait on its report format), the card completeness
 checklist (it also needs card editing, a parked decision), and keyboard shortcuts
 outside Browse. The Health tab's own checks and the SQL console are built (§4.5, §4.3).
 

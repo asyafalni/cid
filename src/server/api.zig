@@ -279,6 +279,8 @@ fn handleInner(
 
     if (eql(method, "GET") and eql(route.action, "text"))
         return textHead(arena, deps, scope, ds, route.queryParam("hash") orelse "");
+    if (eql(method, "GET") and eql(route.action, "pages"))
+        return pdfPages(arena, deps, scope, ds, route.queryParam("hash") orelse "");
     if (eql(method, "GET") and eql(route.action, "table"))
         return tableStats(arena, deps, scope, ds, route.queryParam("hash") orelse "");
     if (eql(method, "GET") and eql(route.action, "rows"))
@@ -1538,6 +1540,30 @@ fn textHead(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, 
         return errorResponse(arena, .not_found, "no such item in this dataset", "Pick the item from this dataset's Browse view.");
     if (ds.restricted) return json(arena, .ok, .{ .withheld = true, .size = here.size_bytes });
     return json(arena, .ok, try readTextHead(arena, deps, scope, hash, @intCast(here.size_bytes)));
+}
+
+/// A PDF's pages the worker drew (at most `max_pages`), as presigned
+/// URLs, with its page count. Only pages that already exist: nothing is
+/// drawn on request. Never for a restricted dataset: its pages are its
+/// text, withheld as the drawer's text is.
+fn pdfPages(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, hash: []const u8) HandleError!Response {
+    if (!validHashHex(hash)) return error.BadRequest;
+    const Here = struct {
+        pub const nilo_table = .projection;
+        pages: ?i32,
+        drawn: ?i32,
+    };
+    const here = (deps.db.rawOne(Here, scope, "SELECT (i.meta->>'pages')::int AS pages, (i.meta->>'page_images')::int AS drawn FROM items i " ++
+        "WHERE i.item_hash = decode($1, 'hex') AND EXISTS " ++
+        "(SELECT 1 FROM item_revisions r WHERE r.dataset_id = $2::uuid AND r.item_hash = i.item_hash)", .{ hash, ds.id }) catch return error.Db) orelse
+        return errorResponse(arena, .not_found, "no such item in this dataset", "Pick the item from this dataset's Browse view.");
+    const total: u32 = if (here.pages) |n| (if (n > 0) @intCast(n) else 0) else 0;
+    if (ds.restricted) return json(arena, .ok, .{ .pages = total, .urls = &[_][]const u8{}, .withheld = true });
+    const drawn: u32 = if (here.drawn) |n| @min(@as(u32, @intCast(@max(n, 0))), preview_worker.max_pages) else 0;
+    const urls = try arena.alloc([]const u8, drawn);
+    for (urls, 0..) |*u, i|
+        u.* = deps.s3.presignGet(scope, preview_worker.pageKey(arena, hash, @intCast(i)) catch return error.OutOfMemory, presign_secs) catch return error.Storage;
+    return json(arena, .ok, .{ .pages = total, .urls = urls, .withheld = false });
 }
 
 fn isPictureOrSound(media_type: []const u8) bool {

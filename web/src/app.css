@@ -3167,3 +3167,24 @@ button.tick-mark:hover {
 img[alt$='.pdf' i] {
   object-position: top;
 }
+
+/* A PDF's pages in the drawer: each a sheet, one under another. */
+.pdf-pages {
+  display: grid;
+  gap: var(--space-3);
+}
+.pdf-page {
+  margin: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+.pdf-page img {
+  width: 100%;
+  height: auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+}
+.pdf-page figcaption {
+  font-size: 0.75rem;
+}

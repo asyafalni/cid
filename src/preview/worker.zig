@@ -44,6 +44,23 @@ pub fn thumbKey(arena: std.mem.Allocator, hash_hex: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "previews/{s}/{s}/thumb.webp", .{ hash_hex[0..2], hash_hex });
 }
 
+/// A PDF's page drawn for the drawer, from 0; only the first `max_pages`.
+pub fn pageKey(arena: std.mem.Allocator, hash_hex: []const u8, page: u32) ![]const u8 {
+    return std.fmt.allocPrint(arena, "previews/{s}/{s}/page-{d:0>2}.webp", .{ hash_hex[0..2], hash_hex, page });
+}
+
+/// The pages of a PDF drawn for the drawer, at most.
+pub const max_pages: u32 = 10;
+
+/// Every preview key one content may have: what purge and cleanup delete.
+pub fn previewKeys(arena: std.mem.Allocator, hash_hex: []const u8) ![]const []const u8 {
+    const keys = try arena.alloc([]const u8, 2 + max_pages);
+    keys[0] = try thumbKey(arena, hash_hex);
+    keys[1] = try blurKey(arena, hash_hex);
+    for (keys[2..], 0..) |*k, i| k.* = try pageKey(arena, hash_hex, @intCast(i));
+    return keys;
+}
+
 /// The blurred rendition beside it: the only preview of a restricted item
 /// the server presigns before a logged reveal (invariant 20).
 pub fn blurKey(arena: std.mem.Allocator, hash_hex: []const u8) ![]const u8 {
@@ -253,12 +270,30 @@ fn buildOne(
             .stdout_limit = .limited(1024),
             .stderr_limit = .limited(64 * 1024),
         }) catch null;
+        var pages: u32 = 1;
         if (counted) |c| if (c.term == .exited and c.term.exited == 0) {
-            if (std.fmt.parseInt(u32, std.mem.trim(u8, c.stdout, " \n"), 10)) |pages| {
-                const meta = std.fmt.allocPrint(arena, "{{\"pages\":{d}}}", .{pages}) catch return .{ .failed = "out of memory" };
-                _ = db.exec(scope, "UPDATE items SET meta = meta || $2::jsonb WHERE item_hash = decode($1, 'hex')", .{ hash, meta }) catch {};
-            } else |_| {}
+            pages = std.fmt.parseInt(u32, std.mem.trim(u8, c.stdout, " \n"), 10) catch 1;
         };
+        // Its first pages, drawn for the drawer, one at a time; a page vips
+        // cannot draw ends the run there, the ones before it kept.
+        var drawn_pages: u32 = 0;
+        while (drawn_pages < @min(pages, max_pages)) : (drawn_pages += 1) {
+            const one = std.fmt.allocPrint(arena, "{s}[page={d}]", .{ in_path, drawn_pages }) catch return .{ .failed = "out of memory" };
+            const out = std.fmt.allocPrint(arena, "{s}/{s}.page{d}.webp", .{ config.tmpdir, hash, drawn_pages }) catch return .{ .failed = "out of memory" };
+            defer std.Io.Dir.cwd().deleteFile(io, out) catch {};
+            const page_run = std.process.run(arena, io, .{
+                .argv = &.{ "nice", "-n", "19", "vips", "thumbnail", one, out, "640" },
+                .timeout = .{ .duration = .{ .clock = .awake, .raw = .{ .nanoseconds = config.timeout_ns } } },
+                .stdout_limit = .limited(64 * 1024),
+                .stderr_limit = .limited(64 * 1024),
+            }) catch break;
+            if (page_run.term != .exited or page_run.term.exited != 0) break;
+            const image = std.Io.Dir.cwd().readFileAlloc(io, out, arena, .limited(8 * 1024 * 1024)) catch break;
+            const key = pageKey(arena, hash, drawn_pages) catch return .{ .failed = "out of memory" };
+            s3.putObject(scope, key, image) catch return .{ .failed = "could not store a PDF page" };
+        }
+        const meta = std.fmt.allocPrint(arena, "{{\"pages\":{d},\"page_images\":{d}}}", .{ pages, drawn_pages }) catch return .{ .failed = "out of memory" };
+        _ = db.exec(scope, "UPDATE items SET meta = meta || $2::jsonb WHERE item_hash = decode($1, 'hex')", .{ hash, meta }) catch {};
         source = page_path;
         is_image = true;
     }

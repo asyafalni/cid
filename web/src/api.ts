@@ -473,6 +473,13 @@ export function getText(name: string, hash: string): Promise<TextHead> {
   return request(`/v0/datasets/${name}/-/text?hash=${hash}`);
 }
 
+/** A PDF's pages the preview worker drew (its first ten at most). */
+export type PdfPages = { pages: number; urls: string[]; withheld: boolean };
+
+export function getPdfPages(name: string, hash: string): Promise<PdfPages> {
+  return request(`/v0/datasets/${name}/-/pages?hash=${hash}`);
+}
+
 export type Revealed = {
   hash: string;
   thumb: string | null;

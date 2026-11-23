@@ -2643,6 +2643,8 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     const blur = try cid.preview.blurKey(arena, &sensitive_hash);
     try s3c.putObject(&scope, thumb, "a thumbnail of the face");
     try s3c.putObject(&scope, blur, "a blurred face");
+    const page_two = try cid.preview.pageKey(arena, &sensitive_hash, 1);
+    try s3c.putObject(&scope, page_two, "a drawn page");
 
     // Purge by path; the bytes and their previews vanish, the tombstone
     // and audit land (invariant 19).
@@ -2653,6 +2655,7 @@ test "purge: bytes gone, history intact, verify says so, content cannot return" 
     try std.testing.expectEqual(@as(?u64, null), try s3c.headObject(&scope, key));
     try std.testing.expectEqual(@as(?u64, null), try s3c.headObject(&scope, thumb));
     try std.testing.expectEqual(@as(?u64, null), try s3c.headObject(&scope, blur));
+    try std.testing.expectEqual(@as(?u64, null), try s3c.headObject(&scope, page_two));
     try std.testing.expectEqual(@as(?i64, null), try db.rawOne(i64, &fscope, "SELECT 1::bigint FROM previews WHERE item_hash = decode($1, 'hex')", .{&sensitive_hash}));
     try std.testing.expectError(error.AlreadyPurged, cid.purge.purge(arena, &standalone.db, &scope, &s3c, "test/datasets/purge", "face.jpg", "again", "user:admin"));
 
@@ -4467,6 +4470,17 @@ test "media: audio gets its waveform, text reads as text, restricted text withhe
     const meta = (try db.rawOne([]const u8, &fscope, "SELECT meta::text FROM items WHERE item_hash = decode($1, 'hex')", .{@as([]const u8, &hashes[4])})).?;
     try std.testing.expect(std.mem.indexOf(u8, meta, "\"pages\": 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, meta, "width") == null);
+    // Its pages for the drawer: the one page drawn, served as a URL.
+    try std.testing.expect(std.mem.indexOf(u8, meta, "\"page_images\": 1") != null);
+    try std.testing.expect(std.mem.startsWith(u8, try s3c.getObjectAlloc(&scope, try cid.preview.pageKey(arena, &hashes[4], 0)), "RIFF"));
+    const pages_route = try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/media/-/pages?hash={s}", .{&hashes[4]});
+    const pages = cid.api.handle(arena, &deps, &scope, "GET", pages_route, "Bearer test-token", "");
+    try std.testing.expectEqual(std.http.Status.ok, pages.status);
+    const Pages = struct { pages: u32, urls: []const []const u8, withheld: bool };
+    const listed = try std.json.parseFromSliceLeaky(Pages, arena, pages.body, .{});
+    try std.testing.expectEqual(@as(u32, 1), listed.pages);
+    try std.testing.expectEqual(@as(usize, 1), listed.urls.len);
+    try std.testing.expect(!listed.withheld);
 
     // The drawer's text: the note whole; the binary file said so; the long
     // file's first 64 KB, marked as such.
@@ -4493,6 +4507,11 @@ test "media: audio gets its waveform, text reads as text, restricted text withhe
     const hidden = try textOf(arena, &deps, &scope, &hashes[1]);
     try std.testing.expect(hidden.withheld);
     try std.testing.expect(hidden.text == null);
+    // A restricted PDF's pages are withheld as its text is: no URL at all.
+    const hidden_pages = cid.api.handle(arena, &deps, &scope, "GET", pages_route, "Bearer test-token", "");
+    const none = try std.json.parseFromSliceLeaky(Pages, arena, hidden_pages.body, .{});
+    try std.testing.expect(none.withheld);
+    try std.testing.expectEqual(@as(usize, 0), none.urls.len);
     const body = try std.fmt.allocPrint(arena, "{{\"hash\":\"{s}\"}}", .{&hashes[1]});
     const revealed = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/media/-/reveal", "Bearer test-token", body);
     try std.testing.expect(std.mem.indexOf(u8, revealed.body, "UTF-8 is fine") != null);

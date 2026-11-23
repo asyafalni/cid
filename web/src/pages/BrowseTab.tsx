@@ -8,6 +8,7 @@ import {
   getBrowse,
   getDownloads,
   getHistory,
+  getPdfPages,
   getText,
   reveal,
   type BrowseItem,
@@ -578,6 +579,8 @@ function ItemDrawer({
           )}
           {url && <audio controls preload="none" src={url} aria-label={item.path} />}
         </div>
+      ) : extOf(item.path) === '.pdf' ? (
+        <PdfView name={name} hash={item.hash} path={item.path} thumb={shownThumb} />
       ) : shownThumb ? (
         item.item_id && item.width && item.height ? (
           <span
@@ -1261,5 +1264,36 @@ function NoPreview({ path, why }: { path: string; why: string }) {
       <span className="data">{extOf(path)}</span>
       <p className="quiet">{why}</p>
     </div>
+  );
+}
+
+// A PDF: its pages as the worker drew them, one under another, the first
+// ten at most; the thumbnail until they exist, and never a restricted
+// dataset's (its pages are its text, withheld as text is).
+function PdfView({ name, hash, path, thumb }: { name: string; hash: string; path: string; thumb: string | undefined }) {
+  const pages = useQuery({ queryKey: ['pdf-pages', name, hash], queryFn: () => getPdfPages(name, hash) });
+  const p = pages.data;
+  if (!p || p.urls.length === 0)
+    return thumb ? (
+      <Thumb className="drawer-media" src={thumb} alt={path} label=".pdf" />
+    ) : (
+      <p className="quiet">{p?.withheld ? 'The pages of a restricted document are withheld.' : 'The pages appear when the preview worker reaches this file.'}</p>
+    );
+  return (
+    <section className="pdf-pages" aria-label="Pages">
+      {p.urls.map((url, i) => (
+        <figure key={url} className="pdf-page">
+          <img src={url} alt={`${path}, page ${i + 1}`} loading={i === 0 ? 'eager' : 'lazy'} />
+          <figcaption className="quiet data">
+            page {i + 1} of {p.pages.toLocaleString()}
+          </figcaption>
+        </figure>
+      ))}
+      {p.pages > p.urls.length && (
+        <p className="quiet">
+          The first {p.urls.length} of {p.pages.toLocaleString()} pages; download the file for the rest.
+        </p>
+      )}
+    </section>
   );
 }

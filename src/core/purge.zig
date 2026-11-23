@@ -76,10 +76,10 @@ pub fn purge(
     const key = content_hash.itemKey(arena, hash_hex) catch return error.OutOfMemory;
     s3.deleteObject(scope, key) catch return error.Storage;
     // Its previews are its content too (invariant 19): the thumbnail, the
-    // blurred rendition, and the queue row (which also holds a table's
-    // first rows).
-    inline for (.{ worker.thumbKey, worker.blurKey }) |keyOf| {
-        s3.deleteObject(scope, keyOf(arena, hash_hex) catch return error.OutOfMemory) catch |err| switch (err) {
+    // blurred rendition, a PDF's pages, and the queue row (which also
+    // holds a table's first rows).
+    for (worker.previewKeys(arena, hash_hex) catch return error.OutOfMemory) |preview_key| {
+        s3.deleteObject(scope, preview_key) catch |err| switch (err) {
             error.NotFound => {},
             else => return error.Storage,
         };

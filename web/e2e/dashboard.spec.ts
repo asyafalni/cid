@@ -1161,7 +1161,10 @@ test('a PDF shows its first page, drawn on the server', async ({ page }) => {
   await expect(tile.locator('img')).toBeVisible();
   await tile.click();
   const drawer = page.getByRole('complementary', { name: 'page.pdf' });
-  await expect(drawer.locator('img').first()).toBeVisible();
+  // Its pages, drawn by the worker, each said which it is.
+  const pages = drawer.getByRole('region', { name: 'Pages' });
+  await expect(pages.getByRole('img', { name: 'page.pdf, page 1', exact: true })).toBeVisible();
+  await expect(pages).toContainText('page 1 of 1');
   // Its page count, never dimensions: a PDF is not an image.
   await expect(drawer.locator('dt', { hasText: 'pages' })).toBeVisible();
   await expect(drawer.locator('dt', { hasText: 'dimensions' })).toHaveCount(0);

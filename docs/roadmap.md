@@ -392,8 +392,8 @@ Trained on your-org/datasets/person-vehicle v4.2.0.
 with `cid deploy-key`; docs/access.md) · the Health tab (~~cid's own checks~~ done
 2026-11-22, docs/dashboard.md 4.5) and Validator tiles (wait on the platform's report
 format) · ~~the SQL console~~ (done 2026-11-23: on the server, sandboxed; docs/dashboard.md
-4.3) · ~~PDF page images~~ (done 2026-11-23: the first page, by `vips`; the other
-pages in the drawer later) · ~~access from other git
+4.3) · ~~PDF page images~~ (done 2026-11-23: the first page, by `vips`, as the
+thumbnail; the first ten pages in the drawer) · ~~access from other git
 hosts (GitHub first)~~ (done 2026-11-22: GitHub sync, create check and sign-in, one
 host per server; the live check, `tests/github_live.sh`, waits on a real token) · ~~DuckDB pinned for other platforms~~ (done 2026-11-21: Linux
 arm64 and macOS, built and tested in CI; Windows not yet) · dashboard Phase 3.

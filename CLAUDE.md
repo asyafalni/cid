@@ -529,6 +529,7 @@ If a change would weaken any of these, stop and ask.
   uploads/<dataset_id>/<hex>[.part-NNNNNN]    staged uploads (pieces over 64 MB),
                                               verified then stored, or cleaned by gc
   previews/<aa>/<hex>/thumb.webp, blur.webp   thumbnails/waveforms, blurred renditions
+  previews/<aa>/<hex>/page-NN.webp            a PDF's first ten pages, for the drawer
   manifests/<dataset_id>/<commit_id>.manifest the release's hashed canonical manifest
   manifests/<dataset_id>/<commit_id>.v5.items.parquet, .v5.anns.parquet
                                               a version's browse index (any version built;
