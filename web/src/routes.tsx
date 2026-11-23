@@ -2,6 +2,7 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  stringifySearchWith,
   redirect,
 } from '@tanstack/react-router';
 import { Shell } from './Shell';
@@ -89,8 +90,7 @@ const datasetRoute = createRoute({
     identity?: string;
     /** A table item's row filters, as JSON (TableView). */
     rows?: string;
-    /** A table item's row, by its place in the file from 1 (TableView); a
-     * number, so the URL reads row=4, not a quoted string. */
+    /** A table item's row, by its place in the file from 1 (TableView). */
     row?: number;
     what?: string;
     who?: string;
@@ -122,12 +122,12 @@ const datasetRoute = createRoute({
     split: typeof search.split === 'string' ? search.split : undefined,
     class: typeof search.class === 'string' ? search.class : undefined,
     type: typeof search.type === 'string' ? search.type : undefined,
-    // "0" and "1" arrive parsed as numbers; buckets are names.
-    anns: typeof search.anns === 'string' || typeof search.anns === 'number' ? String(search.anns) : undefined,
+    anns: typeof search.anns === 'string' ? search.anns : undefined,
     attr: typeof search.attr === 'string' ? search.attr : undefined,
-    identity: typeof search.identity === 'string' || typeof search.identity === 'number' ? String(search.identity) : undefined,
+    identity: typeof search.identity === 'string' ? search.identity : undefined,
     rows: typeof search.rows === 'string' ? search.rows : Array.isArray(search.rows) ? JSON.stringify(search.rows) : undefined,
-    row: typeof search.row === 'number' && Number.isInteger(search.row) && search.row > 0 ? search.row : typeof search.row === 'string' && /^\d+$/.test(search.row) ? Number(search.row) : undefined,
+    // Text in a URL, a number when the page sets it.
+    row: /^[1-9]\d*$/.test(String(search.row ?? '')) ? Number(search.row) : undefined,
     // Activity: the action and the person, when narrowed.
     what: typeof search.what === 'string' ? search.what : undefined,
     who: typeof search.who === 'string' ? search.who : undefined,
@@ -154,8 +154,34 @@ const tokensRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([signInRoute, homeRoute, datasetRoute, keysRoute, tokensRoute]);
 
+// Search values are plain text: a release named 2024, a filter of 0 or a
+// path like 123.jpg read as written, never JSON-quoted (anns=0, not
+// anns=%220%22). A value written quoted, as links made before did, still
+// reads as the text inside; a text that itself is quoted is written so.
+const quoted = (v: string): string => {
+  if (!/^".*"$/s.test(v)) throw new Error('plain');
+  return JSON.parse(v) as string;
+};
+function parseSearch(searchStr: string): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of new URLSearchParams(searchStr)) {
+    if (key in out) continue;
+    try {
+      out[key] = quoted(value);
+    } catch {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 // Any other address: lost in the clouds, inside the shell.
-export const router = createRouter({ routeTree, defaultNotFoundComponent: () => <NotFound /> });
+export const router = createRouter({
+  routeTree,
+  defaultNotFoundComponent: () => <NotFound />,
+  parseSearch,
+  stringifySearch: stringifySearchWith(JSON.stringify, quoted),
+});
 
 declare module '@tanstack/react-router' {
   interface Register {

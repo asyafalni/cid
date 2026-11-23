@@ -477,6 +477,13 @@ test('the annotations filter counts items by how many annotations they have, and
   // None with no annotations here: the bucket is offered at zero once asked for.
   await page.goto('/d/e2e/datasets/boxes?view=browse&anns=0');
   await expect(page.getByText('0 of 1 items')).toBeVisible();
+  // Written as typed, never JSON-quoted, when the page writes it again;
+  // a link made quoted still opens.
+  await page.getByLabel('Filter by path').fill('frames');
+  await expect(page).toHaveURL(/q=frames/);
+  await expect(page).toHaveURL(/[?&]anns=0(&|$)/);
+  await page.goto('/d/e2e/datasets/boxes?view=browse&anns=%220%22');
+  await expect(page.getByText('0 of 1 items')).toBeVisible();
   // A file dataset has no annotations to count.
   await page.goto('/d/e2e/datasets/demo?view=browse');
   await expect(page.getByLabel('Filter by annotations')).toHaveCount(0);
