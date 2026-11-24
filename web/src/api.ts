@@ -503,8 +503,26 @@ export type ActivityEvent = {
   detail: string | null;
 };
 
-export function getActivity(name: string): Promise<{ events: ActivityEvent[] }> {
-  return request(`/v0/datasets/${name}/-/activity`);
+/** A page of the log (200, newest first), narrowed on the server; the
+ * first page also names every action and person the log holds. */
+export type ActivityPage = {
+  events: ActivityEvent[];
+  /** The cursor for the page before; null at the start of the log. */
+  next: string | null;
+  actions?: string[];
+  people?: { account_id: string; display_name: string | null }[];
+};
+
+export function getActivity(
+  name: string,
+  filter: { what?: string; who?: string; before?: string } = {},
+): Promise<ActivityPage> {
+  const q = new URLSearchParams();
+  if (filter.what) q.set('what', filter.what);
+  if (filter.who) q.set('who', filter.who);
+  if (filter.before) q.set('before', filter.before);
+  const qs = q.toString();
+  return request(`/v0/datasets/${name}/-/activity${qs ? `?${qs}` : ''}`);
 }
 
 export function getDownloads(

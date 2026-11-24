@@ -1,10 +1,10 @@
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { RowsSkeleton } from '../Skeleton';
 import { ApiError, getActivity } from '../api';
 
 // Activity (docs/dashboard.md §4.7): who did what to this dataset, newest
-// first. It names who revealed restricted items, so only owners read it;
+// first, as far back as the log goes. It names who revealed restricted items, so only owners read it;
 // anyone else is told so in words, never a blank page.
 export function ActivityTab({
   name,
@@ -22,7 +22,23 @@ export function ActivityTab({
   who: string | undefined;
   onFilter: (patch: { what?: string | undefined; who?: string | undefined }) => void;
 }) {
-  const log = useQuery({ queryKey: ['activity', name], queryFn: () => getActivity(name), retry: false });
+  // Narrowed on the server, so a filter reaches the whole log; older
+  // events a page of 200 at a time. The choices come from the whole log
+  // too (the first page names them), unnarrowed so they never shrink.
+  const log = useInfiniteQuery({
+    queryKey: ['activity', name, what ?? null, who ?? null],
+    queryFn: ({ pageParam }) => getActivity(name, { what, who, before: pageParam ?? undefined }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next,
+    retry: false,
+  });
+  const choices = useQuery({
+    queryKey: ['activity', name, null, null],
+    queryFn: () => getActivity(name),
+    enabled: !!(what || who),
+    retry: false,
+    select: (p) => ({ actions: p.actions ?? [], people: p.people ?? [] }),
+  });
 
   if (log.isPending) return <RowsSkeleton rows={6} cols={4} />;
   if (log.isError) {
@@ -34,8 +50,10 @@ export function ActivityTab({
       </div>
     );
   }
-  const events = log.data.events;
-  if (events.length === 0) {
+  const events = log.data.pages.flatMap((p) => p.events);
+  const first = log.data.pages[0];
+  const narrowed = !!(what || who);
+  if (events.length === 0 && !narrowed) {
     return (
       <div className="empty blueprint">
         <h2>Nothing on the record yet</h2>
@@ -43,33 +61,33 @@ export function ActivityTab({
       </div>
     );
   }
-  // Narrowing is over the events already here (the last 200), by what
-  // was done and by whom; the choices are the ones the log holds.
-  const actions = [...new Set(events.map((e) => e.action))].sort();
-  const people = [...new Map(events.map((e) => [e.account_id, e.display_name ?? e.account_id]))].sort((x, y) =>
-    x[1].localeCompare(y[1]),
+  const actions = (narrowed ? choices.data?.actions : first.actions) ?? [];
+  const people = ((narrowed ? choices.data?.people : first.people) ?? []).map(
+    (p) => [p.account_id, p.display_name ?? p.account_id] as [string, string],
   );
-  const shown = events.filter((e) => (!what || e.action === what) && (!who || e.account_id === who));
+  const more = log.hasNextPage;
+  const noun = (n: number) => `${n.toLocaleString()} ${n === 1 ? 'event' : 'events'}`;
   return (
     <>
     <div className="filter-bar" role="search" aria-label="Filter the log">
       <Narrow label="what" value={what} options={actions.map((a) => [a, a])} onChange={(v) => onFilter({ what: v })} />
       <Narrow label="who" value={who} options={people} onChange={(v) => onFilter({ who: v })} />
-      {(what || who) && (
+      {narrowed && (
         <button className="filter-clear" onClick={() => onFilter({ what: undefined, who: undefined })}>
           Clear
         </button>
       )}
     </div>
-    {shown.length === 0 && <p className="quiet">Nothing in the last 200 events matches; clear a filter to see them all.</p>}
+    {events.length === 0 && <p className="quiet">Nothing in the log matches; clear a filter to see it all.</p>}
+    {events.length > 0 && (
     <table className="browse-table activity-table">
       <caption className="quiet">
         Newest first;{' '}
-        {shown.length === events.length
-          ? events.length < 200
-            ? `all ${events.length} ${events.length === 1 ? 'event' : 'events'}`
-            : 'the last 200 events'
-          : `${shown.length} of the last ${events.length} events`}
+        {more
+          ? `the newest ${noun(events.length)}${narrowed ? ' that match' : ''}, older ones below`
+          : narrowed
+            ? `all ${noun(events.length)} that match`
+            : `all ${noun(events.length)}`}
         .
       </caption>
       <thead>
@@ -81,7 +99,7 @@ export function ActivityTab({
         </tr>
       </thead>
       <tbody>
-        {shown.map((e, i) => (
+        {events.map((e, i) => (
           <tr key={i}>
             <td className="data">{e.at.replace('T', ' ').replace('Z', '')}</td>
             <td title={e.account_id}>{e.display_name ?? e.account_id}</td>
@@ -93,6 +111,12 @@ export function ActivityTab({
         ))}
       </tbody>
     </table>
+    )}
+    {more && (
+      <button className="action more-items" disabled={log.isFetchingNextPage} onClick={() => void log.fetchNextPage()}>
+        {log.isFetchingNextPage ? 'Reading…' : 'Show older events'}
+      </button>
+    )}
     </>
   );
 }

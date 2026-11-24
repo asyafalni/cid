@@ -4096,6 +4096,60 @@ test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {
     try std.testing.expectEqual(std.http.Status.ok, log.status);
     try std.testing.expect(std.mem.indexOf(u8, log.body, "\"action\":\"reveal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, log.body, "server-token") != null);
+
+    // Further back than a page: 450 reads at one and the same instant, the
+    // worst a cursor can meet. Walked page by page, every event comes back
+    // exactly once; narrowed on the server, a filter reaches past the
+    // newest page; the filters' choices name the whole log.
+    _ = try db.exec(&fscope, "INSERT INTO activity_events (ts, dataset_id, account_id, action, ref) " ++
+        "SELECT '2026-01-01 00:00:00.123456+00', d.dataset_id, 'acct:paged', 'browse', 'page-' || lpad(g::text, 4, '0') " ++
+        "FROM datasets d, generate_series(1, 450) g WHERE d.name = 'test/datasets/sniff'", .{});
+    _ = try db.exec(&fscope, "INSERT INTO activity_events (ts, dataset_id, account_id, action, ref) " ++
+        "SELECT '2025-12-31 00:00:00+00', d.dataset_id, 'acct:old', 'purge', 'the-oldest' FROM datasets d WHERE d.name = 'test/datasets/sniff'", .{});
+    const total: usize = @intCast((try db.rawOne(i64, &fscope, "SELECT count(*) FROM activity_events e JOIN datasets d USING (dataset_id) WHERE d.name = 'test/datasets/sniff'", .{})).?);
+    const Page = struct {
+        events: []const struct { action: []const u8, account_id: []const u8, ref: ?[]const u8 },
+        next: ?[]const u8,
+        actions: ?[]const []const u8 = null,
+    };
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    var pages: usize = 0;
+    var paged: usize = 0;
+    var cursor: ?[]const u8 = null;
+    while (true) : (pages += 1) {
+        const target = if (cursor) |c|
+            try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/sniff/-/activity?before={f}", .{std.fmt.alt(std.Uri.Component{ .raw = c }, .formatQuery)})
+        else
+            "/v0/datasets/test/datasets/sniff/-/activity";
+        const res = cid.api.handle(arena, &deps, &scope, "GET", target, "Bearer test-token", "");
+        try std.testing.expectEqual(std.http.Status.ok, res.status);
+        const page = try std.json.parseFromSliceLeaky(Page, arena, res.body, .{ .ignore_unknown_fields = true });
+        if (cursor == null) {
+            // The first page names every action, the oldest's included.
+            var purge = false;
+            for (page.actions.?) |act| purge = purge or std.mem.eql(u8, act, "purge");
+            try std.testing.expect(purge);
+        }
+        try std.testing.expect(page.events.len <= cid.api.activity_page);
+        for (page.events) |e| if (std.mem.eql(u8, e.account_id, "acct:paged")) {
+            paged += 1;
+            const slot = try seen.getOrPut(arena, e.ref.?);
+            try std.testing.expect(!slot.found_existing); // never twice
+        };
+        cursor = page.next orelse break;
+    }
+    try std.testing.expectEqual(@as(usize, 450), paged);
+    try std.testing.expect(pages >= 2);
+    _ = total;
+    // Narrowed on the server: the one purge, though it is the oldest event.
+    const purges = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/sniff/-/activity?what=purge", "Bearer test-token", "");
+    const only = try std.json.parseFromSliceLeaky(Page, arena, purges.body, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(@as(usize, 1), only.events.len);
+    try std.testing.expectEqualStrings("the-oldest", only.events[0].ref.?);
+    try std.testing.expect(only.next == null);
+    // A cursor that is not one is refused in words, not a 500.
+    const bad = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/sniff/-/activity?before=not-a-time%7C0", "Bearer test-token", "");
+    try std.testing.expectEqual(std.http.Status.bad_request, bad.status);
 }
 
 test "table statistics: CSV, Parquet and JSONL, withheld when restricted" {

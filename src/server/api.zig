@@ -309,7 +309,7 @@ fn handleInner(
     if (eql(method, "POST") and eql(route.action, "reveal"))
         return reveal(arena, deps, scope, caller, ds, body);
     if (eql(method, "GET") and eql(route.action, "activity"))
-        return activity(arena, deps, scope, caller, ds);
+        return activity(arena, deps, scope, caller, ds, route);
     if (eql(route.action, "star") and (eql(method, "PUT") or eql(method, "DELETE")))
         return star(arena, deps, scope, caller, ds, eql(method, "PUT"));
     if (eql(method, "GET") and eql(route.action, "info"))
@@ -1646,11 +1646,36 @@ fn reveal(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller,
 /// The dataset's activity log (docs/dashboard.md §4.7). It names who
 /// revealed what, so it is the owners' to read: Maintainers, and the
 /// server token, which administers everything.
-fn activity(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset) HandleError!Response {
+///
+/// 200 events a page, newest first, narrowed on the server (`what=`, an
+/// action; `who=`, an account), so a filter reaches the whole log, not
+/// only the newest page. Events have no id of their own, so a page ends
+/// in a cursor (`before=`): the last event's time and how many events at
+/// exactly that time were already shown, in a fixed order (who, what,
+/// which, detail). The first page also lists every action and person the
+/// log holds, for the filters.
+pub const activity_page = 200;
+
+fn activity(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, route: DatasetRoute) HandleError!Response {
     if (!(try isOwner(deps, scope, caller, ds)))
         return errorResponse(arena, .forbidden, "the activity log is for the dataset's owners", try std.fmt.allocPrint(arena, "Ask an owner ({s} on the dataset's repository) if you need to see it.", .{ownerRole(deps)}));
+    const what = try param(arena, route, "what");
+    const who = try param(arena, route, "who");
+    // `before=<time>|<shown at that time>`, as the page before handed out
+    // (the time ISO-written, with no space for a form encoder to mangle).
+    var at: ?[]const u8 = null;
+    var skip: i64 = 0;
+    if (try param(arena, route, "before")) |cursor| {
+        const bar = std.mem.lastIndexOfScalar(u8, cursor, '|') orelse return error.BadRequest;
+        at = cursor[0..bar];
+        skip = std.fmt.parseInt(i64, cursor[bar + 1 ..], 10) catch return error.BadRequest;
+        if (at.?.len == 0 or skip < 0) return error.BadRequest;
+        // A time Postgres cannot read is the caller's mistake, not the database's.
+        _ = deps.db.rawOne([]const u8, scope, "SELECT $1::timestamptz::text", .{at}) catch return error.BadRequest;
+    }
     const Event = struct {
         pub const nilo_table = .projection;
+        ts: []const u8,
         at: []const u8,
         account_id: []const u8,
         display_name: ?[]const u8,
@@ -1658,11 +1683,41 @@ fn activity(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Calle
         ref: ?[]const u8,
         detail: ?[]const u8,
     };
-    const events = deps.db.raw(Event, scope, "SELECT to_char(e.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS at, e.account_id, " ++
+    const rows = deps.db.raw(Event, scope, "SELECT replace(e.ts::text, ' ', 'T') AS ts, to_char(e.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS at, e.account_id, " ++
         "a.display_name, e.action, e.ref, e.detail::text AS detail " ++
         "FROM activity_events e LEFT JOIN accounts a ON a.account_id = e.account_id " ++
-        "WHERE e.dataset_id = $1::uuid ORDER BY e.ts DESC LIMIT 200", .{ds.id}) catch return error.Db;
-    return json(arena, .ok, .{ .events = events });
+        "WHERE e.dataset_id = $1::uuid AND ($2::timestamptz IS NULL OR e.ts <= $2::timestamptz) " ++
+        "AND ($3::text IS NULL OR e.action = $3) AND ($4::text IS NULL OR e.account_id = $4) " ++
+        "ORDER BY e.ts DESC, e.account_id, e.action, coalesce(e.ref, ''), coalesce(e.detail::text, '') " ++
+        "OFFSET $5::bigint LIMIT $6::bigint", .{ ds.id, at, what, who, skip, @as(i64, activity_page + 1) }) catch return error.Db;
+    const shown = rows[0..@min(rows.len, activity_page)];
+    const next: ?[]const u8 = if (rows.len > activity_page) blk: {
+        const last = shown[shown.len - 1].ts;
+        var same: i64 = 0;
+        for (shown) |e| {
+            if (eql(e.ts, last)) same += 1;
+        }
+        // Still at the time the page began: those shown before count too.
+        if (at) |t| if (eql(t, last)) {
+            same += skip;
+        };
+        break :blk try std.fmt.allocPrint(arena, "{s}|{d}", .{ last, same });
+    } else null;
+
+    const Shown = struct { at: []const u8, account_id: []const u8, display_name: ?[]const u8, action: []const u8, ref: ?[]const u8, detail: ?[]const u8 };
+    const events = try arena.alloc(Shown, shown.len);
+    for (shown, events) |e, *out| out.* = .{ .at = e.at, .account_id = e.account_id, .display_name = e.display_name, .action = e.action, .ref = e.ref, .detail = e.detail };
+    if (at != null) return json(arena, .ok, .{ .events = events, .next = next });
+
+    const Person = struct {
+        pub const nilo_table = .projection;
+        account_id: []const u8,
+        display_name: ?[]const u8,
+    };
+    const actions = deps.db.raw([]const u8, scope, "SELECT DISTINCT action FROM activity_events WHERE dataset_id = $1::uuid ORDER BY 1", .{ds.id}) catch return error.Db;
+    const people = deps.db.raw(Person, scope, "SELECT p.account_id, a.display_name FROM (SELECT DISTINCT account_id FROM activity_events WHERE dataset_id = $1::uuid) p " ++
+        "LEFT JOIN accounts a ON a.account_id = p.account_id ORDER BY coalesce(a.display_name, p.account_id) LIMIT 500", .{ds.id}) catch return error.Db;
+    return json(arena, .ok, .{ .events = events, .next = next, .actions = actions, .people = people });
 }
 
 fn isOwner(deps: *Deps, scope: anytype, caller: Caller, ds: Dataset) HandleError!bool {

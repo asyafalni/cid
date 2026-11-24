@@ -553,6 +553,17 @@ function seedFaces(dir: string) {
   `);
 }
 
+// A log longer than a page: 250 older reads of the restricted set by one
+// reader, a year back, so "Show older" and a filter that reaches past
+// the newest page have something to find.
+function seedFacesHistory() {
+  psql(`
+    INSERT INTO activity_events (ts, dataset_id, account_id, action, ref)
+      SELECT timestamptz '2025-11-01 00:00:00+00' + g * interval '1 minute', dataset_id, 'gitlab:old-reader', 'browse', 'head'
+      FROM datasets, generate_series(1, 250) g WHERE name = 'e2e/datasets/faces';
+  `);
+}
+
 export default function setup() {
   // A serve must be up for the CLI and the API; playwright's webServer
   // starts its own before tests but after globalSetup, so run one briefly.
@@ -590,6 +601,7 @@ export default function setup() {
         ON CONFLICT (dataset_id, release) DO UPDATE SET status = excluded.status;
     `);
     if (!already.includes('e2e/datasets/faces')) seedFaces(dir);
+    if (psqlValue("SELECT count(*) FROM activity_events WHERE account_id = 'gitlab:old-reader'") === '0') seedFacesHistory();
     if (!already.includes('e2e/datasets/masks')) seedMasks(dir);
     if (!already.includes('e2e/datasets/tables')) seedTables(dir);
     if (!already.includes('e2e/datasets/attrs2')) seedAttrs(dir);

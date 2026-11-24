@@ -916,8 +916,19 @@ test('restricted: blurred until a logged reveal, and the log is for owners', asy
   await page.goto('/d/e2e/datasets/faces?view=activity');
   await expect(page.locator('.activity-table')).toContainText('reveal');
   await expect(page.locator('.activity-table')).toContainText('server-token');
-  // A short log says how many it holds, and a release it names is a link.
-  await expect(page.locator('.activity-table caption')).toContainText(/all \d+ events?/);
+  // A long log shows its newest 200 and says older ones follow; a release
+  // it names is a link.
+  await expect(page.locator('.activity-table caption')).toContainText('the newest 200 events, older ones below');
+  await expect(page.locator('.activity-table tbody tr')).toHaveCount(200);
+  // Older pages until the start of the log (the e2e log grows each run).
+  const older = page.getByRole('button', { name: 'Show older events' });
+  for (let shown = 200; await older.isVisible(); ) {
+    await older.click();
+    await expect(page.locator('.activity-table tbody tr')).not.toHaveCount(shown);
+    shown = await page.locator('.activity-table tbody tr').count();
+  }
+  await expect(page.locator('.activity-table caption')).toContainText(/all [\d,]+ events\./);
+  await expect(page.getByRole('button', { name: 'Show older events' })).toHaveCount(0);
   await expect(page.locator('.activity-table').getByRole('link', { name: 'v1.0.0' }).first()).toHaveAttribute('href', /release=v1\.0\.0/);
   // Narrowed to one action, in the URL: only reveals remain.
   await page.getByLabel('Filter by what').selectOption('reveal');
@@ -927,6 +938,12 @@ test('restricted: blurred until a logged reveal, and the log is for owners', asy
   expect(new Set(await chips.allTextContents())).toEqual(new Set(['reveal']));
   await page.getByRole('button', { name: 'Clear' }).click();
   await expect(page).not.toHaveURL(/what=/);
+  // A filter is answered by the server, so it reaches a year back: every
+  // one of the old reader's 250 reads, beyond the newest page.
+  await page.getByLabel('Filter by who').selectOption('gitlab:old-reader');
+  await expect(page.locator('.activity-table caption')).toContainText('the newest 200 events that match');
+  await page.getByRole('button', { name: 'Show older events' }).click();
+  await expect(page.locator('.activity-table caption')).toContainText('all 250 events that match');
 });
 
 test('a reader of a restricted dataset cannot read its activity log', async ({ page }) => {

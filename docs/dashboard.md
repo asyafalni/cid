@@ -279,7 +279,7 @@ are cid's own for now.
   a star is a per-person bookmark kept on the server for the signed-in person
   (`stars`), so the server token, which is nobody, cannot star. Owners are the
   Maintainers, shown and searchable by name.
-- *Not built yet:* the health badge (it needs the Health tab and the Validator).
+- *Built (2026-11-23):* each card's health marks (the Health tab's own checks).
   Searching descriptions waits on card editing, which is a parked decision.
 
 ### 4.2 Dataset › Overview
@@ -513,7 +513,11 @@ command shows it.
   export (the item list or an export a clone reads). It names who read restricted
   content, so only owners can read it; anyone else is told so in words.
 - *Built:* narrowing the log by what was done and by whom (`what=`, `who=` in the
-  URL), over the 200 events shown. *Planned:* reaching further back than 200.
+  URL), answered by the server over the whole log, the choices naming everyone and
+  everything in it; and the log as far back as it goes, 200 events at a time ("Show
+  older events"; 2026-11-24). Events have no id of their own, so a page's cursor is
+  its last event's time and how many at exactly that time were shown, in a fixed
+  order; checked with 450 events at one instant.
 
 ### 4.8 Your SSH keys
 
