@@ -1339,6 +1339,45 @@ test('the List view plays sound in place and reads text\'s opening line', async 
   await expect(page.getByRole('complementary', { name: 'notes.txt' })).toBeVisible();
 });
 
+test('every tab answers the keyboard: numbers switch tabs, c compares, f filters, ? lists them', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/boxes?view=overview');
+  await expect(page.getByRole('link', { name: 'Overview', exact: true })).toHaveAttribute('aria-current', 'page');
+  // A number is a tab, in the order they are drawn.
+  await page.keyboard.press('2');
+  await expect(page).toHaveURL(/view=browse/);
+  // `f` puts the cursor on the first filter.
+  await expect(page.getByLabel('Filter by split')).toBeVisible();
+  await page.keyboard.press('f');
+  await expect(page.getByLabel('Filter by split')).toBeFocused();
+  await page.locator('body').click({ position: { x: 1, y: 1 } });
+  // Browse lists its own keys and every tab's.
+  await page.keyboard.press('?');
+  const list = page.getByRole('region', { name: 'Keyboard shortcuts' });
+  await expect(list).toContainText('next item');
+  await expect(list).toContainText('compare this release with the one before');
+  await page.keyboard.press('Escape');
+  await expect(list).toHaveCount(0);
+  await page.keyboard.press('4');
+  await expect(page).toHaveURL(/view=health/);
+  // Any other tab lists every tab's keys too.
+  await page.keyboard.press('?');
+  await expect(list).toContainText('Overview, Browse, Releases, Health, Files, Activity');
+  const axe = await new AxeBuilder({ page }).include('.shortcuts').analyze();
+  expect(axe.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical')).toEqual([]);
+  await page.keyboard.press('Escape');
+  await expect(list).toHaveCount(0);
+  // `c`: the release on screen against the one before it.
+  await page.keyboard.press('c');
+  await expect(page).toHaveURL(/view=releases/);
+  await expect(page).toHaveURL(/a=v1\.0\.0/);
+  await expect(page).toHaveURL(/b=v1\.1\.0/);
+  // Typed into a field, a key is only a letter.
+  await page.goto('/d/e2e/datasets/boxes?view=browse');
+  await page.getByLabel('Filter by path').fill('3');
+  await expect(page).toHaveURL(/view=browse/);
+});
+
 test('the keyboard moves through items, searches, and lists its shortcuts', async ({ page }) => {
   const at = (n: string) => new RegExp(`item=rows(%2F|/)${n}\\.txt`);
   await signIn(page);

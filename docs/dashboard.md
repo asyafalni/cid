@@ -37,9 +37,9 @@ diff); Files tab (folder tree, sizes, download); Activity (owners only); restric
 blur and logged reveal; your SSH keys and personal tokens; the preview worker (ffmpeg
 only).
 
-**Not built yet** (the spec below says so where it applies): the health badge and the
-Validator's tiles (the Health tab's own checks are built); card completeness; keyboard shortcuts outside Browse (besides `⌘K`);
-charts and gauges; semantic search.
+**Not built yet** (the spec below says so where it applies): the Validator's tiles (the
+Health tab's own checks, and each card's marks, are built); card completeness; charts and
+gauges; semantic search.
 
 **Parked, needs a decision first:** editing the card and making releases from the
 dashboard.
@@ -119,9 +119,12 @@ section in §4 says so.
     searches, `f` filters, `c` compares, `?` lists shortcuts. *Built so far,* in
     Browse: `j`/`k` (and the arrows while an item is open, so they still scroll the
     page otherwise) move between items and keep the open one in view, across pages;
-    `/` searches paths; `g` gallery, `t` table; `Esc` closes the item; `?` (or the `?`
-    button) lists them. Every control is reachable by Tab. `f`, `c` and shortcuts on
-    the other tabs are planned.
+    `/` searches paths; `f` the filters; `g` gallery, `t` table, `l` list; `Esc` closes
+    the item. On every tab of a dataset (2026-11-24): `1`–`6` switch tabs, in the order
+    drawn; `c` compares the release on screen with the one before it (Releases' newest
+    two when there is none before); `?` (or Browse's `?` button) lists the tab's keys and
+    every tab's. A key typed into a field, or held with ⌘/Ctrl/Alt, is never a shortcut.
+    Every control is reachable by Tab.
 
 ---
 
@@ -709,9 +712,8 @@ are marked in their class's colour, counted in code points; a span past the firs
 64 KB shown is counted, a range that cannot be read is said, and the rest still show.
 
 *Not built yet in Phase 2:* tracks drawn across a video's frames (boxes sharing
-`attrs.track`), the Validator's health tiles (they wait on its report format), the card completeness
-checklist (it also needs card editing, a parked decision), and keyboard shortcuts
-outside Browse. The Health tab's own checks and the SQL console are built (§4.5, §4.3).
+`attrs.track`), the Validator's health tiles (they wait on its report format), and the card completeness
+checklist (it also needs card editing, a parked decision). The Health tab's own checks and the SQL console are built (§4.5, §4.3).
 
 *Built:* the row-level table diff. Compare shows, under each modified CSV, Parquet or
 JSONL file, its rows added and removed, with the rows themselves one click away (the

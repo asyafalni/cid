@@ -53,7 +53,8 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      semantic search (Phase 3, parked 2026-11-23 until the platform's embedder
      exists). Small ones done 2026-11-23: dashboard links written as typed
      (`anns=0`, never `%220%22`). Done 2026-11-24: segments, transcripts and
-     text spans, their geometry fixed in `docs/data-model.md` with the owner.
+     text spans, their geometry fixed in `docs/data-model.md` with the owner; keyboard
+     shortcuts on every tab (`1`–`6`, `c`, `?`, and `f` in Browse).
 - Running the e2e suite needs Playwright's browser:
   `pnpm --dir web exec playwright install chromium`.
 - The e2e database is seeded once and kept. A fixture change must be its own

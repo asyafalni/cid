@@ -2393,6 +2393,14 @@
   font-size: 1rem;
   margin: 0 0 var(--space-2);
 }
+.shortcuts h3 {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 0 0 var(--space-1);
+}
 
 .shortcuts dl {
   display: grid;

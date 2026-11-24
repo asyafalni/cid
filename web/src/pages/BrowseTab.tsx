@@ -23,6 +23,8 @@ import { AnnotationOverlay } from '../overlays';
 import { classColor, clock, parseSpan, parseTime } from '../shapes';
 import { MediaTimeline } from '../MediaTimeline';
 import { SpannedText } from '../SpannedText';
+import { ShortcutsPanel } from '../Shortcuts';
+import { typingIn } from '../keys';
 import { SqlConsole } from '../SqlConsole';
 import { timeline } from '../history';
 import { TableView } from '../TableView';
@@ -130,9 +132,7 @@ export function BrowseTab({
   const { hasNextPage, fetchNextPage, isFetchingNextPage } = pages;
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      const t = e.target as HTMLElement | null;
-      if (t && (['INPUT', 'TEXTAREA', 'SELECT', 'AUDIO', 'VIDEO'].includes(t.tagName) || t.isContentEditable)) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (typingIn(e)) return;
       const step = (by: 1 | -1) => {
         e.preventDefault();
         const at = loaded.findIndex((i) => i.path === openItem);
@@ -159,6 +159,14 @@ export function BrowseTab({
         case 'ArrowLeft':
           if (openItem !== undefined) step(-1);
           return;
+        case 'f': {
+          // The first filter after the path search: the split.
+          const first = searchRef.current?.parentElement?.querySelector('select');
+          if (!first) return;
+          e.preventDefault();
+          first.focus();
+          return;
+        }
         case '/':
           if (!searchRef.current) return;
           e.preventDefault();
@@ -248,7 +256,13 @@ export function BrowseTab({
         </button>
       </div>
 
-      {help && <Shortcuts onClose={() => setHelp(false)} />}
+      {help && (
+        <ShortcutsPanel
+          keys={shortcuts}
+          note="The arrows move between items while one is open; otherwise they scroll."
+          onClose={() => setHelp(false)}
+        />
+      )}
 
       {total > 0 && mode !== 'sql' && (
         <div className="filter-bar" role="search">
@@ -830,6 +844,7 @@ const shortcuts: [string, string][] = [
   ['j  ↓  →', 'next item'],
   ['k  ↑  ←', 'previous item'],
   ['/', 'search paths'],
+  ['f', 'filters (split, class, type…)'],
   ['g', 'gallery'],
   ['t', 'table'],
   ['l', 'list (audio and text)'],
@@ -837,25 +852,6 @@ const shortcuts: [string, string][] = [
   ['?', 'this list'],
 ];
 
-function Shortcuts({ onClose }: { onClose: () => void }) {
-  return (
-    <section className="panel shortcuts" aria-label="Keyboard shortcuts">
-      <h2>Keyboard shortcuts</h2>
-      <dl>
-        {shortcuts.map(([keys, does]) => (
-          <div key={keys}>
-            <dt className="data">{keys}</dt>
-            <dd>{does}</dd>
-          </div>
-        ))}
-      </dl>
-      <p className="quiet">The arrows move between items while one is open; otherwise they scroll.</p>
-      <button className="filter-clear" onClick={onClose}>
-        Close
-      </button>
-    </section>
-  );
-}
 
 // The open item's row (gallery or table) is brought into view when it
 // is not already, so moving with the keys never leaves it off screen. Two

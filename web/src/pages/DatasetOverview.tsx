@@ -14,6 +14,7 @@ import { HealthTab } from './HealthTab';
 import { ActivityTab } from './ActivityTab';
 import { noteVisit } from '../recent';
 import { NotFound } from './NotFound';
+import { DatasetKeys } from '../Shortcuts';
 
 // The dataset page: the sky header (name, facts, the release tape), then
 // the tabs.
@@ -284,6 +285,17 @@ export function DatasetOverview() {
         />
       )}
 
+      <DatasetKeys
+        view={view}
+        onView={(v) => setSearch({ view: v, item: undefined })}
+        onCompare={() => {
+          // The pinned release against the one before it; with no release
+          // before, Releases' own choice (the newest two).
+          const at = releases.findIndex((c) => c.release === pinned);
+          const before = at >= 0 ? releases[at + 1]?.release : undefined;
+          setSearch({ view: 'releases', item: undefined, a: before ?? undefined, b: before ? pinned! : undefined });
+        }}
+      />
       {view === 'overview' ? (
         <OverviewTab overview={o} pinned={pinned} commit={pinnedCommit} pin={pin} />
       ) : view === 'browse' ? (
