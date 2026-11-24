@@ -24,6 +24,7 @@
 const std = @import("std");
 const repeat = @import("../util/repeat.zig").repeat;
 const dbx = @import("../store/db.zig");
+const parallel = @import("../util/parallel.zig");
 const blob = @import("../store/blob.zig");
 const release_mod = @import("../core/release.zig");
 const git_writer = @import("../gitrepo/writer.zig");
@@ -2428,22 +2429,43 @@ fn push(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, d
 
     // 1. Every new file is admitted: held here already, or uploaded and
     // its bytes hashed by the server now (invariant 2); once per content.
-    var admitted: std.StringHashMapUnmanaged(void) = .empty;
+    const started = std.Io.Timestamp.now(deps.io, .awake);
+    var admitted: std.StringArrayHashMapUnmanaged(?u64) = .empty;
     for (req.commits) |commit| {
         for (commit.changes) |ch| {
             if (eql(ch.op, "add")) {
                 if (!validHashHex(ch.hash)) return error.BadRequest;
-                if (admitted.contains(ch.hash)) continue;
-                if (try isPurged(deps.db, scope, ch.hash))
-                    return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then run 'cid push' again.");
-                switch (try admit(arena, deps, scope, ds, ch.hash, ch.size)) {
-                    .admitted => try admitted.put(arena, ch.hash, {}),
-                    .missing => return errorResponse(arena, .unprocessable_entity, "a file is missing from storage", "Run 'cid push' again; it re-uploads what is missing."),
-                    .mismatch => return errorResponse(arena, .unprocessable_entity, "an uploaded file does not match its hash", "Run 'cid push' again; it re-uploads it. If it persists, check the file is not changing while you push."),
-                }
+                const slot = try admitted.getOrPut(arena, ch.hash);
+                if (!slot.found_existing) slot.value_ptr.* = ch.size;
             } else if (!eql(ch.op, "delete")) return error.BadRequest;
         }
     }
+    // Several at once, each with a scope of its own (the request's arena
+    // is one fiber's): a push of 100k small files spent most of its time
+    // here, one storage round trip after another. Anything that did not
+    // come out admitted is asked again below, in order, so the answer is
+    // the same as one at a time.
+    const outcomes = try arena.alloc(?PushCheck, admitted.count());
+    @memset(outcomes, null);
+    // Fibers of the server's own loop when serving (its S3 and database
+    // clients run on them); the given Io in tests, where no loop runs.
+    const fan_io = if (deps.offload) nilo.io() else deps.io;
+    parallel.each(fan_io, admitted.count(), &AdmitJob{ .deps = deps, .ds = ds, .hashes = admitted.keys(), .sizes = admitted.values(), .outcomes = outcomes });
+    for (admitted.keys(), admitted.values(), outcomes) |hash, size, done| {
+        const outcome = if (done) |o| o else if (try isPurged(deps.db, scope, hash)) PushCheck.purged else switch (try admit(arena, deps, scope, ds, hash, size)) {
+            .admitted => PushCheck.admitted,
+            .missing => PushCheck.missing,
+            .mismatch => PushCheck.mismatch,
+        };
+        switch (outcome) {
+            .admitted => {},
+            .purged => return errorResponse(arena, .unprocessable_entity, "that content was purged and cannot come back", "Remove or replace the file, then run 'cid push' again."),
+            .missing => return errorResponse(arena, .unprocessable_entity, "a file is missing from storage", "Run 'cid push' again; it re-uploads what is missing."),
+            .mismatch => return errorResponse(arena, .unprocessable_entity, "an uploaded file does not match its hash", "Run 'cid push' again; it re-uploads it. If it persists, check the file is not changing while you push."),
+        }
+    }
+
+    const admitted_at = std.Io.Timestamp.now(deps.io, .awake);
 
     var tx = deps.db.begin(scope, .{}) catch return error.Db;
     defer tx.deinit(); // rolls back unless committed
@@ -2473,6 +2495,11 @@ fn push(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, d
         rev_floor = tx.rawOne([]const u8, scope, "SELECT cutoff_rev::text FROM commits WHERE commit_id = $1::uuid", .{h}) catch return error.Db;
     }
 
+    // Every content once, then every path.
+    const size_texts = try arena.alloc([]const u8, admitted.count());
+    for (admitted.values(), size_texts) |size, *text| text.* = try std.fmt.allocPrint(arena, "{d}", .{size orelse 0});
+    try landContents(&tx, scope, ds, admitted.keys(), size_texts);
+
     var last_commit_id: []const u8 = undefined;
     for (req.commits) |commit| {
         if (Uuid.parse(commit.id) == error.InvalidUuid) return error.BadRequest;
@@ -2480,7 +2507,7 @@ fn push(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, d
         var last_rev: []const u8 = undefined;
         for (commit.changes) |ch| {
             last_rev = if (eql(ch.op, "add"))
-                try insertAddRevision(&tx, scope, deps.io, ds, req.branch, rev_floor, ch.path, ch.hash, ch.size, commit.author)
+                try insertPathRevision(&tx, scope, deps.io, ds, req.branch, rev_floor, ch.path, ch.hash, commit.author)
             else
                 try insertDeleteRevision(&tx, scope, ds, req.branch, rev_floor, ch.path, commit.author);
             rev_floor = last_rev;
@@ -2511,6 +2538,12 @@ fn push(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, d
         .{ ds.id, req.branch, last_commit_id },
     ) catch return error.Db;
     tx.commit() catch return error.Db;
+    const recorded_at = std.Io.Timestamp.now(deps.io, .awake);
+    std.log.scoped(.push).info("{d} files admitted in {d} ms, recorded in {d} ms", .{
+        admitted.count(),
+        @divTrunc(started.durationTo(admitted_at).nanoseconds, std.time.ns_per_ms),
+        @divTrunc(admitted_at.durationTo(recorded_at).nanoseconds, std.time.ns_per_ms),
+    });
 
     queueVersion(deps, scope, ds, last_commit_id);
     noteActivity(arena, deps, scope, caller, ds, "push", last_commit_id, .{ .branch = req.branch, .commits = req.commits.len });
@@ -3015,29 +3048,52 @@ fn insertAddRevision(
     size: u64,
     author: []const u8,
 ) HandleError![]const u8 {
+    var size_text: [20]u8 = undefined;
+    const sizes = [_][]const u8{std.fmt.bufPrint(&size_text, "{d}", .{size}) catch unreachable};
+    try landContents(tx, scope, ds, &.{hash}, &sizes);
+    return insertPathRevision(tx, scope, io, ds, branch, floor, path, hash, author);
+}
+
+/// What every content a commit adds needs once, whichever paths it lands
+/// at: its `items` row (made or touched), held by this dataset, queued for
+/// its preview. One statement each for all of them: a push of 100k files
+/// made each of these 100k round trips.
+fn landContents(tx: anytype, scope: anytype, ds: Dataset, hashes: []const []const u8, sizes: []const []const u8) HandleError!void {
+    if (hashes.len == 0) return;
     _ = tx.exec(
         scope,
         "INSERT INTO items (item_hash, size_bytes, media_type) " ++
-            "VALUES (decode($1, 'hex'), $2::bigint, 'application/octet-stream') " ++
+            "SELECT decode(h, 'hex'), s::bigint, 'application/octet-stream' FROM unnest($1::text[], $2::text[]) AS t(h, s) " ++
             "ON CONFLICT (item_hash) DO UPDATE SET touched_at = now()",
-        .{ hash, @as(i64, @intCast(size)) },
+        .{ hashes, sizes },
     ) catch return error.Db;
-    // The upsert holds the row cleanup locks (core/gc.zig): collected now
+    // The upsert holds the rows cleanup locks (core/gc.zig): collected now
     // means the bytes went after this push admitted them.
-    if ((tx.rawOne(i64, scope, collected_sql, .{hash}) catch return error.Db) != null) return error.Collected;
-    _ = tx.exec(scope, held_sql, .{ ds.id, hash }) catch return error.Db;
-    try enqueuePreview(tx, scope, hash);
-    // Item identity: new path → new item_id; existing path keeps its id.
-    // On a branch, the path may live on main as of the branch start.
-    const Landed = struct {
-        pub const nilo_table = .projection;
-        rev: []const u8,
-        item_id: []const u8,
-    };
-    const landed = (tx.rawOne(
-        Landed,
+    if ((tx.rawOne(i64, scope, "SELECT 1::bigint FROM collected_items WHERE item_hash IN (SELECT decode(h, 'hex') FROM unnest($1::text[]) h) LIMIT 1", .{hashes}) catch return error.Db) != null)
+        return error.Collected;
+    _ = tx.exec(scope, "INSERT INTO dataset_hashes (dataset_id, item_hash) SELECT $1::uuid, decode(h, 'hex') FROM unnest($2::text[]) h ON CONFLICT DO NOTHING", .{ ds.id, hashes }) catch return error.Db;
+    _ = tx.exec(scope, "INSERT INTO previews (item_hash) SELECT decode(h, 'hex') FROM unnest($1::text[]) h ON CONFLICT (item_hash) DO NOTHING", .{hashes}) catch return error.Db;
+}
+
+/// One path's add revision, its content already landed (`landContents`).
+/// Item identity: a new path is a new item_id; an existing path keeps its
+/// id (on a branch, the path may live on main as of the branch start).
+fn insertPathRevision(
+    tx: anytype,
+    scope: anytype,
+    io: std.Io,
+    ds: Dataset,
+    branch: []const u8,
+    floor: ?[]const u8,
+    path: []const u8,
+    hash: []const u8,
+    author: []const u8,
+) HandleError![]const u8 {
+    return (tx.rawOne(
+        []const u8,
         scope,
-        "INSERT INTO item_revisions (rev_id, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
+        "WITH r AS (" ++
+            "INSERT INTO item_revisions (rev_id, dataset_id, branch, path, op, item_id, item_hash, split, author) " ++
             "SELECT cid_rev_after($1::uuid), $2::uuid, $3, $4, " ++
             "  CASE WHEN prev.item_id IS NULL THEN 'add' ELSE 'update' END, " ++
             "  COALESCE(prev.item_id, $5::uuid), decode($6, 'hex'), NULL, $7 " ++
@@ -3045,11 +3101,11 @@ fn insertAddRevision(
             "  SELECT item_id FROM item_revisions " ++
             "  WHERE dataset_id = $2::uuid AND branch IN ('main', $3) AND path = $4 AND op <> 'delete' " ++
             "  ORDER BY rev_id DESC LIMIT 1) prev ON true " ++
-            "RETURNING rev_id::text AS rev, item_id::text AS item_id",
+            "RETURNING rev_id, item_id), " ++
+            "d AS (INSERT INTO dataset_items (item_id, dataset_id) SELECT item_id, $2::uuid FROM r ON CONFLICT (item_id) DO NOTHING) " ++
+            "SELECT rev_id::text FROM r",
         .{ floor, ds.id, branch, path, @as([]const u8, &Uuid.now(io).toString()), hash, author },
-    ) catch return error.Db) orelse return error.Db;
-    _ = tx.exec(scope, "INSERT INTO dataset_items (item_id, dataset_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT (item_id) DO NOTHING", .{ landed.item_id, ds.id }) catch return error.Db;
-    return landed.rev;
+    ) catch return error.Db) orelse error.Db;
 }
 
 fn insertDeleteRevision(
@@ -3485,6 +3541,33 @@ fn heldHere(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, 
 
 const Admit = enum { admitted, missing, mismatch };
 
+const PushCheck = enum { admitted, purged, missing, mismatch };
+
+/// One pushed content's check (purged? held here, or uploaded and
+/// hashed?) on a task of its own, with a scope of its own. A database or
+/// storage error leaves its outcome empty: the request asks again.
+const AdmitJob = struct {
+    deps: *Deps,
+    ds: Dataset,
+    hashes: []const []const u8,
+    sizes: []const ?u64,
+    outcomes: []?PushCheck,
+
+    pub fn run(self: *const AdmitJob, arena: std.mem.Allocator, i: usize) void {
+        var scope = dbx.Run.init(arena);
+        const hash = self.hashes[i];
+        if (isPurged(self.deps.db, &scope, hash) catch return) {
+            self.outcomes[i] = .purged;
+            return;
+        }
+        self.outcomes[i] = switch (admit(arena, self.deps, &scope, self.ds, hash, self.sizes[i]) catch return) {
+            .admitted => .admitted,
+            .missing => .missing,
+            .mismatch => .mismatch,
+        };
+    }
+};
+
 /// Admits an item's bytes (invariant 2): held here already, or uploaded to
 /// this dataset's staging area — then streamed through the content hash,
 /// and only if they match (and the size, when one is claimed) stored
@@ -3494,8 +3577,10 @@ fn admit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, has
     const staged = try stagedKey(arena, ds.id, hash);
     // Whole, or in pieces when the file is larger than one (and was not
     // sent whole): the pieces stream through the hash in order, as one.
-    const whole = (deps.s3.headObject(scope, staged) catch return error.Storage) != null;
-    const count: u32 = if (whole or size == null or size.? <= deps.piece_bytes) 1 else @intCast((size.? + deps.piece_bytes - 1) / deps.piece_bytes);
+    // A file no larger than a piece always comes whole: no need to ask.
+    const small = size == null or size.? <= deps.piece_bytes;
+    const whole = small or (deps.s3.headObject(scope, staged) catch return error.Storage) != null;
+    const count: u32 = if (whole) 1 else @intCast((size.? + deps.piece_bytes - 1) / deps.piece_bytes);
     const pieces = try arena.alloc([]const u8, count);
     if (count == 1) pieces[0] = staged else for (pieces, 1..) |*key, n| key.* = try pieceKey(arena, ds.id, hash, @intCast(n));
     defer for (pieces) |key| deps.s3.deleteObject(scope, key) catch {};

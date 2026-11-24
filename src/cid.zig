@@ -59,6 +59,7 @@ pub const gitrepo = struct {
 };
 pub const uuid7 = @import("util/uuid7.zig");
 pub const progress = @import("util/progress.zig");
+pub const parallel = @import("util/parallel.zig");
 pub const hash = @import("util/hash.zig");
 pub const repeat = @import("util/repeat.zig").repeat;
 pub const access = struct {

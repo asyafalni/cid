@@ -18,6 +18,9 @@ pub const Progress = struct {
     started_ns: i96 = 0,
     drawn_ns: i96 = 0,
     shown: bool = false,
+    /// Transfers run several at once (client/parallel.zig): counting and
+    /// drawing take turns.
+    lock: std.Io.Mutex = .init,
 
     const show_after_ns = std.time.ns_per_s;
     const redraw_every_ns = 100 * std.time.ns_per_ms;
@@ -34,11 +37,15 @@ pub const Progress = struct {
     }
 
     pub fn addBytes(self: *Progress, n: u64) void {
+        self.lock.lockUncancelable(self.io);
+        defer self.lock.unlock(self.io);
         self.bytes_done += n;
         self.maybeDraw();
     }
 
     pub fn fileDone(self: *Progress) void {
+        self.lock.lockUncancelable(self.io);
+        defer self.lock.unlock(self.io);
         self.files_done += 1;
         self.maybeDraw();
     }

@@ -886,11 +886,11 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
 
 | Operation | Budget |
 |---|---|
-| `cid status` on 100k files | < 1 s, no network (cached hashes, re-hash only files whose size/mtime changed) |
-| `cid add` | limited by disk read speed (hashing), 100k small files < 30 s |
-| `cid commit` | < 100 ms, no network |
+| `cid status` on 100k files | < 1 s, no network (cached hashes, re-hash only files whose size/mtime changed); 0.23 s (2026-11-24) |
+| `cid add` | limited by disk read speed (hashing), 100k small files < 30 s; 3.4 s (2026-11-24) |
+| `cid commit` | < 100 ms, no network; 60 ms for 100 changes, 120 ms for 100k (2026-11-24) |
 | Platform migration, 10M revisions (4 writers, batches as `cid_writer`, server commit per 1M) | < 10 min with progress, resumable (`tests/bench/ingest_10m.sh`: 257 s) |
-| `cid push` | limited by upload speed; server-side recording < 1 s for small files; a large file costs one read of its bytes (the hash) plus a copy inside the store: 1 GB in 21 s on SeaweedFS, which copies the bytes; S3 copies without reading them |
+| `cid push` | limited by upload speed; server-side recording < 1 s for small files; a large file costs one read of its bytes (the hash) plus a copy inside the store: 1 GB in 21 s on SeaweedFS, which copies the bytes; S3 copies without reading them. 100k small files (6 MB, local network, 2026-11-24): 227 s, of which the server 145 s (it checks 8 uploads at a time); the client sends 8 at a time, and a clone fetches 8 at a time (25 s cold, 6 s from the cache) |
 | `cid tag` (write manifest), 1M items or annotations | < 60 s |
 | `cid diff` of two releases, 1M rows each | < 10 s |
 | `cid checkout` between releases | only changed files transferred |

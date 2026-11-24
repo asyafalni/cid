@@ -16,6 +16,8 @@ const local = @import("local.zig");
 const index_mod = @import("index.zig");
 const scan = @import("scan.zig");
 const remote_mod = @import("remote.zig");
+const parallel = @import("../util/parallel.zig");
+const Progress = @import("../util/progress.zig").Progress;
 
 pub const Remote = remote_mod.Remote;
 
@@ -95,7 +97,16 @@ pub fn push(
     }
     if (remote.progress) |p| p.begin("Uploading", missing.items.len, upload_bytes);
     defer if (remote.progress) |p| p.end();
-    for (missing.items) |first| {
+    // Several at once first; anything that failed (a damaged cache copy,
+    // an expired URL, a dropped connection) is then dealt with alone below.
+    const done = try arena.alloc(bool, missing.items.len);
+    @memset(done, false);
+    parallel.each(io, missing.items.len, &UploadJob{ .io = io, .cache_dir = cache_dir, .missing = missing.items, .sized = &sized, .progress = remote.progress, .done = done });
+    for (missing.items, done) |first, uploaded| {
+        if (uploaded) {
+            outcome.uploaded_files += 1;
+            continue;
+        }
         const size = sized.get(first.hash) orelse return error.CorruptLocalState;
         // Presigned URLs live 15 minutes, and a long push outlives the
         // later ones: when an upload fails, the server is asked again for
@@ -186,7 +197,7 @@ pub fn clone(
         return error.CorruptLocalState;
     var ws = workspace.open(arena, io, dest_dir) catch return error.CorruptLocalState;
 
-    const downloaded = try materialize(arena, io, &ws, cache_dir, remote, items);
+    const downloaded = (try materialize(arena, io, &ws, cache_dir, remote, items)).downloaded;
     try generateExport(arena, io, &ws, remote, at_commit);
 
     try setPosition(io, &ws, "main", at_commit);
@@ -239,7 +250,7 @@ pub fn pull(
 
     if (unpushed_newest_first.len == 0) {
         const items = (try subsetItems(arena, remote, workspace.Subset.of(ws.config), server_head)).items;
-        const changed = try materialize(arena, io, ws, cache_dir, remote, items);
+        const changed = (try materialize(arena, io, ws, cache_dir, remote, items)).changed;
         try generateExport(arena, io, ws, remote, server_head);
         try setPosition(io, ws, head.branch, server_head);
         local.writeLastPushed(io, ws.cid_dir, server_head) catch return error.CorruptLocalState;
@@ -341,7 +352,7 @@ pub fn pull(
         }
     };
     target.sort(SortCtx{ .keys = target.keys() });
-    const changed = try materialize(arena, io, ws, cache_dir, remote, target.values());
+    const changed = (try materialize(arena, io, ws, cache_dir, remote, target.values())).changed;
 
     // Rewrite the unpushed commits onto the new base: strip dropped paths,
     // skip commits that became empty, remint ids strictly after the server
@@ -528,7 +539,7 @@ pub fn checkout(
     if (unpushed.len > 0) return error.UnpushedCommits;
 
     const items = (try subsetItems(arena, remote, workspace.Subset.of(ws.config), commit_id)).items;
-    const changed = try materialize(arena, io, ws, cache_dir, remote, items);
+    const changed = (try materialize(arena, io, ws, cache_dir, remote, items)).changed;
     try generateExport(arena, io, ws, remote, commit_id);
     try setPosition(io, ws, branch, commit_id);
     if (move_root)
@@ -560,6 +571,10 @@ fn subsetItems(
 /// changed files, removes tracked files that no longer exist. Only touched
 /// files transfer. Refuses when an affected path carries local unstaged
 /// edits.
+/// Files written into the folder (or removed from it), and of those
+/// contents how many came over the network rather than from the cache.
+const Placed = struct { changed: u32, downloaded: u32 };
+
 fn materialize(
     arena: std.mem.Allocator,
     io: std.Io,
@@ -567,7 +582,7 @@ fn materialize(
     cache_dir: std.Io.Dir,
     remote: *const Remote,
     items: []const remote_mod.Remote.StateItem,
-) Error!u32 {
+) Error!Placed {
     if (std.debug.runtime_safety and items.len > 1) for (items[1..], items[0 .. items.len - 1]) |b, a| {
         std.debug.assert(std.mem.order(u8, a.path, b.path) == .lt);
     };
@@ -606,7 +621,14 @@ fn materialize(
         var i: usize = 0;
         while (i < need.count()) : (i += check_chunk) {
             const urls = try remote.downloads(arena, need.keys()[i..@min(i + check_chunk, need.count())]);
-            for (urls) |dl| try remote_mod.downloadToCache(arena, io, cache_dir, dl.hash, dl.url, remote.progress);
+            // Several at once; whatever failed is tried again alone, and
+            // fails the command if it fails again.
+            const done = try arena.alloc(bool, urls.len);
+            @memset(done, false);
+            parallel.each(io, urls.len, &DownloadJob{ .io = io, .cache_dir = cache_dir, .urls = urls, .progress = remote.progress, .done = done });
+            for (urls, done) |dl, ok| {
+                if (!ok) try remote_mod.downloadToCache(arena, io, cache_dir, dl.hash, dl.url, remote.progress);
+            }
         }
     }
 
@@ -638,8 +660,38 @@ fn materialize(
 
     saveTracked(arena, io, ws, &new_tracked) catch return error.CorruptLocalState;
     local.writeFileAtomic(io, ws.cid_dir, "index", "cid-index 1\n") catch return error.CorruptLocalState;
-    return changed;
+    return .{ .changed = changed, .downloaded = @intCast(need.count()) };
 }
+
+const DownloadJob = struct {
+    io: std.Io,
+    cache_dir: std.Io.Dir,
+    urls: []const remote_mod.Remote.Download,
+    progress: ?*Progress,
+    done: []bool,
+
+    pub fn run(self: *const DownloadJob, arena: std.mem.Allocator, i: usize) void {
+        const dl = self.urls[i];
+        remote_mod.downloadToCache(arena, self.io, self.cache_dir, dl.hash, dl.url, self.progress) catch return;
+        self.done[i] = true;
+    }
+};
+
+const UploadJob = struct {
+    io: std.Io,
+    cache_dir: std.Io.Dir,
+    missing: []const remote_mod.Remote.Missing,
+    sized: *const std.StringArrayHashMapUnmanaged(u64),
+    progress: ?*Progress,
+    done: []bool,
+
+    pub fn run(self: *const UploadJob, arena: std.mem.Allocator, i: usize) void {
+        const m = self.missing[i];
+        const size = self.sized.get(m.hash) orelse return;
+        remote_mod.uploadFromCache(arena, self.io, self.cache_dir, size, m, self.progress) catch return;
+        self.done[i] = true;
+    }
+};
 
 /// Annotated folders cloned with a format get their sidecar files
 /// regenerated at every position change, and a .cidignore so the
