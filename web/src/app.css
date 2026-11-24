@@ -3310,3 +3310,47 @@ button.transcript-line:hover {
   box-shadow: inset 0 -2px 0 var(--mark);
   border-radius: 2px;
 }
+
+/* Compare's folder tree: the changed folders at one level, each with its
+   changes in signs (+ added, ~ modified or moved, − deleted). */
+.changed-folders {
+  margin: var(--space-3) 0;
+}
+.changed-folder-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: var(--space-1) var(--space-3);
+}
+.changed-folder {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.changed-folder:hover,
+.changed-folder:focus-visible {
+  border-color: var(--aether);
+}
+.changed-folder-name {
+  color: var(--aether);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.changed-folder-counts {
+  display: flex;
+  gap: var(--space-2);
+  flex: none;
+  font-size: 0.8125rem;
+}

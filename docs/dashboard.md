@@ -447,8 +447,12 @@ Every dataset page (all five tabs) shares one header and the release tape.
     annotation counts under its class at the later version).
   - Change list (built): a flat list of changed paths with their sizes, small
     before/after thumbnails for modified pictures, a page at a time; the first
-    annotation changes, with `cid diff` named for the rest. *Planned:* a folder tree
-    with added/removed/changed markers for file datasets.
+    annotation changes, with `cid diff` named for the rest. *Built (2026-11-24):* the
+    folder tree, a level at a time as the Files tab walks it: the changed folders
+    with their changes in signs and words (`+2 ~1 −1`, "2 added, 1 modified, 1
+    deleted"); a folder opens to the changes under it alone and its own changed
+    folders, a path leading back up, the folder in the URL (`dir=`). The summary
+    stays the whole comparison's.
   - Visual diff (built): changed items with before (dashed) and after (solid)
     overlays side by side.
   - Table diff (built): under each modified CSV, Parquet or JSONL file, rows added and

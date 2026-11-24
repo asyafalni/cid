@@ -1063,7 +1063,9 @@ fn browseCompare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Data
         return errorResponse(arena, .service_unavailable, "the server is indexing another version", "Reload in a moment.");
     var db = try duckFor(arena, deps, a.dir);
     defer db.close();
-    var page = try browseQuery(deps, browse_mod.comparePage, .{ arena, &db, a.files, b.files, pair, try param(arena, route, "after"), try limitOf(route, browse_mod.max_limit) });
+    const prefix = (try param(arena, route, "prefix")) orelse "";
+    if (prefix.len > 0 and prefix[prefix.len - 1] != '/') return error.BadRequest;
+    var page = try browseQuery(deps, browse_mod.comparePage, .{ arena, &db, a.files, b.files, pair, try param(arena, route, "after"), try limitOf(route, browse_mod.max_limit), prefix });
     // Dimensions, as everywhere: read now, never frozen into an index.
     var hashes: std.ArrayList([]const u8) = .empty;
     for (page.visual) |v| {

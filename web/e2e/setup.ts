@@ -411,6 +411,33 @@ function seedManyBranch(dir: string) {
   run(`${cid} push`, folder);
 }
 
+// Folders inside folders, changed between two releases: for compare's
+// folder tree.
+function seedTree(dir: string) {
+  const tree = join(dir, 'tree');
+  execSync(`mkdir -p ${tree}/a/b ${tree}/c`);
+  const put = (path: string, text: string) => writeFileSync(join(tree, path), text);
+  put('a/x.txt', 'x\n');
+  put('a/b/y.txt', 'y\n');
+  put('c/z.txt', 'z\n');
+  put('top.txt', 'top\n');
+  run(`${cid} init cid@127.0.0.1:e2e/datasets/tree --git g@h:tree.git`, tree);
+  run(`${cid} add .`, tree);
+  run(`${cid} commit -m "a tree"`, tree);
+  run(`${cid} push`, tree);
+  run(`${cid} tag v1.0.0`, tree);
+  put('a/x.txt', 'x, changed\n');
+  execSync(`rm ${tree}/a/b/y.txt`);
+  put('a/b/new.txt', 'new\n');
+  put('top.txt', 'top, changed\n');
+  execSync(`mkdir -p ${tree}/d`);
+  put('d/n.txt', 'n\n');
+  run(`${cid} add .`, tree);
+  run(`${cid} commit -m "changes in folders"`, tree);
+  run(`${cid} push`, tree);
+  run(`${cid} tag v1.1.0`, tree);
+}
+
 // Sound and words: a tone (its waveform the thumbnail) and a note.
 function seedMedia(dir: string) {
   const media = join(dir, 'media');
@@ -601,6 +628,7 @@ export default function setup() {
         ON CONFLICT (dataset_id, release) DO UPDATE SET status = excluded.status;
     `);
     if (!already.includes('e2e/datasets/faces')) seedFaces(dir);
+    if (!already.includes('e2e/datasets/tree')) seedTree(dir);
     if (psqlValue("SELECT count(*) FROM activity_events WHERE account_id = 'gitlab:old-reader'") === '0') seedFacesHistory();
     if (!already.includes('e2e/datasets/masks')) seedMasks(dir);
     if (!already.includes('e2e/datasets/tables')) seedTables(dir);

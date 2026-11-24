@@ -18,12 +18,17 @@ export function ReleasesTab({
   a,
   b,
   onPick,
+  dir,
+  onDir,
 }: {
   name: string;
   overview: Overview;
   a: string | undefined;
   b: string | undefined;
   onPick: (patch: { a?: string; b?: string }) => void;
+  /** The folder the change list is narrowed to, from the URL. */
+  dir?: string;
+  onDir?: (dir: string | undefined) => void;
 }) {
   const commits = overview.commits; // newest first
   // On a branch, main's versions are on offer too (B7): a branch is
@@ -75,7 +80,7 @@ export function ReleasesTab({
           )}
         </div>
         {aSel && bSel && aSel !== bSel && (
-          <Comparison name={name} overview={overview} commits={every} aLabel={aSel} bLabel={bSel} />
+          <Comparison name={name} overview={overview} commits={every} aLabel={aSel} bLabel={bSel} dir={dir} onDir={onDir} />
         )}
         {aSel === bSel && <p className="quiet">Pick two different versions to compare.</p>}
       </section>
@@ -229,12 +234,80 @@ function VersionSelect({
   );
 }
 
+// How many changes the list can hold: under the open folder, or in all.
+function changesUnder(page: { under?: { added: number; modified: number; deleted: number; split: number } }, s: { added: number; modified: number; deleted: number; split?: number }): number {
+  const u = page.under;
+  return u ? u.added + u.modified + u.deleted + u.split : s.added + s.modified + s.deleted + (s.split ?? 0);
+}
+
+// The folders with changes in them, one level at a time: each with its
+// changes by kind, in words and signs, never colour alone; a click opens
+// it, and the path above leads back up.
+function ChangedFolders({
+  name,
+  dir,
+  folders,
+  onDir,
+}: {
+  name: string;
+  dir: string | undefined;
+  folders: { name: string; added: number; modified: number; deleted: number; split: number }[];
+  onDir: (dir: string | undefined) => void;
+}) {
+  const crumbs = dir ? dir.split('/') : [];
+  return (
+    <section className="changed-folders" aria-label="Changed folders">
+      <nav className="crumbs" aria-label="Folder path">
+        <button className="crumb" onClick={() => onDir(undefined)}>
+          {name.split('/').pop()}
+        </button>
+        {crumbs.map((part, i) => (
+          <span key={i}>
+            <span aria-hidden="true" className="quiet">
+              /
+            </span>
+            <button className="crumb" onClick={() => onDir(crumbs.slice(0, i + 1).join('/'))}>
+              {part}
+            </button>
+          </span>
+        ))}
+      </nav>
+      {folders.length > 0 && (
+        <ul className="changed-folder-list">
+          {folders.map((f) => {
+            const parts = [
+              f.added > 0 && `${f.added.toLocaleString()} added`,
+              f.modified > 0 && `${f.modified.toLocaleString()} modified`,
+              f.deleted > 0 && `${f.deleted.toLocaleString()} deleted`,
+              f.split > 0 && `${f.split.toLocaleString()} moved to another split`,
+            ].filter(Boolean) as string[];
+            return (
+              <li key={f.name}>
+                <button className="changed-folder" onClick={() => onDir(dir ? `${dir}/${f.name}` : f.name)} aria-label={`${f.name}/: ${parts.join(', ')}`}>
+                  <span className="data changed-folder-name">{f.name}/</span>
+                  <span className="data changed-folder-counts" aria-hidden="true">
+                    {f.added > 0 && <span className="change-verb--added">+{f.added.toLocaleString()}</span>}
+                    {f.modified + f.split > 0 && <span className="change-verb--modified">~{(f.modified + f.split).toLocaleString()}</span>}
+                    {f.deleted > 0 && <span className="change-verb--deleted">−{f.deleted.toLocaleString()}</span>}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function Comparison({
   name,
   overview,
   commits,
   aLabel,
   bLabel,
+  dir,
+  onDir,
 }: {
   name: string;
   overview: Overview;
@@ -242,15 +315,19 @@ function Comparison({
   commits: TapeCommit[];
   aLabel: string;
   bLabel: string;
+  dir?: string;
+  onDir?: (dir: string | undefined) => void;
 }) {
   const aCommit = resolve(commits, aLabel);
   const bCommit = resolve(commits, bLabel);
   // Compared on the server (DuckDB over both versions' indexes): the
   // summary and the visual diff come with the first page; further item
   // changes a page at a time. Nothing here holds either version.
+  // The change list a folder at a time, as the Files tab walks the tree.
+  const prefix = dir ? `${dir}/` : '';
   const pages = useInfiniteQuery({
-    queryKey: ['compare', name, aCommit, bCommit],
-    queryFn: ({ pageParam }) => getCompare(name, aCommit!, bCommit!, pageParam),
+    queryKey: ['compare', name, aCommit, bCommit, prefix],
+    queryFn: ({ pageParam }) => getCompare(name, aCommit!, bCommit!, pageParam, prefix),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.next ?? undefined,
     enabled: aCommit !== null && bCommit !== null,
@@ -352,6 +429,10 @@ function Comparison({
 
       {!anyItems && !anyAnns && <p className="quiet">These two versions hold exactly the same data.</p>}
 
+      {onDir && (dir || (first.folders ?? []).length > 0) && (
+        <ChangedFolders name={name} dir={dir} folders={first.folders ?? []} onDir={onDir} />
+      )}
+
       {changes.length > 0 && (
         <ul className="change-list">
           {changes.map((c) => (
@@ -387,7 +468,7 @@ function Comparison({
         >
           {pages.isFetchingNextPage
             ? 'Loading more…'
-            : `Show more changes (${changes.length.toLocaleString()} of ${(s.added + s.modified + s.deleted).toLocaleString()} shown)`}
+            : `Show more changes (${changes.length.toLocaleString()} of ${changesUnder(first, s).toLocaleString()} shown)`}
         </button>
       )}
 

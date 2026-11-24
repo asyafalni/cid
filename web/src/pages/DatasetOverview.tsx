@@ -319,7 +319,9 @@ export function DatasetOverview() {
           overview={o}
           a={search.a}
           b={search.b}
-          onPick={(patch) => setSearch(patch)}
+          onPick={(patch) => setSearch({ ...patch, dir: undefined })}
+          dir={search.dir}
+          onDir={(dir) => setSearch({ dir })}
         />
       ) : view === 'health' ? (
         <HealthTab name={name} overview={o} commit={pinnedCommit} pin={pin} />

@@ -315,6 +315,11 @@ export type ComparePage = {
     split_b?: string | null;
   }[];
   next: string | null;
+  /** The open folder's changed subfolders, each with its changes by kind
+   * (first page only). */
+  folders?: { name: string; added: number; modified: number; deleted: number; split: number }[];
+  /** The changes under the open folder, by kind (first page only). */
+  under?: { added: number; modified: number; deleted: number; split: number };
   visual: {
     path: string;
     before: CompareSide | null;
@@ -327,9 +332,10 @@ export type ComparePage = {
   by_class: { class: string; added: number; changed: number; removed: number }[];
 };
 
-export function getCompare(name: string, a: string, b: string, after?: string): Promise<ComparePage> {
+export function getCompare(name: string, a: string, b: string, after?: string, prefix?: string): Promise<ComparePage> {
   const params = new URLSearchParams({ a, b });
   if (after !== undefined) params.set('after', after);
+  if (prefix) params.set('prefix', prefix);
   return request(`/v0/datasets/${name}/-/browse/compare?${params.toString().replace(/\+/g, '%20')}`);
 }
 

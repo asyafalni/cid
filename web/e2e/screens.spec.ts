@@ -65,6 +65,8 @@ const pages: [string, string][] = [
   ['item-pdf', '/d/e2e/datasets/docs?view=browse&item=page.pdf'],
   ['item-clip', '/d/e2e/datasets/clips?view=browse&item=talk%2Fclip.wav'],
   ['item-spans', '/d/e2e/datasets/clips?view=browse&item=docs%2Fnotes.txt'],
+  ['compare-tree', '/d/e2e/datasets/tree?view=releases&a=v1.0.0&b=v1.1.0'],
+  ['compare-tree-open', '/d/e2e/datasets/tree?view=releases&a=v1.0.0&b=v1.1.0&dir=a'],
   ['releases-same', `${demo}?view=releases&a=v1.0.0&b=v1.0.0`],
   ['files-root', `${demo}?view=files`],
   ['files-folder', `${many}?view=files&dir=rows`],

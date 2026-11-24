@@ -114,6 +114,31 @@ test('compare between the two releases reads as a sentence', async ({ page }) =>
   await expect(page.getByText('notes.txt')).toBeVisible();
 });
 
+test('compare walks the folder tree: changed folders with their counts, one level at a time', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/tree?view=releases&a=v1.0.0&b=v1.1.0');
+  const folders = page.getByRole('region', { name: 'Changed folders' });
+  // At the top: a/ and d/ changed, c/ did not; each says how, in words.
+  await expect(folders.getByRole('button', { name: 'a/: 1 added, 1 modified, 1 deleted' })).toBeVisible();
+  await expect(folders.getByRole('button', { name: 'd/: 1 added' })).toBeVisible();
+  await expect(folders.getByRole('button', { name: /^c\// })).toHaveCount(0);
+  await expect(page.locator('.change-list')).toContainText('top.txt');
+  // Opened, a/ lists only what changed under it, and its own subfolder.
+  await folders.getByRole('button', { name: /^a\// }).click();
+  await expect(page).toHaveURL(/dir=a(&|$)/);
+  const list = page.locator('.change-list');
+  await expect(list).toContainText('a/x.txt');
+  await expect(list).toContainText('a/b/new.txt');
+  await expect(list).toContainText('a/b/y.txt');
+  await expect(list).not.toContainText('top.txt');
+  await expect(folders.getByRole('button', { name: 'b/: 1 added, 1 deleted' })).toBeVisible();
+  // The summary stays the whole comparison's; the path leads back up.
+  await expect(page.getByText('2 added, 2 modified, 1 deleted')).toBeVisible();
+  await folders.getByRole('navigation', { name: 'Folder path' }).getByRole('button', { name: 'tree' }).click();
+  await expect(page).not.toHaveURL(/dir=/);
+  await expect(page.locator('.change-list')).toContainText('top.txt');
+});
+
 test('the history says what each release holds and changed, and links to the comparison', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?view=releases&a=v1.1.0&b=v1.0.0');

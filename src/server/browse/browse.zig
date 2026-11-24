@@ -576,7 +576,15 @@ pub const ComparePage = struct {
     /// most `max_limit` classes (first page only). A changed annotation
     /// counts under its class at the later version; "" is no class.
     by_class: []const ClassChanges = &.{},
+    /// The folder the change list is narrowed to ("" for all): its changed
+    /// subfolders by name, at most `max_folders`, each with its changes by
+    /// kind, and the changes under it in all (first page only).
+    folders: []const FolderChanges = &.{},
+    under: Counts = .{},
 };
+
+pub const Counts = struct { added: u64 = 0, modified: u64 = 0, deleted: u64 = 0, split: u64 = 0 };
+pub const FolderChanges = struct { name: []const u8, added: u64, modified: u64, deleted: u64, split: u64 };
 
 pub const ClassChanges = struct { class: []const u8, added: u64, changed: u64, removed: u64 };
 
@@ -630,19 +638,31 @@ fn summaryOf(arena: std.mem.Allocator, d: DiffFiles) Error![]const u8 {
     , .{ try quote(arena, d.items), try quote(arena, d.anns) });
 }
 
-pub fn comparePage(arena: std.mem.Allocator, db: *duck.Db, a: Files, b: Files, d: DiffFiles, after: ?[]const u8, limit: u32) Error!ComparePage {
+/// `prefix` narrows the change list to one folder ("" for every path, else
+/// ending in '/'), as the Files tab opens one: its changed subfolders come
+/// with their counts, a folder tree walked a level at a time.
+pub fn comparePage(arena: std.mem.Allocator, db: *duck.Db, a: Files, b: Files, d: DiffFiles, after: ?[]const u8, limit: u32, prefix: []const u8) Error!ComparePage {
     const sql = try std.fmt.allocPrint(arena,
         \\WITH ch AS (SELECT * FROM read_parquet('{0s}')),
         \\acp AS (SELECT * FROM read_parquet('{1s}')),
-        \\page AS (SELECT * FROM ch WHERE $1::VARCHAR IS NULL OR path > $1::VARCHAR ORDER BY path LIMIT $2),
-        \\last AS (SELECT max(path) AS p, count(*) AS n FROM page),
+        \\inside AS (SELECT *, substr(path, length($3::VARCHAR) + 1) AS rest FROM ch WHERE starts_with(path, $3::VARCHAR)),
+        \\page1 AS (SELECT * FROM inside WHERE $1::VARCHAR IS NULL OR path > $1::VARCHAR ORDER BY path LIMIT $2 + 1),
+        \\page AS (SELECT * FROM page1 ORDER BY path LIMIT $2),
+        \\last AS (SELECT max(path) AS p, (SELECT count(*) FROM page1) AS n FROM page),
         \\vis AS (SELECT item, min(item_path) AS item_path FROM acp WHERE $1::VARCHAR IS NULL GROUP BY item ORDER BY 2 LIMIT {4d}),
         \\sa AS (SELECT path, hash, item_id FROM read_parquet('{2s}') WHERE item_id IN (SELECT item FROM vis)),
         \\sb AS (SELECT path, hash, item_id FROM read_parquet('{3s}') WHERE item_id IN (SELECT item FROM vis))
         \\SELECT json_object(
         \\  'summary', {5s},
         \\  'changes', (SELECT coalesce(to_json(list(json_object('change', change, 'path', path, 'hash_a', hash_a, 'hash_b', hash_b, 'size_b', size_b, 'split_a', split_a, 'split_b', split_b) ORDER BY path)), '[]'::JSON) FROM page),
-        \\  'next', (SELECT CASE WHEN n = $2 AND EXISTS (SELECT 1 FROM ch WHERE ch.path > last.p) THEN p END FROM last),
+        \\  'next', (SELECT CASE WHEN n > $2 THEN p END FROM last),
+        \\  'folders', (SELECT coalesce(to_json(list(json_object('name', name, 'added', ad, 'modified', mo, 'deleted', de, 'split', sp) ORDER BY name)), '[]'::JSON)
+        \\    FROM (SELECT split_part(rest, '/', 1) AS name, count(*) FILTER (WHERE change = 'added') AS ad,
+        \\        count(*) FILTER (WHERE change = 'modified') AS mo, count(*) FILTER (WHERE change = 'deleted') AS de,
+        \\        count(*) FILTER (WHERE change = 'split') AS sp
+        \\      FROM inside WHERE $1::VARCHAR IS NULL AND contains(rest, '/') GROUP BY 1 ORDER BY 1 LIMIT {7d})),
+        \\  'under', (SELECT json_object('added', count(*) FILTER (WHERE change = 'added'), 'modified', count(*) FILTER (WHERE change = 'modified'),
+        \\      'deleted', count(*) FILTER (WHERE change = 'deleted'), 'split', count(*) FILTER (WHERE change = 'split')) FROM inside WHERE $1::VARCHAR IS NULL),
         \\  'visual', (SELECT coalesce(to_json(list(json_object('path', v.item_path,
         \\      'before', (SELECT json_object('path', path, 'hash', hash, 'item_id', item_id) FROM sa WHERE sa.item_id = v.item LIMIT 1),
         \\      'after', (SELECT json_object('path', path, 'hash', hash, 'item_id', item_id) FROM sb WHERE sb.item_id = v.item LIMIT 1),
@@ -658,8 +678,8 @@ pub fn comparePage(arena: std.mem.Allocator, db: *duck.Db, a: Files, b: Files, d
         \\        count(*) FILTER (WHERE change = 'changed') AS c, count(*) FILTER (WHERE change = 'removed') AS r
         \\      FROM acp WHERE $1::VARCHAR IS NULL GROUP BY 1 ORDER BY count(*) DESC, 1 LIMIT {6d}))
         \\)::VARCHAR
-    , .{ try quote(arena, d.items), try quote(arena, d.anns), try quote(arena, a.items), try quote(arena, b.items), visual_items, try summaryOf(arena, d), max_limit });
-    const text = (try db.scalarTextArgs(arena, sql, &.{ .{ .text = after }, .{ .int = limit } })) orelse return error.QueryFailed;
+    , .{ try quote(arena, d.items), try quote(arena, d.anns), try quote(arena, a.items), try quote(arena, b.items), visual_items, try summaryOf(arena, d), max_limit, max_folders });
+    const text = (try db.scalarTextArgs(arena, sql, &.{ .{ .text = after }, .{ .int = limit }, .{ .text = prefix } })) orelse return error.QueryFailed;
     return std.json.parseFromSliceLeaky(ComparePage, arena, text, .{ .ignore_unknown_fields = true }) catch error.QueryFailed;
 }
 
@@ -855,7 +875,7 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
     );
     const d12 = try DiffFiles.of(arena, dir, "v1", "v2");
     try buildDiff(arena, io, &db, v1, v2, d12);
-    const cmp = try comparePage(arena, &db, v1, v2, d12, null, 2);
+    const cmp = try comparePage(arena, &db, v1, v2, d12, null, 2, "");
     try std.testing.expectEqual(DiffSummary{ .added = 1, .modified = 1, .deleted = 1, .ann_added = 1, .ann_changed = 1, .ann_removed = 1, .split = 1 }, cmp.summary);
     try std.testing.expectEqualStrings("README", cmp.changes[0].path);
     try std.testing.expectEqualStrings("deleted", cmp.changes[0].change);
@@ -867,12 +887,28 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
     try std.testing.expectEqual(@as(i64, 9), cmp.visual[0].shapes_after[0].geometry.?.object.get("x").?.integer);
     try std.testing.expectEqualStrings("aa", cmp.visual[0].before.?.hash);
     try std.testing.expectEqualStrings("a2", cmp.visual[0].after.?.hash);
-    const page2 = try comparePage(arena, &db, v1, v2, d12, cmp.next, 2);
+    const page2 = try comparePage(arena, &db, v1, v2, d12, cmp.next, 2, "");
     try std.testing.expectEqualStrings("img/a.jpg", page2.changes[0].path);
     try std.testing.expectEqualStrings("split", page2.changes[1].change);
     try std.testing.expectEqualStrings("val", page2.changes[1].split_a.?);
     try std.testing.expectEqualStrings("train", page2.changes[1].split_b.?);
     try std.testing.expectEqual(@as(usize, 0), page2.visual.len);
+    try std.testing.expect(page2.next == null); // the last page says so
+    // A folder at a time: at the top, img/ holds a change of bytes and a
+    // change of split; opened, its changes alone, and no folders under it.
+    try std.testing.expectEqual(@as(usize, 1), cmp.folders.len);
+    try std.testing.expectEqualStrings("img", cmp.folders[0].name);
+    try std.testing.expectEqual(FolderChanges{ .name = cmp.folders[0].name, .added = 0, .modified = 1, .deleted = 0, .split = 1 }, cmp.folders[0]);
+    try std.testing.expectEqual(Counts{ .added = 1, .modified = 1, .deleted = 1, .split = 1 }, cmp.under);
+    const in_img = try comparePage(arena, &db, v1, v2, d12, null, 5, "img/");
+    try std.testing.expectEqual(@as(usize, 2), in_img.changes.len);
+    try std.testing.expectEqualStrings("img/a.jpg", in_img.changes[0].path);
+    try std.testing.expectEqualStrings("img/c.png", in_img.changes[1].path);
+    try std.testing.expectEqual(@as(usize, 0), in_img.folders.len);
+    try std.testing.expectEqual(Counts{ .modified = 1, .split = 1 }, in_img.under);
+    try std.testing.expect(in_img.next == null);
+    // The summary stays the whole comparison's.
+    try std.testing.expectEqual(cmp.summary, in_img.summary);
     try std.testing.expectEqual(@as(usize, 3), cmp.ann_changes.len);
     try std.testing.expectEqualStrings("img/a.jpg", cmp.ann_changes[0].item_path.?);
     try std.testing.expectEqual(@as(usize, 0), page2.ann_changes.len);
