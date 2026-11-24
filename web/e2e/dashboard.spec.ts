@@ -514,6 +514,20 @@ test('the annotations filter counts items by how many annotations they have, and
   await expect(page.getByLabel('Filter by annotations')).toHaveCount(0);
 });
 
+test("the drawer lists an annotation's attributes as filters, and who made it under which policy", async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/attrs2?view=browse&release=v1.0.0&item=street%2Fhidden.png');
+  const anns = page.getByRole('complementary', { name: 'street/hidden.png' }).getByRole('region', { name: 'Annotations' });
+  await expect(anns).toContainText('by agent:annotator · policy p1');
+  // An attribute narrows Browse to the items carrying it.
+  await anns.getByRole('button', { name: 'occluded=true' }).click();
+  await expect(page).toHaveURL(/attr=occluded(%3D|=)true/);
+  await expect(page.getByText('1 of 2 items')).toBeVisible();
+  // An identity, to the identity filter.
+  await anns.getByRole('button', { name: 'identity=car-0042' }).click();
+  await expect(page).toHaveURL(/identity=car-0042/);
+});
+
 test('the attribute filter keeps the items whose annotations carry the value', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/attrs2?view=browse&mode=gallery');

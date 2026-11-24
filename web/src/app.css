@@ -3354,3 +3354,22 @@ button.transcript-line:hover {
   flex: none;
   font-size: 0.8125rem;
 }
+
+/* An annotation's attributes (each a filter) and where it came from. */
+.ann-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin: var(--space-1) 0 0 calc(0.6rem + var(--space-2));
+  font-size: 0.8125rem;
+}
+button.ann-attr {
+  cursor: pointer;
+  color: var(--aether);
+  font: inherit;
+}
+button.ann-attr:hover,
+button.ann-attr:focus-visible {
+  border-color: var(--aether);
+}

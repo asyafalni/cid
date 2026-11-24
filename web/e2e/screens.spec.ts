@@ -67,6 +67,7 @@ const pages: [string, string][] = [
   ['item-spans', '/d/e2e/datasets/clips?view=browse&item=docs%2Fnotes.txt'],
   ['compare-tree', '/d/e2e/datasets/tree?view=releases&a=v1.0.0&b=v1.1.0'],
   ['compare-tree-open', '/d/e2e/datasets/tree?view=releases&a=v1.0.0&b=v1.1.0&dir=a'],
+  ['item-attrs', '/d/e2e/datasets/attrs2?view=browse&release=v1.0.0&item=street%2Fhidden.png'],
   ['releases-same', `${demo}?view=releases&a=v1.0.0&b=v1.0.0`],
   ['files-root', `${demo}?view=files`],
   ['files-folder', `${many}?view=files&dir=rows`],

@@ -483,6 +483,7 @@ export function BrowseTab({
           onRowFilter={onRowFilter}
           row={row}
           onRow={onRow}
+          onFilters={onFilters}
           onClose={() => onOpenItem(undefined)}
         />
       )}
@@ -543,6 +544,7 @@ function ItemDrawer({
   onRowFilter,
   row,
   onRow,
+  onFilters,
   onClose,
 }: {
   name: string;
@@ -557,6 +559,8 @@ function ItemDrawer({
   onRowFilter?: (rows: string | undefined) => void;
   row?: string;
   onRow?: (row: string | undefined) => void;
+  /** Browse's filters: an attribute or identity in the list narrows to it. */
+  onFilters?: (patch: FilterPatch) => void;
   onClose: () => void;
 }) {
   // A restricted item's bytes are never fetched just because its drawer
@@ -680,7 +684,7 @@ function ItemDrawer({
                   <span className="class-dot" style={{ background: classColor(a.class) }} />
                   <span className="chip">{a.kind ?? '?'}</span> {a.class ?? '—'}
                   <AnnWhere a={a} />
-                  <span className="quiet"> — {a.author}</span>
+                  <AnnFacts a={a} onFilters={onFilters} />
                 </li>
               ))}
             </ul>
@@ -1292,6 +1296,44 @@ function AnnWhere({ a }: { a: StateAnnotation }) {
   const s = parseSpan(a);
   if (s) return <span className="data"> {`characters ${s.start.toLocaleString()}–${s.end.toLocaleString()}`}</span>;
   return null;
+}
+
+// An annotation's attributes and where it came from: each attribute as
+// the attribute filter words it (`occluded=true`), a link that narrows
+// Browse to the items carrying it, an identity to the identity filter;
+// a value that is not one word, number or yes/no is shown, not offered.
+// Then who made it and under which labelling policy.
+function AnnFacts({ a, onFilters }: { a: StateAnnotation; onFilters?: (patch: FilterPatch) => void }) {
+  const attrs = a.attrs !== null && typeof a.attrs === 'object' && !Array.isArray(a.attrs) ? Object.entries(a.attrs as Record<string, unknown>) : [];
+  return (
+    <div className="ann-facts">
+      {attrs.map(([key, value]) => {
+        const scalar = typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+        const text = `${key}=${scalar ? String(value) : JSON.stringify(value)}`;
+        if (!scalar || !onFilters || (key === 'identity' && typeof value === 'boolean'))
+          return (
+            <span key={key} className="chip data ann-attr">
+              {text}
+            </span>
+          );
+        const patch: FilterPatch = key === 'identity' ? { identity: String(value) } : { attr: text };
+        return (
+          <button
+            key={key}
+            className="chip data ann-attr"
+            title={key === 'identity' ? `Show the items naming ${String(value)}` : `Show the items with ${text}`}
+            onClick={() => onFilters(patch)}
+          >
+            {text}
+          </button>
+        );
+      })}
+      <span className="quiet">
+        by {a.author}
+        {a.policy_ver ? ` · policy ${a.policy_ver}` : ''}
+      </span>
+    </div>
+  );
 }
 
 function NoPreview({ path, why }: { path: string; why: string }) {

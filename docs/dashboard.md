@@ -404,8 +404,11 @@ Every dataset page (all five tabs) shares one header and the release tape.
   Measured on a 66 MB CSV of 1M rows and 8 columns (ReleaseFast, 2026-11-21): the
   first request, download and conversion included, 0.86 s; a page after 0.14–0.47 s,
   three filters at once or 900,000 rows in; server memory at most 330 MB.
-  *Planned:* provenance (source video/camera/feed alert, agent or reviewer, policy
-  rule) and attribute fields.
+  *Built (2026-11-24):* each annotation's attributes, as the attribute filter words
+  them (`occluded=true`), each narrowing Browse to the items carrying it (an
+  `identity` to the identity filter); and where it came from: its author (an agent or
+  a person) and labelling policy version. *Planned:* the item's own source (video,
+  camera, feed alert), which needs a place in the data model first.
 - **Virtualised infinite scroll** (built): the next page loads as its button scrolls
   into view; no 100-row pages.
 - *Built (2026-11-23):* **SQL console**, Browse's fourth view (`mode=sql`, the query in
