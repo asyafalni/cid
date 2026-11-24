@@ -313,17 +313,22 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
     // Filters and facets read only the light columns of every row; the
     // page's rows alone (and the open item) are read whole, with their
     // annotations. Shared CTEs are materialized, so carrying heavy
-    // columns through them would cost seconds at 1M items.
+    // columns through them would cost seconds at 1M items. The page takes
+    // one row more than it shows, so whether another page follows is
+    // known without a second pass over the selection; with no item open,
+    // nothing is scanned for one. Together a quarter of a page's CPU at
+    // 1M items (2026-11-24).
     const sql = try std.fmt.allocPrint(arena,
         \\WITH m AS (SELECT path, split, ext, class_set, ann_count,
     ++ " " ++ "(" ++ filter_q ++ " AND " ++ filter_i ++ ") AS fq, " ++ filter_s ++ " AS fs, " ++ filter_c ++ " AS fc, " ++ filter_t ++ " AS ft, " ++
         filter_a ++ " AS fa, " ++ filter_x ++ " AS fx " ++
         \\  FROM read_parquet('{0s}')),
         \\sel AS (SELECT path FROM m WHERE fq AND fs AND fc AND ft AND fa AND fx),
-        \\page AS (SELECT path FROM sel WHERE $5::VARCHAR IS NULL OR path > $5::VARCHAR ORDER BY {3s} LIMIT $6),
-        \\last AS (SELECT max(path) AS p, count(*) AS n FROM page),
+        \\page1 AS (SELECT path FROM sel WHERE $5::VARCHAR IS NULL OR path > $5::VARCHAR ORDER BY {3s} LIMIT $6 + 1),
+        \\page AS (SELECT path FROM page1 ORDER BY {3s} LIMIT $6),
+        \\last AS (SELECT max(path) AS p, (SELECT count(*) FROM page1) AS n FROM page),
         \\whole AS (SELECT path, hash, size, split, item_id FROM read_parquet('{0s}') WHERE path IN (SELECT path FROM page)),
-        \\opened AS (SELECT path, hash, size, split, item_id FROM read_parquet('{0s}') WHERE path = $7::VARCHAR LIMIT 1),
+        \\opened AS (SELECT path, hash, size, split, item_id FROM read_parquet('{0s}') WHERE {5s} LIMIT 1),
         \\boxes AS (SELECT item_id, to_json(list(json_object('id', id, 'item_id', item_id, 'kind', kind, 'class', class,
         \\      'geometry', geometry, 'attrs', attrs, 'author', author, 'policy_ver', policy_ver) ORDER BY id)) AS j
         \\  FROM read_parquet('{1s}')
@@ -332,7 +337,7 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         \\  'items', (SELECT coalesce(to_json(list(json_object('path', w.path, 'hash', w.hash, 'size', w.size, 'split', w.split,
         \\      'item_id', w.item_id, 'annotations', coalesce(b.j, '[]'::JSON)) ORDER BY w.path)), '[]'::JSON)
         \\      FROM whole w LEFT JOIN boxes b USING (item_id)),
-        \\  'next', (SELECT CASE WHEN {4s} AND n = $6 AND EXISTS (SELECT 1 FROM sel WHERE sel.path > last.p) THEN p END FROM last),
+        \\  'next', (SELECT CASE WHEN {4s} AND n > $6 THEN p END FROM last),
         \\  'open', (SELECT json_object('path', o.path, 'hash', o.hash, 'size', o.size, 'split', o.split,
         \\      'item_id', o.item_id, 'annotations', coalesce(b.j, '[]'::JSON)) FROM opened o LEFT JOIN boxes b USING (item_id))
         \\)::VARCHAR
@@ -342,6 +347,8 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         if (q.facets) try std.fmt.allocPrint(arena, counts_sql, .{items}) else no_counts_sql,
         if (q.sample) "md5(path), path" else "path",
         if (q.sample) "false" else "true",
+        // No item open: no scan for one (the parameter stays bound).
+        if (q.item != null) "path = $7::VARCHAR" else "false AND $7::VARCHAR IS NULL",
     });
     // The bucket asked for, as the counts it spans; one no bucket names
     // matches nothing, as an unknown split does.
