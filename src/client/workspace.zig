@@ -341,7 +341,7 @@ fn stage(
 
     // Tracked or staged paths under the given paths that are gone from disk:
     // stage the delete.
-    for (tracked.entries.items) |t| {
+    for (tracked.items()) |t| {
         const spec_i = matchSpec(specs, t.path) orelse continue;
         matched[spec_i] = true;
         if (findFile(files, t.path) == null) {
@@ -494,7 +494,7 @@ pub fn restoreWorktree(
         if (e.op == .add)
             try wants.append(arena, .{ .path = e.path, .hash_hex = e.hash_hex, .from_index = true });
     }
-    for (tracked.entries.items) |t| {
+    for (tracked.items()) |t| {
         if (matchSpec(specs, t.path) == null) continue;
         matched_any = true;
         if (idx.get(t.path)) |staged| {
@@ -584,7 +584,7 @@ pub fn status(arena: std.mem.Allocator, io: std.Io, ws: *Workspace) !Status {
             try unstaged_new.append(arena, f.path);
         }
     }
-    for (tracked.entries.items) |t| {
+    for (tracked.items()) |t| {
         if (findFile(files, t.path) == null and idx.get(t.path) == null)
             try unstaged_deleted.append(arena, t.path);
     }

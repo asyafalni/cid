@@ -172,51 +172,46 @@ pub const Index = struct {
 };
 
 pub const Tracked = struct {
-    entries: std.ArrayList(TrackedEntry),
+    /// Keyed by path, so a lookup, a put and a remove are each one hash,
+    /// whatever the tree's size: a linear scan made loading 100k paths
+    /// cost about 40 s (`cid status`, `cid commit`). Kept in path order
+    /// while only parsed and put in order; `serialize` sorts.
+    map: std.StringArrayHashMapUnmanaged(TrackedEntry),
     arena: std.mem.Allocator,
 
     pub fn init(arena: std.mem.Allocator) Tracked {
-        return .{ .entries = .empty, .arena = arena };
+        return .{ .map = .empty, .arena = arena };
+    }
+
+    /// Every entry; in path order after `parse` or `serialize`.
+    pub fn items(self: *const Tracked) []TrackedEntry {
+        return self.map.values();
     }
 
     pub fn get(self: *const Tracked, path: []const u8) ?TrackedEntry {
-        for (self.entries.items) |e| {
-            if (std.mem.eql(u8, e.path, path)) return e;
-        }
-        return null;
+        return self.map.get(path);
     }
 
     pub fn put(self: *Tracked, entry: TrackedEntry) Error!void {
         if (!validPath(entry.path)) return error.BadPath;
-        const copy: TrackedEntry = .{
-            .path = try self.arena.dupe(u8, entry.path),
+        const gop = try self.map.getOrPut(self.arena, entry.path);
+        if (!gop.found_existing) gop.key_ptr.* = try self.arena.dupe(u8, entry.path);
+        gop.value_ptr.* = .{
+            .path = gop.key_ptr.*,
             .hash_hex = entry.hash_hex,
             .size = entry.size,
             .mtime_ns = entry.mtime_ns,
         };
-        for (self.entries.items) |*e| {
-            if (std.mem.eql(u8, e.path, entry.path)) {
-                e.* = copy;
-                return;
-            }
-        }
-        try self.entries.append(self.arena, copy);
     }
 
     pub fn remove(self: *Tracked, path: []const u8) bool {
-        for (self.entries.items, 0..) |e, i| {
-            if (std.mem.eql(u8, e.path, path)) {
-                _ = self.entries.orderedRemove(i);
-                return true;
-            }
-        }
-        return false;
+        return self.map.swapRemove(path);
     }
 
     pub fn serialize(self: *Tracked, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        std.mem.sort(TrackedEntry, self.entries.items, {}, pathLessThan);
+        self.map.sort(PathOrder{ .values = self.map.values() });
         try w.writeAll("cid-tracked 1\n");
-        for (self.entries.items) |e| {
+        for (self.map.values()) |e| {
             try w.print("{s}\t{s}\t{d}\t{d}\n", .{ e.path, &e.hash_hex, e.size, e.mtime_ns });
         }
     }
@@ -247,9 +242,12 @@ pub const Tracked = struct {
     }
 };
 
-fn pathLessThan(_: void, a: TrackedEntry, b: TrackedEntry) bool {
-    return std.mem.lessThan(u8, a.path, b.path);
-}
+const PathOrder = struct {
+    values: []const TrackedEntry,
+    pub fn lessThan(self: PathOrder, a: usize, b: usize) bool {
+        return std.mem.lessThan(u8, self.values[a].path, self.values[b].path);
+    }
+};
 
 const test_hash: [hash_hex_len]u8 = @splat('a');
 
@@ -308,4 +306,30 @@ test "corrupt input is refused, not guessed at" {
     try std.testing.expectError(error.CorruptIndex, Index.parse(arena, "garbage\n"));
     try std.testing.expectError(error.CorruptIndex, Index.parse(arena, "cid-index 1\nX\tp\t-\t0\t0\n"));
     try std.testing.expectError(error.CorruptIndex, Tracked.parse(arena, "cid-tracked 1\nonlypath\n"));
+}
+
+test "tracked: puts and removes in any order, written in path order, read back" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var t = Tracked.init(arena);
+    for ([_][]const u8{ "c.txt", "a/b.txt", "b.txt", "a.txt", "z/y.txt" }) |p|
+        try t.put(.{ .path = p, .hash_hex = test_hash, .size = 1, .mtime_ns = 2 });
+    try t.put(.{ .path = "b.txt", .hash_hex = test_hash, .size = 9, .mtime_ns = 2 });
+    try std.testing.expect(t.remove("a.txt"));
+    try std.testing.expect(!t.remove("a.txt"));
+    try std.testing.expectEqual(@as(u64, 9), t.get("b.txt").?.size);
+    var aw: std.Io.Writer.Allocating = .init(arena);
+    try t.serialize(&aw.writer);
+    try std.testing.expectEqualStrings(
+        "cid-tracked 1\n" ++
+            "a/b.txt\t" ++ test_hash ++ "\t1\t2\n" ++
+            "b.txt\t" ++ test_hash ++ "\t9\t2\n" ++
+            "c.txt\t" ++ test_hash ++ "\t1\t2\n" ++
+            "z/y.txt\t" ++ test_hash ++ "\t1\t2\n",
+        aw.writer.buffered(),
+    );
+    const back = try Tracked.parse(arena, aw.writer.buffered());
+    try std.testing.expectEqual(@as(usize, 4), back.items().len);
+    try std.testing.expectEqualStrings("z/y.txt", back.items()[3].path);
 }

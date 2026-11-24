@@ -583,7 +583,7 @@ fn materialize(
             }
         }
     }
-    for (tracked.entries.items) |t| {
+    for (tracked.items()) |t| {
         if (findState(items, t.path) == null) {
             if (findFile(files, t.path)) |f| {
                 if (f.size != t.size or f.mtime_ns != t.mtime_ns) return error.LocalChangesInTheWay;
@@ -629,7 +629,7 @@ fn materialize(
         @memcpy(&entry.hash_hex, item.hash);
         new_tracked.put(entry) catch return error.CorruptLocalState;
     }
-    for (tracked.entries.items) |t| {
+    for (tracked.items()) |t| {
         if (findState(items, t.path) == null) {
             ws.work_dir.deleteFile(io, t.path) catch {};
             changed += 1;
