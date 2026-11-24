@@ -2960,6 +2960,7 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
         work.items = lines.?.items();
         work.annotations = lines.?.anns();
     }
+    const t_start = std.Io.Timestamp.now(deps.io, .awake);
     const created = release_mod.create(arena, work, deps.db, scope, deps.s3, ds.id, req.name, commit_id) catch |err| {
         if (lines) |l| {
             l.discard(deps, index_files.?);
@@ -3000,14 +3001,26 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
     // converted now, so the first visitor does not wait, and kept in
     // storage beside the manifest. Derived data: a failure here never
     // fails the release, and browsing rebuilds it.
+    const t_made = std.Io.Timestamp.now(deps.io, .awake);
+    var t_converted = t_made;
     if (lines) |l| {
         l.close(deps);
         defer releaseSlot(deps);
         if (convertLines(arena, deps, index_files.?)) |_| {
+            t_converted = std.Io.Timestamp.now(deps.io, .awake);
             storeBrowseIndex(arena, deps, scope, ds, created.commit_id, index_files.?);
             pruneBrowse(arena, deps, std.fs.path.dirname(index_files.?.items) orelse deps.browse_dir);
         } else |_| std.log.warn("browse: the new release's index was not built; browsing will build it", .{});
     }
+    const t_stored = std.Io.Timestamp.now(deps.io, .awake);
+    // Where a release's time goes: the pass over history (manifest, its
+    // change counts, the index's lines), the index's conversion, storing it.
+    std.log.scoped(.release).info("{d} items: manifest pass {d} ms, index converted {d} ms, stored {d} ms", .{
+        created.items,
+        msBetween(t_start, t_made),
+        msBetween(t_made, t_converted),
+        msBetween(t_converted, t_stored),
+    });
     if (cached) |files| storeBrowseIndex(arena, deps, scope, ds, created.commit_id, files);
     queueRelease(deps, scope, ds, created.commit_id);
     noteActivity(arena, deps, scope, caller, ds, "tag", created.name, .{ .items = created.items });
@@ -3019,6 +3032,10 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
         .git = git_status,
         .trained_on = try sourcesOut(arena, sources.items),
     });
+}
+
+fn msBetween(a: std.Io.Timestamp, b: std.Io.Timestamp) i64 {
+    return @intCast(@divTrunc(a.durationTo(b).nanoseconds, std.time.ns_per_ms));
 }
 
 fn sourcesOut(arena: std.mem.Allocator, rows: []const SourceRow) HandleError![]const Source {

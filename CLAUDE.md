@@ -404,6 +404,13 @@ In user-facing text say "release", not "tag", except in the `cid tag` command it
   compare and `cid diff` within noise of the uncompressed run, a first subset export
   about 25% slower (it rebuilds the version's state, now from compressed chunks), and
   the integration suite passes over compressed chunks (2026-10-12).
+  Re-measured 2026-11-24 (same machine, the attribute and identity filters, health
+  and the Hugging Face splits added since): a release 42–50 s, its server log naming
+  each stage (the pass over history 33–42 s, of which the per-item attributes 3.9 s;
+  the manifest stored 5–7 s; the index converted 4–6 s, stored 1–2 s); a new head
+  prepared in 98–126 s; browse pages 0.25–0.40 s after two needless scans went
+  (`browse.queryIndex`); compare 1.1 s, then 50 ms; `cid diff` 0.44 s; memory at most
+  412 MB.
 - **The preview worker** builds thumbnails, audio waveforms, video posters and table
   statistics, sniffing each file's real type and image dimensions as it goes, by
   calling `ffmpeg` as an external program, and `vips` for a PDF's first page (drawn,

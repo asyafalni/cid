@@ -94,6 +94,7 @@ pub fn create(
     cwd.createDirPath(work.io, work.dir) catch return error.Storage;
     const path = std.fmt.allocPrint(arena, "{s}/{s}.manifest", .{ work.dir, commit_id }) catch return error.OutOfMemory;
     defer cwd.deleteFile(work.io, path) catch {};
+    const t0 = std.Io.Timestamp.now(work.io, .awake);
     const written = blk: {
         var file = cwd.createFile(work.io, path, .{ .truncate = true }) catch return error.Storage;
         defer file.close(work.io);
@@ -107,8 +108,10 @@ pub fn create(
         }) catch |err| return mapVersion(err);
     };
 
+    const t1 = std.Io.Timestamp.now(work.io, .awake);
     const key = try manifestKey(arena, dataset_id, commit_id);
     s3.putFile(scope, work.io, key, path) catch return error.Storage;
+    const t2 = std.Io.Timestamp.now(work.io, .awake);
 
     // What changed since the release before it, kept with the release so
     // the dataset repository can say so: the newest release whose commit
@@ -125,6 +128,10 @@ pub fn create(
         version.changes(db, scope, dataset_id, p.commit_id, commit_id) catch |err| return mapVersion(err)
     else
         null;
+    const t3 = std.Io.Timestamp.now(work.io, .awake);
+    std.log.scoped(.release).info("{s}: history pass {d} ms, manifest stored {d} ms, changes since the release before {d} ms", .{
+        name, ms(t0, t1), ms(t1, t2), ms(t2, t3),
+    });
 
     _ = db.exec(
         scope,
@@ -136,6 +143,10 @@ pub fn create(
         .{ dataset_id, name, commit_id, key, @as([]const u8, &written.hash_hex.?), if (previous) |p| @as(?[]const u8, p.name) else null, changes },
     ) catch return error.Db;
     return .{ .name = name, .commit_id = commit_id, .manifest_hash = written.hash_hex.?, .items = written.items };
+}
+
+fn ms(a: std.Io.Timestamp, b: std.Io.Timestamp) i64 {
+    return @intCast(@divTrunc(a.durationTo(b).nanoseconds, std.time.ns_per_ms));
 }
 
 pub const VerifyProblem = enum {
