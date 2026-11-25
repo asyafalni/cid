@@ -32,6 +32,7 @@ pub const table_rows = @import("tabular/rows.zig");
 pub const pathpattern = @import("util/pathpattern.zig");
 pub const api = @import("server/api.zig");
 pub const hf = @import("server/hf.zig");
+pub const mcp = @import("server/mcp.zig");
 pub const serve = @import("server/serve.zig");
 pub const browse = @import("server/browse/browse.zig");
 pub const console = @import("server/browse/console.zig");
@@ -146,4 +147,5 @@ test {
     _ = cli_deploy_key;
     _ = common;
     _ = hf;
+    _ = mcp;
 }

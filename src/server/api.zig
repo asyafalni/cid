@@ -336,6 +336,8 @@ fn handleInner(
         return tag(arena, deps, scope, caller, ds, body);
     if (eql(method, "GET") and eql(route.action, "releases"))
         return releases(arena, deps, scope, ds);
+    if (eql(method, "GET") and eql(route.action, "resolve"))
+        return resolveVersion(arena, deps, scope, ds, try param(arena, route, "rev"));
     if (eql(method, "POST") and eql(route.action, "branch"))
         return branchCreate(arena, deps, scope, caller, ds, body);
     if (eql(method, "GET") and eql(route.action, "branches"))
@@ -3070,6 +3072,33 @@ fn releases(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset) 
     const list = deps.db.raw(Entry, scope, "SELECT name, commit_id::text AS commit, encode(manifest_hash, 'hex') AS manifest_hash FROM refs " ++
         "WHERE dataset_id = $1::uuid AND kind = 'release' ORDER BY commit_id DESC", .{ds.id}) catch return error.Db;
     return json(arena, .ok, .{ .releases = list });
+}
+
+/// A version as a person names it, as the commit it is: a release, a
+/// branch or a commit id; none given, the latest release, or main's head
+/// when there is no release yet. A release wins over a branch of the same
+/// name, as it never moves. For callers that hold a name and need the
+/// commit every version route takes (the MCP door, server/mcp.zig).
+fn resolveVersion(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, rev: ?[]const u8) HandleError!Response {
+    const Found = struct {
+        pub const nilo_table = .projection;
+        commit: []const u8,
+        name: []const u8,
+        kind: []const u8,
+    };
+    const found: ?Found = if (rev) |r| blk: {
+        if (Uuid.parse(r) != error.InvalidUuid)
+            break :blk deps.db.rawOne(Found, scope, "SELECT commit_id::text AS commit, commit_id::text AS name, 'commit' AS kind FROM commits " ++
+                "WHERE commit_id = $1::uuid AND dataset_id = $2::uuid", .{ r, ds.id }) catch return error.Db;
+        break :blk deps.db.rawOne(Found, scope, "SELECT commit_id::text AS commit, name, kind FROM refs " ++
+            "WHERE dataset_id = $1::uuid AND name = $2 ORDER BY (kind = 'release') DESC LIMIT 1", .{ ds.id, r }) catch return error.Db;
+    } else deps.db.rawOne(Found, scope, "SELECT commit_id::text AS commit, name, kind FROM refs " ++
+        "WHERE dataset_id = $1::uuid AND (kind = 'release' OR name = 'main') ORDER BY (kind = 'release') DESC, commit_id DESC LIMIT 1", .{ds.id}) catch return error.Db;
+    const v = found orelse return errorResponse(arena, .not_found, if (rev) |r|
+        try std.fmt.allocPrint(arena, "{s} has no release, branch or commit '{s}'", .{ ds.name, r })
+    else
+        try std.fmt.allocPrint(arena, "{s} has no commit yet", .{ds.name}), "List its releases and pick one, or leave the version out for the latest.");
+    return json(arena, .ok, v);
 }
 
 /// Presigned URLs for thumbnails that already exist. Never a trigger:

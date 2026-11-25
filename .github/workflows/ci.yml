@@ -41,8 +41,10 @@ jobs:
           zig build
           sh tests/agent.sh
 
-  # The Hugging Face door, read by the real clients (tests/hf_client.sh):
-  # huggingface_hub and datasets, pinned in tests/hf_requirements.txt.
+  # The doors out of cid, read by the real clients. The Hugging Face door
+  # (tests/hf_client.sh): huggingface_hub and datasets, pinned in
+  # tests/hf_requirements.txt. The MCP door (tests/mcp_client.sh): the
+  # official MCP client, pinned in tests/mcp_client/package.json.
   hf-clients:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -66,6 +68,14 @@ jobs:
           docker compose -f docker-compose.test.yml run --rm seaweedfs-bucket
       - name: Read through HF_ENDPOINT
         run: sh tests/hf_client.sh
+      # The MCP door, read by the official client (tests/mcp_client.sh).
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Read through the MCP door
+        run: |
+          npm ci --prefix tests/mcp_client
+          sh tests/mcp_client.sh
 
   # cid on one machine (deploy/compose): the image built from this commit,
   # then the walkthrough of its README, word for word, with the CLI built

@@ -36,7 +36,9 @@ If you know git, you already know cid: `add`, `commit`, `push`, `pull`, `checkou
 
 Programs and AI coding agents get the same commands as data: `--json` on any command,
 `cid help --json` for all of them, and a one-page guide every server hands out at
-`/llms.txt` ([`web/public/llms.txt`](web/public/llms.txt)).
+`/llms.txt` ([`web/public/llms.txt`](web/public/llms.txt)). An agent's client can
+also read datasets directly, through a read-only MCP door at `/mcp`
+([`docs/access.md`](docs/access.md), "The MCP door").
 
 ## Install
 

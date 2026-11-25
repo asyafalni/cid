@@ -224,6 +224,58 @@ had it deletes the key, so it no longer logs in at all. Adding and removing are
 activity events (`deploy-key-add`, `deploy-key-remove`). No expiry, as on GitLab:
 the list shows when each was last used. Migration 0008.
 
+## The MCP door
+
+An AI agent's own client reads cid's datasets at `POST /mcp` (built 2026-11-26,
+`src/server/mcp.zig`): the Model Context Protocol's Streamable HTTP transport, one
+JSON-RPC message a request and one JSON answer, no session and no stream. It is one
+more door out of cid, as git and the Hugging Face door are, and read-only like them.
+cid still calls no model; a model's client calls cid.
+
+```bash
+# Claude Code, for example; any client that takes a URL and a header works the same
+claude mcp add --transport http cid https://cid.example/mcp \
+  --header "Authorization: Bearer $CID_PAT"
+```
+
+| Tool | Answers |
+|---|---|
+| `list_datasets` | every dataset and model the token may read |
+| `get_dataset` | one dataset at a version: card, counts, splits, classes, releases |
+| `list_releases`, `list_commits` | its history |
+| `browse_items` | a page of a version's items with their annotations, filtered |
+| `list_folder` | one folder of a version |
+| `compare_versions` | what changed between two versions |
+| `query_sql` | one read-only SELECT over a version's index |
+| `get_health` | a version's health checks |
+
+A version is a release, a branch or a commit id (`GET …/-/resolve?rev=` turns the name
+into the commit); left out, it is the latest release.
+
+How it is held to the same rules as every other route:
+
+- **It is an adapter, nothing more.** Each tool call becomes one of the read routes
+  the dashboard uses, through `api.handleAs` with the caller's own token. Access, a
+  restricted dataset's limits (no SQL console; rows and text withheld) and the logging
+  of its reads are decided by those routes, in one place. A tool has no query of its
+  own.
+- **A token in the `Authorization` header and nothing else.** A personal token (or the
+  server's static one). A dashboard session's cookie is never read here, so no page
+  in a browser can make this door act as the person signed in; without the header the
+  answer is 401 before any message is read.
+- **Read-only by construction.** The tool list is fixed, every tool maps to a `GET`
+  (and the SQL console's sandboxed `POST`), and a tool's `dataset` must be a valid
+  dataset path, so no argument can steer a call to another route.
+- **Errors are for the model to read.** A refused call is a tool result marked
+  `isError`, carrying the route's own `error` and `next`.
+
+Checked by the official client in CI (`tests/mcp_client.sh`,
+`@modelcontextprotocol/sdk`, test-only) and in the integration suite, which also
+holds that a restricted dataset's view through this door is logged.
+
+Not built, on purpose: writes of any kind, resources and prompts, OAuth for MCP
+clients (a personal token is the credential), and server-sent streams.
+
 ## Rules
 
 - SSH is used only to authenticate and hand out tokens; data never flows over the SSH

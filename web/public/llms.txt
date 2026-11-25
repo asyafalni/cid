@@ -63,6 +63,10 @@ command at all: `HF_ENDPOINT=https://host HF_TOKEN=$CID_PAT`, then
 `load_dataset("org/datasets__name", revision="v1.3.0")` (inner slashes of the
 dataset's path are written `__`). That door is read-only.
 
+An agent whose client speaks MCP can read without the CLI too: the server's `/mcp`
+(Streamable HTTP, `Authorization: Bearer $CID_PAT`) offers read-only tools to list
+datasets, page through a version's items, compare two versions and run a SQL SELECT.
+
 ## Changing a file dataset
 
 ```

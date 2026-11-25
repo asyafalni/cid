@@ -88,7 +88,9 @@ such as code beside the dataset, is left as it is. Full spec: `docs/git-reposito
   only an SSH key (checked live with GitLab; the repository must be on that GitLab). Restricted datasets are enforced by the
   server inside per-dataset access, by decision: no row-level security (invariant 11).
 - **AI stays out of cid.** cid never calls an LLM or judgment API (TypeSafe/Jev
-  included) in the CLI or server. The one permitted future exception is advisory-only
+  included) in the CLI or server. Being read by an agent is another matter: the MCP
+  door and `cid help --json` serve an agent's client, as the Hugging Face door serves
+  a library; cid makes no call of its own. The one permitted future exception is advisory-only
   dashboard scoring, Phase 3 at the earliest, decided then (`docs/dashboard.md`). The
   annotation platform is where AI lives; cid's brand is determinism.
 
@@ -250,6 +252,21 @@ cid deploy-key add publisher ci_key.pub --write  # write: push too (never tag)
 cid deploy-key list                              # names, access, last use
 cid deploy-key remove ci-runner
 ```
+
+### AI agents (read only)
+
+An agent's client reads datasets through the MCP door (`src/server/mcp.zig`,
+docs/access.md, "The MCP door"), with a personal token:
+
+```bash
+claude mcp add --transport http cid https://cidhub.com/mcp \
+  --header "Authorization: Bearer $CID_PAT"
+```
+
+Nine tools, all reading: datasets, releases and commits, a page of items, a folder,
+the compare of two versions, a SQL SELECT, health. Each is one of the dashboard's
+read routes under the caller's own access; nothing is written, and cid calls no
+model. To download or change a dataset an agent uses the CLI (`cid help --json`).
 
 ### Hugging Face clients (read only)
 
@@ -714,7 +731,8 @@ src/client/local.zig         local commits, HEAD, last-pushed
 src/client/sync.zig          push, pull, replaying unpushed commits, conflicts, merge state
 src/server/                  api.zig (every route, tokens and permissions, presigned URLs,
                              uploads), serve.zig (Nilo app), signin.zig (GitLab OAuth),
-                             hf.zig (the Hugging Face door: the Hub's read routes)
+                             hf.zig (the Hugging Face door: the Hub's read routes),
+                             mcp.zig (the MCP door: read tools for an agent's client)
 src/store/db.zig             TimescaleDB via nilo_sql (pg.zig native driver, pooled)
 src/store/blob.zig           S3 via nilo_s3: one Bucket ('cid'), the storage rules
 src/manifest/                canonical manifest rows, RFC 8785 JSON (jcs.zig)
@@ -768,6 +786,8 @@ sh tests/quickstart.sh             # deploy/compose/'s walkthrough, word for wor
                                    # the image, on ports of its own)
 sh tests/hf_client.sh              # the Hugging Face door read by huggingface_hub and datasets
                                    # (Python with tests/hf_requirements.txt; test-only)
+sh tests/mcp_client.sh             # the MCP door read by the official client (Node, after
+                                   # `npm ci --prefix tests/mcp_client`; test-only)
 
 pnpm --dir web install
 pnpm --dir web dev                 # dashboard dev server, proxies /v0 to cid serve
@@ -795,7 +815,8 @@ printed test binary directly to see the truth.
 
 CI runs on every push: format, unit and integration tests on Linux x86-64, the
 dashboard's lint, typecheck and Playwright suite, the Hugging Face door read by the real
-clients (`tests/hf_client.sh`), the server image and its walkthrough
+clients (`tests/hf_client.sh`), the MCP door read by the official client
+(`tests/mcp_client.sh`), the server image and its walkthrough
 (`tests/quickstart.sh`), the release archive packed and installed on every platform
 (`tests/install.sh`), and unit tests plus the installed
 binary on Linux arm64 and macOS (Apple silicon and Intel).

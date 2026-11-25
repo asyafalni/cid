@@ -61,8 +61,8 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      folder tree. Done 2026-11-25: Browse's "changed since a release", size, author and
      labelling policy version filters.
   10. **Tier E, reach** (section 7; direction set 2026-11-25). Everything above that
-      can be built is built, so the work turns to who can pick cid up. Done: E1, E2,
-      and E3's first three steps. Next: E3's MCP door (design first), then E4.
+      can be built is built, so the work turns to who can pick cid up. Done: E1, E2
+      and E3. Next: E4.
 - Running the e2e suite needs Playwright's browser:
   `pnpm --dir web exec playwright install chromium`.
 - The e2e database is seeded once and kept. A fixture change must be its own
@@ -448,11 +448,16 @@ and assembling a server by hand. In order:
      it found three places that answered a program in prose: an unknown command, a
      pull stopped on conflicts and a merge stopped on conflicts. All three are JSON
      now, the conflicts as a list of paths and decisions.
-  4. An MCP door, read-only, on the server (`/mcp`, a personal token): list
-     datasets, versions, a browse page, a compare, a table's rows, the SQL console.
-     One more door out of cid, as git and the Hugging Face door are; cid still
-     calls no model. Needs its own design first (the protocol by hand over nilo's
-     HTTP, no new dependency).
+  4. ~~An MCP door~~ (done 2026-11-26; docs/access.md, "The MCP door"). Read-only,
+     at `POST /mcp` with a personal token: nine tools (datasets, releases, commits,
+     a page of items, a folder, a compare, a SQL SELECT, health). It is an adapter
+     over the dashboard's read routes, so access, a restricted dataset's limits and
+     the logging of its reads are those routes' own; the protocol is written by
+     hand over nilo's HTTP, with no new dependency in cid. The official client
+     reads it in CI (`tests/mcp_client.sh`, test-only), which is how a `ping`
+     answered as a list instead of an object was caught before anyone met it.
+     Next for this door, when asked for: the MCP config on the dashboard's Tokens
+     page, beside a new token.
 - **E4. Coming from DVC, Git LFS or Hugging Face.** One page each way: what maps to
   what, and the commands to bring an existing dataset in with its history's
   releases. No importer until someone needs more than the page.

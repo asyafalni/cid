@@ -5443,3 +5443,133 @@ test "models: a third kind, versioned exactly like a file dataset, and served to
     try expectRefused(db, &fscope, "DELETE FROM release_sources WHERE release = 'v1.1.0'", "never changes");
     try expectRefused(db, &fscope, "UPDATE release_sources SET source_release = 'v1' WHERE release = 'v1.1.0'", "never changes");
 }
+
+test "the MCP door: tools read through the same routes, under the same access, a restricted read logged" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var fixture: cid.db.Standalone = undefined;
+    try openFixture(&fixture);
+    defer fixture.close();
+    var fscope = cid.db.Run.init(std.testing.allocator);
+    defer fscope.deinit();
+    const db = &fixture.db;
+    _ = try runMigrations();
+
+    var s3c: cid.blob.Client = undefined;
+    try openBlobs(&s3c, io);
+    defer s3c.deinit();
+    var standalone: cid.db.Standalone = undefined;
+    try standalone.open(std.testing.allocator, conninfo);
+    defer standalone.close();
+    var scope = cid.db.Run.init(std.testing.allocator);
+    defer scope.deinit();
+    var browse_tmp = std.testing.tmpDir(.{});
+    defer browse_tmp.cleanup();
+    const browse_dir = try browse_tmp.dir.realPathFileAlloc(io, ".", arena);
+    var deps: cid.api.Deps = .{ .db = &standalone.db, .s3 = &s3c, .io = io, .gpa = std.testing.allocator, .token = "test-token", .browse_dir = browse_dir, .work_dir = browse_dir };
+    var direct: DirectTransport = .{ .deps = &deps, .scope = &scope, .auth = "Bearer test-token" };
+    const name = "test/datasets/mcpdoor";
+    const remote: cid.client.remote.Remote = .{ .t = direct.transport(), .name = name, .gpa = std.testing.allocator };
+    const bearer = "Bearer test-token";
+
+    _ = try db.exec(&fscope, "SET cid.maintenance = 'on'", .{});
+    _ = try db.exec(&fscope, "DELETE FROM version_files WHERE commit_id IN (SELECT c.commit_id FROM commits c JOIN datasets d USING (dataset_id) WHERE d.name = $1)", .{name});
+    inline for (.{ "activity_events", "refs", "commits", "item_revisions", "annotation_revisions", "dataset_items", "access", "policy_versions" }) |table| {
+        _ = try db.exec(&fscope, "DELETE FROM " ++ table ++ " WHERE dataset_id IN (SELECT dataset_id FROM datasets WHERE name = $1)", .{name});
+    }
+    _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = $1", .{name});
+    _ = try db.exec(&fscope, "RESET cid.maintenance", .{});
+
+    var producer = std.testing.tmpDir(.{ .iterate = true });
+    defer producer.cleanup();
+    var cache = std.testing.tmpDir(.{});
+    defer cache.cleanup();
+    try producer.dir.writeFile(io, .{ .sub_path = "train.csv", .data = "id,text\n1,hello\n" });
+    try producer.dir.createDirPath(io, "notes");
+    try producer.dir.writeFile(io, .{ .sub_path = "notes/a b.txt", .data = "first" });
+    try cid.client.workspace.init(arena, io, producer.dir, "cid@test:" ++ name, "g@h:mcp.git");
+    var pws = try cid.client.workspace.open(arena, io, producer.dir);
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "first", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    _ = try remote.tag(arena, "v1.0.0");
+    try producer.dir.writeFile(io, .{ .sub_path = "train.csv", .data = "id,text\n1,hello\n2,again\n" });
+    _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
+    _ = try cid.client.workspace.commit(arena, io, &pws, "second", "user:test");
+    _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
+    _ = try remote.tag(arena, "v1.1.0");
+
+    const Mcp = struct {
+        fn call(a: std.mem.Allocator, d: *cid.api.Deps, s: anytype, auth: ?[]const u8, comptime tool: []const u8, comptime args: []const u8) !cid.mcp.Answer {
+            return cid.mcp.handle(a, d, s, auth, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"" ++ tool ++ "\",\"arguments\":" ++ args ++ "}}", "test");
+        }
+        fn has(answer: cid.mcp.Answer, needle: []const u8) bool {
+            return std.mem.indexOf(u8, answer.body, needle) != null;
+        }
+    };
+    const ok = "\"isError\":false";
+    const failed = "\"isError\":true";
+
+    // The handshake, and a notification that wants no answer.
+    const hello = try cid.mcp.handle(arena, &deps, &scope, bearer, "{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\"}}", "test");
+    try std.testing.expect(Mcp.has(hello, "\"id\":\"a\"") and Mcp.has(hello, "\"protocolVersion\":\"2025-03-26\"") and Mcp.has(hello, "\"tools\""));
+    const newer = try cid.mcp.handle(arena, &deps, &scope, bearer, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2099-01-01\"}}", "test");
+    try std.testing.expect(Mcp.has(newer, "\"protocolVersion\":\"2025-06-18\""));
+    const note = try cid.mcp.handle(arena, &deps, &scope, bearer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}", "test");
+    try std.testing.expectEqual(std.http.Status.accepted, note.status);
+    try std.testing.expectEqual(@as(usize, 0), note.body.len);
+    const listed = try cid.mcp.handle(arena, &deps, &scope, bearer, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}", "test");
+    try std.testing.expect(Mcp.has(listed, "\"browse_items\"") and Mcp.has(listed, "\"id\":2"));
+    _ = try std.json.parseFromSliceLeaky(std.json.Value, arena, listed.body, .{});
+    // An empty object, as the official client insists (not a list).
+    try std.testing.expect(Mcp.has(try cid.mcp.handle(arena, &deps, &scope, bearer, "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"ping\"}", "test"), "\"result\":{}"));
+    try std.testing.expect(Mcp.has(try cid.mcp.handle(arena, &deps, &scope, bearer, "not json", "test"), "-32700"));
+    try std.testing.expect(Mcp.has(try cid.mcp.handle(arena, &deps, &scope, bearer, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"resources/list\"}", "test"), "-32601"));
+
+    // Each tool, by a version's name.
+    const all = try Mcp.call(arena, &deps, &scope, bearer, "list_datasets", "{}");
+    try std.testing.expect(Mcp.has(all, ok) and Mcp.has(all, name));
+    const info = try Mcp.call(arena, &deps, &scope, bearer, "get_dataset", "{\"dataset\":\"" ++ name ++ "\"}");
+    try std.testing.expect(Mcp.has(info, ok) and Mcp.has(info, "v1.1.0"));
+    try std.testing.expect(Mcp.has(try Mcp.call(arena, &deps, &scope, bearer, "list_releases", "{\"dataset\":\"" ++ name ++ "\"}"), "v1.0.0"));
+    try std.testing.expect(Mcp.has(try Mcp.call(arena, &deps, &scope, bearer, "list_commits", "{\"dataset\":\"" ++ name ++ "\"}"), "second"));
+    // The latest release when no version is named; one item a page when asked.
+    const page = try Mcp.call(arena, &deps, &scope, bearer, "browse_items", "{\"dataset\":\"" ++ name ++ "\",\"limit\":1}");
+    try std.testing.expect(Mcp.has(page, ok) and Mcp.has(page, "\\\"total\\\":2") and Mcp.has(page, "notes/a b.txt") and !Mcp.has(page, "\\\"path\\\":\\\"train.csv"));
+    // A value with a space and a slash reaches the route whole.
+    const found = try Mcp.call(arena, &deps, &scope, bearer, "browse_items", "{\"dataset\":\"" ++ name ++ "\",\"version\":\"v1.0.0\",\"search\":\"notes/a b\"}");
+    try std.testing.expect(Mcp.has(found, "\\\"matched\\\":1"));
+    const folder = try Mcp.call(arena, &deps, &scope, bearer, "list_folder", "{\"dataset\":\"" ++ name ++ "\",\"path\":\"notes/\"}");
+    try std.testing.expect(Mcp.has(folder, ok) and Mcp.has(folder, "notes/a b.txt"));
+    const diff = try Mcp.call(arena, &deps, &scope, bearer, "compare_versions", "{\"dataset\":\"" ++ name ++ "\",\"from\":\"v1.0.0\",\"to\":\"v1.1.0\"}");
+    try std.testing.expect(Mcp.has(diff, ok) and Mcp.has(diff, "\\\"modified\\\":1") and Mcp.has(diff, "train.csv"));
+    const sql = try Mcp.call(arena, &deps, &scope, bearer, "query_sql", "{\"dataset\":\"" ++ name ++ "\",\"sql\":\"SELECT count(*) AS n FROM items\"}");
+    try std.testing.expect(Mcp.has(sql, ok) and Mcp.has(sql, "\\\"n\\\":2"));
+    try std.testing.expect(Mcp.has(try Mcp.call(arena, &deps, &scope, bearer, "get_health", "{\"dataset\":\"" ++ name ++ "\"}"), ok));
+
+    // What goes wrong is said to the model, with what to do next.
+    const no_version = try Mcp.call(arena, &deps, &scope, bearer, "browse_items", "{\"dataset\":\"" ++ name ++ "\",\"version\":\"v9\"}");
+    try std.testing.expect(Mcp.has(no_version, failed) and Mcp.has(no_version, "no release, branch or commit 'v9'") and Mcp.has(no_version, "next"));
+    try std.testing.expect(Mcp.has(try Mcp.call(arena, &deps, &scope, bearer, "get_dataset", "{}"), "needs 'dataset'"));
+    // A name is a dataset's path and nothing else: no route can be steered.
+    const steered = try Mcp.call(arena, &deps, &scope, bearer, "list_releases", "{\"dataset\":\"" ++ name ++ "/-/tag?x=\"}");
+    try std.testing.expect(Mcp.has(steered, failed) and Mcp.has(steered, "not a dataset's path"));
+    try std.testing.expect(Mcp.has(try Mcp.call(arena, &deps, &scope, bearer, "tag", "{}"), "-32602"));
+    // The same access as every route: a token that opens nothing reads nothing.
+    const stranger = try Mcp.call(arena, &deps, &scope, "Bearer not-the-token", "browse_items", "{\"dataset\":\"" ++ name ++ "\"}");
+    try std.testing.expect(Mcp.has(stranger, failed) and !Mcp.has(stranger, "train.csv"));
+    try std.testing.expect(!Mcp.has(try Mcp.call(arena, &deps, &scope, "Bearer not-the-token", "list_datasets", "{}"), name));
+
+    // Restricted: a view through this door is logged like any other, and
+    // the SQL console stays shut.
+    _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = $1", .{name});
+    const before = (try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM activity_events e JOIN datasets d USING (dataset_id) WHERE d.name = $1 AND e.action = 'browse'", .{name})).?;
+    _ = try Mcp.call(arena, &deps, &scope, bearer, "browse_items", "{\"dataset\":\"" ++ name ++ "\"}");
+    const after = (try db.rawOne(i64, &fscope, "SELECT count(*)::bigint FROM activity_events e JOIN datasets d USING (dataset_id) WHERE d.name = $1 AND e.action = 'browse'", .{name})).?;
+    try std.testing.expectEqual(before + 1, after);
+    const shut = try Mcp.call(arena, &deps, &scope, bearer, "query_sql", "{\"dataset\":\"" ++ name ++ "\",\"sql\":\"SELECT * FROM items\"}");
+    try std.testing.expect(Mcp.has(shut, failed) and Mcp.has(shut, "restricted") and !Mcp.has(shut, "train.csv"));
+}

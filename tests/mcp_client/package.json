@@ -1,0 +1,9 @@
+{
+  "name": "cid-mcp-client-test",
+  "private": true,
+  "description": "The official MCP client, to read cid's MCP door in tests/mcp_client.sh. Test-only: cid itself never needs Node. Pinned; bump on purpose.",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2"
+  }
+}

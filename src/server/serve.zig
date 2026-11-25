@@ -8,6 +8,8 @@ const std = @import("std");
 const nilo = @import("nilo_http");
 const api = @import("api.zig");
 const hf = @import("hf.zig");
+const mcp = @import("mcp.zig");
+const version = @import("../cli/version.zig");
 const duck = @import("../store/duck.zig");
 const browse = @import("browse/browse.zig");
 const fetch = @import("nilo_fetch");
@@ -102,6 +104,11 @@ pub fn serve(gpa: std.mem.Allocator, deps: *api.Deps, options: Options) !void {
     try app.get("/api/*", hfDispatch);
     try app.post("/api/*", hfDispatch);
     try app.get("/datasets/*", hfDispatch);
+    // The MCP door (src/server/mcp.zig): an agent's client reading
+    // datasets, one JSON-RPC message a POST. It opens no stream, so a GET
+    // is told so rather than handed the dashboard.
+    try app.post("/mcp", mcpDispatch);
+    try app.get("/mcp", mcpNoStream);
     // The dashboard, embedded at build time: /v0/* wins over these by
     // specificity, and every non-API path falls back to the app shell so
     // deep links (/d/org/datasets/x) open where they point.
@@ -219,6 +226,28 @@ fn hfDispatch(deps: *api.Deps, c: *nilo.Ctx) !void {
     for (answer.headers) |h| c.setHeader(h.name, h.value) catch {};
     if (answer.location) |url| return c.redirect(@backingInt(answer.status), url);
     try c.send(@backingInt(answer.status), answer.content_type, answer.body);
+}
+
+/// The MCP door. A token in the Authorization header and nothing else: a
+/// dashboard session's cookie is never read here, so no page in a browser
+/// can make this door act as the person signed in.
+fn mcpDispatch(deps: *api.Deps, c: *nilo.Ctx) !void {
+    const arena = c.arena();
+    const auth: ?[]const u8 = if (c.header("authorization")) |h| h.view() else null;
+    if (auth == null) {
+        c.setStaticHeader("WWW-Authenticate", "Bearer") catch {};
+        return c.send(401, "application/json", "{\"error\":\"this door needs a token\",\"next\":\"Make a personal token on the dashboard's Tokens page and send it as 'Authorization: Bearer <token>'.\"}");
+    }
+    const answer = mcp.handle(arena, deps, c, auth, (try c.body()).view(), version.text) catch |err| {
+        std.log.warn("mcp: {t}", .{err});
+        return c.send(500, "application/json", "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"the server could not answer; call again\"}}");
+    };
+    try c.send(@backingInt(answer.status), "application/json", answer.body);
+}
+
+fn mcpNoStream(c: *nilo.Ctx) !void {
+    c.setStaticHeader("Allow", "POST") catch {};
+    try c.send(405, "application/json", "{\"error\":\"the MCP door answers POST only; it opens no stream\"}");
 }
 
 /// The background worker: every couple of seconds, prepares whatever
