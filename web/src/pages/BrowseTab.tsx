@@ -98,7 +98,7 @@ export function BrowseTab({
   // more than what was scrolled to, whatever the dataset's size. Each
   // page brings its own thumbnails; a page whose thumbnails cannot be had
   // still shows every item, as type tiles.
-  const query = { q: filters.q, split: filters.split, cls: filters.cls, type: filters.type, anns: filters.anns, attr: filters.attr, identity: filters.identity };
+  const query = { q: filters.q, split: filters.split, cls: filters.cls, type: filters.type, anns: filters.anns, attr: filters.attr, identity: filters.identity, since: filters.since };
   const pages = useInfiniteQuery({
     queryKey: ['browse', name, commit, query],
     queryFn: async ({ pageParam }) => {
@@ -186,6 +186,18 @@ export function BrowseTab({
 
   if (commit === null) return <p className="quiet">Nothing to browse until the first push.</p>;
   if (pages.isPending) return <GridSkeleton count={pageSize > 24 ? 24 : pageSize} />;
+  if (pages.isError && filters.since !== undefined && pages.error instanceof ApiError && pages.error.status === 404) {
+    // A release name no release has (a typo, a link from elsewhere): said,
+    // with the way back, never an empty gallery.
+    return (
+      <div className="panel notice" role="alert">
+        <p>{pages.error.message}.</p>
+        <button className="filter-clear" onClick={() => onFilters({ since: undefined })}>
+          Show every item
+        </button>
+      </div>
+    );
+  }
   if (pages.isError) {
     const indexing = pages.error instanceof ApiError && pages.error.status === 503;
     return (
@@ -218,6 +230,8 @@ export function BrowseTab({
   );
   const classes = first.classes.map((c) => ({ name: c.value, count: c.count }));
   const open = openLoaded ?? openFetched.data?.item;
+  // Releases to compare against: every one on the tape but the version shown.
+  const sinceChoices = overview.commits.filter((c) => c.release !== null && c.id !== commit).map((c) => c.release!);
 
   return (
     <div className="browse">
@@ -325,11 +339,36 @@ export function BrowseTab({
             // list, since a face set names thousands.
             <IdentityFilter value={filters.identity} onChange={(v) => onFilters({ identity: v })} />
           )}
+          {(sinceChoices.length > 0 || filters.since !== undefined) && (
+            // What the loop added: items new, re-encoded, moved to another
+            // split or re-annotated since a release (deleted ones are not
+            // here to show; Releases' compare lists them).
+            <label className="facet">
+              <span className="facet-label" aria-hidden="true">
+                changed since
+              </span>
+              <select
+                aria-label="Filter to items changed since a release"
+                value={filters.since ?? '\u0000all'}
+                onChange={(e) => onFilters({ since: e.target.value === '\u0000all' ? undefined : e.target.value })}
+              >
+                <option value={'\u0000all'}>any time</option>
+                {(filters.since !== undefined && !sinceChoices.includes(filters.since)
+                  ? [filters.since, ...sinceChoices]
+                  : sinceChoices
+                ).map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {filtered && (
             <button
               className="filter-clear"
               onClick={() =>
-                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined, anns: undefined, attr: undefined, identity: undefined })
+                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined, anns: undefined, attr: undefined, identity: undefined, since: undefined })
               }
             >
               Clear filters

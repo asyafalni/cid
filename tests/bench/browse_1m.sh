@@ -169,6 +169,8 @@ timed "files: cam7/ (20,000 files, first page)" "$API/browse/dir?commit=$V1&pref
 timed "compare v1 → head (first time: the pair's diff built)" "$API/browse/compare?a=$V1&b=$HEAD"
 timed "compare v1 → head again (diff kept)" "$API/browse/compare?a=$V1&b=$HEAD"
 timed "compare, next page of changes" "$API/browse/compare?a=$V1&b=$HEAD&after=zz"
+timed "browse head, changed since v1 (diff kept)" "$API/browse?commit=$HEAD&limit=120&since=v1"
+timed "browse head, changed since v1 + split=val" "$API/browse?commit=$HEAD&limit=120&since=v1&split=val"
 echo "  server peak memory: $(peak)"
 
 echo "cid diff v1 → head, fresh server"

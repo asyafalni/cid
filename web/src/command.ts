@@ -19,6 +19,7 @@ export type ViewState = {
   anns?: string;
   attr?: string;
   identity?: string;
+  since?: string;
   a?: string;
   b?: string;
   dir?: string;
@@ -56,6 +57,7 @@ export function viewStateOf(o: Overview, search: Record<string, unknown>): ViewS
     anns: search.anns === undefined ? undefined : String(search.anns),
     attr: str('attr'),
     identity: search.identity === undefined ? undefined : String(search.identity),
+    since: str('since'),
     a: str('a'),
     b: str('b'),
     dir: str('dir'),
@@ -89,6 +91,14 @@ export function commandFor(o: Overview, s: ViewState, host: string): Shown | nul
     if (pair.a && pair.b && pair.a !== pair.b) {
       inFolder();
       steps.push(`cid diff ${pair.a} ${pair.b}`);
+    }
+  }
+  // Changed since a release: the same changes, listed by `cid diff`.
+  if (s.view === 'browse' && s.since) {
+    const at = s.pinned ?? s.commit;
+    if (at && at !== s.since) {
+      inFolder();
+      steps.push(`cid diff ${s.since} ${at}`);
     }
   }
   if (s.view === 'files' && s.dir) {

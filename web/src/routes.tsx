@@ -88,6 +88,8 @@ const datasetRoute = createRoute({
     anns?: string;
     attr?: string;
     identity?: string;
+    /** Browse: only items changed since this release. */
+    since?: string;
     /** A table item's row filters, as JSON (TableView). */
     rows?: string;
     /** A table item's row, by its place in the file from 1 (TableView). */
@@ -125,6 +127,7 @@ const datasetRoute = createRoute({
     anns: typeof search.anns === 'string' ? search.anns : undefined,
     attr: typeof search.attr === 'string' ? search.attr : undefined,
     identity: typeof search.identity === 'string' ? search.identity : undefined,
+    since: typeof search.since === 'string' ? search.since : undefined,
     rows: typeof search.rows === 'string' ? search.rows : Array.isArray(search.rows) ? JSON.stringify(search.rows) : undefined,
     // Text in a URL, a number when the page sets it.
     row: /^[1-9]\d*$/.test(String(search.row ?? '')) ? Number(search.row) : undefined,

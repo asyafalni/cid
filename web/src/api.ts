@@ -214,6 +214,8 @@ export type BrowseQuery = {
   anns?: string;
   attr?: string;
   identity?: string;
+  /** Only items changed since this release (by name). */
+  since?: string;
   after?: string;
   item?: string;
   limit?: number;
@@ -237,6 +239,7 @@ export function getBrowse(name: string, commit: string, query: BrowseQuery): Pro
   if (query.anns !== undefined) params.set('anns', query.anns);
   if (query.attr !== undefined) params.set('attr', query.attr);
   if (query.identity !== undefined) params.set('identity', query.identity);
+  if (query.since !== undefined) params.set('since', query.since);
   if (query.after !== undefined) params.set('after', query.after);
   if (query.item !== undefined) params.set('item', query.item);
   if (query.limit !== undefined) params.set('limit', String(query.limit));

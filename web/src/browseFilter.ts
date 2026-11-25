@@ -19,6 +19,8 @@ export type Filters = {
   identity?: string;
   /** The SQL console's query (mode 'sql'), so a query is a link. */
   sql?: string;
+  /** Items added, modified, moved or re-annotated since this release (by name). */
+  since?: string;
 };
 
 /** The URL spelling of each filter, for patches back to the router. */
@@ -32,6 +34,7 @@ export type FilterPatch = {
   attr?: string | undefined;
   identity?: string | undefined;
   sql?: string | undefined;
+  since?: string | undefined;
 };
 
 export function extOf(path: string): string {
@@ -43,5 +46,5 @@ export function extOf(path: string): string {
 export type Facet = { value: string; count: number };
 
 export function anyFilter(f: Filters): boolean {
-  return Boolean(f.q) || f.split !== undefined || f.cls !== undefined || f.type !== undefined || f.anns !== undefined || f.attr !== undefined || f.identity !== undefined;
+  return Boolean(f.q) || f.split !== undefined || f.cls !== undefined || f.type !== undefined || f.anns !== undefined || f.attr !== undefined || f.identity !== undefined || f.since !== undefined;
 }

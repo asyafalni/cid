@@ -40,6 +40,7 @@ export function DatasetOverview() {
     anns?: string;
     attr?: string;
     identity?: string;
+    since?: string;
     rows?: string;
     row?: number;
     what?: string;
@@ -276,6 +277,7 @@ export function DatasetOverview() {
               anns: search.anns,
               attr: search.attr,
               identity: search.identity,
+              since: search.since,
               a: search.a,
               b: search.b,
               dir: search.dir,
@@ -310,7 +312,7 @@ export function DatasetOverview() {
           row={search.row === undefined ? undefined : String(search.row)}
           // A number in the URL (row=4), not a quoted string.
           onRow={(row) => setSearch({ row: row === undefined ? undefined : Number(row) })}
-          filters={{ mode: search.mode, q: search.q, split: search.split, cls: search.class, type: search.type, anns: search.anns, attr: search.attr, identity: search.identity, sql: search.sql }}
+          filters={{ mode: search.mode, q: search.q, split: search.split, cls: search.class, type: search.type, anns: search.anns, attr: search.attr, identity: search.identity, since: search.since, sql: search.sql }}
           onFilters={(patch) => setSearch(patch)}
         />
       ) : view === 'releases' ? (

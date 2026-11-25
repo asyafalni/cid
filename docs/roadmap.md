@@ -57,7 +57,7 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      shortcuts on every tab (`1`–`6`, `c`, `?`, and `f` in Browse); the
      Activity log as far back as it goes, filtered on the server; the 100k-file
      CLI budgets measured and met (status, commit, push, clone); compare's
-     folder tree.
+     folder tree. Done 2026-11-25: Browse's "changed since a release" filter.
 - Running the e2e suite needs Playwright's browser:
   `pnpm --dir web exec playwright install chromium`.
 - The e2e database is seeded once and kept. A fixture change must be its own

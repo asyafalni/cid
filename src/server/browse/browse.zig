@@ -47,6 +47,11 @@ pub const Query = struct {
     /// a sample of items, an item opened from a link. The answer then
     /// carries zeros and empty lists, at half the cost at 1M items.
     facets: bool = true,
+    /// Items added, modified, moved to another split or with an annotation
+    /// changed since another version: that pair's diff (`DiffFiles`, the
+    /// earlier version first), built once and kept, as compare reads it.
+    /// Folded into the filter every facet applies, as the identity is.
+    since: ?DiffFiles = null,
     /// A sample instead of a page: `limit` items spread over the version,
     /// chosen by a hash of their paths, so the same version gives the same
     /// sample every time, and a version that keeps most paths keeps most
@@ -265,7 +270,7 @@ fn quote(arena: std.mem.Allocator, path: []const u8) Error![]const u8 {
 /// reads the lists in a scan of its own, so the shared `m` never carries
 /// them (materialized through `m`, under the browse database's memory
 /// ceiling, they doubled a 1M-item page: 244 to 509 ms; this way 290).
-const other_than_attr_sql = filter_q ++ " AND " ++ filter_s ++ " AND " ++ filter_c ++ " AND " ++ filter_t ++ " AND " ++ filter_a ++ " AND " ++ filter_i;
+const other_than_attr_sql = filter_q ++ "{1s} AND " ++ filter_s ++ " AND " ++ filter_c ++ " AND " ++ filter_t ++ " AND " ++ filter_a ++ " AND " ++ filter_i;
 
 // Each filter, as `m` names it (fq, fs, …) and the attribute facet repeats it.
 const filter_q = "($1::VARCHAR IS NULL OR contains(lower(path), lower($1::VARCHAR)))";
@@ -318,9 +323,16 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
     // known without a second pass over the selection; with no item open,
     // nothing is scanned for one. Together a quarter of a page's CPU at
     // 1M items (2026-11-24).
+    // Changed since a version: the pair's changed paths, item and
+    // annotation alike, read once; with none asked, no scan for them.
+    const since_cte = if (q.since) |d| try std.fmt.allocPrint(arena,
+        \\since_set AS (SELECT path FROM read_parquet('{0s}') WHERE change <> 'deleted'
+        \\  UNION SELECT item_path FROM read_parquet('{1s}') WHERE item_path IS NOT NULL),
+    , .{ try quote(arena, d.items), try quote(arena, d.anns) }) else "";
+    const since_filter: []const u8 = if (q.since != null) " AND path IN (SELECT path FROM since_set)" else "";
     const sql = try std.fmt.allocPrint(arena,
-        \\WITH m AS (SELECT path, split, ext, class_set, ann_count,
-    ++ " " ++ "(" ++ filter_q ++ " AND " ++ filter_i ++ ") AS fq, " ++ filter_s ++ " AS fs, " ++ filter_c ++ " AS fc, " ++ filter_t ++ " AS ft, " ++
+        \\WITH {6s} m AS (SELECT path, split, ext, class_set, ann_count,
+    ++ " " ++ "(" ++ filter_q ++ "{7s} AND " ++ filter_i ++ ") AS fq, " ++ filter_s ++ " AS fs, " ++ filter_c ++ " AS fc, " ++ filter_t ++ " AS ft, " ++
         filter_a ++ " AS fa, " ++ filter_x ++ " AS fx " ++
         \\  FROM read_parquet('{0s}')),
         \\sel AS (SELECT path FROM m WHERE fq AND fs AND fc AND ft AND fa AND fx),
@@ -344,11 +356,13 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
     , .{
         items,
         anns,
-        if (q.facets) try std.fmt.allocPrint(arena, counts_sql, .{items}) else no_counts_sql,
+        if (q.facets) try std.fmt.allocPrint(arena, counts_sql, .{ items, since_filter }) else no_counts_sql,
         if (q.sample) "md5(path), path" else "path",
         if (q.sample) "false" else "true",
         // No item open: no scan for one (the parameter stays bound).
         if (q.item != null) "path = $7::VARCHAR" else "false AND $7::VARCHAR IS NULL",
+        since_cte,
+        since_filter,
     });
     // The bucket asked for, as the counts it spans; one no bucket names
     // matches nothing, as an unknown split does.
@@ -917,6 +931,26 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
     try std.testing.expectEqualDeep(ClassChanges{ .class = "car", .added = 1, .changed = 0, .removed = 1 }, cmp.by_class[0]);
     try std.testing.expectEqualDeep(ClassChanges{ .class = "person", .added = 0, .changed = 1, .removed = 0 }, cmp.by_class[1]);
     try std.testing.expectEqual(@as(usize, 0), page2.by_class.len);
+
+    // Changed since v1: every item v2 holds is, by bytes (a.jpg), by being
+    // new (d.txt), by its split (c.png) or by its annotations alone
+    // (b.JPG); README, deleted, is not in v2 to show. The facets count
+    // the changed items only, and the other filters narrow them further.
+    const since = try queryIndex(arena, &db, v2, .{ .since = d12 });
+    try std.testing.expectEqual(@as(u64, 4), since.total);
+    try std.testing.expectEqual(@as(u64, 4), since.matched);
+    try std.testing.expectEqual(@as(?u64, 3), countOf(since.facets.split, "train"));
+    const since_cars = try queryIndex(arena, &db, v2, .{ .since = d12, .class = "car" });
+    try std.testing.expectEqual(@as(u64, 1), since_cars.matched);
+    try std.testing.expectEqualStrings("img/b.JPG", since_cars.items[0].path);
+    // Against itself nothing changed; the open item still comes.
+    const d22 = try DiffFiles.of(arena, dir, "v2", "v2");
+    try buildDiff(arena, io, &db, v2, v2, d22);
+    const still = try queryIndex(arena, &db, v2, .{ .since = d22, .item = "d.txt" });
+    try std.testing.expectEqual(@as(u64, 0), still.matched);
+    try std.testing.expectEqual(@as(usize, 0), still.items.len);
+    try std.testing.expectEqualStrings("d.txt", still.open.?.path);
+    try std.testing.expectEqual(@as(usize, 0), (try queryIndex(arena, &db, v2, .{ .since = d22, .facets = false })).items.len);
 
     // The CLI's lines: the same changes, in files DuckDB writes.
     const out: CompareFiles = .{

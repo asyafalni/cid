@@ -139,6 +139,29 @@ test('compare walks the folder tree: changed folders with their counts, one leve
   await expect(page.locator('.change-list')).toContainText('top.txt');
 });
 
+test('browse narrows to what changed since a release, and says so when no release has the name', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/tree?view=browse&mode=table');
+  await expect(page.getByText('5 items', { exact: true })).toBeVisible();
+  // v1.1.0 against v1.0.0: two files rewritten, two new; c/z.txt is as it was.
+  await page.getByRole('combobox', { name: 'Filter to items changed since a release' }).selectOption('v1.0.0');
+  await expect(page).toHaveURL(/since=v1\.0\.0/);
+  await expect(page.getByText('4 of 5 items')).toBeVisible();
+  const table = page.locator('.browse-table');
+  await expect(table).toContainText('a/b/new.txt');
+  await expect(table).toContainText('top.txt');
+  await expect(table).not.toContainText('c/z.txt');
+  // The command lists the same changes.
+  await page.getByRole('button', { name: 'Show command' }).click();
+  await expect(page.getByRole('region', { name: 'Command' })).toContainText('cid diff v1.0.0 v1.1.0');
+  // A name no release has: said, with the way back.
+  await page.goto('/d/e2e/datasets/tree?view=browse&mode=table&since=v9');
+  await expect(page.getByRole('alert')).toContainText('no release is named v9');
+  await page.getByRole('button', { name: 'Show every item' }).click();
+  await expect(page).not.toHaveURL(/since=/);
+  await expect(page.getByText('5 items', { exact: true })).toBeVisible();
+});
+
 test('the history says what each release holds and changed, and links to the comparison', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?view=releases&a=v1.1.0&b=v1.0.0');

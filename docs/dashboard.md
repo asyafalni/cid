@@ -375,9 +375,18 @@ Every dataset page (all five tabs) shares one header and the release tape.
   release 39.4 against 39.1 s, server CPU for 25 pages 13.7–14.1 against 13.5–14.2 s.
   Identities are read in a pass of their own over one key: folded into the
   attributes' pass they cost a 1M release 1.2 s more.
-  *Planned:* size, source (camera, video, feed), author (agent/human), policy version, changed
-  since release X, and histograms as clickable filters, like Hugging Face's, for every
-  numeric column and attribute.
+  *Built (2026-11-25):* changed since a release (`since=v1.0.0`, by name): the items
+  added, rewritten, moved to another split or with an annotation changed since it,
+  read from the pair's diff that Compare keeps (built once, then reused), and folded
+  into the filter every facet applies, so the counts are the changed items' counts.
+  Deleted items are not in the version to show; Compare lists them. Show command
+  gives `cid diff <release> <version>`; a name no release has is said, with the way
+  back. At 1M items (ReleaseFast, 2026-11-25), once the pair's diff is kept (1.1 s
+  the first time, as Compare): a page 0.14–0.15 s, with a split filter too; server
+  memory at most 365 MB.
+  *Planned:* size, source (camera, video, feed), author (agent/human), policy version,
+  and histograms as clickable filters, like Hugging Face's, for every numeric column
+  and attribute.
 - **Search.** *Built:* file paths ("path contains"), and the rows of a table: the
   words in any of its text columns, ignoring case, in the rows view (`rows=` holds it
   as `{"column": "*", "contains": …}`); the matching rows are found once a page, so
@@ -577,7 +586,9 @@ command shows it.
   split/class/type facets (each counted against the other filters), the class counts,
   a cursor, and the open item. `facets=0` leaves out the counts and facets, about
   half the work at 1M items: the dashboard asks for them with a filter's first page
-  only, not for its next pages, "A look inside" or an item opened from a link. The
+  only, not for its next pages, "A look inside" or an item opened from a link.
+  `since=<release>` narrows every count and the page to what changed since that
+  release, from the pair's kept diff (`…/browse/compare` builds the same one). The
   server runs these queries one at a time, the rest waiting their turn in order, so
   people browsing at once wait rather than fail. The server answers with DuckDB from the version's
   browse index, two Parquet files (items in path order; annotations by item, never

@@ -3049,6 +3049,19 @@ test "annotated: the platform writes revisions, the server commits, state compos
         const fetched = try browseAt(arena, &deps, &scope, tagged.commit, "&q=0001");
         try std.testing.expectEqual(@as(u64, 2), fetched.total);
         try std.testing.expectEqual(@as(usize, 1), fetched.items[0].annotations.len);
+        // Changed since a release, by its name: against itself nothing;
+        // the first version against it, only the frame whose boxes the
+        // review pass changed. A name no release has is said. Two versions
+        // at once: the cache must hold both (a server keeps 32).
+        deps.browse_cache_max = 4;
+        try std.testing.expectEqual(@as(u64, 0), (try browseAt(arena, &deps, &scope, tagged.commit, "&since=v-browse")).matched);
+        const since = try browseAt(arena, &deps, &scope, c1, "&since=v-browse");
+        try std.testing.expectEqual(@as(u64, 2), since.total);
+        try std.testing.expectEqual(@as(u64, 1), since.matched);
+        try std.testing.expectEqualStrings("frames/0001.jpg", since.items[0].path);
+        const no_such = cid.api.handle(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/ann/-/browse?commit={s}&since=v-nope", .{c1}), "Bearer test-token", "");
+        try std.testing.expectEqual(std.http.Status.not_found, no_such.status);
+        try std.testing.expect(std.mem.indexOf(u8, no_such.body, "no release is named v-nope") != null);
         for (keys) |key| try s3c.deleteObject(&scope, key);
     }
 }

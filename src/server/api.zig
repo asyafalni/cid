@@ -1012,6 +1012,19 @@ fn browse(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, ro
     if (q.q) |text| if (text.len == 0) {
         q.q = null;
     };
+    // Changed since a release (`since=v1.0.0`, by name, so a link reads as
+    // it is meant): the pair's diff, the one compare keeps, earlier first.
+    if (try param(arena, route, "since")) |name| {
+        const at = deps.db.rawOne([]const u8, scope, "SELECT commit_id::text FROM refs WHERE dataset_id = $1::uuid AND name = $2 AND kind = 'release'", .{ ds.id, name }) catch return error.Db;
+        const since_commit = at orelse
+            return errorResponse(arena, .not_found, try std.fmt.allocPrint(arena, "no release is named {s}", .{name}), "Pick a release from the \"Changed since\" list.");
+        const earlier = switch (try indexFor(arena, deps, scope, ds, since_commit)) {
+            .ready => |ix| ix,
+            .refused => |res| return res,
+        };
+        q.since = (try diffIndex(arena, deps, scope, ds, since_commit, route.queryParam("commit").?, earlier, index)) orelse
+            return errorResponse(arena, .service_unavailable, "the server is indexing another version", "Reload in a moment.");
+    }
     var db = try duckFor(arena, deps, index.dir);
     defer db.close();
     const answer = try browseQuery(deps, browse_mod.queryIndex, .{ arena, &db, index.files, q });
