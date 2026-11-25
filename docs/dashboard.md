@@ -384,7 +384,13 @@ Every dataset page (all five tabs) shares one header and the release tape.
   back. At 1M items (ReleaseFast, 2026-11-25), once the pair's diff is kept (1.1 s
   the first time, as Compare): a page 0.14–0.15 s, with a split filter too; server
   memory at most 365 MB.
-  *Planned:* size, source (camera, video, feed), author (agent/human), policy version,
+  *Built (2026-11-25):* by size (`size=1MB-10MB`), in steps of ten from under 10 KB
+  to 100 MB or more, the facet a histogram in bucket order like the annotation
+  count's; read from the index's size column, so no index format change. At 1M
+  items (ReleaseFast, 2026-11-25) a page with the size facet counted costs what one
+  did without it (0.36 against 0.37 s unfiltered); a size filter matching every
+  item 0.31–0.32 s, beside a split 0.23 s.
+  *Planned:* source (camera, video, feed), author (agent/human), policy version,
   and histograms as clickable filters, like Hugging Face's, for every numeric column
   and attribute.
 - **Search.** *Built:* file paths ("path contains"), and the rows of a table: the

@@ -19,6 +19,8 @@ export type Filters = {
   identity?: string;
   /** The SQL console's query (mode 'sql'), so a query is a link. */
   sql?: string;
+  /** A size bucket: '<10KB', '10KB-100KB', '100KB-1MB', '1MB-10MB', '10MB-100MB' or '100MB+'. */
+  size?: string;
   /** Items added, modified, moved or re-annotated since this release (by name). */
   since?: string;
 };
@@ -35,6 +37,7 @@ export type FilterPatch = {
   identity?: string | undefined;
   sql?: string | undefined;
   since?: string | undefined;
+  size?: string | undefined;
 };
 
 export function extOf(path: string): string {
@@ -46,5 +49,5 @@ export function extOf(path: string): string {
 export type Facet = { value: string; count: number };
 
 export function anyFilter(f: Filters): boolean {
-  return Boolean(f.q) || f.split !== undefined || f.cls !== undefined || f.type !== undefined || f.anns !== undefined || f.attr !== undefined || f.identity !== undefined || f.since !== undefined;
+  return Boolean(f.q) || f.split !== undefined || f.cls !== undefined || f.type !== undefined || f.anns !== undefined || f.attr !== undefined || f.identity !== undefined || f.since !== undefined || f.size !== undefined;
 }

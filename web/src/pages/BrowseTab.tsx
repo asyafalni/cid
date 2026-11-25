@@ -98,7 +98,7 @@ export function BrowseTab({
   // more than what was scrolled to, whatever the dataset's size. Each
   // page brings its own thumbnails; a page whose thumbnails cannot be had
   // still shows every item, as type tiles.
-  const query = { q: filters.q, split: filters.split, cls: filters.cls, type: filters.type, anns: filters.anns, attr: filters.attr, identity: filters.identity, since: filters.since };
+  const query = { q: filters.q, split: filters.split, cls: filters.cls, type: filters.type, anns: filters.anns, attr: filters.attr, identity: filters.identity, since: filters.since, size: filters.size };
   const pages = useInfiniteQuery({
     queryKey: ['browse', name, commit, query],
     queryFn: async ({ pageParam }) => {
@@ -323,6 +323,15 @@ export function BrowseTab({
               onChange={(v) => onFilters({ anns: v })}
             />
           )}
+          {/* A histogram as much as a filter: the size buckets in order. */}
+          <FacetSelect
+            label="size"
+            facets={first.facets.size}
+            value={filters.size}
+            blank="none"
+            show={sizeWords}
+            onChange={(v) => onFilters({ size: v })}
+          />
           {(first.facets.attr.length > 0 || filters.attr !== undefined) && (
             // Attribute values the annotations carry ("occluded=true"), the
             // most common first.
@@ -368,7 +377,7 @@ export function BrowseTab({
             <button
               className="filter-clear"
               onClick={() =>
-                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined, anns: undefined, attr: undefined, identity: undefined, since: undefined })
+                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined, anns: undefined, attr: undefined, identity: undefined, since: undefined, size: undefined })
               }
             >
               Clear filters
@@ -788,17 +797,33 @@ function ItemHistoryList({ name, path }: { name: string; path: string }) {
   );
 }
 
+/** A size bucket as words: '1MB-10MB' reads "1–10 MB". */
+function sizeWords(bucket: string): string {
+  const words: Record<string, string> = {
+    '<10KB': 'under 10 KB',
+    '10KB-100KB': '10–100 KB',
+    '100KB-1MB': '100 KB–1 MB',
+    '1MB-10MB': '1–10 MB',
+    '10MB-100MB': '10–100 MB',
+    '100MB+': '100 MB or more',
+  };
+  return words[bucket] ?? bucket;
+}
+
 function FacetSelect({
   label,
   facets,
   value,
   blank,
+  show,
   onChange,
 }: {
   label: string;
   facets: { value: string; count: number }[];
   value: string | undefined;
   blank: string;
+  /** How a value reads, when not as itself. */
+  show?: (value: string) => string;
   onChange: (value: string | undefined) => void;
 }) {
   return (
@@ -814,7 +839,7 @@ function FacetSelect({
         <option value={'\u0000all'}>any</option>
         {facets.map((f) => (
           <option key={f.value} value={f.value}>
-            {f.value === '' ? blank : f.value} ({f.count.toLocaleString()})
+            {f.value === '' ? blank : show ? show(f.value) : f.value} ({f.count.toLocaleString()})
           </option>
         ))}
       </select>

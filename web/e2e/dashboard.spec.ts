@@ -139,6 +139,20 @@ test('compare walks the folder tree: changed folders with their counts, one leve
   await expect(page.locator('.change-list')).toContainText('top.txt');
 });
 
+test('browse filters by size, the buckets a histogram in their own order', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/clips?view=browse&mode=table');
+  const size = page.getByRole('combobox', { name: 'Filter by size' });
+  // Six seconds of sound against a short note.
+  await expect(size.locator('option')).toHaveText(['any', 'under 10 KB (1)', '100 KB–1 MB (1)']);
+  await size.selectOption('100KB-1MB');
+  await expect(page).toHaveURL(/size=100KB-1MB/);
+  await expect(page.getByText('1 of 2 items')).toBeVisible();
+  const table = page.locator('.browse-table');
+  await expect(table).toContainText('talk/clip.wav');
+  await expect(table).not.toContainText('notes.txt');
+});
+
 test('browse narrows to what changed since a release, and says so when no release has the name', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/tree?view=browse&mode=table');
@@ -719,7 +733,7 @@ test('"Show command" gives the cid command for the view on screen, and it does t
   // What has no command says so.
   await page.goto('/d/e2e/datasets/demo?view=browse&q=img');
   await page.getByRole('button', { name: 'Show command' }).click();
-  await expect(page.getByRole('region', { name: 'Command' })).toContainText('The path search and the type, annotations, attribute and identity filters have no clone flag');
+  await expect(page.getByRole('region', { name: 'Command' })).toContainText('The path search and the type, annotations, attribute, identity and size filters have no clone flag');
   await page.getByRole('link', { name: 'Activity', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Command' })).toContainText('no command shows it');
 });

@@ -201,7 +201,7 @@ export type BrowsePage = {
   /** The cursor for the next page; null on the last. */
   next: string | null;
   open: BrowseItem | null;
-  facets: { split: BrowseFacet[]; class: BrowseFacet[]; type: BrowseFacet[]; anns: BrowseFacet[]; attr: BrowseFacet[] };
+  facets: { split: BrowseFacet[]; class: BrowseFacet[]; type: BrowseFacet[]; anns: BrowseFacet[]; attr: BrowseFacet[]; size: BrowseFacet[] };
   /** Annotations per class across the whole version. */
   classes: BrowseFacet[];
 };
@@ -216,6 +216,8 @@ export type BrowseQuery = {
   identity?: string;
   /** Only items changed since this release (by name). */
   since?: string;
+  /** A size bucket. */
+  size?: string;
   after?: string;
   item?: string;
   limit?: number;
@@ -240,6 +242,7 @@ export function getBrowse(name: string, commit: string, query: BrowseQuery): Pro
   if (query.attr !== undefined) params.set('attr', query.attr);
   if (query.identity !== undefined) params.set('identity', query.identity);
   if (query.since !== undefined) params.set('since', query.since);
+  if (query.size !== undefined) params.set('size', query.size);
   if (query.after !== undefined) params.set('after', query.after);
   if (query.item !== undefined) params.set('item', query.item);
   if (query.limit !== undefined) params.set('limit', String(query.limit));
