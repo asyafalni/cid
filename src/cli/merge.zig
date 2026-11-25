@@ -73,6 +73,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
 }
 
 fn listConflicts(ctx: *const common.Context, branch: []const u8, conflicts: []const sync.Conflict, what: []const u8) void {
+    if (common.conflictsJson(ctx, "main and the branch changed the same files.", "Decide each with 'cid checkout --mine <path>' (keep main's version) or 'cid checkout --theirs <path>' (take the branch's), then run 'cid merge --continue'.", conflicts)) return;
     var buf: [4096]u8 = undefined;
     var w = std.Io.File.stderr().writer(ctx.io, &buf);
     const err_w = &w.interface;

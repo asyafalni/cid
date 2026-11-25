@@ -85,6 +85,24 @@ pub fn fail(ctx: *const Context, code: ExitCode, comptime fmt: []const u8, args:
     return code;
 }
 
+/// With `--json`, a stop on conflicts as data and true: the error every
+/// failure carries, plus each path and its decision so far, so a program
+/// need not read them out of the sentence. `conflicts` is any list of
+/// `{path, choice}`; `next` the sentence saying how to decide and go on.
+pub fn conflictsJson(ctx: *const Context, comptime what: []const u8, comptime next: []const u8, conflicts: anytype) bool {
+    if (!ctx.json) return false;
+    var buf: [2048]u8 = undefined;
+    var stderr_writer = std.Io.File.stderr().writer(ctx.io, &buf);
+    const err = &stderr_writer.interface;
+    err.print("{f}\n", .{std.json.fmt(.{
+        .@"error" = what ++ " " ++ next,
+        .exit = @backingInt(ExitCode.conflict),
+        .conflicts = conflicts,
+    }, .{})}) catch {};
+    err.flush() catch {};
+    return true;
+}
+
 /// With `--json`, prints `value` as the command's result and answers true;
 /// the caller then skips its text.
 pub fn emitJson(ctx: *const Context, value: anytype) bool {

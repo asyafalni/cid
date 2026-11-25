@@ -40,10 +40,18 @@ fn run(
     const ctx: cid.common.Context = .{ .arena = arena, .gpa = gpa, .io = io, .out = out, .env = env, .json = json };
     const code: cid.ExitCode = switch (cid.command.parse(rest.items)) {
         .help => blk: {
+            if (json) {
+                cid.help.printJson(out, cid.version.text) catch break :blk .network;
+                break :blk .ok;
+            }
             cid.help.print(out) catch break :blk .network;
             break :blk .ok;
         },
         .help_all => blk: {
+            if (json) {
+                cid.help.printJson(out, cid.version.text) catch break :blk .network;
+                break :blk .ok;
+            }
             cid.help.printAll(out) catch break :blk .network;
             break :blk .ok;
         },
@@ -72,13 +80,17 @@ fn run(
         .ssh_keys => |ssh_args| cid.cli_ssh.runKeys(arena, io, out, env, ssh_args),
         .ssh_auth => |ssh_args| cid.cli_ssh.runAuth(arena, io, out, env, ssh_args),
         .not_yet => |name| {
+            if (json) return @backingInt(cid.common.fail(&ctx, .usage, "'{s}' is not built yet in this early version. Run 'cid help --json' for what works today.", .{name}));
             var ebuf: [256]u8 = undefined;
             var ew = std.Io.File.stderr().writer(io, &ebuf);
             ew.interface.print("cid: '{s}' is not built yet in this early version. Run 'cid help' for what works today.\n", .{name}) catch {};
             ew.interface.flush() catch {};
             return @backingInt(cid.ExitCode.usage);
         },
-        .unknown => |name| return fail(io, .usage, name, "cid help"),
+        .unknown => |name| {
+            if (json) return @backingInt(cid.common.fail(&ctx, .usage, "'{s}' is not a cid command. Run 'cid help --json' for the commands there are.", .{name}));
+            return fail(io, .usage, name, "cid help");
+        },
     };
     out.flush() catch return @backingInt(cid.ExitCode.network);
     return @backingInt(code);

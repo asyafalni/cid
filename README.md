@@ -34,6 +34,10 @@ token from the dashboard, in an https address: `cid clone https://ci:TOKEN@host/
 If you know git, you already know cid: `add`, `commit`, `push`, `pull`, `checkout`,
 `status`, `log`, `diff` — same verbs, same meaning.
 
+Programs and AI coding agents get the same commands as data: `--json` on any command,
+`cid help --json` for all of them, and a one-page guide every server hands out at
+`/llms.txt` ([`web/public/llms.txt`](web/public/llms.txt)).
+
 ## Try it
 
 One command runs a whole cid on your machine (the server with its dashboard, the

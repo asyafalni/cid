@@ -663,7 +663,14 @@ Rules for every command:
   `people.csv  id` or `events/  user_id,ts`; the last matching rule wins. It is an
   ordinary committed file, versioned with the data.
 - `--json` anywhere on the line: the result as one JSON document on stdout (`diff`:
-  one line per change, then a summary); errors as `{"error", "exit"}` on stderr.
+  one line per change, then a summary); errors as `{"error", "exit"}` on stderr, a
+  stop on conflicts adding `"conflicts"` (each path and its decision).
+- `cid help --json` is every command as data (usage, flags, whether it needs the
+  server, what it changes, the exit codes), for programs and AI coding agents; a new
+  command or flag goes into that table (`src/cli/help.zig`) in the same change. The
+  server hands the same audience a one-page guide at `/llms.txt`
+  (`web/public/llms.txt`); `tests/agent.sh` drives a session by JSON and exit codes
+  alone.
 - Exit codes: 0 ok, 1 wrong usage (or no server configured), 2 conflict, 3 integrity
   failure, 4 server or network, 5 access denied.
 - The author of a commit is `CID_AUTHOR`, else `user:$USER`.
@@ -750,6 +757,8 @@ docker compose -f docker-compose.test.yml up -d
 zig build integration              # needs the services
 
 sh tests/usability.sh              # the scripted CLI session (services + `zig build`)
+sh tests/agent.sh                  # the same CLI as a program drives it: --json and exit
+                                   # codes only (services + `zig build`, python3)
 sh tests/proxy.sh                  # deploy/proxy/ configs carry a push, clone, release (docker)
 sh tests/quickstart.sh             # deploy/compose/'s walkthrough, word for word (docker; builds
                                    # the image, on ports of its own)

@@ -49,6 +49,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
             r.head_commit[0..13], r.commits, plural(r.commits), r.files_changed, plural(r.files_changed),
         }) catch return .network,
         .conflicts => |list| {
+            if (common.conflictsJson(ctx, "you and the server changed the same files; nothing was merged.", "Decide each file with 'cid checkout --mine <path>' (keep yours) or 'cid checkout --theirs <path>' (take the server's), then run 'cid pull --continue'.", list)) return .conflict;
             var buf: [4096]u8 = undefined;
             var stderr_writer = std.Io.File.stderr().writer(ctx.io, &buf);
             const err_w = &stderr_writer.interface;

@@ -1,0 +1,108 @@
+# cid
+
+> cid is version control for datasets: history, releases, diffs and one-command
+> downloads for any files (images, audio, video, text, tables, model weights) and
+> the annotations on them. It uses git's verbs with git's meanings. This page is for
+> a program or an AI coding agent that has to work with a cid dataset.
+
+If you know git, you know cid: `add` stages, `commit` saves locally (instant,
+offline), `push` uploads, `pull` downloads, `checkout` switches version, `status`,
+`log` and `diff` read. A release is a tag that never moves. There is no git
+repository to manage: cid writes a small readable record into one by itself.
+
+## Ask the tool, not your memory
+
+```
+cid help --json
+```
+
+prints every command with its usage, its flags, whether it needs the server, what
+it changes (`nothing`, `folder` or `server`) and what each exit code means. Prefer
+it to anything you remember about cid, this page included.
+
+## Rules that hold for every command
+
+- Add `--json` anywhere on the line. The result is one JSON document on stdout
+  (`cid diff`: one JSON line per change, then a summary line). An error is
+  `{"error": "...", "exit": N}` on stderr.
+- Exit codes: 0 ok; 1 wrong usage; 2 conflict; 3 integrity failure; 4 server or
+  network (the same command is safe to run again); 5 access denied.
+- Every error message ends with the command to run next. Read it and run that.
+- Inside a cloned folder the dataset is implied. Outside one, the address names it.
+- Nothing asks a question on stdin, and nothing needs a terminal.
+
+## Getting in without a person
+
+A person uses their SSH key and an address like `cid@host:org/datasets/name`. A
+program uses a personal token, made on the dashboard's Tokens page:
+
+```
+cid clone https://ci:$CID_PAT@host/org/datasets/name
+cd name && CID_TOKEN=$CID_PAT cid pull
+```
+
+The token is never written into the folder; pass `CID_TOKEN` to each later command.
+Never print a token, and never put one in a commit message or a file.
+
+## Reading a dataset
+
+```
+cid clone <address> [--release v1.3.0]     # the latest release unless told
+cid clone <address> --split val --class person   # only part of an annotated dataset
+cid log --json                              # commits and releases, newest first
+cid diff v1.2.0 v1.3.0 --json               # what changed, without downloading either
+cid checkout v1.2.0                         # only changed files download
+cid status --json                           # offline: branch, edits, unpushed commits
+```
+
+Every downloaded file is hash-checked before it appears. Files are shared through a
+local cache, so a second clone or a checkout downloads only what is new.
+
+Code that already uses Hugging Face libraries can read a release with no cid
+command at all: `HF_ENDPOINT=https://host HF_TOKEN=$CID_PAT`, then
+`load_dataset("org/datasets__name", revision="v1.3.0")` (inner slashes of the
+dataset's path are written `__`). That door is read-only.
+
+## Changing a file dataset
+
+```
+cid add .                       # or one path; hashes and stages
+cid commit -m "Add March calls" # local and instant
+cid push                        # uploads only what the server lacks
+```
+
+- `cid push` refused with exit 2 means someone pushed first: run `cid pull`, then
+  `cid push` again.
+- `cid pull` lists conflicts (exit 2) when both sides changed the same file. Do not
+  choose for the user unless they told you how: each path is decided with
+  `cid checkout --mine <path>` or `cid checkout --theirs <path>`, then
+  `cid pull --continue`.
+- An interrupted `push`, `pull` or `checkout` is finished by running it again.
+- `cid tag <name>` makes a release, and `cid branch` and `cid merge` act on the
+  server: they are the dataset owner's decisions. Do them only when asked.
+
+## What not to try
+
+- **An annotated dataset's clone is an export.** `cid add` refuses there:
+  annotations change in the annotation platform, not in a folder.
+- **A folder cloned with `--split` or `--class` is read-only.**
+- **A release cannot be moved, renamed or deleted,** and pushed history cannot be
+  rewritten. There is no force push, rebase or amend. Fix forward with a new commit
+  and a new release.
+- **Do not edit anything under `.cid/`.**
+- **Do not run git commands to make cid work.** The dataset's git repository is
+  written by the server; reading it is fine, pushing to its cid-written files is not.
+- **Do not hunt for large files with git tools.** The data is not in git.
+
+## Tables
+
+`cid diff` compares `.csv`, `.parquet` and `.jsonl` files row by row, on the server.
+To see which cells changed, the table's key must be declared in a committed
+`.cidkeys` file, one rule a line: `people.csv  id`, or `events/  user_id,ts`.
+Without one, an edited row shows as one removed and one added.
+
+## Running a server to test against
+
+`deploy/compose/` in the cid repository starts a whole cid on localhost with one
+command, with a walkthrough. Its administrator token is given to the CLI as
+`CID_SERVER` and `CID_TOKEN`.

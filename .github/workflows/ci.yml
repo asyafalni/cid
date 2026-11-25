@@ -35,6 +35,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libvips-tools
       - name: Integration tests
         run: zig build integration
+      # cid driven as a program drives it: --json and exit codes only.
+      - name: The agent's session
+        run: |
+          zig build
+          sh tests/agent.sh
 
   # The Hugging Face door, read by the real clients (tests/hf_client.sh):
   # huggingface_hub and datasets, pinned in tests/hf_requirements.txt.

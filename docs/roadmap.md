@@ -61,8 +61,8 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      folder tree. Done 2026-11-25: Browse's "changed since a release", size, author and
      labelling policy version filters.
   10. **Tier E, reach** (section 7; direction set 2026-11-25). Everything above that
-      can be built is built, so the work turns to who can pick cid up. E1 is done;
-      E2 next.
+      can be built is built, so the work turns to who can pick cid up. Done: E1, and
+      E3's first three steps. Next: E2, then E3's MCP door (design first), then E4.
 - Running the e2e suite needs Playwright's browser:
   `pnpm --dir web exec playwright install chromium`.
 - The e2e database is seeded once and kept. A fixture change must be its own
@@ -431,13 +431,18 @@ and assembling a server by hand. In order:
   to work it with no document in its context, as it works git. What exists:
   `--json` on every command, exit codes with one meaning each, every error naming
   the next command. To add, in this order:
-  1. `cid help --json`: every command, its arguments and flags, its exit codes, as
-     one document, generated from the same table `cid help` prints.
-  2. An agent guide: one page (`docs/agents.md`, also served by the server as
-     `/llms.txt`) saying what cid is, the everyday loop, how to read a version
-     without downloading it, and what never to do. Short enough to sit in a context.
-  3. A check that it works: a scripted session using only `--json` output and exit
-     codes, as `tests/usability.sh` checks the words a person reads.
+  1. ~~`cid help --json`~~ (done 2026-11-25): every command, its usage and flags,
+     whether it needs the server, what it changes, and what each exit code means,
+     as one document. A unit test holds its table and the words `cid help` prints
+     to the same commands.
+  2. ~~An agent guide~~ (done 2026-11-25): one page, served by every cid server at
+     `/llms.txt` with no sign-in (`web/public/llms.txt`): what cid is, the loops
+     for reading and changing, getting in without a person, and what not to try.
+  3. ~~A check that it works~~ (done 2026-11-25): `tests/agent.sh`, a session
+     driven by `--json` output and exit codes alone, stdin closed, in CI. Writing
+     it found three places that answered a program in prose: an unknown command, a
+     pull stopped on conflicts and a merge stopped on conflicts. All three are JSON
+     now, the conflicts as a list of paths and decisions.
   4. An MCP door, read-only, on the server (`/mcp`, a personal token): list
      datasets, versions, a browse page, a compare, a table's rows, the SQL console.
      One more door out of cid, as git and the Hugging Face door are; cid still

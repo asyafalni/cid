@@ -242,6 +242,8 @@ fn mimeOf(path: []const u8) []const u8 {
         .{ .ext = ".ico", .mime = "image/x-icon" },
         .{ .ext = ".map", .mime = "application/json" },
         .{ .ext = ".json", .mime = "application/json" },
+        // llms.txt, the guide for programs and AI agents (docs/roadmap.md, E3).
+        .{ .ext = ".txt", .mime = "text/plain; charset=utf-8" },
     };
     for (exts) |e| {
         if (std.mem.endsWith(u8, path, e.ext)) return e.mime;

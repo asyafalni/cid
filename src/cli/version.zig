@@ -5,6 +5,9 @@
 const std = @import("std");
 const build_options = @import("build_options");
 
+/// The version, as `cid --version` prints it.
+pub const text: []const u8 = build_options.version;
+
 const airship =
     \\         .-~~~~~~~~~~~~-.
     \\       .'  ~  c i d  ~   '.

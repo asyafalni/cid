@@ -30,6 +30,16 @@ async function signIn(page: import('@playwright/test').Page) {
   await expect(page.getByRole('heading', { name: 'Datasets' })).toBeVisible();
 }
 
+test('the server hands a program its guide, with no sign-in', async ({ request }) => {
+  // llms.txt: what an AI coding agent reads before its first cid command.
+  const guide = await request.get('/llms.txt');
+  expect(guide.status()).toBe(200);
+  expect(guide.headers()['content-type']).toContain('text/plain');
+  const text = await guide.text();
+  expect(text.startsWith('# cid')).toBe(true);
+  expect(text).toContain('cid help --json');
+});
+
 test('sign-in guards the deck and the token opens it', async ({ page }) => {
   await page.goto('/');
   await expect(page).toHaveURL(/\/signin/);
