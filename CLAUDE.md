@@ -731,6 +731,9 @@ src/access/                  key lookup and forced-command checks (auth.zig), to
                              src/cli/sshcmd.zig (cid ssh-keys, cid ssh-auth)
 deploy/sshd/                 hardened sshd_config and setup
 deploy/proxy/                reverse proxy configs (Caddy, nginx) for the server and the store
+deploy/package.sh, install.sh  a release's archive per platform (the binary, libduckdb
+                             beside it) and the script that installs it for one user;
+                             .github/workflows/release.yml runs on a version tag
 deploy/compose/              cid on one machine: the server image (Dockerfile, at the root)
                              with TimescaleDB and SeaweedFS, and the walkthrough
 web/                         dashboard: React + Vite + TypeScript (see docs/dashboard.md)
@@ -757,6 +760,7 @@ docker compose -f docker-compose.test.yml up -d
 zig build integration              # needs the services
 
 sh tests/usability.sh              # the scripted CLI session (services + `zig build`)
+sh tests/install.sh <prefix>       # a built cid packed, then installed by install.sh
 sh tests/agent.sh                  # the same CLI as a program drives it: --json and exit
                                    # codes only (services + `zig build`, python3)
 sh tests/proxy.sh                  # deploy/proxy/ configs carry a push, clone, release (docker)
@@ -792,7 +796,8 @@ printed test binary directly to see the truth.
 CI runs on every push: format, unit and integration tests on Linux x86-64, the
 dashboard's lint, typecheck and Playwright suite, the Hugging Face door read by the real
 clients (`tests/hf_client.sh`), the server image and its walkthrough
-(`tests/quickstart.sh`), and unit tests plus the installed
+(`tests/quickstart.sh`), the release archive packed and installed on every platform
+(`tests/install.sh`), and unit tests plus the installed
 binary on Linux arm64 and macOS (Apple silicon and Intel).
 
 Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
@@ -845,7 +850,8 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
 
 ## Zig conventions
 
-- **Pin the Zig version** in `build.zig.zon` and CI. Upgrade Zig only in its own change.
+- **Pin the Zig version** in `build.zig.zon`, CI, the release workflow and the
+  `Dockerfile`. Upgrade Zig only in its own change.
 - **Explicit allocators** everywhere; an arena per command or request. No globals.
 - **Errors:** explicit error sets at module boundaries, `errdefer` for cleanup, never
   `catch unreachable` on I/O, parsing, network or database results. Map errors to exit

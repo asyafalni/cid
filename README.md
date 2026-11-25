@@ -38,6 +38,19 @@ Programs and AI coding agents get the same commands as data: `--json` on any com
 `cid help --json` for all of them, and a one-page guide every server hands out at
 `/llms.txt` ([`web/public/llms.txt`](web/public/llms.txt)).
 
+## Install
+
+The `cid` command, for Linux and macOS (x86-64 and arm64), with no root and no build:
+
+```bash
+curl -fsSL https://github.com/asyafalni/cid/releases/latest/download/install.sh | sh
+```
+
+It checks the download against the release's checksums, unpacks it under
+`~/.local/share/cid` and links `~/.local/bin/cid`; running it again upgrades.
+`CID_VERSION=v1.2.0` picks a release. (There is no release yet: until the first one,
+build it as below.)
+
 ## Try it
 
 One command runs a whole cid on your machine (the server with its dashboard, the

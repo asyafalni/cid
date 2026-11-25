@@ -1,0 +1,82 @@
+# A version tag (v1.2.0) becomes a release: cid built for each platform
+# DuckDB is pinned for, with the dashboard embedded, packed as install.sh
+# takes it (deploy/package.sh), with the checksums it verifies. Nothing
+# here runs until someone pushes such a tag; ci.yml packs and installs on
+# every push (tests/install.sh), so this workflow's steps are never new.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: linux-x86_64
+            runs-on: ubuntu-24.04
+          - name: linux-arm64
+            runs-on: ubuntu-24.04-arm
+          - name: macos-arm64
+            runs-on: macos-15
+          - name: macos-x86_64
+            runs-on: macos-15-intel
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.16.1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Dashboard
+        run: |
+          pnpm --dir web install --frozen-lockfile
+          pnpm --dir web build
+      - name: cid, at the tag's version
+        shell: bash
+        run: zig build -Doptimize=ReleaseFast -Dversion="${GITHUB_REF_NAME#v}" --prefix "$RUNNER_TEMP/cid"
+      - name: Pack, and install what was packed
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh tests/install.sh "$RUNNER_TEMP/cid"
+          sh deploy/package.sh "$RUNNER_TEMP/cid" dist
+          [ "$("$RUNNER_TEMP/cid/bin/cid" --version)" = "cid ${GITHUB_REF_NAME#v}" ]
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum cid-*.tar.gz > SHA256SUMS && cat SHA256SUMS
+      - name: The release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "cid ${GITHUB_REF_NAME#v}" --generate-notes \
+            dist/cid-*.tar.gz dist/SHA256SUMS install.sh

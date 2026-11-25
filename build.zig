@@ -8,7 +8,8 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const options = b.addOptions();
-    options.addOption([]const u8, "version", version);
+    // A release is built with its tag's version (.github/workflows/release.yml).
+    options.addOption([]const u8, "version", b.option([]const u8, "version", "The version `cid --version` prints (default: " ++ version ++ ")") orelse version);
 
     // Nilo (pinned commit; CLAUDE.md, Zig conventions): the server's HTTP
     // framework, and its native Postgres driver (.sql fetches pg.zig).

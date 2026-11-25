@@ -61,8 +61,8 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      folder tree. Done 2026-11-25: Browse's "changed since a release", size, author and
      labelling policy version filters.
   10. **Tier E, reach** (section 7; direction set 2026-11-25). Everything above that
-      can be built is built, so the work turns to who can pick cid up. Done: E1, and
-      E3's first three steps. Next: E2, then E3's MCP door (design first), then E4.
+      can be built is built, so the work turns to who can pick cid up. Done: E1, E2,
+      and E3's first three steps. Next: E3's MCP door (design first), then E4.
 - Running the e2e suite needs Playwright's browser:
   `pnpm --dir web exec playwright install chromium`.
 - The e2e database is seeded once and kept. A fixture change must be its own
@@ -424,9 +424,14 @@ and assembling a server by hand. In order:
   CI. It needed `cid admin serve --host`, and `sslmode` carried through `CID_DB`:
   the first run of the stack could not reach its database, which is on another
   host, without TLS, and nothing said why.
-- **E2. Binaries.** A workflow that, on a version tag, packs `cid` with its DuckDB
-  library for the four platforms CI already builds, so the CLI is a download and
-  not a Zig build. It publishes nothing until the owner pushes a tag.
+- ~~**E2. Binaries**~~ (done 2026-11-26). A version tag (`v1.2.0`) becomes a
+  release (`.github/workflows/release.yml`): cid built at that version for the four
+  platforms, the dashboard embedded, packed with its DuckDB library
+  (`deploy/package.sh`), with checksums. `install.sh` installs it for one user with
+  no root, checks the download, and upgrades in place. `tests/install.sh` packs and
+  installs on every platform on every push, so the release's steps are never run
+  for the first time on a tag. No tag has been pushed: the first release is the
+  owner's call.
 - **E3. cid for agents.** An agent that meets a cid folder or address should be able
   to work it with no document in its context, as it works git. What exists:
   `--json` on every command, exit codes with one meaning each, every error naming

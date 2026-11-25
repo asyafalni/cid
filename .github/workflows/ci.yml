@@ -82,6 +82,9 @@ jobs:
         run: zig build
       - name: The stack and its walkthrough
         run: sh tests/quickstart.sh
+      # Linux x86-64's turn at what the other platforms' job checks.
+      - name: Packed, then installed by install.sh
+        run: sh tests/install.sh zig-out
 
   # The dashboard's suite (web/e2e): the real binary with the dashboard
   # embedded, the test services, a fake GitLab, Chromium.
@@ -168,3 +171,6 @@ jobs:
           got=$("$RUNNER_TEMP/cid/bin/cid" hash-object tests/fixtures/notes.txt tests/fixtures/people.parquet)
           want=$'4a8e37d61bf6d65fbf8318ba10bd4cf882be8c308fee96e08f6425a68ca4bffb\nfe91204d70aaa233e4cc1688db72d6ad79e4b5452e8e9c65630283a4da35d57a'
           if [ "$got" != "$want" ]; then printf 'hashes differ:\n%s\n' "$got"; exit 1; fi
+      # A release as someone installs it (release.yml packs the same way).
+      - name: Packed, then installed by install.sh
+        run: sh tests/install.sh "$RUNNER_TEMP/cid"

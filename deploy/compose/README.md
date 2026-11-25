@@ -19,7 +19,8 @@ The first run builds the image from this repository, which takes a few minutes. 
 
 ## 2. Get the `cid` command
 
-On Linux, take it out of the image you just built (the binary and the DuckDB library
+Once cid has a release, `install.sh` gets it (the [README](../../README.md),
+"Install"). Until then, on Linux, take it out of the image you just built (the binary and the DuckDB library
 it needs beside it):
 
 ```sh
