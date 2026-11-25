@@ -51,6 +51,8 @@ const pages: [string, string][] = [
   ['item-text', `${media}?view=browse&item=notes.txt`],
   ['browse-list', `${media}?view=browse&mode=list`],
   ['item-restricted', `${faces}?view=browse&item=person-01.png`],
+  ['files-item-image', `${demo}?view=files&item=img-a.png`],
+  ['files-item-audio', `${media}?view=files&item=tone.wav`],
   ['releases-files', `${demo}?view=releases`],
   ['releases-annotated', `${boxes}?view=releases&a=v1.0.0&b=v1.1.0`],
   ['releases-tables', `${tables}?view=releases&a=v1.0.0&b=v1.1.0`],

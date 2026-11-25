@@ -408,12 +408,29 @@ test('the files tab walks the committed tree', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?view=files');
   await expect(page.getByText('README.txt')).toBeVisible();
-  // Each file says its type, and its name opens it in Browse at the same release.
+  // Each file says its type, and its name opens it beside the listing.
   const picture = page.getByRole('row', { name: /img-a\.png/ });
   await expect(picture.getByRole('cell', { name: '.png', exact: true })).toBeVisible();
   // And when it last changed, and by whom (the CLI's author, user:$USER).
   await expect(picture.getByRole('cell', { name: /^\d{4}-\d{2}-\d{2} · user:/ })).toBeVisible();
   await picture.getByRole('link', { name: 'img-a.png' }).click();
+  await expect(page).toHaveURL(/view=files/);
+  await expect(page).toHaveURL(/item=img-a\.png/);
+  const drawer = page.getByRole('complementary', { name: 'img-a.png' });
+  await expect(drawer.getByText('200×150')).toBeVisible();
+  await expect(drawer.locator('img')).toBeVisible();
+  // Text shows as itself, and Escape closes the panel, the listing still there.
+  await page.getByRole('row', { name: /README\.txt/ }).getByRole('link', { name: 'README.txt' }).click();
+  const readme = page.getByRole('complementary', { name: 'README.txt' });
+  await expect(readme).toBeVisible();
+  await expect(readme.locator('pre')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(readme).toBeHidden();
+  await expect(page).not.toHaveURL(/item=/);
+  await expect(page.getByText('README.txt')).toBeVisible();
+  // A link opens it there too, and the panel leads on into Browse.
+  await page.goto('/d/e2e/datasets/demo?view=files&item=img-a.png');
+  await page.getByRole('complementary', { name: 'img-a.png' }).getByRole('link', { name: 'Open in Browse' }).click();
   await expect(page).toHaveURL(/view=browse/);
   await expect(page).toHaveURL(/item=img-a\.png/);
   await expect(page.getByText('200×150')).toBeVisible();
@@ -1589,7 +1606,7 @@ test('a malformed CSV shows its own error, in words, and the rest of the dataset
   await expect(page.getByRole('row', { name: /tone\.wav/ })).toBeVisible();
 });
 
-const axePages = ['/no/such/page', '/d/e2e/datasets/nope', '/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/d/e2e/datasets/media?view=browse&mode=list', '/d/e2e/datasets/attrs2?view=health&release=v1.1.0', '/d/e2e/datasets/boxes?view=browse&mode=sql&sql=SELECT%20split%2C%20count(*)%20FROM%20items%20GROUP%20BY%20split', '/keys', '/tokens'];
+const axePages = ['/no/such/page', '/d/e2e/datasets/nope', '/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/demo?view=files&item=img-a.png', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/d/e2e/datasets/media?view=browse&mode=list', '/d/e2e/datasets/attrs2?view=health&release=v1.1.0', '/d/e2e/datasets/boxes?view=browse&mode=sql&sql=SELECT%20split%2C%20count(*)%20FROM%20items%20GROUP%20BY%20split', '/keys', '/tokens'];
 
 // Both themes: Daybreak as Playwright's default light scheme, Night flight
 // as the dark one. Each must pass on its own (docs/dashboard.md §3.4).

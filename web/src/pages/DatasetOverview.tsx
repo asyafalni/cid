@@ -346,8 +346,12 @@ export function DatasetOverview() {
           name={name}
           commit={pinnedCommit}
           pin={pin}
+          annotated={o.kind === 'annotated'}
+          restricted={o.restricted}
           openDir={search.dir}
           onOpenDir={(dir) => setSearch({ dir })}
+          openItem={search.item}
+          onOpenItem={(item) => setSearch({ item })}
         />
       )}
     </article>

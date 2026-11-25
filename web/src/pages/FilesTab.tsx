@@ -1,28 +1,43 @@
-import { useState } from 'react';
-import { useInfiniteQuery, useQueries } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import { useInfiniteQuery, useQueries, useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { getDir, getDownloads, getLastChange, type LastChange, type Pin } from '../api';
+import { getBrowse, getDir, getDownloads, getLastChange, type LastChange, type Pin } from '../api';
 import { extOf } from '../browseFilter';
 import { RowsSkeleton } from '../Skeleton';
 import { humanBytes } from '../format';
+import { typingIn } from '../keys';
+import { thumbsFor } from '../thumbs';
+import { ItemDrawer, MissingItem } from './BrowseTab';
+
+const noneHidden: ReadonlySet<string> = new Set();
 
 // Files: the folder tree exactly as committed, sizes and types, a
 // download per file. The open folder path lives in the URL. One folder at
 // a time, from the server (DuckDB over the version's index): subfolders
-// with their counts, then the folder's own files a page at a time.
+// with their counts, then the folder's own files a page at a time. A
+// file's name opens it beside the listing, in the same drawer Browse uses
+// (its preview, facts and history), the open file in the URL too.
 export function FilesTab({
   name,
   commit,
   pin,
+  annotated,
+  restricted,
   openDir,
   onOpenDir,
+  openItem,
+  onOpenItem,
 }: {
   name: string;
   commit: string | null;
   /** What the page is pinned to, kept on links into Browse. */
   pin: Pin;
+  annotated: boolean;
+  restricted: boolean;
   openDir: string | undefined;
   onOpenDir: (dir: string | undefined) => void;
+  openItem: string | undefined;
+  onOpenItem: (path: string | undefined) => void;
 }) {
   const prefix = openDir ? `${openDir}/` : '';
   const listing = useInfiniteQuery({
@@ -46,6 +61,26 @@ export function FilesTab({
   });
   const changed = new Map<string, LastChange>();
   for (const q of changedPages) for (const c of q.data?.changes ?? []) changed.set(c.path, c);
+
+  // The open file, with its annotations and thumbnail, as Browse asks for
+  // an item opened from a link: one lean query, no counts or facets.
+  const opened = useQuery({
+    queryKey: ['browse-open', name, commit, openItem],
+    queryFn: async () => {
+      const page = await getBrowse(name, commit!, { item: openItem, limit: 1, facets: false });
+      return page.open ? { item: page.open, thumbs: await thumbsFor(name, [page.open]) } : null;
+    },
+    enabled: commit !== null && openItem !== undefined,
+  });
+  // Escape closes it, as in Browse (never while typing).
+  useEffect(() => {
+    if (openItem === undefined) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape' && !typingIn(e)) onOpenItem(undefined);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [openItem, onOpenItem]);
 
   if (commit === null) return <p className="quiet">Nothing here until the first push.</p>;
   if (listing.isPending) return <RowsSkeleton rows={8} cols={4} />;
@@ -110,10 +145,15 @@ export function FilesTab({
             </tr>
           ))}
           {files.map((item) => (
-            <tr key={item.path}>
+            <tr key={item.path} className={openItem === item.path ? 'row--open' : undefined}>
               <td className="data">
-                {/* The file as itself: its preview, facts and history, in Browse's drawer. */}
-                <Link to="/d/$" params={{ _splat: name }} search={{ view: 'browse', ...pin, item: item.path }}>
+                {/* The file as itself, beside the listing: a link, so it can be shared. */}
+                <Link
+                  to="/d/$"
+                  params={{ _splat: name }}
+                  search={{ view: 'files', ...pin, dir: openDir, item: item.path }}
+                  aria-current={openItem === item.path ? 'true' : undefined}
+                >
                   {item.path.slice(prefix.length)}
                 </Link>
               </td>
@@ -154,6 +194,27 @@ export function FilesTab({
       )}
       {folders.length === 0 && files.length === 0 && (
         <p className="quiet">This folder is empty at this version.</p>
+      )}
+      {openItem !== undefined && opened.data === null && (
+        <MissingItem name={name} path={openItem} onClose={() => onOpenItem(undefined)} />
+      )}
+      {openItem !== undefined && opened.data && (
+        <ItemDrawer
+          name={name}
+          item={opened.data.item}
+          annotated={annotated}
+          restricted={restricted}
+          annotations={opened.data.item.annotations}
+          thumb={opened.data.thumbs.find((t) => t.hash === opened.data!.item.hash)?.url}
+          hidden={noneHidden}
+          opacity={0.9}
+          onClose={() => onOpenItem(undefined)}
+        >
+          {/* Onward to step through items, filter, or show and hide classes. */}
+          <Link className="action drawer-download" to="/d/$" params={{ _splat: name }} search={{ view: 'browse', ...pin, item: openItem }}>
+            Open in Browse
+          </Link>
+        </ItemDrawer>
       )}
     </div>
   );

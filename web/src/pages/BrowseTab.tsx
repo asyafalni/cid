@@ -563,7 +563,7 @@ export function BrowseTab({
 // A link to an item this version does not hold (a path from another
 // release, a typo, a deleted file): said in words, with the releases that
 // do hold it, from its history; never a page that silently shows nothing.
-function MissingItem({ name, path, onClose }: { name: string; path: string; onClose: () => void }) {
+export function MissingItem({ name, path, onClose }: { name: string; path: string; onClose: () => void }) {
   const history = useQuery({ queryKey: ['history', name, path], queryFn: () => getHistory(name, path) });
   const holding = [
     ...new Set(
@@ -600,7 +600,7 @@ function MissingItem({ name, path, onClose }: { name: string; path: string; onCl
   );
 }
 
-function ItemDrawer({
+export function ItemDrawer({
   name,
   item,
   annotated,
@@ -615,6 +615,7 @@ function ItemDrawer({
   onRow,
   onFilters,
   onClose,
+  children,
 }: {
   name: string;
   item: StateItem;
@@ -631,6 +632,8 @@ function ItemDrawer({
   /** Browse's filters: an attribute or identity in the list narrows to it. */
   onFilters?: (patch: FilterPatch) => void;
   onClose: () => void;
+  /** Ways onward from where the drawer opened (the Files tab: into Browse). */
+  children?: ReactNode;
 }) {
   // A restricted item's bytes are never fetched just because its drawer
   // opened: that would log a download nobody chose. They come with a
@@ -782,10 +785,15 @@ function ItemDrawer({
         </div>
       )}
       {restricted && revealed && <p className="quiet reveal-note">Revealed; this was logged.</p>}
-      {url && (
-        <a className="action drawer-download" href={url} download>
-          Download the file
-        </a>
+      {(children || url) && (
+        <div className="drawer-actions">
+          {children}
+          {url && (
+            <a className="action drawer-download" href={url} download>
+              Download the file
+            </a>
+          )}
+        </div>
       )}
     </aside>
   );

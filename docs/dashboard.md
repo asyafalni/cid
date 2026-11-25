@@ -529,15 +529,21 @@ command shows it.
 ### 4.6 Dataset › Files
 - *Built:* shown for every dataset, file or annotated. The folder tree exactly as
   committed, one folder at a time: subfolders with their counts, then the folder's
-  files a page at a time, each with its type, its size and a download link; a file's
-  name opens it in Browse's drawer (its preview, facts and history) at the same
-  release. The open folder is part of the URL.
+  files a page at a time, each with its type, its size and a download link. The open
+  folder is part of the URL.
+- *Built (2026-11-26):* a preview panel inside the tab: a file's name opens it beside
+  the listing in the same drawer Browse uses (its preview as itself: picture with its
+  annotations, sound, video, PDF pages, a table's rows, text; its facts and history;
+  a restricted item blurred until a logged reveal), at the same release, the open file
+  in the URL (`view=files&item=…`), Escape to close, and "Open in Browse" to step
+  through items or filter from there. One lean query per file opened (the item, no
+  counts or facets), as Browse asks for an item opened from a link.
 - *Built:* each file's last change: the date and author of the revision that put
   its content there, asked for a page at a time after the page is listed, so the
   listing never waits on history. At 1M items (`bench/datasets/items-1000000`,
   ReleaseFast, 2026-11-20) a 120-file page answers in 1–7 ms, and in 130–150 ms
   (one run 0.6 s) once history is compressed: a path lookup there decompresses its
-  dataset's segment. *Planned:* a preview panel inside the tab.
+  dataset's segment.
 
 ### 4.7 Activity
 - *Built:* the dataset's log, newest first, the last 200 events: when (UTC), who, what
@@ -719,14 +725,13 @@ with history) · Releases timeline and compare (summary + visual diff) · Files 
 shareable URLs · restricted blur and reveal log · preview worker for images and tables.
 
 *Status:* built, except: the auto card is partial (counts, file types, class table,
-split sizes and labelling policy only); Browse filters are path,
-split, class, type and annotation count only; the Releases timeline is partial (message, date, author,
+split sizes and labelling policy only); Browse has no filter by an item's source
+(camera, video, feed) yet; the Releases timeline is partial (message, date, author,
 id, each release's item count and changes since the one before, and "not in git
 yet" on a release the server has not written to the dataset repository, else a
 link to its tag on GitLab or GitHub, and a purged-items count; no release notes or
 quality) and covers `main`
-or the branch picked (any commit on it can be pinned); the Files tab has no preview panel of its
-own (a file opens in Browse's drawer).
+or the branch picked (any commit on it can be pinned).
 
 *Delivered ahead of Phase 2:* table statistics. A CSV, Parquet or JSONL item opens as a
 table in the drawer: rows, per-column type, range, distinct count and nulls, and its
