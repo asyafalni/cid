@@ -21,6 +21,8 @@ export type ViewState = {
   identity?: string;
   since?: string;
   size?: string;
+  author?: string;
+  policy?: string;
   a?: string;
   b?: string;
   dir?: string;
@@ -60,6 +62,8 @@ export function viewStateOf(o: Overview, search: Record<string, unknown>): ViewS
     identity: search.identity === undefined ? undefined : String(search.identity),
     since: str('since'),
     size: str('size'),
+    author: str('author'),
+    policy: str('policy'),
     a: str('a'),
     b: str('b'),
     dir: str('dir'),
@@ -78,8 +82,8 @@ export function commandFor(o: Overview, s: ViewState, host: string): Shown | nul
       else clone.push(`--split ${s.split}`);
     }
     if (s.cls !== undefined) clone.push(`--class ${s.cls}`);
-    if (s.q || s.type || s.anns || s.attr || s.identity || s.size)
-      notes.push('The path search and the type, annotations, attribute, identity and size filters have no clone flag; the folder holds every path.');
+    if (s.q || s.type || s.anns || s.attr || s.identity || s.size || s.author || s.policy)
+      notes.push('The path search and the type, annotations, attribute, identity, size, author and policy filters have no clone flag; the folder holds every path.');
   }
   const steps = [clone.join(' ')];
   // A version that is no release: the clone, then a checkout of it.

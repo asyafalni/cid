@@ -41,6 +41,10 @@ pub const Query = struct {
     identity: ?[]const u8 = null,
     /// Items whose size falls in this bucket (`size_buckets`).
     size: ?[]const u8 = null,
+    /// Items with an annotation by this author, exactly.
+    author: ?[]const u8 = null,
+    /// Items with an annotation made under this labelling policy version.
+    policy: ?[]const u8 = null,
     /// The open item's path, answered beside the page (it may be on no
     /// page loaded yet: a shared link opens straight onto it).
     item: ?[]const u8 = null,
@@ -90,9 +94,10 @@ pub const Item = struct {
 
 pub const Facet = struct { value: []const u8, count: u64 };
 
-pub const Facets = struct { split: []Facet, class: []Facet, type: []Facet, anns: []Facet = &.{}, attr: []Facet = &.{}, size: []Facet = &.{} };
+pub const Facets = struct { split: []Facet, class: []Facet, type: []Facet, anns: []Facet = &.{}, attr: []Facet = &.{}, size: []Facet = &.{}, author: []Facet = &.{}, policy: []Facet = &.{} };
 
-/// The attribute facet offers this many values at most, the most common.
+/// The attribute, author and policy facets each offer this many values at
+/// most, the most common.
 pub const max_attr_values = 50;
 
 /// An item's annotation count, as the `anns` filter and facet bucket it:
@@ -146,8 +151,9 @@ fn finish(arena: std.mem.Allocator, answer: Answer, q: Query) !Answer {
     a.facets.anns = try keepActive(arena, a.facets.anns, q.anns);
     a.facets.attr = try keepActive(arena, a.facets.attr, q.attr);
     a.facets.size = try keepActive(arena, a.facets.size, q.size);
-    std.mem.sort(Facet, a.facets.attr, {}, byCount);
-    inline for (.{ a.facets.split, a.facets.class, a.facets.type }) |list| std.mem.sort(Facet, list, {}, byCount);
+    a.facets.author = try keepActive(arena, a.facets.author, q.author);
+    a.facets.policy = try keepActive(arena, a.facets.policy, q.policy);
+    inline for (.{ a.facets.split, a.facets.class, a.facets.type, a.facets.attr, a.facets.author, a.facets.policy }) |list| std.mem.sort(Facet, list, {}, byCount);
     // Buckets read as a histogram: in their own order, not by count.
     std.mem.sort(Facet, a.facets.anns, {}, byRank(&ann_buckets).less);
     std.mem.sort(Facet, a.facets.size, {}, byRank(&size_buckets).less);
@@ -209,8 +215,8 @@ fn byValue(_: void, a: Facet, b: Facet) bool {
 /// The browse index's format, in its file names (locally and in storage):
 /// changing the columns changes it, so an index in an older format is
 /// never read, only rebuilt. v2 added `class_set`, v3 `ann_count`, v4
-/// `attr_set`, v5 `ident_set`.
-pub const index_format = "v5";
+/// `attr_set`, v5 `ident_set`, v6 `author_set` and `policy_set`.
+pub const index_format = "v6";
 
 /// A version's browse index: its items in path order, and its annotations
 /// by item, as two Parquet files — and the JSON lines they are made from.
@@ -262,7 +268,8 @@ pub fn convertIndex(arena: std.mem.Allocator, io: std.Io, db: *duck.Db, files: F
         .{ .lines = files.ann_lines, .out = files.anns, .columns = "id: 'VARCHAR', item_id: 'VARCHAR', kind: 'VARCHAR', class: 'VARCHAR', " ++
             "geometry: 'JSON', attrs: 'JSON', author: 'VARCHAR', policy_ver: 'VARCHAR'" },
         .{ .lines = files.items_lines, .out = files.items, .columns = "path: 'VARCHAR', hash: 'VARCHAR', size: 'BIGINT', split: 'VARCHAR', " ++
-            "item_id: 'VARCHAR', ext: 'VARCHAR', classes: 'VARCHAR[]', attrs: 'VARCHAR[]', idents: 'VARCHAR[]'" },
+            "item_id: 'VARCHAR', ext: 'VARCHAR', classes: 'VARCHAR[]', attrs: 'VARCHAR[]', idents: 'VARCHAR[]', " ++
+            "authors: 'VARCHAR[]', policies: 'VARCHAR[]'" },
     };
     for (steps, 0..) |step, i| {
         // Named after this build's lines, so no other build writes it.
@@ -275,7 +282,8 @@ pub fn convertIndex(arena: std.mem.Allocator, io: std.Io, db: *duck.Db, files: F
         // (de-duplicating per page cost a 1M-item page about 100 ms).
         // And their annotation count, for the `anns` filter: one class
         // per annotation, so its length.
-        const extra = if (i == 0) ", " ++ ann_digest ++ " AS digest" else ", list_sort(list_distinct(classes)) AS class_set, len(classes) AS ann_count, coalesce(attrs, []) AS attr_set, coalesce(idents, []) AS ident_set";
+        const extra = if (i == 0) ", " ++ ann_digest ++ " AS digest" else ", list_sort(list_distinct(classes)) AS class_set, len(classes) AS ann_count, coalesce(attrs, []) AS attr_set, coalesce(idents, []) AS ident_set, " ++
+            "list_sort(list_distinct(coalesce(authors, []))) AS author_set, list_sort(list_distinct(coalesce(policies, []))) AS policy_set";
         _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT *{s} FROM read_json('{s}', format = 'newline_delimited', columns = {{{s}}})) TO '{s}' (FORMAT parquet)", .{ extra, step.lines, step.columns, tmp }));
         std.Io.Dir.rename(cwd, tmp, cwd, step.out, io) catch return error.WriteFailed;
     }
@@ -290,11 +298,52 @@ fn quote(arena: std.mem.Allocator, path: []const u8) Error![]const u8 {
     return out.items;
 }
 
-/// Every filter but the attribute's, written out: the attribute facet
-/// reads the lists in a scan of its own, so the shared `m` never carries
-/// them (materialized through `m`, under the browse database's memory
-/// ceiling, they doubled a 1M-item page: 244 to 509 ms; this way 290).
-const other_than_attr_sql = filter_q ++ "{1s} AND " ++ filter_s ++ " AND " ++ filter_c ++ " AND " ++ filter_t ++ " AND " ++ filter_a ++ " AND " ++ filter_i ++ " AND " ++ filter_z;
+/// Each filter: its flag in `m` and its condition. `fq` holds the path
+/// search with every filter that has no facet (identity, changed since:
+/// `{1s}` in counts_sql), so every facet applies it.
+const filters = [_][2][]const u8{
+    .{ "fq", "(" ++ filter_q ++ "{1s} AND " ++ filter_i ++ ")" },
+    .{ "fs", filter_s },
+    .{ "fc", filter_c },
+    .{ "ft", filter_t },
+    .{ "fa", filter_a },
+    .{ "fx", filter_x },
+    .{ "fz", filter_z },
+    .{ "fu", filter_u },
+    .{ "fp", filter_p },
+};
+
+/// Every flag but `skip`'s, for a facet over `m` (counted against every
+/// other filter); "" for the selection, every flag.
+fn flagsBut(comptime skip: []const u8) []const u8 {
+    comptime var out: []const u8 = "";
+    inline for (filters) |f| {
+        if (comptime std.mem.eql(u8, f[0], skip)) continue;
+        out = out ++ (if (out.len == 0) "" else " AND ") ++ f[0];
+    }
+    return out;
+}
+
+/// Every filter but `skip`'s, written out, for a facet that reads lists in
+/// a scan of its own (attributes, authors, policies), so the shared `m`
+/// never carries them (materialized through `m`, under the browse
+/// database's memory ceiling, the attribute lists doubled a 1M-item page:
+/// 244 to 509 ms; this way 290).
+fn conditionsBut(comptime skip: []const u8) []const u8 {
+    comptime var out: []const u8 = "";
+    inline for (filters) |f| {
+        if (comptime std.mem.eql(u8, f[0], skip)) continue;
+        out = out ++ (if (out.len == 0) "" else " AND ") ++ f[1];
+    }
+    return out;
+}
+
+/// A facet of list values, counted in its own scan: the 50 most common.
+fn listFacet(comptime name: []const u8, comptime column: []const u8, comptime flag: []const u8) []const u8 {
+    return "'" ++ name ++ "', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)\n" ++
+        "      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(" ++ column ++ ") AS v FROM read_parquet('{0s}') WHERE " ++
+        conditionsBut(flag) ++ ") GROUP BY 1 ORDER BY n DESC, v LIMIT " ++ std.fmt.comptimePrint("{d}", .{max_attr_values}) ++ ")),\n";
+}
 
 // Each filter, as `m` names it (fq, fs, …) and the attribute facet repeats it.
 const filter_q = "($1::VARCHAR IS NULL OR contains(lower(path), lower($1::VARCHAR)))";
@@ -307,6 +356,8 @@ const filter_x = "($10::VARCHAR IS NULL OR list_contains(attr_set, $10::VARCHAR)
 // folded into `fq`, the one filter every facet and the selection apply.
 const filter_i = "($11::VARCHAR IS NULL OR list_contains(ident_set, $11::VARCHAR))";
 const filter_z = "($12::VARCHAR IS NULL OR size BETWEEN $12::BIGINT AND $13::BIGINT)";
+const filter_u = "($14::VARCHAR IS NULL OR list_contains(author_set, $14::VARCHAR))";
+const filter_p = "($15::VARCHAR IS NULL OR list_contains(policy_set, $15::VARCHAR))";
 
 /// A page's counts and facets, over every item of the version (`{0s}` is
 /// its items file): most of a page's cost at 1M items.
@@ -314,28 +365,36 @@ const counts_sql =
     \\'total', (SELECT count(*) FROM m),
     \\  'matched', (SELECT count(*) FROM sel),
     \\  'split', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
-    \\      FROM (SELECT coalesce(split, '') AS v, count(*) AS n FROM m WHERE fq AND fc AND ft AND fa AND fx AND fz GROUP BY 1)),
+    \\      FROM (SELECT coalesce(split, '') AS v, count(*) AS n FROM m WHERE
+++ " " ++ flagsBut("fs") ++ " " ++
+    \\GROUP BY 1)),
     \\  'class', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
-    \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(class_set) AS v FROM m WHERE fq AND fs AND ft AND fa AND fx AND fz) GROUP BY 1)),
+    \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(class_set) AS v FROM m WHERE
+++ " " ++ flagsBut("fc") ++ " " ++
+    \\) GROUP BY 1)),
     \\  'type', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
-    \\      FROM (SELECT ext AS v, count(*) AS n FROM m WHERE fq AND fs AND fc AND fa AND fx AND fz GROUP BY 1)),
-    \\  'attr', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
-    \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(attr_set) AS v FROM read_parquet('{0s}') WHERE
-++ " " ++ other_than_attr_sql ++ " " ++
-    \\) GROUP BY 1 ORDER BY n DESC, v LIMIT 50)),
+    \\      FROM (SELECT ext AS v, count(*) AS n FROM m WHERE
+++ " " ++ flagsBut("ft") ++ " " ++
+    \\GROUP BY 1)),
+    \\
+++ "  " ++ listFacet("attr", "attr_set", "fx") ++ "  " ++ listFacet("author", "author_set", "fu") ++ "  " ++ listFacet("policy", "policy_set", "fp") ++
     \\  'anns', (SELECT coalesce(json_group_array(json_object('b', v, 'count', n)), '[]'::JSON)
     \\      FROM (SELECT
 ++ " " ++ ann_bucket_sql ++ " " ++
-    \\ AS v, count(*) AS n FROM m WHERE fq AND fs AND fc AND ft AND fx AND fz GROUP BY 1)),
+    \\ AS v, count(*) AS n FROM m WHERE
+++ " " ++ flagsBut("fa") ++ " " ++
+    \\GROUP BY 1)),
     \\  'size', (SELECT coalesce(json_group_array(json_object('b', v, 'count', n)), '[]'::JSON)
     \\      FROM (SELECT
 ++ " " ++ size_bucket_sql ++ " " ++
-    \\ AS v, count(*) AS n FROM m WHERE fq AND fs AND fc AND ft AND fa AND fx GROUP BY 1)),
+    \\ AS v, count(*) AS n FROM m WHERE
+++ " " ++ flagsBut("fz") ++ " " ++
+    \\GROUP BY 1)),
     \\  'classes', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
     \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(classes) AS v FROM read_parquet('{0s}')) GROUP BY 1))
 ;
 /// The same fields, left out (Query.facets false).
-const no_counts_sql = "'total', 0, 'matched', 0, 'split', '[]'::JSON, 'class', '[]'::JSON, 'type', '[]'::JSON, 'anns', '[]'::JSON, 'attr', '[]'::JSON, 'size', '[]'::JSON, 'classes', '[]'::JSON";
+const no_counts_sql = "'total', 0, 'matched', 0, 'split', '[]'::JSON, 'class', '[]'::JSON, 'type', '[]'::JSON, 'anns', '[]'::JSON, 'attr', '[]'::JSON, 'size', '[]'::JSON, 'author', '[]'::JSON, 'policy', '[]'::JSON, 'classes', '[]'::JSON";
 
 /// The contract, answered from the index (inside the folder `db` is
 /// confined to). Every request value is a bound parameter.
@@ -362,9 +421,10 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
     const sql = try std.fmt.allocPrint(arena,
         \\WITH {6s} m AS (SELECT path, split, ext, class_set, ann_count, size,
     ++ " " ++ "(" ++ filter_q ++ "{7s} AND " ++ filter_i ++ ") AS fq, " ++ filter_s ++ " AS fs, " ++ filter_c ++ " AS fc, " ++ filter_t ++ " AS ft, " ++
-        filter_a ++ " AS fa, " ++ filter_x ++ " AS fx, " ++ filter_z ++ " AS fz " ++
+        filter_a ++ " AS fa, " ++ filter_x ++ " AS fx, " ++ filter_z ++ " AS fz, " ++ filter_u ++ " AS fu, " ++ filter_p ++ " AS fp " ++
         \\  FROM read_parquet('{0s}')),
-        \\sel AS (SELECT path FROM m WHERE fq AND fs AND fc AND ft AND fa AND fx AND fz),
+        \\sel AS (SELECT path FROM m WHERE
+    ++ " " ++ flagsBut("") ++ "),\n" ++
         \\page1 AS (SELECT path FROM sel WHERE $5::VARCHAR IS NULL OR path > $5::VARCHAR ORDER BY {3s} LIMIT $6 + 1),
         \\page AS (SELECT path FROM page1 ORDER BY {3s} LIMIT $6),
         \\last AS (SELECT max(path) AS p, (SELECT count(*) FROM page1) AS n FROM page),
@@ -412,6 +472,8 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         .{ .text = q.identity },
         .{ .text = if (sizes) |r| try std.fmt.allocPrint(arena, "{d}", .{r[0]}) else null },
         .{ .text = if (sizes) |r| try std.fmt.allocPrint(arena, "{d}", .{r[1]}) else null },
+        .{ .text = q.author },
+        .{ .text = q.policy },
     })) orelse return error.QueryFailed;
 
     const Raw = struct {
@@ -426,6 +488,8 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         anns: []const BucketCount,
         attr: []Facet,
         size: []const BucketCount,
+        author: []Facet,
+        policy: []Facet,
         classes: []Facet,
     };
     const raw = std.json.parseFromSliceLeaky(Raw, arena, text, .{ .ignore_unknown_fields = true }) catch
@@ -436,7 +500,7 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         .items = raw.items,
         .next = raw.next,
         .open = raw.open,
-        .facets = .{ .split = raw.split, .class = raw.class, .type = raw.type, .anns = try bucketFacets(arena, &ann_buckets, raw.anns), .attr = raw.attr, .size = try bucketFacets(arena, &size_buckets, raw.size) },
+        .facets = .{ .split = raw.split, .class = raw.class, .type = raw.type, .anns = try bucketFacets(arena, &ann_buckets, raw.anns), .attr = raw.attr, .size = try bucketFacets(arena, &size_buckets, raw.size), .author = raw.author, .policy = raw.policy },
         .classes = raw.classes,
     }, q);
 }
@@ -746,15 +810,15 @@ pub fn compareLines(arena: std.mem.Allocator, db: *duck.Db, d: DiffFiles, out: C
 /// one without an extension, boxes of two classes, one with no class.
 const fixture_items =
     \\{"path":"README","hash":"dd","size":4,"split":null,"item_id":null,"ext":"file","classes":[]}
-    \\{"path":"img/a.jpg","hash":"aa","size":1,"split":"train","item_id":"i1","ext":".jpg","classes":["person","person"]}
-    \\{"path":"img/b.JPG","hash":"bb","size":2,"split":"train","item_id":"i2","ext":".jpg","classes":["car"],"attrs":["occluded=true"],"idents":["car-0042"]}
-    \\{"path":"img/c.png","hash":"cc","size":3,"split":"val","item_id":"i3","ext":".png","classes":[""]}
+    \\{"path":"img/a.jpg","hash":"aa","size":1,"split":"train","item_id":"i1","ext":".jpg","classes":["person","person"],"authors":["agent","agent"],"policies":["p1"]}
+    \\{"path":"img/b.JPG","hash":"bb","size":2,"split":"train","item_id":"i2","ext":".jpg","classes":["car"],"attrs":["occluded=true"],"idents":["car-0042"],"authors":["agent"],"policies":["p2"]}
+    \\{"path":"img/c.png","hash":"cc","size":3,"split":"val","item_id":"i3","ext":".png","classes":[""],"authors":["user:r"],"policies":["p1"]}
     \\
 ;
 const fixture_anns =
     \\{"id":"x1","item_id":"i1","kind":"box","class":"person","geometry":{"x":1,"y":2,"w":3,"h":4},"attrs":null,"author":"agent","policy_ver":"p1"}
     \\{"id":"x2","item_id":"i1","kind":"box","class":"person","geometry":{"x":0,"y":0,"w":1,"h":1},"attrs":null,"author":"agent","policy_ver":"p1"}
-    \\{"id":"x3","item_id":"i2","kind":"box","class":"car","geometry":null,"attrs":{"occluded":true},"author":"agent","policy_ver":"p1"}
+    \\{"id":"x3","item_id":"i2","kind":"box","class":"car","geometry":null,"attrs":{"occluded":true},"author":"agent","policy_ver":"p2"}
     \\{"id":"x4","item_id":"i3","kind":"point","class":null,"geometry":null,"attrs":null,"author":"user:r","policy_ver":"p1"}
     \\
 ;
@@ -856,6 +920,24 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
     try std.testing.expectEqual(@as(?u64, 0), countOf(big.facets.size, "1MB-10MB"));
     try std.testing.expectEqual(@as(u64, 0), (try queryIndex(arena, &db, v1, .{ .size = "huge" })).matched);
     try std.testing.expectEqual(@as(?u64, 2), countOf((try queryIndex(arena, &db, v1, .{ .size = "<10KB", .split = "train" })).facets.size, "<10KB"));
+    // By author and by labelling policy version: items with any annotation
+    // of theirs, each facet counted against the other filters, an item
+    // with no annotations under none.
+    try std.testing.expectEqual(@as(?u64, 2), countOf(all.facets.author, "agent"));
+    try std.testing.expectEqualStrings("agent", all.facets.author[0].value); // most common first
+    try std.testing.expectEqual(@as(?u64, 2), countOf(all.facets.policy, "p1"));
+    const by_r = try queryIndex(arena, &db, v1, .{ .author = "user:r" });
+    try std.testing.expectEqual(@as(u64, 1), by_r.matched);
+    try std.testing.expectEqualStrings("img/c.png", by_r.items[0].path);
+    try std.testing.expectEqual(@as(?u64, 2), countOf(by_r.facets.author, "agent")); // its own filter left out
+    try std.testing.expectEqual(@as(?u64, null), countOf(by_r.facets.policy, "p2")); // narrowed by the author
+    const p2_train = try queryIndex(arena, &db, v1, .{ .policy = "p2", .split = "train" });
+    try std.testing.expectEqual(@as(u64, 1), p2_train.matched);
+    try std.testing.expectEqualStrings("img/b.JPG", p2_train.items[0].path);
+    try std.testing.expectEqual(@as(?u64, 1), countOf(p2_train.facets.policy, "p1")); // a.jpg
+    const nobody = try queryIndex(arena, &db, v1, .{ .author = "user:nobody" });
+    try std.testing.expectEqual(@as(u64, 0), nobody.matched);
+    try std.testing.expectEqual(@as(?u64, 0), countOf(nobody.facets.author, "user:nobody")); // kept, at zero
     // By identity, exactly: no facet, and it narrows every other count.
     const who = try queryIndex(arena, &db, v1, .{ .identity = "car-0042" });
     try std.testing.expectEqual(@as(u64, 1), who.matched);

@@ -201,7 +201,7 @@ export type BrowsePage = {
   /** The cursor for the next page; null on the last. */
   next: string | null;
   open: BrowseItem | null;
-  facets: { split: BrowseFacet[]; class: BrowseFacet[]; type: BrowseFacet[]; anns: BrowseFacet[]; attr: BrowseFacet[]; size: BrowseFacet[] };
+  facets: { split: BrowseFacet[]; class: BrowseFacet[]; type: BrowseFacet[]; anns: BrowseFacet[]; attr: BrowseFacet[]; size: BrowseFacet[]; author: BrowseFacet[]; policy: BrowseFacet[] };
   /** Annotations per class across the whole version. */
   classes: BrowseFacet[];
 };
@@ -218,6 +218,10 @@ export type BrowseQuery = {
   since?: string;
   /** A size bucket. */
   size?: string;
+  /** Who made an annotation of the item. */
+  author?: string;
+  /** A labelling policy version an annotation was made under. */
+  policy?: string;
   after?: string;
   item?: string;
   limit?: number;
@@ -243,6 +247,8 @@ export function getBrowse(name: string, commit: string, query: BrowseQuery): Pro
   if (query.identity !== undefined) params.set('identity', query.identity);
   if (query.since !== undefined) params.set('since', query.since);
   if (query.size !== undefined) params.set('size', query.size);
+  if (query.author !== undefined) params.set('author', query.author);
+  if (query.policy !== undefined) params.set('policy', query.policy);
   if (query.after !== undefined) params.set('after', query.after);
   if (query.item !== undefined) params.set('item', query.item);
   if (query.limit !== undefined) params.set('limit', String(query.limit));

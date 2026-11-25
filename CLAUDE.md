@@ -538,9 +538,9 @@ If a change would weaken any of these, stop and ask.
   previews/<aa>/<hex>/thumb.webp, blur.webp   thumbnails/waveforms, blurred renditions
   previews/<aa>/<hex>/page-NN.webp            a PDF's first ten pages, for the drawer
   manifests/<dataset_id>/<commit_id>.manifest the release's hashed canonical manifest
-  manifests/<dataset_id>/<commit_id>.v5.items.parquet, .v5.anns.parquet
+  manifests/<dataset_id>/<commit_id>.v6.items.parquet, .v6.anns.parquet
                                               a version's browse index (any version built;
-                                              v5 is its format, browse.index_format)
+                                              v6 is its format, browse.index_format)
   states/<dataset_id>/<commit>-<subset>-<hash>.jsonl.gz        a version's items, as the CLI downloads them
   exports/<dataset_id>/<commit>/<format>-<subset>-<hash>.jsonl.gz  an export, as a bundle of files
   diffs/<dataset_id>/<a>-<b>-<hash>.jsonl.gz        what changed between two versions

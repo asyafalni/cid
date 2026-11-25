@@ -40,7 +40,8 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, scratch: []const u8, files: bro
     defer db.close();
     const views = try std.fmt.allocPrint(arena,
         \\CREATE VIEW items AS SELECT path, hash, size, split, ext AS type, item_id, ann_count AS annotations,
-        \\  class_set AS classes, attr_set AS attributes, ident_set AS identities FROM read_parquet({s});
+        \\  class_set AS classes, attr_set AS attributes, ident_set AS identities, author_set AS authors, policy_set AS policies
+        \\  FROM read_parquet({s});
         \\CREATE VIEW annotations AS SELECT id, item_id, kind, class, geometry, attrs AS attributes, author, policy_ver
         \\  FROM read_parquet({s});
     , .{ try literal(arena, files.items), try literal(arena, files.anns) });

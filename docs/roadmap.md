@@ -57,7 +57,8 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      shortcuts on every tab (`1`–`6`, `c`, `?`, and `f` in Browse); the
      Activity log as far back as it goes, filtered on the server; the 100k-file
      CLI budgets measured and met (status, commit, push, clone); compare's
-     folder tree. Done 2026-11-25: Browse's "changed since a release" and size filters.
+     folder tree. Done 2026-11-25: Browse's "changed since a release", size, author and
+     labelling policy version filters.
 - Running the e2e suite needs Playwright's browser:
   `pnpm --dir web exec playwright install chromium`.
 - The e2e database is seeded once and kept. A fixture change must be its own
@@ -264,6 +265,8 @@ both themes, and works with reduced motion. Beauty never costs a budget.
 - **B6. More Browse filters:** ~~annotation count~~ (done 2026-11-20: buckets, index
   format v3); ~~attributes~~ (done 2026-11-21: index format v4); ~~identities~~
   (done 2026-11-21: index format v5); ~~the List view~~ (done 2026-11-21);
+  ~~changed since a release, size~~ (done 2026-11-25); ~~author and labelling
+  policy version~~ (done 2026-11-25: index format v6);
   ~~histograms~~ (done with U6).
 - ~~**B7. Branches on the tape and pinning a commit**~~ (done 2026-11-20: `?commit=`,
   `?branch=`). Comparing a branch with `main` came 2026-11-21: on a branch the compare

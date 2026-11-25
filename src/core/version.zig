@@ -140,6 +140,10 @@ const PassItem = struct {
     attrs: []const u8,
     /// The item's distinct identities: its annotations' `attrs.identity`.
     idents: []const u8,
+    /// Who made the item's annotations, and under which labelling policy
+    /// versions: one per annotation (the index makes them distinct).
+    authors: []const u8,
+    policies: []const u8,
 };
 
 const PassAnn = struct {
@@ -199,9 +203,14 @@ pub fn pass(
     try materialize(&tx, scope, dataset_id, where, "v");
     // Over annotations stored in item order this is an ordered walk of the
     // index, grouped as it goes: 1.1 s at 1M items, where an unordered
-    // table took 9 s.
+    // table took 9 s. Authors and policy versions ride the same walk, for
+    // Browse's author and policy filters, one per annotation: DuckDB makes
+    // them distinct when it builds the index (DISTINCT here cost a 1M
+    // release 2.0 s, these lists 0.85 s).
     _ = tx.exec(scope, "CREATE TEMP TABLE v_classes ON COMMIT DROP AS SELECT item_id, " ++
-        "array_to_json(array_agg(coalesce(class, '') ORDER BY annotation_id))::text AS classes FROM v_alive GROUP BY item_id", .{}) catch return error.Db;
+        "array_to_json(array_agg(coalesce(class, '') ORDER BY annotation_id))::text AS classes, " ++
+        "array_to_json(array_agg(author))::text AS authors, " ++
+        "array_to_json(array_agg(policy_ver))::text AS policies FROM v_alive GROUP BY item_id", .{}) catch return error.Db;
     _ = tx.exec(scope, "ANALYZE v_classes", .{}) catch return error.Db;
     // Each item's distinct scalar attribute values ("occluded=true"), for
     // Browse's attribute filter, and apart from them its identities (the
@@ -228,7 +237,8 @@ pub fn pass(
 
     _ = tx.exec(scope, "DECLARE pass_items NO SCROLL CURSOR FOR SELECT l.path, encode(l.item_hash, 'hex') AS hash_hex, " ++
         "l.size_bytes, l.split, l.item_id::text AS item_id, " ++ comptime extOf("l.path") ++ " AS ext, coalesce(c.classes, '[]') AS classes, " ++
-        "coalesce(t.attrs, '[]') AS attrs, coalesce(n.idents, '[]') AS idents FROM v_live l LEFT JOIN v_classes c USING (item_id) " ++
+        "coalesce(t.attrs, '[]') AS attrs, coalesce(n.idents, '[]') AS idents, " ++
+        "coalesce(c.authors, '[]') AS authors, coalesce(c.policies, '[]') AS policies FROM v_live l LEFT JOIN v_classes c USING (item_id) " ++
         "LEFT JOIN v_attrs t USING (item_id) LEFT JOIN v_idents n USING (item_id) ORDER BY l.path COLLATE \"C\"", .{}) catch return error.Db;
     while (true) {
         var batch = dbx.Run.init(gpa);
@@ -249,10 +259,11 @@ pub fn pass(
             m.writeAll(text.items) catch return error.WriteFailed;
         }
         if (outputs.items) |w| for (rows) |r| {
-            w.print("{{\"path\":{f},\"hash\":\"{s}\",\"size\":{d},\"split\":{f},\"item_id\":{f},\"ext\":{f},\"classes\":{s},\"attrs\":{s},\"idents\":{s}}}\n", .{
+            w.print("{{\"path\":{f},\"hash\":\"{s}\",\"size\":{d},\"split\":{f},\"item_id\":{f},\"ext\":{f},\"classes\":{s},\"attrs\":{s},\"idents\":{s},\"authors\":{s},\"policies\":{s}}}\n", .{
                 std.json.fmt(r.path, .{}),  r.hash_hex,                   r.size_bytes,
                 std.json.fmt(r.split, .{}), std.json.fmt(r.item_id, .{}), std.json.fmt(r.ext, .{}),
                 r.classes,                  r.attrs,                      r.idents,
+                r.authors,                  r.policies,
             }) catch return error.WriteFailed;
         };
         written.items += rows.len;

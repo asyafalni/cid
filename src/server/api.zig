@@ -1006,6 +1006,8 @@ fn browse(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, ro
         .attr = try param(arena, route, "attr"),
         .identity = try param(arena, route, "identity"),
         .size = try param(arena, route, "size"),
+        .author = try param(arena, route, "author"),
+        .policy = try param(arena, route, "policy"),
         .limit = try limitOf(route, browse_mod.default_limit),
         .facets = !std.mem.eql(u8, (try param(arena, route, "facets")) orelse "1", "0"),
         .sample = std.mem.eql(u8, (try param(arena, route, "sample")) orelse "0", "1"),

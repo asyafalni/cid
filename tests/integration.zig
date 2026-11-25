@@ -1016,7 +1016,7 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
         try std.testing.expectEqualStrings("done", head_job.status);
         try std.testing.expect((try db.rawOne([]const u8, &fscope, "SELECT stats::text FROM commits WHERE commit_id = $1::uuid AND stats IS NOT NULL", .{@as([]const u8, &id2)})) != null);
         try std.testing.expect((try db.rawOne(i64, &fscope, "SELECT 1::bigint FROM version_files WHERE commit_id = $1::uuid AND kind = 'state'", .{@as([]const u8, &id2)})) != null);
-        const index = try std.fmt.allocPrint(arena, "{s}.v5.items.parquet", .{&id2});
+        const index = try std.fmt.allocPrint(arena, "{s}." ++ cid.browse.index_format ++ ".items.parquet", .{&id2});
         _ = try prep_tmp.dir.statFile(io, index, .{});
         deps.browse_dir = "/tmp/cid-browse";
     }
@@ -2997,6 +2997,15 @@ test "annotated: the platform writes revisions, the server commits, state compos
     try std.testing.expectEqual(@as(u64, 1), b2.matched);
     try std.testing.expectEqual(@as(usize, 1), b2.items[0].annotations.len);
     try std.testing.expectEqual(@as(i64, 11), b2.items[0].annotations[0].geometry.?.object.get("x").?.integer);
+    // By who made an annotation: the reviewer's moved box, and none of
+    // theirs before the review; by labelling policy version, the one
+    // annotated item (the other has none).
+    const reviewed = try browseAt(arena, &deps, &scope, c2, "&author=user%3Areviewer");
+    try std.testing.expectEqual(@as(u64, 1), reviewed.matched);
+    try std.testing.expectEqualStrings("frames/0001.jpg", reviewed.items[0].path);
+    try std.testing.expectEqual(@as(u64, 0), (try browseAt(arena, &deps, &scope, c1, "&author=user%3Areviewer")).matched);
+    try std.testing.expectEqual(@as(u64, 1), (try browseAt(arena, &deps, &scope, c1, "&policy=policy-v1")).matched);
+    try std.testing.expectEqual(@as(u64, 0), (try browseAt(arena, &deps, &scope, c1, "&policy=policy-v2")).matched);
     const val = try browseAt(arena, &deps, &scope, c2, "&split=val&limit=1");
     try std.testing.expectEqual(@as(u64, 1), val.matched);
     try std.testing.expectEqualStrings("val", val.items[0].split.?);
@@ -3039,8 +3048,8 @@ test "annotated: the platform writes revisions, the server commits, state compos
         // cache fetches it rather than rebuilding.
         const tagged = try remote.tag(arena, "v-browse");
         const keys = [_][]const u8{
-            try std.fmt.allocPrint(arena, "manifests/{s}/{s}.v5.items.parquet", .{ ds_id, tagged.commit }),
-            try std.fmt.allocPrint(arena, "manifests/{s}/{s}.v5.anns.parquet", .{ ds_id, tagged.commit }),
+            try std.fmt.allocPrint(arena, "manifests/{s}/{s}." ++ cid.browse.index_format ++ ".items.parquet", .{ ds_id, tagged.commit }),
+            try std.fmt.allocPrint(arena, "manifests/{s}/{s}." ++ cid.browse.index_format ++ ".anns.parquet", .{ ds_id, tagged.commit }),
         };
         for (keys) |key| try std.testing.expect((try s3c.headObject(&scope, key)) != null);
         var empty_cache = std.testing.tmpDir(.{});

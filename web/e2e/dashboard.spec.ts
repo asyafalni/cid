@@ -153,6 +153,26 @@ test('browse filters by size, the buckets a histogram in their own order', async
   await expect(table).not.toContainText('notes.txt');
 });
 
+test('browse filters by who made the annotations and under which policy', async ({ page }) => {
+  await signIn(page);
+  // The latest boxes: an agent drew both boxes, a reviewer then moved one.
+  await page.goto('/d/e2e/datasets/boxes?view=browse&mode=table');
+  const author = page.getByRole('combobox', { name: 'Filter by author' });
+  await expect(author.locator('option')).toHaveText(['any', 'agent:annotator (1)', 'user:reviewer (1)']);
+  await expect(page.getByRole('combobox', { name: 'Filter by policy' }).locator('option')).toHaveText(['any', 'p1 (1)']);
+  await author.selectOption('user:reviewer');
+  await expect(page).toHaveURL(/author=user%3Areviewer/);
+  await expect(page.getByText('1 of 1 items')).toBeVisible();
+  await expect(page.locator('.browse-table')).toContainText('frames/street.png');
+  // Before the reviewer's change, nothing of theirs: the filter kept, at zero.
+  await page.goto('/d/e2e/datasets/boxes?view=browse&mode=table&release=v1.0.0&author=user%3Areviewer');
+  await expect(page.getByRole('heading', { name: 'No item matches these filters' })).toBeVisible();
+  await expect(author.locator('option')).toHaveText(['any', 'agent:annotator (1)', 'user:reviewer (0)']);
+  // And the command says the filter has no clone flag.
+  await page.getByRole('button', { name: 'Show command' }).click();
+  await expect(page.getByRole('region', { name: 'Command' })).toContainText('author and policy filters have no clone flag');
+});
+
 test('browse narrows to what changed since a release, and says so when no release has the name', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/tree?view=browse&mode=table');
@@ -733,7 +753,7 @@ test('"Show command" gives the cid command for the view on screen, and it does t
   // What has no command says so.
   await page.goto('/d/e2e/datasets/demo?view=browse&q=img');
   await page.getByRole('button', { name: 'Show command' }).click();
-  await expect(page.getByRole('region', { name: 'Command' })).toContainText('The path search and the type, annotations, attribute, identity and size filters have no clone flag');
+  await expect(page.getByRole('region', { name: 'Command' })).toContainText('The path search and the type, annotations, attribute, identity, size, author and policy filters have no clone flag');
   await page.getByRole('link', { name: 'Activity', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Command' })).toContainText('no command shows it');
 });

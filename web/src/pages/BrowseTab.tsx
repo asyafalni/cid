@@ -98,7 +98,7 @@ export function BrowseTab({
   // more than what was scrolled to, whatever the dataset's size. Each
   // page brings its own thumbnails; a page whose thumbnails cannot be had
   // still shows every item, as type tiles.
-  const query = { q: filters.q, split: filters.split, cls: filters.cls, type: filters.type, anns: filters.anns, attr: filters.attr, identity: filters.identity, since: filters.since, size: filters.size };
+  const query = { q: filters.q, split: filters.split, cls: filters.cls, type: filters.type, anns: filters.anns, attr: filters.attr, identity: filters.identity, since: filters.since, size: filters.size, author: filters.author, policy: filters.policy };
   const pages = useInfiniteQuery({
     queryKey: ['browse', name, commit, query],
     queryFn: async ({ pageParam }) => {
@@ -343,6 +343,27 @@ export function BrowseTab({
               onChange={(v) => onFilters({ attr: v })}
             />
           )}
+          {(first.facets.author.length > 0 || filters.author !== undefined) && (
+            // Who made the annotations (an agent or a person), and under
+            // which labelling policy version: the items an agent or a
+            // policy touched, to review them together.
+            <FacetSelect
+              label="author"
+              facets={first.facets.author}
+              value={filters.author}
+              blank="none"
+              onChange={(v) => onFilters({ author: v })}
+            />
+          )}
+          {(first.facets.policy.length > 0 || filters.policy !== undefined) && (
+            <FacetSelect
+              label="policy"
+              facets={first.facets.policy}
+              value={filters.policy}
+              blank="none"
+              onChange={(v) => onFilters({ policy: v })}
+            />
+          )}
           {((overview.identities ?? 0) > 0 || filters.identity !== undefined) && (
             // Who or what an annotation names: typed, matched exactly; no
             // list, since a face set names thousands.
@@ -377,7 +398,7 @@ export function BrowseTab({
             <button
               className="filter-clear"
               onClick={() =>
-                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined, anns: undefined, attr: undefined, identity: undefined, since: undefined, size: undefined })
+                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined, anns: undefined, attr: undefined, identity: undefined, since: undefined, size: undefined, author: undefined, policy: undefined })
               }
             >
               Clear filters

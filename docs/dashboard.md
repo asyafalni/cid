@@ -390,8 +390,20 @@ Every dataset page (all five tabs) shares one header and the release tape.
   items (ReleaseFast, 2026-11-25) a page with the size facet counted costs what one
   did without it (0.36 against 0.37 s unfiltered); a size filter matching every
   item 0.31–0.32 s, beside a split 0.23 s.
-  *Planned:* source (camera, video, feed), author (agent/human), policy version,
-  and histograms as clickable filters, like Hugging Face's, for every numeric column
+  *Built (2026-11-25):* by who made an annotation (`author=agent:sam2`, exactly: an
+  agent or a person) and by labelling policy version (`policy=p3`): the items with any
+  annotation of theirs, each facet listing the 50 most common, counted against the
+  other filters, so "what did this agent label in val" and "what is still labelled
+  under the old policy" are one choice each. Index format v6 keeps each item's
+  authors and policy versions as short sorted lists (`author_set`, `policy_set`, also
+  the SQL console's `authors` and `policies`), gathered in the walk that already
+  groups annotations by item for their classes; joining the annotations instead cost
+  each 1M-item page 0.32 s and 320 MB. At 1M items (ReleaseFast, 2026-11-25): a
+  release 49.7 s, its history pass 36.5 s (the lists cost it 0.85 s; made distinct
+  in Postgres they cost 2.0 s, so DuckDB does that when it builds the index); a page
+  0.38–0.44 s unfiltered, 0.42–0.44 s filtered by an author every item has, 0.25 s
+  by a policy and a split; server memory at most 400 MB.
+  *Planned:* source (camera, video, feed), and histograms as clickable filters, like Hugging Face's, for every numeric column
   and attribute.
 - **Search.** *Built:* file paths ("path contains"), and the rows of a table: the
   words in any of its text columns, ignoring case, in the rows view (`rows=` holds it
@@ -429,7 +441,7 @@ Every dataset page (all five tabs) shares one header and the release tape.
 - *Built (2026-11-23):* **SQL console**, Browse's fourth view (`mode=sql`, the query in
   the URL as `sql=`, so a query is a link and opens already run): one `SELECT` over the
   version on screen, as two views, `items` (path, hash, size, split, type, item_id,
-  annotations, classes, attributes, identities) and `annotations` (id, item_id, kind,
+  annotations, classes, attributes, identities, authors, policies) and `annotations` (id, item_id, kind,
   class, geometry, attributes, author, policy_ver); results as a table, and as tiles
   when they name items (a `path` and a `hash`), each opening its item. Run on the
   server (decided 2026-11-23: nothing to download, works at 1M items), sandboxed,
@@ -593,6 +605,8 @@ command shows it.
   a cursor, and the open item. `facets=0` leaves out the counts and facets, about
   half the work at 1M items: the dashboard asks for them with a filter's first page
   only, not for its next pages, "A look inside" or an item opened from a link.
+  `author=` and `policy=` keep the items with an annotation by that author or under
+  that labelling policy version, each with its facet; `size=` a size bucket.
   `since=<release>` narrows every count and the page to what changed since that
   release, from the pair's kept diff (`…/browse/compare` builds the same one). The
   server runs these queries one at a time, the rest waiting their turn in order, so
