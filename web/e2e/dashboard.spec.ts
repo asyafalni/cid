@@ -340,11 +340,11 @@ test('a commit can be pinned: from the history or the tape, and every view and c
   // Another tab keeps it pinned.
   await page.getByRole('link', { name: 'Browse', exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`commit=${commit}`));
-  await expect(page.getByText('131 items')).toBeVisible();
+  await expect(page.getByText('131 items', { exact: true })).toBeVisible();
   // A release's tag pins the release again, and the commit lets go.
   await page.getByRole('button', { name: 'v1.0.0' }).click();
   await expect(page).not.toHaveURL(/commit=/);
-  await expect(page.getByText('130 items')).toBeVisible();
+  await expect(page.getByText('130 items', { exact: true })).toBeVisible();
 });
 
 test('a branch can be viewed: its own tape, its head, and commands that check it out', async ({ page }) => {
@@ -1436,7 +1436,7 @@ test('a declared key turns a removed-and-added pair into one row changed, cell b
 test('browse pages through a version: one page, then more on scroll, and links past the first page', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/many?view=browse&mode=table');
-  await expect(page.getByText('130 items')).toBeVisible();
+  await expect(page.getByText('130 items', { exact: true })).toBeVisible();
   // The table is virtual: it declares every loaded row (and the header)
   // but holds only those near the screen.
   const table = page.locator('.browse-table');
