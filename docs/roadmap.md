@@ -3,8 +3,9 @@
 What is left and what is done. Section 0 is the short answer: where the work stands
 and what to take next. The tiers below keep the detail: small dashboard pieces (A),
 the experience tier that makes the dashboard better than Hugging Face's pages and
-checks that it is (U), one-server-change pieces (B), and the direction work (C: a
-Hugging Face door, models, lineage).
+checks that it is (U), one-server-change pieces (B), the direction work (C: a
+Hugging Face door, models, lineage), and reach (E: what lets someone outside, or an
+AI coding agent, pick cid up).
 Arranged 2026-11-20. `CLAUDE.md` is still the law; where this file and `CLAUDE.md`
 disagree about scope, section 1 below records the newer decision and `CLAUDE.md` is
 updated in the change that builds it.
@@ -59,6 +60,9 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      CLI budgets measured and met (status, commit, push, clone); compare's
      folder tree. Done 2026-11-25: Browse's "changed since a release", size, author and
      labelling policy version filters.
+  10. **Tier E, reach** (section 7; direction set 2026-11-25). Everything above that
+      can be built is built, so the work turns to who can pick cid up. E1 is done;
+      E2 next.
 - Running the e2e suite needs Playwright's browser:
   `pnpm --dir web exec playwright install chromium`.
 - The e2e database is seeded once and kept. A fixture change must be its own
@@ -132,10 +136,10 @@ Where cid stands against Hugging Face today:
 | What changed between versions | Needs code | **Ahead:** compare, with visual and row diffs |
 | Private data | Viewer needs a paid plan | **Ahead:** the same for everyone |
 | Column histograms, click to filter | Yes | **Level:** a table's rows, each column's distribution above it, a click to filter (U6) |
-| Search inside text and string columns | Yes | **Behind:** paths only |
-| A link to one row of a table | Yes | **Behind:** a link to a file, not a row |
+| Search inside text and string columns | Yes | **Level for tables** (U8): a table's rows across its text columns; text files are not indexed across a version, by decision |
+| A link to one row of a table | Yes | **Level** (U7): `row=` opens the table at that row |
 | SQL over a version | Yes, in the browser | **Level:** on the server, sandboxed, any size (2026-11-23) |
-| Embedding the viewer elsewhere | Yes (iframe) | **Behind:** not built |
+| Embedding the viewer elsewhere | Yes (iframe) | **Behind**, parked (U10) |
 | One line of code to load | `load_dataset(...)` | **Level** since C1: the same line, with `HF_ENDPOINT` set |
 
 Close the "behind" rows without giving up an "ahead" one.
@@ -406,7 +410,44 @@ hosts (GitHub first)~~ (done 2026-11-22: GitHub sync, create check and sign-in, 
 host per server; the live check, `tests/github_live.sh`, waits on a real token) · ~~DuckDB pinned for other platforms~~ (done 2026-11-21: Linux
 arm64 and macOS, built and tested in CI; Windows not yet) · dashboard Phase 3.
 
-## 7. Parked, not planned
+## 7. Tier E: reach
+
+Direction set 2026-11-25, with the owner's brief: cid should serve people the way
+git, DVC and Hugging Face do, and the tools that win now are the ones an AI coding
+agent can reach and drive. Until this tier, trying cid meant reading `CLAUDE.md`
+and assembling a server by hand. In order:
+
+- ~~**E1. cid on your own machine in one command**~~ (done 2026-11-25). An image of
+  the server (`Dockerfile`), a compose stack with the database and the file store
+  (`deploy/compose/`), a walkthrough from nothing to two releases, a clone and the
+  git record, and `tests/quickstart.sh` running that walkthrough word for word, in
+  CI. It needed `cid admin serve --host`, and `sslmode` carried through `CID_DB`:
+  the first run of the stack could not reach its database, which is on another
+  host, without TLS, and nothing said why.
+- **E2. Binaries.** A workflow that, on a version tag, packs `cid` with its DuckDB
+  library for the four platforms CI already builds, so the CLI is a download and
+  not a Zig build. It publishes nothing until the owner pushes a tag.
+- **E3. cid for agents.** An agent that meets a cid folder or address should be able
+  to work it with no document in its context, as it works git. What exists:
+  `--json` on every command, exit codes with one meaning each, every error naming
+  the next command. To add, in this order:
+  1. `cid help --json`: every command, its arguments and flags, its exit codes, as
+     one document, generated from the same table `cid help` prints.
+  2. An agent guide: one page (`docs/agents.md`, also served by the server as
+     `/llms.txt`) saying what cid is, the everyday loop, how to read a version
+     without downloading it, and what never to do. Short enough to sit in a context.
+  3. A check that it works: a scripted session using only `--json` output and exit
+     codes, as `tests/usability.sh` checks the words a person reads.
+  4. An MCP door, read-only, on the server (`/mcp`, a personal token): list
+     datasets, versions, a browse page, a compare, a table's rows, the SQL console.
+     One more door out of cid, as git and the Hugging Face door are; cid still
+     calls no model. Needs its own design first (the protocol by hand over nilo's
+     HTTP, no new dependency).
+- **E4. Coming from DVC, Git LFS or Hugging Face.** One page each way: what maps to
+  what, and the commands to bring an existing dataset in with its history's
+  releases. No importer until someone needs more than the page.
+
+## 8. Parked, not planned
 
 Everything on `CLAUDE.md`'s "explicitly not now" list, card editing and releases from
 the dashboard, and from this round: uploads through the Hugging Face API (since

@@ -34,6 +34,17 @@ token from the dashboard, in an https address: `cid clone https://ci:TOKEN@host/
 If you know git, you already know cid: `add`, `commit`, `push`, `pull`, `checkout`,
 `status`, `log`, `diff` — same verbs, same meaning.
 
+## Try it
+
+One command runs a whole cid on your machine (the server with its dashboard, the
+database and the file store), and a short walkthrough takes you from an empty folder
+to two releases, a clone and the git record cid wrote:
+[`deploy/compose/`](deploy/compose/README.md).
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml up --build -d
+```
+
 ## The dashboard
 
 The cid server also serves a web dashboard for browsing, comparing and downloading

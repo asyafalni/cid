@@ -213,7 +213,8 @@ cid admin verify <dataset> <release>   # rebuild a release and check its hash
 cid admin gc [--days n] [--apply]      # show unreferenced files and abandoned uploads; --apply deletes
 cid admin purge <dataset> <path|hash> --reason "why"   # audited erasure (docs/data-model.md)
 cid admin serve        # run the cid server (its background loop also drains previews,
-                       # syncs GitLab and retries git writes)
+                       # syncs GitLab and retries git writes); localhost:7070 unless
+                       # --host / --port say otherwise
 cid admin previews     # one pass of the preview worker
 cid admin sync-gitlab  # sync members and SSH keys now
 cid admin git <dataset>            # git repository status: releases written, errors, and
@@ -723,6 +724,8 @@ src/access/                  key lookup and forced-command checks (auth.zig), to
                              src/cli/sshcmd.zig (cid ssh-keys, cid ssh-auth)
 deploy/sshd/                 hardened sshd_config and setup
 deploy/proxy/                reverse proxy configs (Caddy, nginx) for the server and the store
+deploy/compose/              cid on one machine: the server image (Dockerfile, at the root)
+                             with TimescaleDB and SeaweedFS, and the walkthrough
 web/                         dashboard: React + Vite + TypeScript (see docs/dashboard.md)
 web/e2e/                     Playwright tests: UX budgets, accessibility (axe), keyboard
 docs/                        data-model.md, access.md, git-repository.md, dashboard.md, roadmap.md
@@ -748,6 +751,8 @@ zig build integration              # needs the services
 
 sh tests/usability.sh              # the scripted CLI session (services + `zig build`)
 sh tests/proxy.sh                  # deploy/proxy/ configs carry a push, clone, release (docker)
+sh tests/quickstart.sh             # deploy/compose/'s walkthrough, word for word (docker; builds
+                                   # the image, on ports of its own)
 sh tests/hf_client.sh              # the Hugging Face door read by huggingface_hub and datasets
                                    # (Python with tests/hf_requirements.txt; test-only)
 
@@ -777,7 +782,8 @@ printed test binary directly to see the truth.
 
 CI runs on every push: format, unit and integration tests on Linux x86-64, the
 dashboard's lint, typecheck and Playwright suite, the Hugging Face door read by the real
-clients (`tests/hf_client.sh`), and unit tests plus the installed
+clients (`tests/hf_client.sh`), the server image and its walkthrough
+(`tests/quickstart.sh`), and unit tests plus the installed
 binary on Linux arm64 and macOS (Apple silicon and Intel).
 
 Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:

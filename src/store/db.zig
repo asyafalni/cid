@@ -12,7 +12,10 @@ pub const Run = @import("nilo_http").Run;
 
 /// CID_DB accepts both spellings: a `postgres://` URL (what nilo_sql
 /// takes) and libpq's `key=value` form (what cid accepted first). This
-/// renders either as a URL, allocated in `arena`.
+/// renders either as a URL, allocated in `arena`. `sslmode` is carried
+/// over: nilo_sql asks a database on another host for TLS unless the
+/// spec says `sslmode=disable`, as a private network's database needs
+/// (deploy/compose/).
 pub fn urlFrom(arena: std.mem.Allocator, spec: []const u8) ![]const u8 {
     const trimmed = std.mem.trim(u8, spec, " \t\n");
     if (std.mem.startsWith(u8, trimmed, "postgres://") or
@@ -24,6 +27,7 @@ pub fn urlFrom(arena: std.mem.Allocator, spec: []const u8) ![]const u8 {
     var user: []const u8 = "postgres";
     var password: []const u8 = "";
     var dbname: []const u8 = "postgres";
+    var sslmode: []const u8 = "";
     var it = std.mem.tokenizeAny(u8, trimmed, " \t\n");
     while (it.next()) |pair| {
         const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
@@ -34,11 +38,13 @@ pub fn urlFrom(arena: std.mem.Allocator, spec: []const u8) ![]const u8 {
         if (std.mem.eql(u8, key, "user")) user = value;
         if (std.mem.eql(u8, key, "password")) password = value;
         if (std.mem.eql(u8, key, "dbname")) dbname = value;
+        if (std.mem.eql(u8, key, "sslmode")) sslmode = value;
     }
+    const query: []const u8 = if (sslmode.len == 0) "" else "?sslmode=";
     if (password.len == 0)
-        return std.fmt.allocPrint(arena, "postgres://{s}@{s}:{s}/{s}", .{ user, host, port, dbname });
-    return std.fmt.allocPrint(arena, "postgres://{s}:{s}@{s}:{s}/{s}", .{
-        user, password, host, port, dbname,
+        return std.fmt.allocPrint(arena, "postgres://{s}@{s}:{s}/{s}{s}{s}", .{ user, host, port, dbname, query, sslmode });
+    return std.fmt.allocPrint(arena, "postgres://{s}:{s}@{s}:{s}/{s}{s}{s}", .{
+        user, password, host, port, dbname, query, sslmode,
     });
 }
 
@@ -88,4 +94,8 @@ test "urlFrom passes URLs through and renders libpq key=value pairs" {
     const no_pw = try urlFrom(a, "host=db user=cid dbname=cid");
     defer a.free(no_pw);
     try std.testing.expectEqualStrings("postgres://cid@db:5432/cid", no_pw);
+
+    const plain = try urlFrom(a, "host=db user=cid password=pw dbname=cid sslmode=disable");
+    defer a.free(plain);
+    try std.testing.expectEqualStrings("postgres://cid:pw@db:5432/cid?sslmode=disable", plain);
 }

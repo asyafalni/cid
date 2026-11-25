@@ -1,0 +1,12 @@
+# The image is built from source: nothing built on this machine goes in.
+.git
+.zig-cache
+zig-cache
+zig-out
+zig-pkg
+web/node_modules
+web/dist
+web/test-results
+web/playwright-report
+docs/screenshots
+bench

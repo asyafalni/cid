@@ -62,6 +62,22 @@ jobs:
       - name: Read through HF_ENDPOINT
         run: sh tests/hf_client.sh
 
+  # cid on one machine (deploy/compose): the image built from this commit,
+  # then the walkthrough of its README, word for word, with the CLI built
+  # here as a reader would build it.
+  quickstart:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      - name: The cid command
+        run: zig build
+      - name: The stack and its walkthrough
+        run: sh tests/quickstart.sh
+
   # The dashboard's suite (web/e2e): the real binary with the dashboard
   # embedded, the test services, a fake GitLab, Chromium.
   e2e:

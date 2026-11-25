@@ -27,7 +27,8 @@ const admin_help =
     \\
     \\  setup      create the database schema (applies all migrations)
     \\  migrate    apply new SQL migrations
-    \\  serve      run the cid server (--port <n>, default 7070)
+    \\  serve      run the cid server (--port <n>, default 7070; --host <address>,
+    \\             default 127.0.0.1)
     \\  verify <dataset> <release>   rebuild a release and check its hash
     \\  git <dataset> [--resync]     dataset repository status, and whether it still
     \\             holds what cid wrote; --resync retries
@@ -138,7 +139,7 @@ fn runMigrate(
 
     var standalone: dbx.Standalone = undefined;
     standalone.open(arena, spec) catch {
-        return fail(io, .network, "cannot connect to the database.\nCheck the database is running and CID_DB is right, then run 'cid admin {s}' again.", .{sub});
+        return fail(io, .network, "cannot connect to the database.\nCheck the database is running and CID_DB is right (a database on another host is asked for TLS unless CID_DB says sslmode=disable), then run 'cid admin {s}' again.", .{sub});
     };
     defer standalone.close();
     standalone.db.watching(stashDbProblem);
@@ -165,9 +166,17 @@ fn runServe(
     args: []const [:0]const u8,
 ) ExitCode {
     var port: u16 = 7070;
+    // Localhost unless told: TLS is a proxy's job (deploy/proxy/), so the
+    // server is only reachable from elsewhere when someone says so, as a
+    // container must (deploy/compose/).
+    var listen_host: []const u8 = "127.0.0.1";
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        if (eql(args[i], "--port")) {
+        if (eql(args[i], "--host")) {
+            i += 1;
+            if (i >= args.len) return fail(io, .usage, "--host needs an address. Run 'cid admin serve --host 0.0.0.0'.", .{});
+            listen_host = args[i];
+        } else if (eql(args[i], "--port")) {
             i += 1;
             if (i >= args.len) return fail(io, .usage, "--port needs a number. Run 'cid admin serve --port 7070'.", .{});
             port = std.fmt.parseInt(u16, args[i], 10) catch
@@ -325,7 +334,7 @@ fn runServe(
 
     // A long-running server needs an allocator that frees: the command's
     // arena never would, and every streamed batch would stay allocated.
-    serve_mod.serve(std.heap.smp_allocator, &deps, .{ .port = port, .session_secret = &secret, .signin = signin_cfg }) catch |err| {
+    serve_mod.serve(std.heap.smp_allocator, &deps, .{ .host = listen_host, .port = port, .session_secret = &secret, .signin = signin_cfg }) catch |err| {
         return fail(io, .network, "the server stopped: {t}. Fix the cause, then run 'cid admin serve' again.", .{err});
     };
     return .ok;

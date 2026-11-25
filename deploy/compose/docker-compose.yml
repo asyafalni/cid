@@ -1,0 +1,92 @@
+# cid on one machine: the server with its dashboard, TimescaleDB for the
+# history and SeaweedFS for the files. For trying cid and for development
+# against a real server; README.md beside this file walks through it.
+#
+#   docker compose -f deploy/compose/docker-compose.yml up --build -d
+#
+# Everything listens on localhost only (ports 7070 and 8333; CID_PORT and
+# CID_S3_PORT move them), with the keys written below. Before
+# other machines may reach it: change every key and the token, put the
+# reverse proxy of deploy/proxy/ in front for TLS, and set up sign-in and
+# the SSH front door (docs/access.md, deploy/sshd/).
+name: cid-local
+
+services:
+  cid:
+    build: ../..
+    image: cid:local
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      seaweedfs-bucket:
+        condition: service_completed_successfully
+    environment:
+      # A database on another host is asked for TLS unless told otherwise;
+      # this one is on the stack's own network and has none.
+      CID_DB: host=timescaledb port=5432 user=cid password=cid-local dbname=cid sslmode=disable
+      # The server reaches the store by its service name; the CLI and the
+      # browser are sent to the name this machine reaches it by.
+      CID_S3_ENDPOINT: http://seaweedfs:8333
+      CID_S3_PUBLIC_ENDPOINT: http://127.0.0.1:${CID_S3_PORT:-8333}
+      CID_S3_ACCESS_KEY: cid-local-key
+      CID_S3_SECRET_KEY: cid-local-secret
+      CID_PUBLIC_URL: http://127.0.0.1:${CID_PORT:-7070}
+      # The server's static token: full access, for the CLI (CID_TOKEN)
+      # and the dashboard's sign-in page.
+      CID_TOKEN: ${CID_TOKEN:-cid-local-token}
+      CID_TOKEN_SECRET: ${CID_TOKEN_SECRET:-cid-local-secret-for-short-lived-tokens}
+    ports:
+      - "127.0.0.1:${CID_PORT:-7070}:7070"
+    volumes:
+      # Dataset repositories on this machine stand in for a git host:
+      # `--git /git/<name>.git` (README.md).
+      - git:/git
+      - state:/var/lib/cid
+    restart: unless-stopped
+
+  # Versions pinned on purpose, as docker-compose.test.yml pins them.
+  timescaledb:
+    image: timescale/timescaledb:2.30.2-pg17
+    environment:
+      POSTGRES_USER: cid
+      POSTGRES_PASSWORD: cid-local
+      POSTGRES_DB: cid
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cid -d cid"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48
+    command: server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
+    volumes:
+      - ./seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
+      - files:/data
+    ports:
+      - "127.0.0.1:${CID_S3_PORT:-8333}:8333"
+    healthcheck:
+      # Any answer will do: an unsigned request gets a 403.
+      test: ["CMD-SHELL", "wget -S -q -O /dev/null http://127.0.0.1:8333 2>&1 | grep -q 'HTTP/'"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+
+  # The 'cid' bucket: creating it is the deployment's job, never cid's.
+  seaweedfs-bucket:
+    image: chrislusf/seaweedfs:4.48
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    entrypoint: ["sh", "-c", "echo 's3.bucket.create -name cid' | weed shell -master=seaweedfs:9333"]
+    restart: "no"
+
+volumes:
+  db:
+  files:
+  git:
+  state:
