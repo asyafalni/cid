@@ -756,7 +756,8 @@ deploy/compose/              cid on one machine: the server image (Dockerfile, a
                              with TimescaleDB and SeaweedFS, and the walkthrough
 web/                         dashboard: React + Vite + TypeScript (see docs/dashboard.md)
 web/e2e/                     Playwright tests: UX budgets, accessibility (axe), keyboard
-docs/                        data-model.md, access.md, git-repository.md, dashboard.md, roadmap.md
+docs/                        data-model.md, access.md, git-repository.md, dashboard.md, roadmap.md,
+                             coming-from.md (DVC, Git LFS, Hugging Face: what maps to what)
 src/util/                    hash (BLAKE3, the one content hash), uuid7, progress
 sql/migrations/
 tests/                       integration tests against real TimescaleDB + SeaweedFS;

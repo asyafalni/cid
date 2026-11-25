@@ -61,8 +61,8 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      folder tree. Done 2026-11-25: Browse's "changed since a release", size, author and
      labelling policy version filters.
   10. **Tier E, reach** (section 7; direction set 2026-11-25). Everything above that
-      can be built is built, so the work turns to who can pick cid up. Done: E1, E2
-      and E3. Next: E4.
+      can be built is built, so the work turns to who can pick cid up. All four are
+      done (E1 to E4, 2026-11-25/26).
 - Running the e2e suite needs Playwright's browser:
   `pnpm --dir web exec playwright install chromium`.
 - The e2e database is seeded once and kept. A fixture change must be its own
@@ -458,9 +458,16 @@ and assembling a server by hand. In order:
      answered as a list instead of an object was caught before anyone met it.
      Next for this door, when asked for: the MCP config on the dashboard's Tokens
      page, beside a new token.
-- **E4. Coming from DVC, Git LFS or Hugging Face.** One page each way: what maps to
-  what, and the commands to bring an existing dataset in with its history's
-  releases. No importer until someone needs more than the page.
+- ~~**E4. Coming from DVC, Git LFS or Hugging Face**~~ (done 2026-11-26:
+  `docs/coming-from.md`). What each habit becomes, what cid does not do (pipelines,
+  file locking, a public hub), and a loop that brings an existing dataset in with
+  each of its git tags as a release. The git loop was run against a server before
+  it was written down. No importer command: the loop is five lines, and a command
+  would have to know three tools' quirks.
+
+Left in this tier, each waiting on something outside the code: the first release
+(the owner pushes the tag), and the MCP config shown beside a new token on the
+dashboard's Tokens page.
 
 ## 8. Parked, not planned
 

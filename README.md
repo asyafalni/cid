@@ -40,6 +40,9 @@ Programs and AI coding agents get the same commands as data: `--json` on any com
 also read datasets directly, through a read-only MCP door at `/mcp`
 ([`docs/access.md`](docs/access.md), "The MCP door").
 
+Already versioning data with DVC, Git LFS or Hugging Face? What each habit becomes,
+and how to bring a dataset in with its releases: [`docs/coming-from.md`](docs/coming-from.md).
+
 ## Install
 
 The `cid` command, for Linux and macOS (x86-64 and arm64), with no root and no build:
