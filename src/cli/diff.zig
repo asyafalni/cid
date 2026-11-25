@@ -84,6 +84,10 @@ fn sizeOf(ctx: *const common.Context, ws: *workspace.Workspace, path: []const u8
 
 // --- versions: resolve names, fetch both states, compare
 
+/// How long `cid diff` waits for a server preparing a version: a new
+/// 1M-item head takes the server about 100 s (docs/dashboard.md).
+const busy_wait_secs = 180;
+
 fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: []const []const u8) common.ExitCode {
     const name = workspace.datasetPathOf(ws.config.address) orelse
         return common.fail(ctx, .integrity, ".cid/config.zon holds a broken address. Clone again, or fix it to cid@host:org/path.", .{});
@@ -108,10 +112,22 @@ fn versionDiff(ctx: *const common.Context, ws: *workspace.Workspace, versions: [
     // printed as they arrive: a million-item diff holds one line at a time.
     if (!ctx.json) ctx.out.print("Comparing {s} → {s}\n", .{ a_label, b_label }) catch return .network;
     var printer: Printer = .{ .ctx = ctx, .remote = remote, .commit_b = b_commit, .classes = .{ .arena = ctx.arena } };
-    const sum = remote.compare(ctx.arena, a_commit, b_commit, .{ .ctx = &printer, .visit = Printer.visit }) catch |err| switch (err) {
-        error.Corrupt => return common.fail(ctx, .integrity, "the diff from the server failed its check; the lines above are void. Run 'cid diff' again.", .{}),
-        error.AccessDenied => return common.denied(ctx, "cid diff"),
-        else => return common.fail(ctx, .network, "cannot compare '{s}' and '{s}' on the server. Check CID_SERVER, then run 'cid diff' again.", .{ a_label, b_label }),
+    // A version just released or pushed is being prepared by the server
+    // (its index built), one at a time: wait for it, saying so once, as
+    // long as preparing a 1M-item version takes.
+    var waited: u32 = 0;
+    const sum = while (true) : (waited += 1) {
+        if (remote.compare(ctx.arena, a_commit, b_commit, .{ .ctx = &printer, .visit = Printer.visit })) |s| break s else |err| switch (err) {
+            error.Busy => {
+                if (waited == busy_wait_secs)
+                    return common.fail(ctx, .network, "the server is still preparing '{s}' and '{s}'. Run 'cid diff' again in a minute.", .{ a_label, b_label });
+                if (waited == 0 and !ctx.json) ctx.out.print("The server is preparing these versions; waiting…\n", .{}) catch return .network;
+                std.Io.sleep(ctx.io, .fromSeconds(1), .awake) catch {};
+            },
+            error.Corrupt => return common.fail(ctx, .integrity, "the diff from the server failed its check; the lines above are void. Run 'cid diff' again.", .{}),
+            error.AccessDenied => return common.denied(ctx, "cid diff"),
+            else => return common.fail(ctx, .network, "cannot compare '{s}' and '{s}' on the server. Check CID_SERVER, then run 'cid diff' again.", .{ a_label, b_label }),
+        }
     };
     if (printer.failed) return .network;
     const by_class = printer.classes.sorted(ctx.arena) catch return .network;

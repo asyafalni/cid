@@ -148,6 +148,7 @@ pub const Error = error{
     NoSuchBranch,
     BadReleaseName,
     NothingToTag,
+    Busy, // 503: the server is building something this needs; ask again shortly
     OutOfMemory,
 };
 
@@ -592,6 +593,9 @@ pub const Remote = struct {
     pub fn compare(self: *const Remote, arena: std.mem.Allocator, a: []const u8, b: []const u8, visitor: DiffVisitor) Error!DiffSummary {
         const res = try self.send(arena, "GET", try self.target(arena, "compare/{s}/{s}", .{ a, b }), "");
         if (res.status == .not_found) return error.NoSuchDataset;
+        // Indexing another version (a new release is prepared right after
+        // it is made): nothing streamed yet, so asking again is safe.
+        if (res.status == .service_unavailable) return error.Busy;
         if (res.status != .ok) return error.ServerRefused;
         const Where = struct { url: []const u8, hash: []const u8, summary: DiffSummary };
         const where = parse(Where, arena, res.body) orelse return error.ServerRefused;
@@ -907,6 +911,29 @@ pub fn placeFromCache(
 test {
     _ = Transport;
     _ = index_mod;
+}
+
+test "compare: a busy server is Busy, not refused, so the caller can ask again" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const Busy503 = struct {
+        fn call(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: []const u8, _: []const u8) anyerror!Response {
+            return .{ .status = .service_unavailable, .body = "{\"error\":\"the server is indexing another version\"}" };
+        }
+        fn getUrl(_: *anyopaque, _: []const u8, _: BodyReader) anyerror!void {
+            return error.Unexpected;
+        }
+    };
+    var unused: u8 = 0;
+    const remote: Remote = .{
+        .t = .{ .ctx = &unused, .call_fn = Busy503.call, .get_url_fn = Busy503.getUrl },
+        .name = "org/datasets/calls",
+        .gpa = std.testing.allocator,
+    };
+    const Ignore = struct {
+        fn visit(_: *anyopaque, _: Remote.DiffLine) anyerror!void {}
+    };
+    try std.testing.expectError(error.Busy, remote.compare(arena_state.allocator(), "a", "b", .{ .ctx = &unused, .visit = Ignore.visit }));
 }
 
 /// A query value, percent-encoded (letters, digits and -._~ pass as they are).
