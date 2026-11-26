@@ -8,6 +8,8 @@
 #   - every tag becomes a release holding exactly that tag's data: files
 #     added, changed, renamed and dropped, and a tag that changed only code;
 #   - a file a later tag no longer tracks is not carried along;
+#   - a DVC repository that checks files out as symbolic links (usual for
+#     large data) is imported whole, not as the empty folder cid would see;
 #   - an import that stops (the old remote unreachable) says so, imports
 #     nothing wrong, and carries on when it is run again;
 #   - running it once more does nothing.
@@ -145,6 +147,23 @@ if command -v dvc >/dev/null 2>&1; then
     rm -rf "$WORK/out"
     ok "dvc: the dropped table is gone from the last release" sh -c \
         "cd '$WORK' && '$CID' clone 'cid@127.0.0.1:$DS' out --release release-2.1 >/dev/null && test ! -e out/labels.csv && test -e out/data/audio/long.wav"
+
+    # A repository set to check out symbolic links into DVC's cache: cid
+    # stores files, so the clone is switched to hard links, and every file
+    # arrives.
+    DS="import/datasets/dvc-links-$RUN"
+    mkdir -p "$WORK/links-old/data" && cd "$WORK/links-old" || exit 1
+    git init -q . && dvc init -q && dvc remote add -q -d old "$WORK/links-remote" && dvc config cache.type symlink
+    for n in 1 2 3; do rand 4000 > "data/$n.bin"; done
+    dvc add -q data && git add -A && commit "Linked data" && git tag v1 && dvc push -q
+    git clone -q "$WORK/links-old" "$WORK/links-new" && cd "$WORK/links-new" || exit 1
+    git init -q --bare "$WORK/links-cid.git"
+    ok  "dvc links: init" "$CID" init "cid@127.0.0.1:$DS" --git "$WORK/links-cid.git"
+    sh "$IMPORT" >/dev/null 2>&1
+    has "dvc links: the clone is switched to hard links, and says so" "now uses hard links" sh "$IMPORT"
+    rm -rf "$WORK/out"
+    ok  "dvc links: every file is in the release" sh -c \
+        "cd '$WORK' && '$CID' clone 'cid@127.0.0.1:$DS' out --release v1 >/dev/null && cmp out/data/1.bin links-old/data/1.bin && cmp out/data/3.bin links-old/data/3.bin"
 else
     skip "the DVC half: 'dvc' is not installed (pip install dvc)"
 fi

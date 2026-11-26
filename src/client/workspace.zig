@@ -256,6 +256,10 @@ pub const AddError = error{ PathspecUnmatched, CorruptLocalState, StoreFailed } 
 pub const AddSummary = struct {
     staged_adds: u32 = 0,
     staged_deletes: u32 = 0,
+    /// Symbolic links among the paths asked for. When there are any,
+    /// nothing was staged: cid stores files, not links, and says so
+    /// before it stages half of what a folder seems to hold.
+    links: []const []const u8 = &.{},
 };
 
 /// `cid add <paths>`: stage every added, changed and deleted file under the
@@ -287,10 +291,19 @@ fn stage(
 ) AddError!AddSummary {
     var idx = loadIndex(arena, io, ws) catch return error.CorruptLocalState;
     var tracked = loadTracked(arena, io, ws) catch return error.CorruptLocalState;
-    const files = scan.scanWorkdir(arena, io, ws.work_dir) catch return error.CorruptLocalState;
+    var links: std.ArrayList([]const u8) = .empty;
+    const files = scan.scanWorkdirLinks(arena, io, ws.work_dir, &links) catch return error.CorruptLocalState;
 
     var specs = try arena.alloc([]const u8, raw_paths.len);
     for (raw_paths, 0..) |raw, i| specs[i] = normalizeSpec(raw);
+
+    // A link among what was asked for stops the add before anything is
+    // staged (`commit -a` takes tracked files only, and a link is never one).
+    if (!tracked_only) {
+        var asked: std.ArrayList([]const u8) = .empty;
+        for (links.items) |path| if (matchSpec(specs, path) != null) try asked.append(arena, path);
+        if (asked.items.len > 0) return .{ .links = asked.items };
+    }
 
     var matched = try arena.alloc(bool, specs.len);
     @memset(matched, false);
@@ -555,13 +568,16 @@ pub const Status = struct {
     unstaged_new: []const []const u8,
     unstaged_modified: []const []const u8,
     unstaged_deleted: []const []const u8,
+    /// Symbolic links in the folder: not files to cid, so in no commit.
+    links: []const []const u8 = &.{},
 };
 
 pub fn status(arena: std.mem.Allocator, io: std.Io, ws: *Workspace) !Status {
     const idx = loadIndex(arena, io, ws) catch return error.CorruptLocalState;
     const tracked = loadTracked(arena, io, ws) catch return error.CorruptLocalState;
     const head = local.loadHead(arena, io, ws.cid_dir) catch return error.CorruptLocalState;
-    const files = scan.scanWorkdir(arena, io, ws.work_dir) catch return error.CorruptLocalState;
+    var links: std.ArrayList([]const u8) = .empty;
+    const files = scan.scanWorkdirLinks(arena, io, ws.work_dir, &links) catch return error.CorruptLocalState;
     const last_pushed = local.readLastPushed(arena, io, ws.cid_dir);
     const commits = local.listUnpushed(arena, io, ws.cid_dir, last_pushed) catch return error.CorruptLocalState;
 
@@ -596,6 +612,7 @@ pub fn status(arena: std.mem.Allocator, io: std.Io, ws: *Workspace) !Status {
         .unstaged_new = unstaged_new.items,
         .unstaged_modified = unstaged_modified.items,
         .unstaged_deleted = unstaged_deleted.items,
+        .links = links.items,
     };
 }
 

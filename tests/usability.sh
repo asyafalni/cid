@@ -119,6 +119,19 @@ expect_ok   "init"    "$CID" init "cid@127.0.0.1:$DS" --git "$REPO"
 expect_hint "init twice"                      "$CID" init cid@h:a/b --git g@h:x.git
 expect_hint "add with nothing named"          "$CID" add
 expect_hint "add with an unmatched path"      "$CID" add nope.txt
+# A symbolic link is never dropped in silence: add refuses it by name,
+# stages nothing, and status lists it.
+ln -s a.txt a-link.txt
+expect_hint "add with a symbolic link among the paths" "$CID" add .
+case "$("$CID" status 2>&1)" in
+    *"link      a-link.txt"*) say "ok: status lists the link, not stored" ;;
+    *) say "FAIL: status does not list a symbolic link"; fails=$((fails+1)) ;;
+esac
+case "$("$CID" status 2>&1)" in
+    *"added "*) say "FAIL: the refused add staged something"; fails=$((fails+1)) ;;
+    *) say "ok: the refused add staged nothing" ;;
+esac
+rm a-link.txt
 expect_ok   "add ."   "$CID" add .
 expect_hint "commit without a message"        "$CID" commit
 expect_ok   "commit"  "$CID" commit -m "first"

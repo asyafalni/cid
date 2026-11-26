@@ -89,15 +89,27 @@ for tag in $tags; do
     git clean -fdq || stop "$tag" "git clean failed."
     if [ -d .dvc ]; then
         command -v dvc >/dev/null 2>&1 || stop "$tag" "this tag uses DVC and 'dvc' is not installed."
+        # A repository set to check files out as symbolic links into DVC's
+        # cache (cache.type symlink, usual for large data) would give cid
+        # links, and cid stores files. Hard links are files, and cost no
+        # more space; the setting is this clone's own (.dvc/config.local).
+        case "$(dvc config cache.type 2>/dev/null)" in *symlink*)
+            dvc config --local cache.type hardlink,copy || stop "$tag" "could not set this clone's DVC cache.type."
+            say "  (DVC checks files out as symbolic links here; this clone now uses hard links, which take no more space)" ;;
+        esac
         # Fetches what is missing, then checks it out; it fails if any file is absent from the remote.
         dvc pull -q || stop "$tag" "'dvc pull' failed: is the DVC remote reachable, with its credentials set?"
+        # Links an earlier checkout left become files too.
+        if [ -n "$(find . -type l -not -path './.git/*' -not -path './.dvc/*' -not -path './.cid/*' | head -1)" ]; then
+            dvc checkout --relink -q || stop "$tag" "'dvc checkout --relink' failed."
+        fi
     fi
     if git ls-files -z '*.gitattributes' '.gitattributes' | xargs -0 grep -qs 'filter=lfs' 2>/dev/null; then
         git lfs version >/dev/null 2>&1 || stop "$tag" "this tag uses Git LFS and 'git lfs' is not installed."
         git lfs pull || stop "$tag" "'git lfs pull' failed: is the LFS server reachable?"
     fi
 
-    cid add . >/dev/null || stop "$tag" "'cid add .' failed (run it to see why)."
+    out="$(cid add . 2>&1)" || { say "$out" >&2; stop "$tag" "'cid add .' failed."; }
     # A tag that changed no data has nothing to commit: it is released all
     # the same, at the commit before it, so every old name has a release.
     out="$(cid commit -m "Import $tag" 2>&1)" || case "$out" in

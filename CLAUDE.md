@@ -654,7 +654,7 @@ Everyday (shown by `cid help`):
 | `cid status` | Branch, staged and unstaged changes, unpushed commits, subset, pending conflicts (offline) |
 | `cid log` | The folder's branch, newest first: unpushed commits marked, then the server's, releases named (and marked "not in git yet" until the dataset repository has them) |
 | `cid diff [<a>] [<b>]` | What changed; no arguments = unstaged edits, `--staged` = staged |
-| `cid add <path>...` | Stage added, changed and deleted files (`cid add .` for everything) |
+| `cid add <path>...` | Stage added, changed and deleted files (`cid add .` for everything). A symbolic link among them is refused by name, and nothing is staged: cid stores files, not links |
 | `cid restore [--staged] <path>` | Unstage (`--staged`) or throw away local edits |
 | `cid commit -m <msg> [-a]` | Save staged changes as a local commit; `-a` first stages every change to tracked files (new files need `add`, as in git) |
 | `cid push` | Upload local commits and their new files; resumes if interrupted |

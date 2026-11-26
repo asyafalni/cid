@@ -32,6 +32,20 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         else => return common.fail(ctx, .integrity, ".cid/ state is unreadable. Run 'cid status' for details.", .{}),
     };
 
+    // Links are never dropped in silence: the add stops, naming them.
+    if (summary.links.len > 0) {
+        const shown = summary.links[0..@min(summary.links.len, 3)];
+        const names = std.mem.join(ctx.arena, ", ", shown) catch return .network;
+        const more = if (summary.links.len > shown.len)
+            std.fmt.allocPrint(ctx.arena, " and {d} more", .{summary.links.len - shown.len}) catch return .network
+        else
+            "";
+        return common.fail(ctx, .usage, "{d} of these paths {s} a symbolic link ({s}{s}), and cid stores files, not links: nothing was staged. " ++
+            "Put the files themselves there (cp -L), or name the links in .cidignore, then run 'cid add' again.", .{
+            summary.links.len, if (summary.links.len == 1) "is" else "are", names, more,
+        });
+    }
+
     const total = summary.staged_adds + summary.staged_deletes;
     if (common.emitJson(ctx, summary)) return .ok;
     if (total == 0) {

@@ -18,6 +18,17 @@ pub const Error = error{BadPath} || std.mem.Allocator.Error ||
     std.Io.Dir.SelectiveWalker.Error || std.Io.Dir.StatFileError;
 
 pub fn scanWorkdir(arena: std.mem.Allocator, io: std.Io, work_dir: std.Io.Dir) Error![]FileInfo {
+    return scanWorkdirLinks(arena, io, work_dir, null);
+}
+
+/// The same scan, also naming in `links` every symbolic link it met (and
+/// `.cidignore` does not leave out), sorted. cid stores files, never
+/// links, and a link is not followed: what it points at may be another
+/// tool's read-only store, or a folder that leads back here. So a link is
+/// never a file to this scan; it is said, by `cid add` and `cid status`,
+/// never dropped in silence (a DVC folder checked out as links once
+/// imported as an empty dataset).
+pub fn scanWorkdirLinks(arena: std.mem.Allocator, io: std.Io, work_dir: std.Io.Dir, links: ?*std.ArrayList([]const u8)) Error![]FileInfo {
     var out: std.ArrayList(FileInfo) = .empty;
     const ignore = loadIgnore(arena, io, work_dir);
 
@@ -41,10 +52,19 @@ pub fn scanWorkdir(arena: std.mem.Allocator, io: std.Io, work_dir: std.Io.Dir) E
                     .mtime_ns = @intCast(stat.mtime.nanoseconds),
                 });
             },
-            else => {}, // symlinks and specials are skipped, for now loudly nothing
+            .sym_link => if (links) |list| {
+                if (ignored(ignore, entry.path) or ignoredDir(ignore, entry.path)) continue;
+                try list.append(arena, try arena.dupe(u8, entry.path));
+            },
+            else => {}, // sockets, devices and the like are no dataset's files
         }
     }
 
+    if (links) |list| std.mem.sort([]const u8, list.items, {}, struct {
+        fn less(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.less);
     std.mem.sort(FileInfo, out.items, {}, lessThan);
     return out.items;
 }
@@ -120,6 +140,31 @@ test ".cidignore: exact, directory and extension patterns" {
     const files = try scanWorkdir(arena_state.allocator(), io, tmp.dir);
     try std.testing.expectEqual(@as(usize, 1), files.len);
     try std.testing.expectEqualStrings("keep.jpg", files[0].path);
+}
+
+test "scan names symbolic links, to a file or a folder, and never follows one; .cidignore leaves them out" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "real");
+    try tmp.dir.writeFile(io, .{ .sub_path = "real/a.bin", .data = "aaaa" });
+    try tmp.dir.symLink(io, "real/a.bin", "a-link.bin", .{});
+    try tmp.dir.symLink(io, "real", "folder-link", .{ .is_directory = true });
+    try tmp.dir.symLink(io, "nowhere", "dangling", .{});
+    try tmp.dir.symLink(io, "real/a.bin", "skipped.tmp", .{});
+    try tmp.dir.writeFile(io, .{ .sub_path = ".cidignore", .data = "*.tmp\n.cidignore\n" });
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var links: std.ArrayList([]const u8) = .empty;
+    const files = try scanWorkdirLinks(arena_state.allocator(), io, tmp.dir, &links);
+    // The one real file, once: not again through either link.
+    try std.testing.expectEqual(@as(usize, 1), files.len);
+    try std.testing.expectEqualStrings("real/a.bin", files[0].path);
+    try std.testing.expectEqual(@as(usize, 3), links.items.len);
+    try std.testing.expectEqualStrings("a-link.bin", links.items[0]);
+    try std.testing.expectEqualStrings("dangling", links.items[1]);
+    try std.testing.expectEqualStrings("folder-link", links.items[2]);
 }
 
 test "scan finds nested files, skips .cid, sorts by path" {

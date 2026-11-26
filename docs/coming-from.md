@@ -94,11 +94,24 @@ naming the tag and its date. What to know:
 - **Files are sent once.** A file that many tags share goes up with the first; a
   renamed file is not sent again.
 - A file a later tag stopped tracking is not carried along.
+- **Symbolic links.** cid stores files, never links, and `cid add` refuses a link by
+  name instead of leaving it out. A DVC repository set to check files out as links
+  into its cache (`cache.type symlink`, usual for large data) is handled: the script
+  switches this clone to hard links, which are files and take no more space, and
+  says so.
 - `sh import-tags.sh v1.0 v1.1` imports only those, in that order.
 - A tag whose name cid cannot spell (`release/2.1`) is released with `-` in place of
   the characters it cannot hold (`release-2.1`), and says so.
 - A commit's author in cid is whoever runs the import (`CID_AUTHOR`); the release's
   note carries the tag's date and message.
+
+**Room on the machine that runs the import.** Besides DVC's own cache, cid keeps a
+copy of every file it adds in its cache (`~/.cache/cid`, or under `$XDG_CACHE_HOME`)
+until you delete it, so have free space the size of all the data, once more. Point
+`XDG_CACHE_HOME` at a larger disk if the home disk is small. When the import is done
+and `cid status` shows no local commit left to push, the cache can go
+(`rm -rf ~/.cache/cid`): cid fetches a file again when a checkout needs it. The clone
+itself can be deleted too; `cid clone` gives a fresh one.
 
 Where the files will live matters before a large import: cid's store can keep them
 on a NAS ([`deploy/nas`](../deploy/nas/README.md), which also says how much room and

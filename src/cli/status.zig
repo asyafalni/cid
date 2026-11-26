@@ -50,8 +50,10 @@ fn print(out: *std.Io.Writer, st: workspace.Status) !void {
         st.unstaged_modified.len == 0 and st.unstaged_deleted.len == 0;
     if (clean) {
         try out.writeAll("nothing to commit, working folder clean\n");
+        try printLinks(out, st);
         return;
     }
+    defer printLinks(out, st) catch {};
 
     if (st.staged.len > 0) {
         try out.writeAll("\nChanges staged for commit ('cid commit -m \"...\"'):\n");
@@ -68,6 +70,15 @@ fn print(out: *std.Io.Writer, st: workspace.Status) !void {
         for (st.unstaged_modified) |p| try out.print("  modified  {s}\n", .{p});
         for (st.unstaged_deleted) |p| try out.print("  deleted   {s}\n", .{p});
     }
+}
+
+/// Links are in no commit and `cid add` refuses them: said here too, so a
+/// folder of links never reads as a clean, empty dataset.
+fn printLinks(out: *std.Io.Writer, st: workspace.Status) !void {
+    if (st.links.len == 0) return;
+    try out.writeAll("\nSymbolic links, not stored (cid stores files; copy them in with 'cp -L', or name them in .cidignore):\n");
+    for (st.links[0..@min(st.links.len, 10)]) |p| try out.print("  link      {s}\n", .{p});
+    if (st.links.len > 10) try out.print("  … and {d} more\n", .{st.links.len - 10});
 }
 
 fn plural(n: u32) []const u8 {

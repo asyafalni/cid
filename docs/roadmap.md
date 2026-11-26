@@ -87,6 +87,12 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
       wrong (see E4); `deploy/import-tags.sh` replaces it: every tag a release,
       each compared file by file with DVC's own checkout, stopping loudly and
       carrying on when run again.
+      And found by importing a DVC repository set to `cache.type symlink`: cid
+      skipped symbolic links in silence, so the import released an empty dataset
+      and `cid status` called the folder clean. `cid add` now refuses a link by
+      name and `cid status` lists them; the import script switches such a clone
+      to hard links. Open, the owner's to decide: should `cid add` follow a link
+      to a file and store the file, as `cp -L` would?
       Left: the numbers on the owner's own NAS (`deploy/nas/README.md` says how to
       take them; the test share is a laptop's), SMB untried, and the owner's own
       import. Still open, and the owner's to decide because it touches invariant 2:

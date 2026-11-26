@@ -91,7 +91,7 @@ const commands = [_]Command{
     .{ .name = "diff", .usage = "cid diff [--staged] | cid diff <a> [<b>]", .does = "What changed. No arguments: unstaged edits. Two versions (releases, branches or commits): files added, modified and deleted, rows for CSV, Parquet and JSONL, items and annotations for an annotated dataset.", .group = .everyday, .network = true, .changes = .nothing, .flags = &.{
         .{ .flag = "--staged", .does = "what is staged for the next commit (--cached too, as in git)" },
     } },
-    .{ .name = "add", .usage = "cid add <path>... | cid add -A", .does = "Stage added, changed and deleted files for the next commit ('cid add .' for everything). Files are hashed and copied to the local cache now. To remove or move a file, delete or move it in the folder and add the path.", .group = .everyday, .network = false, .changes = .folder, .flags = &.{
+    .{ .name = "add", .usage = "cid add <path>... | cid add -A", .does = "Stage added, changed and deleted files for the next commit ('cid add .' for everything). Files are hashed and copied to the local cache now. To remove or move a file, delete or move it in the folder and add the path. A symbolic link is refused (exit 1, nothing staged): cid stores files, not links.", .group = .everyday, .network = false, .changes = .folder, .flags = &.{
         .{ .flag = "-A, --all", .does = "everything, as 'cid add .'" },
     } },
     .{ .name = "restore", .usage = "cid restore [--staged] <path>...", .does = "Throw away local edits to a path, or with --staged, unstage it and keep the edits.", .group = .everyday, .network = false, .changes = .folder, .flags = &.{
