@@ -37,7 +37,8 @@ fn run(
     for (args) |a| {
         if (std.mem.eql(u8, a, "--json")) json = true else rest.append(arena, a) catch return @backingInt(cid.ExitCode.network);
     }
-    const ctx: cid.common.Context = .{ .arena = arena, .gpa = gpa, .io = io, .out = out, .env = env, .json = json };
+    var ssh_problem: cid.common.SshProblem = .{};
+    const ctx: cid.common.Context = .{ .arena = arena, .gpa = gpa, .io = io, .out = out, .env = env, .json = json, .ssh_problem = &ssh_problem };
     const code: cid.ExitCode = switch (cid.command.parse(rest.items)) {
         .help => blk: {
             if (json) {

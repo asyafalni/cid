@@ -46,8 +46,11 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     // .cid marker says which server and dataset it mirrors. This is the
     // CLI's one and only git invocation (CLAUDE.md, external programs).
     if (std.mem.endsWith(u8, address, ".git")) {
-        address = resolveGitUrl(ctx, address) orelse
-            return common.fail(ctx, .usage, "could not read the dataset marker from that git repository. Check the URL, or run 'cid clone' with the cid address instead.", .{});
+        var why: []const u8 = no_marker;
+        address = resolveGitUrl(ctx, address, &why) orelse {
+            const shown = workspace.redacted(ctx.arena, positional.items[0]) catch "that repository";
+            return common.fail(ctx, if (common.networkReason(why)) .network else .usage, "could not read the cid marker from {s}: {s}.\nCheck that 'git ls-remote {s}' works, or run 'cid clone' with the cid address instead.", .{ shown, why, shown });
+        };
     }
     const name = workspace.datasetPathOf(address) orelse
         return common.fail(ctx, .usage, "'{s}' is not a cid address (expected cid@host:org/path). Check it and run 'cid clone' again.", .{workspace.redacted(ctx.arena, address) catch "that"});
@@ -137,10 +140,12 @@ fn reportClone(ctx: *const common.Context, name: []const u8, dest: []const u8, o
     return .ok;
 }
 
+const no_marker = "it holds no cid marker (.cid on main), so cid has not written to it";
+
 /// Shallow-clones the repository to a scratch folder, reads `.cid`
 /// (cid-marker 1 / server <url> / dataset <name>), and builds the cid
-/// address cid@<server-host>:<dataset>.
-fn resolveGitUrl(ctx: *const common.Context, git_url: []const u8) ?[]const u8 {
+/// address cid@<server-host>:<dataset>. On failure `why` says why.
+fn resolveGitUrl(ctx: *const common.Context, git_url: []const u8, why: *[]const u8) ?[]const u8 {
     const home = ctx.env.get("HOME") orelse return null;
     var rand: [6]u8 = undefined;
     ctx.io.random(&rand);
@@ -153,10 +158,17 @@ fn resolveGitUrl(ctx: *const common.Context, git_url: []const u8) ?[]const u8 {
         .timeout = .{ .duration = .{ .clock = .awake, .raw = .{ .nanoseconds = 60 * std.time.ns_per_s } } },
         .stdout_limit = .limited(64 * 1024),
         .stderr_limit = .limited(64 * 1024),
-    }) catch return null;
+    }) catch |err| {
+        why.* = switch (err) {
+            error.FileNotFound => "the git program is not installed (cid needs it only to read this marker)",
+            error.Timeout => "no answer within 60 seconds",
+            else => "git could not run",
+        };
+        return null;
+    };
     if (result.term != .exited or result.term.exited != 0) {
-        if (result.stderr.len > 0)
-            std.log.warn("git said: {s}", .{std.mem.trim(u8, result.stderr, " \n")});
+        const line = common.tellingLine(result.stderr);
+        why.* = if (line.len > 0) line else "git could not clone it";
         return null;
     }
 

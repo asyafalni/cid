@@ -136,6 +136,20 @@ if "$CID" branch | grep -q "^\* main"; then say "ok: branch alone lists branches
 else say "FAIL: branch alone does not mark main"; fails=$((fails+1)); fi
 expect_hint "branch with an unknown option"   "$CID" branch --nope
 expect_hint "rm, which cid has not"           "$CID" rm a.txt
+# First contact over SSH, with a stand-in ssh (no sshd here): an unknown
+# key and an unreachable host each named, with what to do.
+mkdir -p "$WORK/fake-ssh"
+printf '#!/bin/sh\necho "cid@example.invalid: Permission denied (publickey)." >&2\nexit 255\n' > "$WORK/fake-ssh/ssh"
+chmod +x "$WORK/fake-ssh/ssh"
+expect_code 5 "a key the server does not know"   env -u CID_SERVER -u CID_TOKEN PATH="$WORK/fake-ssh:$PATH" "$CID" clone cid@example.invalid:org/datasets/x "$WORK/never"
+if env -u CID_SERVER -u CID_TOKEN PATH="$WORK/fake-ssh:$PATH" "$CID" clone cid@example.invalid:org/datasets/x "$WORK/never" 2>&1 | grep -q "SSH keys page"; then
+    say "ok: an unknown key is told to add itself, not to ask an owner"
+else say "FAIL: an unknown key is not told how to add itself"; fails=$((fails+1)); fi
+printf '#!/bin/sh\necho "ssh: Could not resolve hostname example.invalid: Name or service not known" >&2\nexit 255\n' > "$WORK/fake-ssh/ssh"
+expect_code 4 "a host that does not resolve"     env -u CID_SERVER -u CID_TOKEN PATH="$WORK/fake-ssh:$PATH" "$CID" clone cid@example.invalid:org/datasets/x "$WORK/never"
+if env -u CID_SERVER -u CID_TOKEN PATH="$WORK/fake-ssh:$PATH" "$CID" clone cid@example.invalid:org/datasets/x "$WORK/never" 2>&1 | grep -q "Could not resolve hostname example.invalid"; then
+    say "ok: ssh's own reason is in the message"
+else say "FAIL: ssh's reason is missing"; fails=$((fails+1)); fi
 expect_ok   "remote -v, as in git"            "$CID" remote -v
 if "$CID" push --help | grep -q "^usage: cid push"; then say "ok: push --help explains push, and pushes nothing"
 else say "FAIL: push --help does not explain push"; fails=$((fails+1)); fi

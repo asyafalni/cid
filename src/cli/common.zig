@@ -21,7 +21,68 @@ pub const Context = struct {
     io: std.Io,
     out: *std.Io.Writer,
     env: *const std.process.Environ.Map,
+    /// Why the last SSH call failed, filled by it, so the command's error
+    /// names the host and the reason (owned by main; null in tests).
+    ssh_problem: ?*SshProblem = null,
 };
+
+pub const SshProblem = struct { target: []const u8 = "", reason: []const u8 = "" };
+
+/// The one line of an external program's error output that says what went
+/// wrong: not a host's banner, not git's "make sure you have the correct
+/// access rights" boilerplate. Prefixes (`remote: `, `ssh: `, `ERROR: `)
+/// dropped; at most 200 bytes. Empty when nothing is left.
+pub fn tellingLine(stderr: []const u8) []const u8 {
+    var best: []const u8 = "";
+    var lines = std.mem.splitScalar(u8, stderr, '\n');
+    while (lines.next()) |raw| {
+        var line = std.mem.trim(u8, raw, " \r\t");
+        if (std.mem.startsWith(u8, line, "remote:")) line = std.mem.trim(u8, line["remote:".len..], " ");
+        if (line.len == 0 or std.mem.startsWith(u8, line, "===")) continue;
+        // git's asides are never why it failed.
+        if (std.mem.startsWith(u8, line, "warning:") or std.mem.startsWith(u8, line, "hint:")) continue;
+        if (std.mem.startsWith(u8, line, "Please make sure") or std.mem.startsWith(u8, line, "and the repository exists") or
+            std.mem.startsWith(u8, line, "fatal: Could not read from remote repository")) continue;
+        // A host's own error wins over the lines git adds after it.
+        if (std.mem.startsWith(u8, line, "ERROR:")) return clip(std.mem.trim(u8, line["ERROR:".len..], " "));
+        if (std.mem.startsWith(u8, line, "ssh: ")) return clip(line["ssh: ".len..]);
+        if (best.len == 0) best = line;
+    }
+    if (std.mem.startsWith(u8, best, "fatal: ")) best = best["fatal: ".len..];
+    return clip(best);
+}
+
+fn clip(line: []const u8) []const u8 {
+    const trimmed = std.mem.trimEnd(u8, line, ". ");
+    return trimmed[0..@min(trimmed.len, 200)];
+}
+
+/// Whether a program's reason is the network's (exit 4), not the address's.
+pub fn networkReason(reason: []const u8) bool {
+    inline for (.{ "Could not resolve", "Connection refused", "timed out", "No route to host", "Network is unreachable", "no answer" }) |s|
+        if (std.mem.indexOf(u8, reason, s) != null) return true;
+    return false;
+}
+
+test "the telling line of ssh's and git's complaints" {
+    try std.testing.expectEqualStrings("Could not resolve hostname nohost.invalid: Name or service not known", tellingLine("ssh: Could not resolve hostname nohost.invalid: Name or service not known\r\n"));
+    try std.testing.expectEqualStrings("The project you were looking for could not be found or you don't have permission to view it", tellingLine(
+        \\remote: 
+        \\remote: ========================================================================
+        \\remote: 
+        \\remote: ERROR: The project you were looking for could not be found or you don't have permission to view it.
+        \\
+        \\remote: 
+        \\fatal: Could not read from remote repository.
+        \\
+        \\Please make sure you have the correct access rights
+        \\and the repository exists.
+    ));
+    try std.testing.expectEqualStrings("Remote branch main not found in upstream origin", tellingLine("warning: --depth is ignored in local clones; use file:// instead.\nfatal: Remote branch main not found in upstream origin\n"));
+    try std.testing.expectEqualStrings("", tellingLine("\n\n"));
+    try std.testing.expect(networkReason("Could not resolve hostname x"));
+    try std.testing.expect(!networkReason("Permission denied (publickey)"));
+}
 
 /// Something the user should know that did not stop the command, on
 /// stderr (so it never mixes into a result on stdout).
@@ -153,10 +214,25 @@ pub fn openCacheDir(ctx: *const Context) !std.Io.Dir {
 /// reachable or configured (exit 1).
 pub fn noRemote(ctx: *const Context, err: anyerror, comptime command: []const u8) ExitCode {
     if (err == error.AccessDenied) return denied(ctx, command);
+    // A key the server has never seen is not a role an owner can grant:
+    // the key needs adding, by its holder.
+    if (err == error.KeyUnknown) {
+        const target = if (ctx.ssh_problem) |p| p.target else "the server";
+        return fail(ctx, .access, "the cid server {s} does not know your SSH key.\nAdd your public key (the one 'ssh -v {s}' offers) on the dashboard's SSH keys page,\nor to your account on the server's git host, then run '" ++ command ++ "' again.", .{ target, target });
+    }
     if (err == error.NeedToken) return fail(ctx, .usage, need_token_msg ++ "'" ++ command ++ "' again.", .{});
-    // The SSH call ran and failed: the server or the network (exit 4);
-    // otherwise nothing says where the server is (exit 1).
-    if (err == error.ServerUnreachable) return fail(ctx, .network, no_server_msg, .{});
+    // The SSH call ran and failed: the server or the network (exit 4),
+    // named with ssh's own reason; otherwise nothing says where the server
+    // is (exit 1).
+    if (err == error.ServerUnreachable) {
+        if (ctx.ssh_problem) |p| if (p.target.len > 0) return fail(
+            ctx,
+            .network,
+            "cannot reach the cid server {s} over SSH: {s}.\nCheck that 'ssh {s}' answers (cid replies and closes), or export CID_SERVER\nand CID_TOKEN, then run '" ++ command ++ "' again.",
+            .{ p.target, if (p.reason.len > 0) p.reason else "ssh gave no reason", p.target },
+        );
+        return fail(ctx, .network, no_server_msg, .{});
+    }
     return fail(ctx, .usage, no_server_msg, .{});
 }
 
@@ -228,23 +304,32 @@ fn sshToken(
     address: []const u8,
     dataset_name: []const u8,
     level: remote_mod.TokenLevel,
-) error{ NoServer, ServerUnreachable, AccessDenied }!Grant {
+) error{ NoServer, ServerUnreachable, AccessDenied, KeyUnknown }!Grant {
     const colon = std.mem.indexOfScalar(u8, address, ':') orelse return error.NoServer;
     const ssh_target = address[0..colon];
+    const problem = ctx.ssh_problem;
+    if (problem) |p| p.* = .{ .target = ssh_target };
     const result = std.process.run(ctx.arena, ctx.io, .{
         .argv = &.{ "ssh", ssh_target, "cid-auth", dataset_name, @tagName(level) },
         .timeout = .{ .duration = .{ .clock = .awake, .raw = .{ .nanoseconds = 30 * std.time.ns_per_s } } },
         .stdout_limit = .limited(64 * 1024),
         .stderr_limit = .limited(64 * 1024),
-    }) catch return error.ServerUnreachable;
+    }) catch |err| {
+        if (problem) |p| p.reason = switch (err) {
+            error.FileNotFound => "the ssh program is not installed (OpenSSH's client)",
+            error.Timeout => "no answer within 30 seconds",
+            else => "ssh could not run",
+        };
+        return error.ServerUnreachable;
+    };
     if (result.term != .exited or result.term.exited != 0) {
-        if (result.stderr.len > 0)
-            std.log.warn("ssh said: {s}", .{std.mem.trim(u8, result.stderr, " \n")});
+        if (problem) |p| p.reason = tellingLine(result.stderr);
         // The forced command exits 5 when it refuses this key the dataset
         // or the level; sshd's own "Permission denied" is a key it does
         // not know. Both are access, not a missing server.
         if (result.term == .exited and result.term.exited == @backingInt(ExitCode.access)) return error.AccessDenied;
-        if (std.mem.indexOf(u8, result.stderr, "Permission denied") != null) return error.AccessDenied;
+        // sshd's own refusal: the server knows no account with this key.
+        if (std.mem.indexOf(u8, result.stderr, "Permission denied") != null) return error.KeyUnknown;
         return error.ServerUnreachable;
     }
     const Parsed = struct { token: []const u8, url: []const u8, expires_in_secs: u64 = 0 };
