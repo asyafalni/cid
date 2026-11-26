@@ -1,0 +1,2 @@
+# Test-only: the DVC that tests/import_tags.sh imports from.
+dvc==3.67.1

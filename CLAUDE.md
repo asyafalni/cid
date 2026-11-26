@@ -758,6 +758,8 @@ deploy/proxy/                reverse proxy configs (Caddy, nginx) for the server
 deploy/package.sh, install.sh  a release's archive per platform (the binary, libduckdb
                              beside it) and the script that installs it for one user;
                              .github/workflows/release.yml runs on a version tag
+deploy/import-tags.sh        a DVC or Git LFS repository into cid, every git tag a release
+                             (docs/coming-from.md)
 deploy/compose/              cid on one machine: the server image (Dockerfile, at the root)
                              with TimescaleDB and SeaweedFS, and the walkthrough
 deploy/nas/                  laid over deploy/compose: SeaweedFS's data files on a
@@ -790,6 +792,9 @@ sh tests/usability.sh              # the scripted CLI session (services + `zig b
 sh tests/install.sh <prefix>       # a built cid packed, then installed by install.sh
 sh tests/agent.sh                  # the same CLI as a program drives it: --json and exit
                                    # codes only (services + `zig build`, python3)
+sh tests/import_tags.sh            # deploy/import-tags.sh against real DVC and Git LFS repositories
+                                   # (services + `zig build`; dvc from tests/import_requirements.txt,
+                                   # git lfs; test-only)
 sh tests/proxy.sh                  # deploy/proxy/ configs carry a push, clone, release (docker)
 sh tests/quickstart.sh             # deploy/compose/'s walkthrough, word for word (docker; builds
                                    # the image, on ports of its own)
@@ -827,7 +832,8 @@ printed test binary directly to see the truth.
 CI runs on every push: format, unit and integration tests on Linux x86-64, the
 dashboard's lint, typecheck and Playwright suite, the Hugging Face door read by the real
 clients (`tests/hf_client.sh`), the MCP door read by the official client
-(`tests/mcp_client.sh`), the server image and its walkthrough
+(`tests/mcp_client.sh`), a DVC and a Git LFS repository imported tag by tag
+(`tests/import_tags.sh`), the server image and its walkthrough
 (`tests/quickstart.sh`), the same image with its files on an NFS share
 (`tests/nas.sh`), the release archive packed and installed on every platform
 (`tests/install.sh`), and unit tests plus the installed

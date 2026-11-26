@@ -2,10 +2,11 @@
 
 If you already version data with one of these, this page says what each of your
 habits becomes in cid, what cid does not do, and how to bring an existing dataset in
-with its releases. The loop every recipe shares (check out a git tag, then `cid add`,
-`commit`, `push`, `tag`) was run against a real server before it was written down,
-including a tag that changed no data. The `dvc`, `git lfs` and `hf` lines are those
-tools' own commands and were not run here: check them against your versions.
+with its releases. The DVC and Git LFS imports are one script,
+`deploy/import-tags.sh`, run against real DVC and Git LFS repositories at every change
+(`tests/import_tags.sh`; and once, by hand, against a DVC remote in MinIO with cid's
+files on an NFS share). The Hugging Face recipe's `hf` lines are that tool's own
+commands and were not run here: check them against your version.
 
 The one difference behind all three: **DVC and Git LFS live inside git; git lives
 inside cid.** You work in cid alone (`add`, `commit`, `push`), the data never touches
@@ -48,39 +49,68 @@ variables.
 
 ### Bringing a DVC dataset in, with its releases
 
-Each git tag of the old repository becomes a cid release with the same name. Run
-this in a clone of the old repository; it never changes that repository's history.
-The dataset gets a **new, empty** git repository of its own for cid's record (cid
-writes `README.md`, a changelog and one tag per release there, so it must not be the
-repository you are importing from).
+Each git tag of the old repository becomes a cid release of the same name, holding
+exactly the data that tag had. [`deploy/import-tags.sh`](../deploy/import-tags.sh)
+does it; run it in a **fresh clone** of the old repository. It never changes that
+repository's history, only what is checked out in the clone. The dataset gets a
+**new, empty** git repository of its own for cid's record (cid writes `README.md`, a
+changelog and one tag per release there, so it must not be the repository you are
+importing from).
 
 ```sh
-cd my-dvc-repo
-
-# What is not data: git and DVC's own files. Add your code folders too.
-printf '.git/\n.dvc/\n*.dvc\n.dvcignore\n.gitignore\n.gitattributes\ndvc.yaml\ndvc.lock\n' > .cidignore
-printf '.cid/\n.cidignore\n' >> .git/info/exclude        # keep git blind to cid's files
+git clone git@gitlab.com:your-org/old-speech-repo.git && cd old-speech-repo
 
 cid init cid@cid.example:your-org/datasets/speech-id \
   --git git@gitlab.com:your-org/datasets/speech-id.git
 
-for tag in $(git tag --sort=creatordate); do
-  git checkout -q "$tag" && dvc checkout -q && dvc pull -q
-  cid add . && cid commit -m "Import $tag" && cid push && cid tag "$tag"
-done
+# deploy/import-tags.sh, from cid's repository: one file of plain sh
+sh import-tags.sh        # writes .cidignore and stops: add your code folders to it
+sh import-tags.sh        # imports every tag, oldest first
 ```
+
+```
+[1/4] v1.0
+Pushed 1 commit (55 files uploaded) to cid@cid.example:your-org/datasets/speech-id.
+[2/4] v1.1
+Pushed 1 commit (21 files uploaded) to cid@cid.example:your-org/datasets/speech-id.
+[3/4] v1.1-code
+Everything up to date.
+[4/4] v2.0
+Pushed 1 commit (1 file uploaded) to cid@cid.example:your-org/datasets/speech-id.
+
+Imported. 'cid log' lists the releases; the folder is left at the last tag.
+```
+
+What it does for each tag: checks the tag out, lets DVC fetch that tag's files
+(`dvc pull`, with whatever credentials your DVC remote needs, as you already have
+them), stages and commits what changed, pushes, and makes the release, with a note
+naming the tag and its date. What to know:
+
+- **It stops at the first thing that fails**, says what, and imports nothing after
+  it. Run it again and it carries on after the last tag that is already a release.
+  A release is only ever made from a tag whose files were all fetched.
+- **Every tag becomes a release**, also one that changed only code: it is a second
+  name for the same data, so every version your old code refers to exists.
+- **Files are sent once.** A file that many tags share goes up with the first; a
+  renamed file is not sent again.
+- A file a later tag stopped tracking is not carried along.
+- `sh import-tags.sh v1.0 v1.1` imports only those, in that order.
+- A tag whose name cid cannot spell (`release/2.1`) is released with `-` in place of
+  the characters it cannot hold (`release-2.1`), and says so.
+- A commit's author in cid is whoever runs the import (`CID_AUTHOR`); the release's
+  note carries the tag's date and message.
 
 Where the files will live matters before a large import: cid's store can keep them
 on a NAS ([`deploy/nas`](../deploy/nas/README.md), which also says how much room and
-time an import takes), and the loop is best run from a machine on the same network
-as both the old remote and the new store. It can be stopped and started again: tags
-already imported make no new commit, and a push picks up where it stopped.
+time an import takes), and the import is best run from a machine on the same network
+as both the old remote and the new store. `tests/import_tags.sh` runs this against a
+real DVC repository at every change, and compares every release with DVC's own
+checkout of its tag.
 
-A tag that changed no data makes no commit (`cid commit` says "nothing staged") and
-so no release; that is the right outcome, and the loop moves on. Files already
-uploaded are never sent again, so releases that share most of their data cost only
-their difference. When it is done, `cid log` lists the releases, and the old
-repository can be archived.
+Why a script and not a loop in this page: the short loop that used to be here
+(`git checkout`, `dvc checkout`, `dvc pull`, then `cid add`, `commit`, `push`, `tag`)
+was wrong in a way that hid itself. In a fresh clone `dvc checkout` fails before
+`dvc pull` ever runs, and the loop went on to release the nearly empty folder.
 
 ## From Git LFS
 
@@ -103,21 +133,19 @@ smudging every file of history you touch, and the data has a dashboard.
 
 ### Bringing an LFS dataset in
 
-The same loop as for DVC, without the DVC lines: check out each tag, let LFS fetch
-its files, and release it.
+The same script as for DVC ([above](#bringing-a-dvc-dataset-in-with-its-releases)):
+it sees that the repository uses LFS and lets LFS fetch each tag's files
+(`git lfs pull`) before releasing it.
 
 ```sh
-cd my-lfs-repo
-printf '.git/\n.gitattributes\n.gitignore\n' > .cidignore
-printf '.cid/\n.cidignore\n' >> .git/info/exclude
+git clone git@gitlab.com:your-org/old-scans-repo.git && cd old-scans-repo
 
 cid init cid@cid.example:your-org/datasets/scans \
   --git git@gitlab.com:your-org/datasets/scans.git
 
-for tag in $(git tag --sort=creatordate); do
-  git checkout -q "$tag" && git lfs pull
-  cid add . && cid commit -m "Import $tag" && cid push && cid tag "$tag"
-done
+# deploy/import-tags.sh, from cid's repository: one file of plain sh
+sh import-tags.sh        # writes .cidignore and stops: add your code folders to it
+sh import-tags.sh        # imports every tag, oldest first
 ```
 
 ## From Hugging Face

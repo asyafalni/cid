@@ -77,9 +77,14 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
       file by itself; a verified upload written into place as it is read, where
       the store's own copy took most of a large push; a store that stalls waited
       out, and a failed push resumed without sending anything twice.
+      Also done 2026-11-26: the import itself tried, with DVC's remote in a real
+      MinIO and cid's files on the NFS share. The documented loop turned out
+      wrong (see E4); `deploy/import-tags.sh` replaces it: every tag a release,
+      each compared file by file with DVC's own checkout, stopping loudly and
+      carrying on when run again.
       Left: the numbers on the owner's own NAS (`deploy/nas/README.md` says how to
-      take them; the test share is a laptop's), SMB untried, and the import
-      itself. Still open, and the owner's to decide because it touches invariant 2:
+      take them; the test share is a laptop's), SMB untried, and the owner's own
+      import. Still open, and the owner's to decide because it touches invariant 2:
       each pushed byte is written to the store twice (staged, then into place);
       writing once would mean a client's bytes at an item's key before their hash
       is checked.
@@ -481,9 +486,11 @@ and assembling a server by hand. In order:
 - ~~**E4. Coming from DVC, Git LFS or Hugging Face**~~ (done 2026-11-26:
   `docs/coming-from.md`). What each habit becomes, what cid does not do (pipelines,
   file locking, a public hub), and a loop that brings an existing dataset in with
-  each of its git tags as a release. The git loop was run against a server before
-  it was written down. No importer command: the loop is five lines, and a command
-  would have to know three tools' quirks.
+  each of its git tags as a release. Corrected 2026-11-26: the five-line DVC loop
+  written here first was never run against DVC, and was wrong (in a fresh clone
+  `dvc checkout` fails before `dvc pull` runs, so it released nearly empty
+  folders, silently). The DVC and Git LFS imports are now one script,
+  `deploy/import-tags.sh`, with `tests/import_tags.sh` against both real tools.
 
 Left in this tier, each waiting on something outside the code: the first release
 (the owner pushes the tag), and the MCP config shown beside a new token on the

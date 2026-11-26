@@ -76,6 +76,12 @@ jobs:
         run: |
           npm ci --prefix tests/mcp_client
           sh tests/mcp_client.sh
+      # A DVC and a Git LFS repository into cid, tag by tag, with the real
+      # tools (deploy/import-tags.sh, docs/coming-from.md).
+      - name: Import from DVC and Git LFS
+        run: |
+          pip install -r tests/import_requirements.txt
+          sh tests/import_tags.sh
 
   # cid on one machine (deploy/compose): the image built from this commit,
   # then the walkthrough of its README, word for word, with the CLI built
