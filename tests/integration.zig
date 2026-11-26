@@ -3840,10 +3840,18 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
         "ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=1", "-frames:v", "1", png_path,
     } });
     const png = try std.Io.Dir.cwd().readFileAlloc(io, png_path, arena, .limited(1024 * 1024));
+    // And a video of three seconds, which earns a poster and a clip.
+    const mp4_path = try std.fmt.allocPrint(arena, "{s}/t.mp4", .{png_path_buf[0..tmp_len]});
+    _ = try std.process.run(arena, io, .{ .argv = &.{
+        "ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10", "-t", "3", "-pix_fmt", "yuv420p", mp4_path,
+    } });
+    const mp4 = try std.Io.Dir.cwd().readFileAlloc(io, mp4_path, arena, .limited(4 * 1024 * 1024));
 
     var dg: [32]u8 = undefined;
     cid.hash.Hasher.hash(png, &dg, .{});
     const png_hash = std.fmt.bytesToHex(dg, .lower);
+    cid.hash.Hasher.hash(mp4, &dg, .{});
+    const mp4_hash = std.fmt.bytesToHex(dg, .lower);
     const text = "just text, never a thumbnail";
     cid.hash.Hasher.hash(text, &dg, .{});
     const text_hash = std.fmt.bytesToHex(dg, .lower);
@@ -3853,7 +3861,7 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     _ = try db.exec(&fscope, "UPDATE previews SET status = 'skipped', reason = 'test reset' WHERE status = 'pending'", .{});
 
     // Reset queue rows and objects from earlier runs.
-    inline for (.{ &png_hash, &text_hash }) |h| {
+    inline for (.{ &png_hash, &text_hash, &mp4_hash }) |h| {
         const hz = try arena.dupeSentinel(u8, h, 0);
         _ = db.exec(&fscope, "DELETE FROM previews WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
         _ = db.exec(&fscope, "DELETE FROM purged_items WHERE item_hash = decode($1, 'hex')", .{hz}) catch {};
@@ -3872,9 +3880,11 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     const fmt_id = (try db.rawOne([]const u8, &scope, "SELECT dataset_id::text FROM datasets WHERE name = 'test/datasets/fmt'", .{})).?;
     try s3c.putObject(&scope, try cid.api.stagedKey(arena, fmt_id, &png_hash), png);
     try s3c.putObject(&scope, try cid.api.stagedKey(arena, fmt_id, &text_hash), text);
+    try s3c.putObject(&scope, try cid.api.stagedKey(arena, fmt_id, &mp4_hash), mp4);
     try remote.registerItems(arena, &.{
         .{ .hash = &png_hash, .size = png.len, .media_type = "image/png" },
         .{ .hash = &text_hash, .size = text.len, .media_type = "text/plain" },
+        .{ .hash = &mp4_hash, .size = mp4.len, .media_type = "video/mp4" },
     });
 
     // One pass: the image builds, the text is skipped with its reason.
@@ -3907,6 +3917,27 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
     try std.testing.expectEqual(std.http.Status.ok, res.status);
     try std.testing.expect(std.mem.indexOf(u8, res.body, &png_hash) != null);
     try std.testing.expect(std.mem.indexOf(u8, res.body, &text_hash) == null);
+
+    // A video: its poster, and a short clip beside it (a real WebM came
+    // out), handed out with the poster; a picture has none.
+    const clip = try s3c.getObjectAlloc(&scope, try cid.preview.clipKey(arena, &mp4_hash));
+    try std.testing.expect(clip.len > 100 and std.mem.startsWith(u8, clip, "\x1a\x45\xdf\xa3")); // EBML: a WebM
+    const Answer = struct { thumbs: []const struct { hash: []const u8, url: []const u8, clip: ?[]const u8 } };
+    const vbody = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\",\"{s}\"]}}", .{ &png_hash, &mp4_hash });
+    const open_res = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/fmt/-/thumbs", "Bearer test-token", vbody);
+    const open_thumbs = try std.json.parseFromSliceLeaky(Answer, arena, open_res.body, .{});
+    try std.testing.expectEqual(@as(usize, 2), open_thumbs.thumbs.len);
+    for (open_thumbs.thumbs) |t| {
+        if (std.mem.eql(u8, t.hash, &mp4_hash)) {
+            try std.testing.expect(std.mem.indexOf(u8, t.clip.?, "clip.webm") != null);
+        } else try std.testing.expect(t.clip == null);
+    }
+    // A restricted dataset never gets the clip: its frames are clear.
+    _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = 'test/datasets/fmt'", .{});
+    defer _ = db.exec(&fscope, "UPDATE datasets SET restricted = false WHERE name = 'test/datasets/fmt'", .{}) catch {};
+    const secret_res = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/fmt/-/thumbs", "Bearer test-token", vbody);
+    try std.testing.expect(std.mem.indexOf(u8, secret_res.body, &mp4_hash) != null); // its blurred poster
+    try std.testing.expect(std.mem.indexOf(u8, secret_res.body, "clip.webm") == null);
 }
 
 test "sniffing: a CLI-pushed PNG earns its type, dimensions and preview" {

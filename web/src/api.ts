@@ -351,10 +351,14 @@ export function getCompare(name: string, a: string, b: string, after?: string, p
   return request(`/v0/datasets/${name}/-/browse/compare?${params.toString().replace(/\+/g, '%20')}`);
 }
 
+/** A finished preview: its picture, and for a video its short clip (never
+ * for a restricted dataset). */
+export type Thumbnail = { hash: string; url: string; clip?: string | null };
+
 export function getThumbs(
   name: string,
   hashes: string[],
-): Promise<{ thumbs: { hash: string; url: string }[] }> {
+): Promise<{ thumbs: Thumbnail[] }> {
   return post(`/v0/datasets/${name}/-/thumbs`, { hashes });
 }
 

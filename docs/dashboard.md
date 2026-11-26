@@ -665,7 +665,16 @@ command shows it.
   each named "page 3 of 12", saying when a longer document has more ("the first 10
   of 12 pages; download the file for the rest"). Never for a restricted dataset: a
   document's pages are its text, withheld as its text is. Purge and cleanup delete
-  them with the thumbnail. *Planned:* short video previews.
+  them with the thumbnail. *Built (2026-11-26):* short video previews. After a
+  video's poster the worker makes `previews/<aa>/<hex>/clip.webm`: its first 4 s,
+  silent, 320 px wide at 12 frames a second, VP9 (royalty-free, and played by every
+  current browser, open-source Chromium included, which H.264 is not); only those
+  seconds are read. Best effort: a clip ffmpeg cannot make leaves the poster as it
+  is. A gallery tile plays it, muted and looping, while it is pointed at or has the
+  keyboard's focus, and fetches nothing before; never for someone who asked for
+  reduced motion, and never for a restricted dataset (its frames are clear content,
+  as a PDF's pages are). A 30 s 1080p video: 0.9 s of one thread, 110 MB, a 36 KB
+  clip. Purge and cleanup delete it with the thumbnail.
   **Generation is ingest-driven, never request-driven**: a page view can only read
   previews that exist (or show a placeholder), so a thousand concurrent viewers cost
   object reads, not ffmpeg runs. The queue is keyed by content hash — one build per

@@ -6,7 +6,8 @@
 //!
 //! Every invocation is disciplined: nice -19, -nostdin, -threads 1, a
 //! hard timeout, and a size guard before any byte is fetched. Outputs
-//! land in SeaweedFS at previews/<aa>/<hex>/thumb.webp, immutable.
+//! land in SeaweedFS at previews/<aa>/<hex>/thumb.webp, immutable (and,
+//! for a video, clip.webm: its first seconds, silent and small).
 
 const std = @import("std");
 const dbx = @import("../store/db.zig");
@@ -52,12 +53,26 @@ pub fn pageKey(arena: std.mem.Allocator, hash_hex: []const u8, page: u32) ![]con
 /// The pages of a PDF drawn for the drawer, at most.
 pub const max_pages: u32 = 10;
 
+/// A video's short preview: its first `clip_seconds`, silent, 320 pixels
+/// wide, VP9 in WebM (royalty-free, and what every current browser plays,
+/// open-source Chromium included, which H.264 is not), for a gallery tile to
+/// play while it is pointed at. Never handed out for a restricted
+/// dataset: its frames are clear content, as a PDF's pages are.
+pub fn clipKey(arena: std.mem.Allocator, hash_hex: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "previews/{s}/{s}/clip.webm", .{ hash_hex[0..2], hash_hex });
+}
+
+pub const clip_seconds = "4";
+/// A clip larger than this is not kept (a tile plays it on hover).
+const max_clip_bytes = 4 * 1024 * 1024;
+
 /// Every preview key one content may have: what purge and cleanup delete.
 pub fn previewKeys(arena: std.mem.Allocator, hash_hex: []const u8) ![]const []const u8 {
-    const keys = try arena.alloc([]const u8, 2 + max_pages);
+    const keys = try arena.alloc([]const u8, 3 + max_pages);
     keys[0] = try thumbKey(arena, hash_hex);
     keys[1] = try blurKey(arena, hash_hex);
-    for (keys[2..], 0..) |*k, i| k.* = try pageKey(arena, hash_hex, @intCast(i));
+    keys[2] = try clipKey(arena, hash_hex);
+    for (keys[3..], 0..) |*k, i| k.* = try pageKey(arena, hash_hex, @intCast(i));
     return keys;
 }
 
@@ -351,7 +366,37 @@ fn buildOne(
         return .{ .failed = "could not store the blurred rendition" };
     _ = db.exec(scope, "UPDATE previews SET blurred = true WHERE item_hash = decode($1, 'hex')", .{hash}) catch
         return .{ .failed = "could not record the blurred rendition" };
+    if (is_video) buildClip(arena, io, db, scope, s3, config, hash, in_path);
     return .built;
+}
+
+/// A video's clip, after its poster: best effort, so a clip ffmpeg cannot
+/// make (an encoder this build lacks, a video too short) leaves the
+/// poster, and the tile, as they are. Recorded on the item (`meta.clip`)
+/// so the thumbnails route knows to hand it out.
+fn buildClip(arena: std.mem.Allocator, io: std.Io, db: *dbx.sql.Db, scope: anytype, s3: *blob.Client, config: Config, hash: []const u8, in_path: []const u8) void {
+    const clip_path = std.fmt.allocPrint(arena, "{s}/{s}.clip.webm", .{ config.tmpdir, hash }) catch return;
+    defer std.Io.Dir.cwd().deleteFile(io, clip_path) catch {};
+    const run = std.process.run(arena, io, .{
+        .argv = &.{
+            "nice", "-n",         "19", "ffmpeg",    "-nostdin", "-threads",  "1",                             "-y",      "-loglevel",  "error",
+            // Only the first seconds are read, silent, small and quick to encode.
+            "-t",   clip_seconds, "-i", in_path,     "-an",      "-vf",       "scale='min(320,iw)':-2,fps=12", "-c:v",    "libvpx-vp9", "-b:v",
+            "0",    "-crf",       "40", "-deadline", "realtime", "-cpu-used", "8",                             "-row-mt", "0",          clip_path,
+        },
+        .timeout = .{ .duration = .{ .clock = .awake, .raw = .{ .nanoseconds = config.video_timeout_ns } } },
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(64 * 1024),
+    }) catch return;
+    if (run.term != .exited or run.term.exited != 0) {
+        std.log.info("preview {s}: no clip: {s}", .{ hash[0..12], std.mem.trim(u8, run.stderr, " \n") });
+        return;
+    }
+    const clip = std.Io.Dir.cwd().readFileAlloc(io, clip_path, arena, .limited(max_clip_bytes)) catch return;
+    if (clip.len == 0) return;
+    const key = clipKey(arena, hash) catch return;
+    s3.putObject(scope, key, clip) catch return;
+    _ = db.exec(scope, "UPDATE items SET meta = meta || '{\"clip\":true}'::jsonb WHERE item_hash = decode($1, 'hex')", .{hash}) catch {};
 }
 
 fn recordSniff(arena: std.mem.Allocator, db: *dbx.sql.Db, scope: anytype, hash: []const u8, found: sniff_mod.Sniffed) void {

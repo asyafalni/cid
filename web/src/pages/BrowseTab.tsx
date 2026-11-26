@@ -28,7 +28,7 @@ import { typingIn } from '../keys';
 import { SqlConsole } from '../SqlConsole';
 import { timeline } from '../history';
 import { TableView } from '../TableView';
-import { Thumb } from '../Thumb';
+import { ClipThumb, Thumb } from '../Thumb';
 import { thumbsFor } from '../thumbs';
 import { anyFilter, extOf, type FilterPatch, type Filters } from '../browseFilter';
 
@@ -225,9 +225,10 @@ export function BrowseTab({
   const classFacet = first.facets.class;
   const typeFacet = first.facets.type;
   const filtered = anyFilter(filters);
-  const thumbByHash = new Map(
-    [...pages.data.pages.flatMap((p) => p.thumbs), ...(openFetched.data?.thumbs ?? [])].map((t) => [t.hash, t.url]),
-  );
+  const allThumbs = [...pages.data.pages.flatMap((p) => p.thumbs), ...(openFetched.data?.thumbs ?? [])];
+  const thumbByHash = new Map(allThumbs.map((t) => [t.hash, t.url]));
+  // A video's short clip, played while its tile is pointed at.
+  const clipByHash = new Map(allThumbs.flatMap((t) => (t.clip ? [[t.hash, t.clip] as const] : [])));
   const classes = first.classes.map((c) => ({ name: c.value, count: c.count }));
   const open = openLoaded ?? openFetched.data?.item;
   // Releases to compare against: every one on the tape but the version shown.
@@ -501,6 +502,8 @@ export function BrowseTab({
                       </Thumb>
                     </span>
                   </span>
+                ) : clipByHash.has(item.hash) ? (
+                  <ClipThumb src={thumbByHash.get(item.hash)} clip={clipByHash.get(item.hash)!} alt={item.path} label={extOf(item.path)} />
                 ) : (
                   <Thumb src={thumbByHash.get(item.hash)} alt={item.path} label={extOf(item.path)} lazy />
                 )

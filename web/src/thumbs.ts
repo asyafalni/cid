@@ -1,8 +1,8 @@
-import { getThumbs, type StateItem } from './api';
+import { getThumbs, type StateItem, type Thumbnail } from './api';
 
 /** Thumbnails for a page's visual items. Previews are optional: when they
  * cannot be had, the items show as type tiles, never as an error. */
-export async function thumbsFor(name: string, items: StateItem[]): Promise<{ hash: string; url: string }[]> {
+export async function thumbsFor(name: string, items: StateItem[]): Promise<Thumbnail[]> {
   const hashes = items.filter((i) => looksVisual(i.path)).map((i) => i.hash);
   if (hashes.length === 0) return [];
   try {

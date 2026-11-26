@@ -475,6 +475,20 @@ function seedDocs(dir: string) {
   run(`${cid} push`, folder);
 }
 
+// A video, pushed the way a person would: the worker makes its poster and
+// a short clip, which its gallery tile plays while pointed at.
+function seedVideo(dir: string) {
+  const folder = join(dir, 'video');
+  execSync(`mkdir -p ${folder}`);
+  run(
+    `ffmpeg -nostdin -loglevel error -f lavfi -i testsrc2=size=320x240:rate=12 -t 3 -pix_fmt yuv420p -y ${folder}/street.mp4`,
+  );
+  run(`${cid} init cid@127.0.0.1:e2e/datasets/video --git g@h:video.git`, folder);
+  run(`${cid} add .`, folder);
+  run(`${cid} commit -m "three seconds of street"`, folder);
+  run(`${cid} push`, folder);
+}
+
 // Annotations that are not drawn on a picture, the platform's way: a
 // six-second clip with segments and transcript lines (one segment whose
 // end comes before its start, which must not break the rest), and a note
@@ -634,6 +648,7 @@ export default function setup() {
     if (!already.includes('e2e/datasets/tables')) seedTables(dir);
     if (!already.includes('e2e/datasets/attrs2')) seedAttrs(dir);
     if (!already.includes('e2e/datasets/docs')) seedDocs(dir);
+    if (!already.includes('e2e/datasets/video')) seedVideo(dir);
     if (!already.includes('e2e/datasets/clips')) seedClips(dir);
     if (!already.includes('e2e/datasets/many')) seedMany(dir);
     const manyLog = run(`curl -s http://127.0.0.1:7178/v0/datasets/e2e/datasets/many/-/log -H "Authorization: Bearer ${token}"`);

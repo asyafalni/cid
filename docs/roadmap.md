@@ -60,7 +60,7 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      CLI budgets measured and met (status, commit, push, clone); compare's
      folder tree. Done 2026-11-25: Browse's "changed since a release", size, author and
      labelling policy version filters. Done 2026-11-26: the Files
-     tab's preview panel.
+     tab's preview panel; short video previews.
   10. **Tier E, reach** (section 7; direction set 2026-11-25). Everything above that
       can be built is built, so the work turns to who can pick cid up. All four are
       done (E1 to E4, 2026-11-25/26).

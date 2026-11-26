@@ -934,6 +934,20 @@
   width: 7rem;
 }
 
+.clip-thumb {
+  position: relative;
+  display: block;
+}
+
+.clip-thumb-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: var(--bg);
+}
+
 .tile img {
   width: 100%;
   aspect-ratio: 4 / 3;

@@ -555,6 +555,7 @@ If a change would weaken any of these, stop and ask.
                                               verified then stored, or cleaned by gc
   previews/<aa>/<hex>/thumb.webp, blur.webp   thumbnails/waveforms, blurred renditions
   previews/<aa>/<hex>/page-NN.webp            a PDF's first ten pages, for the drawer
+  previews/<aa>/<hex>/clip.webm               a video's first seconds, silent, for its tile
   manifests/<dataset_id>/<commit_id>.manifest the release's hashed canonical manifest
   manifests/<dataset_id>/<commit_id>.v6.items.parquet, .v6.anns.parquet
                                               a version's browse index (any version built;

@@ -3103,22 +3103,33 @@ fn resolveVersion(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dat
 
 /// Presigned URLs for thumbnails that already exist. Never a trigger:
 /// a hash with no finished preview is simply absent from the answer and
-/// the page shows a placeholder (the structural ffmpeg guarantee).
+/// the page shows a placeholder (the structural ffmpeg guarantee). A
+/// video's short clip comes beside its poster, when the worker made one.
 fn thumbs(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(HashesBody, arena, body) orelse return error.BadRequest;
     if (req.hashes.len > 1000) return error.BadRequest;
-    const Thumb = struct { hash: []const u8, url: []const u8 };
+    const Thumb = struct { hash: []const u8, url: []const u8, clip: ?[]const u8 = null };
+    const Done = struct {
+        pub const nilo_table = .projection;
+        clip: bool,
+    };
     var list: std.ArrayList(Thumb) = .empty;
     for (req.hashes) |hash| {
         if (!validHashHex(hash)) return error.BadRequest;
         // A restricted dataset is answered with the blurred rendition and
         // nothing else (invariant 20): a missing blur is an absent preview,
         // never the clear one in its place. The clear one is /reveal's.
-        const done = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM previews WHERE item_hash = decode($1, 'hex') AND status = 'done' AND (blurred OR NOT $2)", .{ hash, ds.restricted }) catch return error.Db;
-        if (done == null) continue;
+        const done = deps.db.rawOne(Done, scope, "SELECT coalesce((i.meta->>'clip')::boolean, false) AS clip FROM previews p JOIN items i USING (item_hash) " ++
+            "WHERE p.item_hash = decode($1, 'hex') AND p.status = 'done' AND (p.blurred OR NOT $2)", .{ hash, ds.restricted }) catch return error.Db;
+        const found = done orelse continue;
         const key = (if (ds.restricted) preview_worker.blurKey(arena, hash) else preview_worker.thumbKey(arena, hash)) catch return error.OutOfMemory;
         const url = deps.s3.presignGet(scope, key, presign_secs) catch return error.Storage;
-        try list.append(arena, .{ .hash = hash, .url = url });
+        // Never a clip for a restricted dataset: its frames are clear.
+        const clip = if (found.clip and !ds.restricted)
+            deps.s3.presignGet(scope, preview_worker.clipKey(arena, hash) catch return error.OutOfMemory, presign_secs) catch return error.Storage
+        else
+            null;
+        try list.append(arena, .{ .hash = hash, .url = url, .clip = clip });
     }
     return json(arena, .ok, .{ .thumbs = list.items });
 }

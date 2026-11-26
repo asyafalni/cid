@@ -1294,6 +1294,37 @@ test('a link to one row opens the table there, marked, and a row\'s number makes
   await expect(page.getByRole('region', { name: 'Rows' })).toContainText('Row 4 is not among these rows');
 });
 
+test('a video tile plays its short clip while pointed at, and stops after', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/video?view=browse&mode=gallery');
+  const tile = page.getByRole('button', { name: /street\.mp4/ });
+  // Its poster, and no clip fetched until someone points at it.
+  await expect(tile.locator('img')).toBeVisible();
+  await expect(tile.locator('video')).toHaveCount(0);
+  await tile.hover();
+  const clip = tile.locator('video');
+  await expect(clip).toHaveAttribute('src', /clip\.webm/);
+  // It really plays: silent, looping, time moving.
+  await expect.poll(() => clip.evaluate((v: HTMLVideoElement) => v.currentTime), { timeout: 5000 }).toBeGreaterThan(0);
+  await expect(clip).toHaveJSProperty('muted', true);
+  await page.mouse.move(0, 0);
+  await expect(tile.locator('video')).toHaveCount(0);
+  // The keyboard reaches it too.
+  await tile.focus();
+  await expect(tile.locator('video')).toHaveCount(1);
+});
+
+test('a video clip never plays for someone who asked for reduced motion', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/video?view=browse&mode=gallery');
+  const tile = page.getByRole('button', { name: /street\.mp4/ });
+  await expect(tile.locator('img')).toBeVisible();
+  await tile.hover();
+  await page.waitForTimeout(300);
+  await expect(tile.locator('video')).toHaveCount(0);
+});
+
 test('a PDF shows its first page, drawn on the server', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/docs?view=browse&mode=gallery');
