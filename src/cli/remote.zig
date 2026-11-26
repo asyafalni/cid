@@ -11,7 +11,9 @@ const workspace = @import("../client/workspace.zig");
 pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCode {
     var ws = common.openWorkspace(ctx) catch
         return common.fail(ctx, .usage, common.not_a_dataset_msg, .{});
-    if (args.len > 0) {
+    // git's -v (--verbose) lists the same two addresses this always shows.
+    const plain = args.len == 1 and (std.mem.eql(u8, args[0], "-v") or std.mem.eql(u8, args[0], "--verbose"));
+    if (args.len > 0 and !plain) {
         if (!std.mem.eql(u8, args[0], "set-url"))
             return common.fail(ctx, .usage, "'cid remote {s}' is not a remote command. Run 'cid remote' or 'cid remote set-url <address>'.", .{args[0]});
         var address: ?[]const u8 = null;

@@ -89,6 +89,12 @@ fn run(
         },
         .unknown => |name| {
             if (json) return @backingInt(cid.common.fail(&ctx, .usage, "'{s}' is not a cid command. Run 'cid help --json' for the commands there are.", .{name}));
+            // git's rm and mv have no cid twin: a folder is staged as it
+            // is, so say how, rather than only that they do not exist.
+            if (std.mem.eql(u8, name, "rm") or std.mem.eql(u8, name, "mv"))
+                return @backingInt(cid.common.fail(&ctx, .usage, "cid has no '{s}': change the folder itself ({s} the file as usual), then run 'cid add <path>' to stage it, as for any change", .{
+                    name, if (std.mem.eql(u8, name, "rm")) "delete" else "move",
+                }));
             return fail(io, .usage, name, "cid help");
         },
     };

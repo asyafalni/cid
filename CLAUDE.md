@@ -663,7 +663,8 @@ For dataset owners (`cid help --all`): `init <address> --git <url> [--model]` (b
 addresses required; `--model` when the folder holds a model's files),
 `tag` (`-m <notes>` gives the release its own words, up to 4,000 bytes: shown in its
 history, on the card and in git's changelog, and never changed; a model's release may add `--trained-on <dataset>@<release>`, repeatable: what it
-was trained on, recorded once, shown on both pages and in git), `branch`,
+was trained on, recorded once, shown on both pages and in git; alone, or with `-l`, it
+lists the releases, as git's does), `branch` (alone, or with `-a`, lists the branches),
 `merge [--continue]`, `deploy-key add <name> <key.pub> [--write]|list|remove <name>`
 (a machine's own SSH key on this dataset: read, or write with `--write`, never
 maintain; a person's key is refused), and `remote` (the folder's address and git URL;

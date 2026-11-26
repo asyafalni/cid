@@ -88,9 +88,11 @@ const commands = [_]Command{
     .{ .name = "status", .usage = "cid status", .does = "The branch, staged and unstaged changes, unpushed commits, the folder's subset and any pending conflicts.", .group = .everyday, .network = false, .changes = .nothing },
     .{ .name = "log", .usage = "cid log", .does = "The folder's branch, newest first: unpushed commits, then the server's, with releases named.", .group = .everyday, .network = true, .changes = .nothing },
     .{ .name = "diff", .usage = "cid diff [--staged] | cid diff <a> [<b>]", .does = "What changed. No arguments: unstaged edits. Two versions (releases, branches or commits): files added, modified and deleted, rows for CSV, Parquet and JSONL, items and annotations for an annotated dataset.", .group = .everyday, .network = true, .changes = .nothing, .flags = &.{
-        .{ .flag = "--staged", .does = "what is staged for the next commit" },
+        .{ .flag = "--staged", .does = "what is staged for the next commit (--cached too, as in git)" },
     } },
-    .{ .name = "add", .usage = "cid add <path>...", .does = "Stage added, changed and deleted files for the next commit ('cid add .' for everything). Files are hashed and copied to the local cache now.", .group = .everyday, .network = false, .changes = .folder },
+    .{ .name = "add", .usage = "cid add <path>... | cid add -A", .does = "Stage added, changed and deleted files for the next commit ('cid add .' for everything). Files are hashed and copied to the local cache now. To remove or move a file, delete or move it in the folder and add the path.", .group = .everyday, .network = false, .changes = .folder, .flags = &.{
+        .{ .flag = "-A, --all", .does = "everything, as 'cid add .'" },
+    } },
     .{ .name = "restore", .usage = "cid restore [--staged] <path>...", .does = "Throw away local edits to a path, or with --staged, unstage it and keep the edits.", .group = .everyday, .network = false, .changes = .folder, .flags = &.{
         .{ .flag = "--staged", .does = "unstage instead of discarding edits" },
     } },
@@ -103,15 +105,19 @@ const commands = [_]Command{
         .{ .flag = "--git <git-url>", .does = "the dataset's git repository, where cid writes one small commit per release" },
         .{ .flag = "--model", .does = "the folder holds a model's files (weights, configuration), not a dataset" },
     } },
-    .{ .name = "tag", .usage = "cid tag <name> [-m <notes>] [--trained-on <dataset>@<release>]...", .does = "Make a release of the pushed head. A release never moves or changes; tagging an existing name is an error.", .group = .owner, .network = true, .changes = .server, .flags = &.{
+    .{ .name = "tag", .usage = "cid tag <name> [-m <notes>] [--trained-on <dataset>@<release>]... | cid tag", .does = "Make a release of the pushed head. A release never moves or changes; tagging an existing name is an error. Alone (or -l), lists the releases and changes nothing.", .group = .owner, .network = true, .changes = .server, .flags = &.{
+        .{ .flag = "-l, --list", .does = "list the releases, as 'cid tag' alone does" },
         .{ .flag = "-m <notes>", .does = "the release's own words: what it is and why, shown in its history and in git; kept with it, never changed" },
         .{ .flag = "--trained-on <dataset>@<release>", .does = "for a model: a dataset release it was trained on; repeatable" },
     } },
-    .{ .name = "branch", .usage = "cid branch <name>", .does = "Start a draft line of work from main; 'cid checkout <name>' then works on it.", .group = .owner, .network = true, .changes = .server },
+    .{ .name = "branch", .usage = "cid branch <name> | cid branch", .does = "Start a draft line of work from main; 'cid checkout <name>' then works on it. Alone (or -a), lists the branches, the folder's marked with *, and changes nothing.", .group = .owner, .network = true, .changes = .server, .flags = &.{
+        .{ .flag = "-a, -l, --list", .does = "list the branches, as 'cid branch' alone does" },
+    } },
     .{ .name = "merge", .usage = "cid merge <branch> | cid merge --continue", .does = "Merge a branch into main. Conflicts are listed (exit 2), never resolved silently; decide each with 'cid checkout --mine|--theirs <path>'.", .group = .owner, .network = true, .changes = .server, .flags = &.{
         .{ .flag = "--continue", .does = "finish a merge once every listed conflict is decided" },
     } },
-    .{ .name = "remote", .usage = "cid remote | cid remote set-url [<address>] [--git <git-url>]", .does = "The folder's address and git URL; set-url points the folder at a renamed dataset.", .group = .owner, .network = false, .changes = .folder, .flags = &.{
+    .{ .name = "remote", .usage = "cid remote [-v] | cid remote set-url [<address>] [--git <git-url>]", .does = "The folder's address and git URL; set-url points the folder at a renamed dataset.", .group = .owner, .network = false, .changes = .folder, .flags = &.{
+        .{ .flag = "-v", .does = "the same as 'cid remote' (it always shows both addresses)" },
         .{ .flag = "--git <git-url>", .does = "with set-url: the dataset's new git repository URL" },
     } },
     .{ .name = "deploy-key", .usage = "cid deploy-key add <name> <key.pub> [--write] | list | remove <name>", .does = "A machine's own SSH key on this dataset, for CI: read, or push with --write.", .group = .owner, .network = true, .changes = .server, .flags = &.{

@@ -1,5 +1,6 @@
 //! `cid tag <name> [-m <notes>] [--trained-on <dataset>@<release>]...`:
-//! make a release from the branch head, on the server. Needs everything
+//! make a release from the branch head, on the server. `cid tag` alone
+//! (or `-l`, `--list`) lists the releases, as git's does. Needs everything
 //! pushed first, and says so. `-m` gives the release its own words, as
 //! git's annotated tags carry a message: kept with it, never changed. A model's release may name the dataset releases it was trained
 //! on (docs/roadmap.md, C3): recorded with it, and never changed.
@@ -16,6 +17,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     var given: ?[]const u8 = null;
     var sources: std.ArrayList(Remote.Source) = .empty;
     var notes: ?[]const u8 = null;
+    var list = false;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "-m") or std.mem.eql(u8, args[i], "--message")) {
@@ -31,14 +33,26 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
             if (at == 0 or at + 1 == args[i].len)
                 return common.fail(ctx, .usage, "'{s}' names no release. Run 'cid tag <name> --trained-on <dataset>@<release>', e.g. your-org/datasets/person-vehicle@v4.2.0", .{args[i]});
             sources.append(ctx.arena, .{ .dataset = args[i][0..at], .release = args[i][at + 1 ..] }) catch return .network;
+        } else if (std.mem.eql(u8, args[i], "-l") or std.mem.eql(u8, args[i], "--list")) {
+            list = true;
+        } else if (std.mem.startsWith(u8, args[i], "-")) {
+            // Never a release name: a release never moves, so an option
+            // mistaken for one would stay in the history for good.
+            return common.fail(ctx, .usage, "'{s}' is not an option of cid tag. Run 'cid tag' to list releases, or {s}", .{ args[i], usage });
         } else if (given == null) {
             given = args[i];
         } else return common.fail(ctx, .usage, "{s}", .{usage});
     }
-    const name = given orelse return common.fail(ctx, .usage, "{s}", .{usage});
+    if (list and (given != null or notes != null or sources.items.len > 0))
+        return common.fail(ctx, .usage, "-l lists releases and makes none. Run 'cid tag' to list them, or {s}", .{usage});
 
     const ws = common.openWorkspace(ctx) catch
         return common.fail(ctx, .usage, common.not_a_dataset_msg, .{});
+
+    const name = given orelse {
+        if (notes != null or sources.items.len > 0) return common.fail(ctx, .usage, "{s}", .{usage});
+        return listReleases(ctx, ws);
+    };
 
     // Releases are made on the server from pushed history (CLI reference).
     const last_pushed = local.readLastPushed(ctx.arena, ctx.io, ws.cid_dir);
@@ -74,6 +88,27 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
         ctx.out.print("{s}{s} {s}", .{ if (n == 0) "Trained on " else ", ", src.dataset, src.release }) catch return .network;
         if (n + 1 == result.trained_on.len) ctx.out.writeAll(".\n") catch return .network;
     }
+    return .ok;
+}
+
+/// `cid tag` alone: the dataset's releases, one a line, as `git tag`
+/// lists tags; with the commit each sits on.
+fn listReleases(ctx: *const common.Context, ws: workspace.Workspace) common.ExitCode {
+    const dataset = workspace.datasetPathOf(ws.config.address) orelse
+        return common.fail(ctx, .integrity, ".cid/config.zon holds a broken address. Clone again, or fix it to cid@host:org/path.", .{});
+    const remote = common.remoteFor(ctx, dataset, .read, ws.config.address) catch |err|
+        return common.noRemote(ctx, err, "cid tag");
+    const releases = remote.releases(ctx.arena) catch |err| switch (err) {
+        error.NoSuchDataset => return common.fail(ctx, .usage, "the dataset is not on the server yet. Run 'cid push' first.", .{}),
+        error.AccessDenied => return common.denied(ctx, "cid tag"),
+        else => return common.fail(ctx, .network, "cannot reach the server. Check CID_SERVER, then run 'cid tag' again.", .{}),
+    };
+    if (common.emitJson(ctx, .{ .releases = releases })) return .ok;
+    if (releases.len == 0) {
+        ctx.out.writeAll("No releases yet. Run 'cid tag v1.0.0' to make the first.\n") catch return .network;
+        return .ok;
+    }
+    for (releases) |r| ctx.out.print("{s}\t{s}\n", .{ r.name, r.commit[0..@min(r.commit.len, 13)] }) catch return .network;
     return .ok;
 }
 

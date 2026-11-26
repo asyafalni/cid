@@ -15,8 +15,16 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     const cache_dir = common.openCacheDir(ctx) catch
         return common.fail(ctx, .network, "cannot open the cache folder (~/.cache/cid). Check HOME, then run 'cid add' again.", .{});
 
+    // git's "everything" (-A, --all) is cid's 'cid add .'; any other
+    // option is said, never taken for a path.
     const paths = ctx.arena.alloc([]const u8, args.len) catch return .network;
-    for (args, 0..) |a, i| paths[i] = a;
+    for (args, 0..) |a, i| {
+        if (std.mem.eql(u8, a, "-A") or std.mem.eql(u8, a, "--all")) {
+            paths[i] = ".";
+        } else if (std.mem.startsWith(u8, a, "-") and a.len > 1) {
+            return common.fail(ctx, .usage, "'{s}' is not an option of cid add. Run 'cid add <path>...', or 'cid add .' for everything.", .{a});
+        } else paths[i] = a;
+    }
 
     const summary = workspace.add(ctx.arena, ctx.io, &ws, cache_dir, paths) catch |err| switch (err) {
         error.PathspecUnmatched => return common.fail(ctx, .usage, "a path matched no files and nothing tracked. Run 'cid status' to see what is here.", .{}),

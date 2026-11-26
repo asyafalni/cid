@@ -16,8 +16,10 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     var staged = false;
     var versions: std.ArrayList([]const u8) = .empty;
     for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--staged")) {
+        if (std.mem.eql(u8, arg, "--staged") or std.mem.eql(u8, arg, "--cached")) {
             staged = true;
+        } else if (std.mem.startsWith(u8, arg, "-") and arg.len > 1) {
+            return common.fail(ctx, .usage, "'{s}' is not an option of cid diff. Run 'cid diff' (unstaged), 'cid diff --staged', or 'cid diff <a> <b>'.", .{arg});
         } else {
             versions.append(ctx.arena, arg) catch return .network;
         }

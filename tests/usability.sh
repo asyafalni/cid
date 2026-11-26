@@ -126,7 +126,19 @@ expect_hint "commit with nothing staged"      "$CID" commit -m "again"
 expect_ok   "push"    "$CID" push
 expect_ok   "tag"     "$CID" tag v1.0.0
 expect_hint "tag the same name again"         "$CID" tag v1.0.0
+# git's habits: 'tag' and 'tag -l' list releases, and an option is never a name.
+if "$CID" tag -l | grep -q "^v1.0.0"; then say "ok: tag -l lists the releases"
+else say "FAIL: tag -l does not list v1.0.0"; fails=$((fails+1)); fi
+expect_hint "an option is never a release name" "$CID" tag --nope
+if "$CID" tag | grep -q -- "^--nope"; then say "FAIL: an option became a release"; fails=$((fails+1))
+else say "ok: no release was made of an option"; fi
+if "$CID" branch | grep -q "^\* main"; then say "ok: branch alone lists branches, main marked"
+else say "FAIL: branch alone does not mark main"; fails=$((fails+1)); fi
+expect_hint "branch with an unknown option"   "$CID" branch --nope
+expect_hint "rm, which cid has not"           "$CID" rm a.txt
+expect_ok   "remote -v, as in git"            "$CID" remote -v
 echo "more" >> a.txt
+expect_hint "diff with an option it has not"  "$CID" diff --stat
 expect_ok   "diff shows the edit"             "$CID" diff
 expect_ok   "restore the edit"                "$CID" restore a.txt
 expect_ok   "status clean"                    "$CID" status
@@ -151,7 +163,7 @@ else say "ok: no warning once the git URL matches"; fi
 
 echo "two" > b.txt
 expect_hint "commit -a leaves new files alone, like git" "$CID" commit -am "second"
-expect_ok   "stage the new file" "$CID" add b.txt
+expect_ok   "stage the new file with -A, as in git" "$CID" add -A
 echo "hello again" > a.txt
 expect_ok   "commit -a" "$CID" commit -am "second"
 expect_hint "tag with unpushed commits"       "$CID" tag v1.1.0

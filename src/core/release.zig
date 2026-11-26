@@ -27,9 +27,12 @@ pub const Error = error{
 };
 
 /// Release names: what you would tag in git. No slashes, no control
-/// characters, and never shaped like a commit id.
+/// characters, never shaped like a commit id, and starting with a letter
+/// or digit: "-l" or "--list" is an option someone typed, and a release
+/// never moves, so it must never become one.
 pub fn validName(name: []const u8) bool {
     if (name.len == 0 or name.len > 100) return false;
+    if (!std.ascii.isAlphanumeric(name[0])) return false;
     for (name) |ch| switch (ch) {
         'A'...'Z', 'a'...'z', '0'...'9', '.', '_', '-' => {},
         else => return false,
@@ -268,4 +271,7 @@ test "release names" {
     try std.testing.expect(!validName("v1/0"));
     try std.testing.expect(!validName("has space"));
     try std.testing.expect(!validName("01a0f5e3-49a3-7ae3-a919-41a8a5666c35")); // commit-shaped
+    try std.testing.expect(!validName("-l")); // an option, not a name
+    try std.testing.expect(!validName("--list"));
+    try std.testing.expect(!validName(".hidden"));
 }

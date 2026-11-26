@@ -3015,7 +3015,7 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
             releaseSlot(deps);
         }
         return switch (err) {
-            error.BadName => errorResponse(arena, .bad_request, "that is not a release name (letters, digits, dot, dash, underscore)", "Pick a name like v1.0.0 and run 'cid tag' again."),
+            error.BadName => errorResponse(arena, .bad_request, "that is not a release name (letters, digits, dot, dash, underscore, starting with a letter or digit)", "Pick a name like v1.0.0 and run 'cid tag' again."),
             error.ReleaseExists => errorResponse(arena, .conflict, "that release already exists and releases never move", "Pick a new name, e.g. the next version number."),
             error.NoSuchCommit => errorResponse(arena, .not_found, "no such commit in this dataset", "Run 'cid log' to list commits."),
             error.BadAnnotationText => errorResponse(arena, .unprocessable_entity, "an annotation carries text or JSON the manifest cannot hold", "Fix the offending annotation in the platform, commit, then tag again."),
@@ -3312,7 +3312,7 @@ const BranchBody = struct { name: []const u8 };
 fn branchCreate(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(BranchBody, arena, body) orelse return error.BadRequest;
     if (!release_mod.validName(req.name) or eql(req.name, "main"))
-        return errorResponse(arena, .bad_request, "that is not a branch name (letters, digits, dot, dash, underscore; not 'main')", "Pick a name like cleanup and run 'cid branch' again.");
+        return errorResponse(arena, .bad_request, "that is not a branch name (letters, digits, dot, dash, underscore, starting with a letter or digit; not 'main')", "Pick a name like cleanup and run 'cid branch' again.");
 
     const existing = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM refs WHERE dataset_id = $1::uuid AND name = $2", .{ ds.id, req.name }) catch return error.Db;
     if (existing != null)

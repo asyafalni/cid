@@ -85,6 +85,8 @@ cid push                        # uploads only what the server lacks
 - `cid tag <name>` makes a release (`-m "..."` gives it notes: what it is and why;
   they can never be changed afterwards), and `cid branch` and `cid merge` act on the
   server: they are the dataset owner's decisions. Do them only when asked.
+  `cid tag` and `cid branch` alone only list (releases, branches), as in git; a name
+  never starts with `-`, so a mistyped option is refused, never made a release.
 
 ## What not to try
 
