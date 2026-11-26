@@ -14,7 +14,7 @@ CID="$ROOT/zig-out/bin/cid"
 WORK="$(mktemp -d)"
 PORT=$((20000 + $$ % 20000))
 API_PORT=$((PORT + 1)) S3_PORT=$((PORT + 2)) STORE_PORT=$((PORT + 3))
-SEAWEED_IMAGE=chrislusf/seaweedfs:4.48
+SEAWEED_IMAGE=chrislusf/seaweedfs:4.55
 CADDY_IMAGE=caddy:2.10.0
 NGINX_IMAGE=nginx:1.28.0
 export CID_DB='host=127.0.0.1 port=5433 user=cid password=cid-test dbname=cid_test'

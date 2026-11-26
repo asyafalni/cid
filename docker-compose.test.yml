@@ -19,7 +19,7 @@ services:
   # deployment's does: a URL signed for the wrong host or with the wrong
   # key fails here too, instead of passing only in tests.
   seaweedfs:
-    image: chrislusf/seaweedfs:4.48
+    image: chrislusf/seaweedfs:4.55
     command: server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -master.volumeSizeLimitMB=64
     volumes:
       - ./tests/seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
@@ -36,7 +36,7 @@ services:
   # deployment's job (nilo_s3 has no CreateBucket, on purpose), and this
   # service is the reference for how a real deployment does it.
   seaweedfs-bucket:
-    image: chrislusf/seaweedfs:4.48
+    image: chrislusf/seaweedfs:4.55
     depends_on:
       seaweedfs:
         condition: service_healthy
