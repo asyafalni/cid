@@ -62,7 +62,12 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      labelling policy version filters. Done 2026-11-26: the Files
      tab's preview panel; short video previews; release notes (`cid tag <name> -m
      "..."`, kept with the release, in its history, on the card and in git's changelog);
-     numeric attributes as histograms in Browse (`num=`, index format v7).
+     numeric attributes as histograms in Browse (`num=`, index format v7); a
+     newcomer's pass over the CLI, as a git user types it: `cid tag`/`cid branch` alone
+     list (and a name never starts with `-`, after `cid tag -l` made a release "-l"),
+     `cid help <command>` and `--help` that never runs the command, `add -A`,
+     `remote -v`, `diff --cached`, and a checkout to an older commit no longer counting
+     pushed commits as unpushed.
   10. **Tier E, reach** (section 7; direction set 2026-11-25). Everything above that
       can be built is built, so the work turns to who can pick cid up. All four are
       done (E1 to E4, 2026-11-25/26).
