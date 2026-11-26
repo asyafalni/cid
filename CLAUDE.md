@@ -595,9 +595,10 @@ Files added with `cid add` are hashed and copied into the local cache at `add` t
 not have (checked by hash, under invariant 12), then records the commits. A file over
 64 MB goes up in 64 MB pieces, each its own presigned PUT to
 `uploads/<dataset_id>/<hash>.part-NNNNNN`; when the push is recorded the server
-streams the pieces in order through BLAKE3 as one file, then copies the verified bytes
-into place inside the store (S3 CopyObject, or a multipart copy joining the pieces),
-so nothing passes through the server's disk. Resuming needs no local state: re-running `cid push`
+streams the pieces in order through BLAKE3 as one file and, as it reads, writes them
+into a multipart upload on the item's key, which it completes only if the hash matched
+(aborted otherwise: nothing is ever at the key unverified), so the bytes pass through
+the server's memory a part at a time, never its disk. Resuming needs no local state: re-running `cid push`
 asks the server what it still lacks, whole files and pieces alike, and sends only that.
 
 ---
@@ -905,8 +906,8 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
   the request's Ctx as the query Scope, admin commands and tests a Run.
   S3 goes through nilo_s3 the same way (a Bucket is a Service; presignGet
   and presignPut for the push flow, get/put, head, delete, list,
-  `putMultipart` for files over 64 MB, and `copyObject`/`compose` to land
-  verified uploads inside the store), wrapped in src/store/blob.zig.
+  `putMultipart` for files over 64 MB and to land verified uploads, read
+  through the hash as they are written), wrapped in src/store/blob.zig.
   nilo's ADR 059 compiles the bucket name into the type and cid ships one
   static binary, so **the bucket is always named `cid`**: deployments
   create it (docker-compose.test.yml shows how; creation is never cid's
@@ -943,7 +944,7 @@ Before finishing any change: `zig fmt --check build.zig src tests` (never `.`:
 | `cid add` | limited by disk read speed (hashing), 100k small files < 30 s; 3.4 s (2026-11-24) |
 | `cid commit` | < 100 ms, no network; 60 ms for 100 changes, 120 ms for 100k (2026-11-24) |
 | Platform migration, 10M revisions (4 writers, batches as `cid_writer`, server commit per 1M) | < 10 min with progress, resumable (`tests/bench/ingest_10m.sh`: 257 s) |
-| `cid push` | limited by upload speed; server-side recording < 1 s for small files; a large file costs one read of its bytes (the hash) plus a copy inside the store: 1 GB in 21 s on SeaweedFS, which copies the bytes; S3 copies without reading them. 100k small files (6 MB, local network, 2026-11-24): 227 s, of which the server 145 s (it checks 8 uploads at a time); the client sends 8 at a time, and a clone fetches 8 at a time (25 s cold, 6 s from the cache) |
+| `cid push` | limited by upload speed; server-side recording < 1 s for small files; a large file costs one read of its bytes (the hash) and one write (into place, as it is read): 1 GB landed in 22 s on SeaweedFS (2026-11-26, a busy machine; a copy inside the store, as it was done before, took 34–48 s there, because SeaweedFS copies by rewriting). 100k small files (6 MB, local network, 2026-11-24): 227 s, of which the server 145 s (it checks 8 uploads at a time); the client sends 8 at a time, and a clone fetches 8 at a time (25 s cold, 6 s from the cache) |
 | `cid tag` (write manifest), 1M items or annotations | < 60 s |
 | `cid diff` of two releases, 1M rows each | < 10 s |
 | `cid checkout` between releases | only changed files transferred |

@@ -3729,6 +3729,75 @@ const AdmitJob = struct {
     }
 };
 
+/// An upload's staged pieces, read in order as one stream through the
+/// content hash, a ranged read at a time. Its last read fails unless the
+/// bytes are the ones claimed (the hash, and the size when one is), so
+/// whatever is written from it is sealed only when they are.
+fn Staged(comptime Scope: type) type {
+    return struct {
+        const Self = @This();
+
+        s3: *blob.Client,
+        scope: Scope,
+        pieces: []const []const u8,
+        sizes: []const u64,
+        hash: []const u8,
+        hasher: content_hash.Hasher,
+        piece: usize = 0,
+        offset: u64 = 0,
+        outcome: enum { reading, verified, mismatch, failed } = .reading,
+        /// What the hash is fed through: the store's read needs room to
+        /// write into (with none it never moves).
+        hash_buf: [64 * 1024]u8 = undefined,
+        reader: std.Io.Reader,
+
+        fn init(s3: *blob.Client, scope: Scope, pieces: []const []const u8, sizes: []const u64, hash: []const u8) Self {
+            return .{
+                .s3 = s3,
+                .scope = scope,
+                .pieces = pieces,
+                .sizes = sizes,
+                .hash = hash,
+                .hasher = content_hash.init(),
+                .reader = .{ .vtable = &.{ .stream = stream }, .buffer = &.{}, .seek = 0, .end = 0 },
+            };
+        }
+
+        fn stream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
+            const self: *Self = @alignCast(@fieldParentPtr("reader", r));
+            while (self.piece < self.pieces.len and self.offset == self.sizes[self.piece]) {
+                self.piece += 1;
+                self.offset = 0;
+            }
+            if (self.piece == self.pieces.len) {
+                if (self.outcome == .reading)
+                    self.outcome = if (eql(&content_hash.hexOf(&self.hasher), self.hash)) .verified else .mismatch;
+                return if (self.outcome == .verified) error.EndOfStream else error.ReadFailed;
+            }
+            const n: u64 = limit.minInt64(@min(self.sizes[self.piece] - self.offset, staged_read_bytes));
+            if (n == 0) return 0;
+            // Through the hash into `w`.
+            var hashing = w.hashed(self.hasher, &self.hash_buf);
+            const wrote = self.s3.streamRangeTo(self.scope, self.pieces[self.piece], self.offset, self.offset + n - 1, &hashing.writer) catch {
+                self.outcome = .failed;
+                return error.ReadFailed;
+            };
+            hashing.writer.flush() catch return error.WriteFailed;
+            self.hasher = hashing.hasher;
+            if (wrote != n) {
+                self.outcome = .failed;
+                return error.ReadFailed;
+            }
+            self.offset += n;
+            return @intCast(n);
+        }
+    };
+}
+
+/// One ranged read of a staged piece, at most: also the memory an upload's
+/// landing holds, per file being admitted (eight at a time).
+const staged_read_bytes = 16 * 1024 * 1024;
+
 /// Admits an item's bytes (invariant 2): held here already, or uploaded to
 /// this dataset's staging area — then streamed through the content hash,
 /// and only if they match (and the size, when one is claimed) stored
@@ -3746,27 +3815,43 @@ fn admit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, has
     if (count == 1) pieces[0] = staged else for (pieces, 1..) |*key, n| key.* = try pieceKey(arena, ds.id, hash, @intCast(n));
     defer for (pieces) |key| deps.s3.deleteObject(scope, key) catch {};
 
-    // Read once, for the hash (invariant 2): through BLAKE3 into nothing.
-    // The bytes are kept by the store itself, below, never written here.
-    var sink: std.Io.Writer.Discarding = .init(&.{});
-    var hbuf: [64 * 1024]u8 = undefined;
-    var hashed = sink.writer.hashed(content_hash.init(), &hbuf);
+    const sizes = try arena.alloc(u64, count);
     var got: u64 = 0;
-    for (pieces) |key| got += deps.s3.streamTo(scope, key, &hashed.writer) catch return .missing;
-    hashed.writer.flush() catch return error.Storage;
-    if (!eql(&content_hash.hexOf(&hashed.hasher), hash) or (size != null and size.? != got)) return .mismatch;
+    for (pieces, sizes) |key, *len| {
+        len.* = (deps.s3.headObject(scope, key) catch return error.Storage) orelse return .missing;
+        got += len.*;
+    }
+    if (size != null and size.? != got) return .mismatch;
 
-    const key = itemKey(arena, hash) catch return error.OutOfMemory;
+    // Read once (invariant 2), through BLAKE3, and written as it is read
+    // into the item's key: a multipart upload the store keeps out of
+    // sight until it is completed, which happens only if the hash
+    // matched. One read and one write, in memory a part at a time, never
+    // on the server's disk. A copy inside the store looked cheaper and
+    // was not: SeaweedFS copies by rewriting, at a quarter of the speed
+    // it takes a write (1 GB: 34-48 s against 0.7 s to read and about
+    // 8 s to write, 2026-11-26).
     // Stored only if absent, never overwritten (invariant 2), except bytes
     // that cannot be these: a stored object of another size is damage, and
-    // the verified upload repairs it. Copied (or the pieces joined) inside
-    // the store: no byte passes through the server a second time.
+    // the verified upload repairs it. Already there: read for the hash alone.
+    const key = itemKey(arena, hash) catch return error.OutOfMemory;
     const stored = deps.s3.headObject(scope, key) catch return error.Storage;
-    if (stored == null or stored.? != got) {
-        if (count == 1)
-            deps.s3.copyObject(scope, staged, key) catch return error.Storage
-        else
-            deps.s3.compose(scope, key, pieces) catch return error.Storage;
+    var source = Staged(@TypeOf(scope)).init(deps.s3, scope, pieces, sizes, hash);
+    var put_failed = false;
+    if (stored != null and stored.? == got) {
+        var sink: std.Io.Writer.Discarding = .init(&.{});
+        _ = source.reader.streamRemaining(&sink.writer) catch {};
+    } else {
+        // Parts large enough that S3's 10,000 hold the file.
+        const part: usize = @intCast(@max(staged_read_bytes, got / 9_000 + 1));
+        deps.s3.putFrom(scope, key, &source.reader, part) catch {
+            put_failed = true;
+        };
+    }
+    switch (source.outcome) {
+        .mismatch => return .mismatch,
+        .failed, .reading => return error.Storage,
+        .verified => if (put_failed) return error.Storage,
     }
     // Verified bytes are back in storage: whatever cleanup took returns.
     _ = deps.db.exec(scope, "DELETE FROM collected_items WHERE item_hash = decode($1, 'hex')", .{hash}) catch return error.Db;

@@ -171,6 +171,23 @@ pub const Client = struct {
         return reading.pipe(w);
     }
 
+    /// Bytes `from` to `to` (inclusive) of an object into `w`, and how many.
+    pub fn streamRangeTo(self: *Client, scope: anytype, key: []const u8, from: u64, to: u64, w: *std.Io.Writer) Error!u64 {
+        var reading: Items.Reading = .{ .range = .{ .from = from, .to = to } };
+        try self.items.stream(scope, key, &reading);
+        defer reading.close();
+        return reading.pipe(w);
+    }
+
+    /// An object written from `reader`, read to its end, `part_bytes` in
+    /// memory at a time (a multipart upload when it is longer than that).
+    /// Nothing is at `key` unless the reader ended without failing: a
+    /// reader that fails, even on its last read, leaves `key` as it was.
+    /// Its type is octet-stream: what an item really is gets sniffed later.
+    pub fn putFrom(self: *Client, scope: anytype, key: []const u8, reader: *std.Io.Reader, part_bytes: usize) Error!void {
+        return self.items.putMultipart(scope, key, .{ .reader = reader, .content_type = "application/octet-stream", .part_bytes = part_bytes });
+    }
+
     /// The whole object in the Scope. `error.NotFound` when it is not
     /// there; the comptime 1 GiB ceiling refuses anything larger before
     /// a byte of it is read.
@@ -200,20 +217,6 @@ pub const Client = struct {
     /// previous page's `next`. The loop over pages is the caller's.
     pub fn list(self: *Client, scope: anytype, prefix: []const u8, cursor: ?[]const u8) Error!s3.Page {
         return self.items.list(scope, .{ .prefix = prefix, .cursor = cursor });
-    }
-
-    /// `from` copied to `to` inside the store; no byte comes through here.
-    pub fn copyObject(self: *Client, scope: anytype, from: []const u8, to: []const u8) Error!void {
-        return self.items.copy(scope, from, to);
-    }
-
-    /// `parts`, in order, joined into one object at `to` inside the store
-    /// (every part but the last at least 5 MiB, S3's rule).
-    /// Joins staged pieces into one item, inside the store. Its type is
-    /// octet-stream: what an item really is gets sniffed later, from its
-    /// bytes (the preview worker), never taken from an upload.
-    pub fn compose(self: *Client, scope: anytype, to: []const u8, parts: []const []const u8) Error!void {
-        return self.items.compose(scope, to, parts, .{ .content_type = "application/octet-stream" });
     }
 
     pub fn deleteObject(self: *Client, scope: anytype, key: []const u8) Error!void {

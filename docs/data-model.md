@@ -113,9 +113,15 @@ or, for a file larger than one piece (64 MB), to numbered pieces
 push that stopped are not asked for again. When the push (or `register-items`) is
 recorded, the server streams the staged object, or its pieces in order as one stream,
 through BLAKE3 and checks the hash and size. Only matching bytes are stored at
-`items/blake3/…`, and only if that key is absent. They are put there by a copy inside
-the store, never through the server: S3 CopyObject for one staged object, a multipart
-upload whose parts are copied from the pieces (UploadPartCopy) for several; a stored object of the wrong size is
+`items/blake3/…`, and only if that key is absent. They are written there as they are
+read for the hash: the same stream feeds a multipart upload on the item's key (a plain
+PUT when the file fits one part), which the store keeps out of sight until it is
+completed, and it is completed only if the hash and size matched; otherwise it is
+aborted and the key is as it was. One read and one write, 16 MiB in the server's
+memory at a time per file, never on its disk. (Until 2026-11-26 this was a copy inside
+the store, CopyObject or UploadPartCopy. SeaweedFS copies by rewriting every byte, at
+about a quarter of the speed it takes a write: a 1 GB file's landing took 34–48 s
+copied and 22 s streamed, the same day on the same disk.) A stored object of the wrong size is
 damage, and the verified upload overwrites it as a repair. The staged copy is removed
 either way, and a verified upload deletes the hash's `collected_items` row (the bytes
 are back). A mismatch refuses the whole push before anything is recorded. This
