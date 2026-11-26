@@ -1,0 +1,11 @@
+# tests/nas.sh only: the share as an NFS volume Docker mounts itself, from
+# the test's own server, in place of a folder the machine already mounted.
+# `hard`, as deploy/nas/README.md asks: a share that goes away makes the
+# store wait, never see a short file.
+volumes:
+  nas:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=127.0.0.1,vers=3,port=${CID_TEST_NFS_PORT},mountport=${CID_TEST_NFS_PORT},tcp,nolock,hard
+      device: ":/export"

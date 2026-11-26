@@ -1,0 +1,62 @@
+# cid with its files on a NAS: laid over deploy/compose/docker-compose.yml,
+# it moves SeaweedFS's data files to a network share and its file index
+# into PostgreSQL. README.md beside this file says why, and what to mount.
+#
+#   CID_NAS_DIR=/mnt/nas/cid docker compose \
+#     -f deploy/compose/docker-compose.yml -f deploy/nas/docker-compose.yml up --build -d
+services:
+  # The file index's database, beside cid's own in the same PostgreSQL;
+  # ordered by bytes, as S3 lists names.
+  seaweedfs-db:
+    image: timescale/timescaledb:2.30.2-pg17
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: cid-local
+    # Asked until it answers: on its first start PostgreSQL says it is
+    # ready, then restarts once.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        for _ in $$(seq 30); do
+          if psql -h timescaledb -U cid -d cid -tAc "SELECT 1 FROM pg_database WHERE datname = 'seaweedfs'" | grep -q 1; then exit 0; fi
+          psql -h timescaledb -U cid -d cid -c "CREATE DATABASE seaweedfs TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C'" && exit 0
+          sleep 1
+        done
+        exit 1
+    restart: "no"
+
+  seaweedfs:
+    depends_on:
+      seaweedfs-db:
+        condition: service_completed_successfully
+    # -dir: the data files, on the share. -master.dir and -volume.dir.idx:
+    # what can be rebuilt (the cluster's own notes, each data file's index),
+    # on this machine's disk, where small writes are fast.
+    # -volume.max=0: as many data files as the share has room for (the
+    # default is 8). Each grows to CID_NAS_VOLUME_MB, 30 GB unless said
+    # otherwise; SeaweedFS refuses writes ("no free volumes left") once the
+    # share has no room for another beyond CID_NAS_MIN_FREE.
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        mkdir -p /meta/idx && exec weed server -dir=/nas -master.dir=/meta -volume.dir.idx=/meta/idx
+        -volume.max=0 -volume.minFreeSpace=${CID_NAS_MIN_FREE:-10GiB}
+        -master.volumeSizeLimitMB=${CID_NAS_VOLUME_MB:-30000}
+        -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
+    volumes:
+      # Paths here are read from deploy/compose, the first file's folder.
+      - ../nas/filer.toml:/etc/seaweedfs/filer.toml:ro
+      - nas:/nas
+      - files:/meta
+
+volumes:
+  # The share, mounted on this machine by its administrator (fstab).
+  nas:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${CID_NAS_DIR:?set CID_NAS_DIR to the folder on the mounted NAS share that cid may fill}

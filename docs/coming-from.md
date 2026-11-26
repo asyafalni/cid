@@ -70,6 +70,12 @@ for tag in $(git tag --sort=creatordate); do
 done
 ```
 
+Where the files will live matters before a large import: cid's store can keep them
+on a NAS ([`deploy/nas`](../deploy/nas/README.md), which also says how much room and
+time an import takes), and the loop is best run from a machine on the same network
+as both the old remote and the new store. It can be stopped and started again: tags
+already imported make no new commit, and a push picks up where it stopped.
+
 A tag that changed no data makes no commit (`cid commit` says "nothing staged") and
 so no release; that is the right outcome, and the loop moves on. Files already
 uploaded are never sent again, so releases that share most of their data cost only

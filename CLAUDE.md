@@ -570,6 +570,8 @@ If a change would weaken any of these, stop and ask.
 S3 client rules for SeaweedFS: path-style addressing, SigV4, real payload hash,
 multipart for files over 64 MB (all via nilo_s3), the bucket always named `cid` and
 created by the deployment, SeaweedFS version pinned in the test compose file.
+On a NAS (`deploy/nas/`): the data files on the share, the file index in PostgreSQL,
+nothing irreplaceable on the server's own disk.
 
 Local cache on user machines: `~/.cache/cid/items/<aa>/<hex>` (or under
 `$XDG_CACHE_HOME`), shared by every clone and release. Working folders get copies (copy-on-write clones where the filesystem has
@@ -758,6 +760,8 @@ deploy/package.sh, install.sh  a release's archive per platform (the binary, lib
                              .github/workflows/release.yml runs on a version tag
 deploy/compose/              cid on one machine: the server image (Dockerfile, at the root)
                              with TimescaleDB and SeaweedFS, and the walkthrough
+deploy/nas/                  laid over deploy/compose: SeaweedFS's data files on a
+                             network share, its file index in PostgreSQL
 web/                         dashboard: React + Vite + TypeScript (see docs/dashboard.md)
 web/e2e/                     Playwright tests: UX budgets, accessibility (axe), keyboard
 docs/                        data-model.md, access.md, git-repository.md, dashboard.md, roadmap.md,
@@ -789,6 +793,8 @@ sh tests/agent.sh                  # the same CLI as a program drives it: --json
 sh tests/proxy.sh                  # deploy/proxy/ configs carry a push, clone, release (docker)
 sh tests/quickstart.sh             # deploy/compose/'s walkthrough, word for word (docker; builds
                                    # the image, on ports of its own)
+sh tests/nas.sh                    # deploy/nas/ on a real NFS mount: push, release, clone, the
+                                   # store's disk lost, the share gone mid-push (docker)
 sh tests/hf_client.sh              # the Hugging Face door read by huggingface_hub and datasets
                                    # (Python with tests/hf_requirements.txt; test-only)
 sh tests/mcp_client.sh             # the MCP door read by the official client (Node, after
@@ -822,7 +828,8 @@ CI runs on every push: format, unit and integration tests on Linux x86-64, the
 dashboard's lint, typecheck and Playwright suite, the Hugging Face door read by the real
 clients (`tests/hf_client.sh`), the MCP door read by the official client
 (`tests/mcp_client.sh`), the server image and its walkthrough
-(`tests/quickstart.sh`), the release archive packed and installed on every platform
+(`tests/quickstart.sh`), the same image with its files on an NFS share
+(`tests/nas.sh`), the release archive packed and installed on every platform
 (`tests/install.sh`), and unit tests plus the installed
 binary on Linux arm64 and macOS (Apple silicon and Intel).
 

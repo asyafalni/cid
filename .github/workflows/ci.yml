@@ -92,6 +92,11 @@ jobs:
         run: zig build
       - name: The stack and its walkthrough
         run: sh tests/quickstart.sh
+      # The same image with its files on a network share (deploy/nas): a
+      # real NFS mount, the store's local disk lost, the share taken away
+      # in the middle of a push.
+      - name: The stack on an NFS share
+        run: NO_BUILD=1 sh tests/nas.sh
       # Linux x86-64's turn at what the other platforms' job checks.
       - name: Packed, then installed by install.sh
         run: sh tests/install.sh zig-out

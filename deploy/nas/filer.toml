@@ -1,0 +1,29 @@
+# Where SeaweedFS keeps its map from each stored object to its bytes. That
+# map cannot be rebuilt from the data files, so it goes in PostgreSQL, the
+# database cid already runs and you already back up, never on the share
+# (its default, an embedded LevelDB, needs file locks a share may not keep)
+# and never only on this machine's disk.
+[leveldb2]
+enabled = false
+
+[postgres]
+enabled = true
+hostname = "timescaledb"
+port = 5432
+username = "cid"
+password = "cid-local"
+database = "seaweedfs"
+schema = ""
+sslmode = "disable"
+connection_max_idle = 10
+connection_max_open = 20
+connection_max_lifetime_seconds = 0
+createTable = """
+  CREATE TABLE IF NOT EXISTS "%s" (
+    dirhash   BIGINT,
+    name      VARCHAR(65535),
+    directory VARCHAR(65535),
+    meta      bytea,
+    PRIMARY KEY (dirhash, name)
+  );
+"""

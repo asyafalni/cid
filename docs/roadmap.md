@@ -66,6 +66,23 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
   10. **Tier E, reach** (section 7; direction set 2026-11-25). Everything above that
       can be built is built, so the work turns to who can pick cid up. All four are
       done (E1 to E4, 2026-11-25/26).
+  11. **The first trial: a DVC dataset on a NAS** (asked for by the owner,
+      2026-11-26; first above everything optional). The dataset is 100 GB to 1 TB
+      in DVC, its remote a MinIO on a NAS; cid's store is to be SeaweedFS with its
+      data on that NAS, and the import the loop of `docs/coming-from.md` (both the
+      owner's choices). Done 2026-11-26: `deploy/nas/` (the data files on the
+      share, the file index in PostgreSQL, nothing irreplaceable on the server's
+      disk) with `tests/nas.sh` on a real NFS mount (the store's disk lost, the
+      share gone mid-push); SeaweedFS pinned at 4.55, which repairs a torn data
+      file by itself; a verified upload written into place as it is read, where
+      the store's own copy took most of a large push; a store that stalls waited
+      out, and a failed push resumed without sending anything twice.
+      Left: the numbers on the owner's own NAS (`deploy/nas/README.md` says how to
+      take them; the test share is a laptop's), SMB untried, and the import
+      itself. Still open, and the owner's to decide because it touches invariant 2:
+      each pushed byte is written to the store twice (staged, then into place);
+      writing once would mean a client's bytes at an item's key before their hash
+      is checked.
 - Running the e2e suite needs Playwright's browser:
   `pnpm --dir web exec playwright install chromium`.
 - The e2e database is seeded once and kept. A fixture change must be its own
