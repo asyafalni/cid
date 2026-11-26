@@ -199,7 +199,7 @@ fn keyed(
         any_value = true;
     }
     const cells_sql = if (any_value)
-        try std.fmt.allocPrint(arena, "list_filter([{s}], x -> x IS NOT NULL)", .{cells.items})
+        try std.fmt.allocPrint(arena, "list_filter([{s}], lambda x: x IS NOT NULL)", .{cells.items})
     else
         "[]::STRUCT(\"column\" VARCHAR, before VARCHAR, after VARCHAR)[]";
     const text = (try db.scalarText(arena, try std.fmt.allocPrint(arena,
