@@ -122,8 +122,10 @@ memory at a time per file, never on its disk. (Until 2026-11-26 this was a copy 
 the store, CopyObject or UploadPartCopy. SeaweedFS copies by rewriting every byte, at
 about a quarter of the speed it takes a write: a 1 GB file's landing took 34–48 s
 copied and 22 s streamed, the same day on the same disk.) A stored object of the wrong size is
-damage, and the verified upload overwrites it as a repair. The staged copy is removed
-either way, and a verified upload deletes the hash's `collected_items` row (the bytes
+damage, and the verified upload overwrites it as a repair. A store that fails while a
+file lands is asked again (after 2, 5 and 15 s); if it still fails the push fails, the
+staged copy stays, and running the push again uploads nothing twice. The staged copy is
+removed once there is a verdict, admitted or refused, and a verified upload deletes the hash's `collected_items` row (the bytes
 are back). A mismatch refuses the whole push before anything is recorded. This
 includes the annotation platform: its `cid_writer` role INSERTs *revisions* directly,
 but item bytes and `items` rows go through the server's upload API, so invariant 2

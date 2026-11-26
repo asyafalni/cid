@@ -3794,6 +3794,10 @@ fn Staged(comptime Scope: type) type {
     };
 }
 
+/// How long to wait before each further try at landing a file whose read
+/// or write the store failed.
+const landing_waits_ms = [_]u32{ 2_000, 5_000, 15_000 };
+
 /// One ranged read of a staged piece, at most: also the memory an upload's
 /// landing holds, per file being admitted (eight at a time).
 const staged_read_bytes = 16 * 1024 * 1024;
@@ -3801,7 +3805,9 @@ const staged_read_bytes = 16 * 1024 * 1024;
 /// Admits an item's bytes (invariant 2): held here already, or uploaded to
 /// this dataset's staging area — then streamed through the content hash,
 /// and only if they match (and the size, when one is claimed) stored
-/// under the item's key, if absent. The staged copy goes either way.
+/// under the item's key, if absent. The staged copy goes once there is a
+/// verdict, admitted or not; while the store is failing it stays, so
+/// running the push again sends nothing twice.
 fn admit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, hash: []const u8, size: ?u64) HandleError!Admit {
     if (try heldHere(arena, deps, scope, ds, hash)) return .admitted;
     const staged = try stagedKey(arena, ds.id, hash);
@@ -3813,7 +3819,8 @@ fn admit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, has
     const count: u32 = if (whole) 1 else @intCast((size.? + deps.piece_bytes - 1) / deps.piece_bytes);
     const pieces = try arena.alloc([]const u8, count);
     if (count == 1) pieces[0] = staged else for (pieces, 1..) |*key, n| key.* = try pieceKey(arena, ds.id, hash, @intCast(n));
-    defer for (pieces) |key| deps.s3.deleteObject(scope, key) catch {};
+    var verdict = false;
+    defer if (verdict) for (pieces) |key| deps.s3.deleteObject(scope, key) catch {};
 
     const sizes = try arena.alloc(u64, count);
     var got: u64 = 0;
@@ -3821,7 +3828,10 @@ fn admit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, has
         len.* = (deps.s3.headObject(scope, key) catch return error.Storage) orelse return .missing;
         got += len.*;
     }
-    if (size != null and size.? != got) return .mismatch;
+    if (size != null and size.? != got) {
+        verdict = true;
+        return .mismatch;
+    }
 
     // Read once (invariant 2), through BLAKE3, and written as it is read
     // into the item's key: a multipart upload the store keeps out of
@@ -3835,24 +3845,39 @@ fn admit(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, has
     // that cannot be these: a stored object of another size is damage, and
     // the verified upload repairs it. Already there: read for the hash alone.
     const key = itemKey(arena, hash) catch return error.OutOfMemory;
-    const stored = deps.s3.headObject(scope, key) catch return error.Storage;
-    var source = Staged(@TypeOf(scope)).init(deps.s3, scope, pieces, sizes, hash);
-    var put_failed = false;
-    if (stored != null and stored.? == got) {
-        var sink: std.Io.Writer.Discarding = .init(&.{});
-        _ = source.reader.streamRemaining(&sink.writer) catch {};
-    } else {
-        // Parts large enough that S3's 10,000 hold the file.
-        const part: usize = @intCast(@max(staged_read_bytes, got / 9_000 + 1));
-        deps.s3.putFrom(scope, key, &source.reader, part) catch {
-            put_failed = true;
-        };
+    // A store that fails part-way is asked again, a little later each
+    // time: a busy or briefly absent share (a NAS under a large import)
+    // stalls its storage process for a second or two, and one stall must
+    // not fail a push of a thousand files. A failed try leaves nothing at
+    // the key (the upload is aborted), so trying again is safe.
+    var tries: u32 = 0;
+    while (true) : (tries += 1) {
+        const stored = deps.s3.headObject(scope, key) catch return error.Storage;
+        var source = Staged(@TypeOf(scope)).init(deps.s3, scope, pieces, sizes, hash);
+        var put_failed = false;
+        if (stored != null and stored.? == got) {
+            var sink: std.Io.Writer.Discarding = .init(&.{});
+            _ = source.reader.streamRemaining(&sink.writer) catch {};
+        } else {
+            // Parts large enough that S3's 10,000 hold the file.
+            const part: usize = @intCast(@max(staged_read_bytes, got / 9_000 + 1));
+            deps.s3.putFrom(scope, key, &source.reader, part) catch {
+                put_failed = true;
+            };
+        }
+        switch (source.outcome) {
+            .mismatch => {
+                verdict = true;
+                return .mismatch;
+            },
+            .verified => if (!put_failed) break,
+            .failed, .reading => {},
+        }
+        if (tries == landing_waits_ms.len) return error.Storage;
+        std.log.scoped(.push).warn("the store failed while landing {s}; trying again in {d} s", .{ hash[0..12], landing_waits_ms[tries] / 1000 });
+        std.Io.sleep(deps.io, .fromMilliseconds(landing_waits_ms[tries]), .awake) catch {};
     }
-    switch (source.outcome) {
-        .mismatch => return .mismatch,
-        .failed, .reading => return error.Storage,
-        .verified => if (put_failed) return error.Storage,
-    }
+    verdict = true;
     // Verified bytes are back in storage: whatever cleanup took returns.
     _ = deps.db.exec(scope, "DELETE FROM collected_items WHERE item_hash = decode($1, 'hex')", .{hash}) catch return error.Db;
     return .admitted;
