@@ -47,6 +47,10 @@ fn run(
             cid.help.print(out) catch break :blk .network;
             break :blk .ok;
         },
+        .help_for => |name| blk: {
+            if (cid.help.printFor(out, name, json) catch break :blk .network) break :blk .ok;
+            break :blk cid.common.fail(&ctx, .usage, "there is no cid command '{s}'. Run 'cid help' for the everyday ones, 'cid help --all' for the rest", .{name});
+        },
         .help_all => blk: {
             if (json) {
                 cid.help.printJson(out, cid.version.text) catch break :blk .network;

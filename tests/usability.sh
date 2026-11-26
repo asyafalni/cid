@@ -137,6 +137,8 @@ else say "FAIL: branch alone does not mark main"; fails=$((fails+1)); fi
 expect_hint "branch with an unknown option"   "$CID" branch --nope
 expect_hint "rm, which cid has not"           "$CID" rm a.txt
 expect_ok   "remote -v, as in git"            "$CID" remote -v
+if "$CID" push --help | grep -q "^usage: cid push"; then say "ok: push --help explains push, and pushes nothing"
+else say "FAIL: push --help does not explain push"; fails=$((fails+1)); fi
 echo "more" >> a.txt
 expect_hint "diff with an option it has not"  "$CID" diff --stat
 expect_ok   "diff shows the edit"             "$CID" diff

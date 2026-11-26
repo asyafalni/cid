@@ -689,7 +689,9 @@ Rules for every command:
 - `--json` anywhere on the line: the result as one JSON document on stdout (`diff`:
   one line per change, then a summary); errors as `{"error", "exit"}` on stderr, a
   stop on conflicts adding `"conflicts"` (each path and its decision).
-- `cid help --json` is every command as data (usage, flags, whether it needs the
+- `cid help <command>` (or `--help`/`-h` after any command, which then never runs)
+  prints that command's usage, options and what it touches, from the same table as
+  `cid help --json`: every command as data (usage, flags, whether it needs the
   server, what it changes, the exit codes), for programs and AI coding agents; a new
   command or flag goes into that table (`src/cli/help.zig`) in the same change. The
   server hands the same audience a one-page guide at `/llms.txt`

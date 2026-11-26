@@ -18,7 +18,8 @@ cid help --json
 
 prints every command with its usage, its flags, whether it needs the server, what
 it changes (`nothing`, `folder` or `server`) and what each exit code means. Prefer
-it to anything you remember about cid, this page included.
+it to anything you remember about cid, this page included. `cid help <command> --json`
+is one command's entry; `--help` after any command prints its help and never runs it.
 
 ## Rules that hold for every command
 

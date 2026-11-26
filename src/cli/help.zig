@@ -25,7 +25,8 @@ const text =
     \\  commit -m <msg>    save staged changes locally (instant, offline)
     \\  push               upload local commits and their files
     \\
-    \\'cid help --all' also lists owner commands (init, tag, branch, merge, deploy-key).
+    \\'cid help <command>' for one command's options; 'cid help --all' also lists
+    \\owner commands (init, tag, branch, merge, deploy-key).
     \\
 ;
 
@@ -170,6 +171,42 @@ pub fn printJson(out: *std.Io.Writer, version: []const u8) !void {
     try w.write("Server administration: 'cid admin'.");
     try w.endObject();
     try out.writeByte('\n');
+}
+
+/// One command's help, from the same table `--json` serves: its usage,
+/// what it does, its options, and what it needs and changes. False when
+/// no command has that name.
+pub fn printFor(out: *std.Io.Writer, name: []const u8, json: bool) !bool {
+    for (commands) |c| {
+        if (!std.mem.eql(u8, c.name, name)) continue;
+        if (json) {
+            var w: std.json.Stringify = .{ .writer = out, .options = .{ .whitespace = .indent_2 } };
+            try w.write(c);
+            try out.writeByte('\n');
+            return true;
+        }
+        try out.print("usage: {s}\n\n{s}\n", .{ c.usage, c.does });
+        if (c.flags.len > 0) {
+            try out.writeAll("\nOptions:\n");
+            var width: usize = 0;
+            for (c.flags) |f| width = @max(width, f.flag.len);
+            for (c.flags) |f| {
+                try out.print("  {s}", .{f.flag});
+                try out.splatByteAll(' ', width - f.flag.len + 2);
+                try out.print("{s}\n", .{f.does});
+            }
+        }
+        try out.print("\n{s}; {s}.\n", .{
+            if (c.network) "Needs the server" else "Works offline",
+            switch (c.changes) {
+                .nothing => "changes nothing",
+                .folder => "changes this folder only",
+                .server => "changes the dataset on the server",
+            },
+        });
+        return true;
+    }
+    return false;
 }
 
 pub fn print(out: *std.Io.Writer) !void {

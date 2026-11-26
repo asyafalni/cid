@@ -6,6 +6,8 @@ const std = @import("std");
 pub const Parsed = union(enum) {
     help,
     help_all,
+    /// One command's help: `cid help <command>`, or `--help`/`-h` after it.
+    help_for: []const u8,
     version,
     init: []const [:0]const u8,
     add: []const [:0]const u8,
@@ -45,8 +47,14 @@ pub fn parse(args: []const [:0]const u8) Parsed {
     const first = args[0];
     if (eql(first, "help") or eql(first, "--help") or eql(first, "-h")) {
         if (args.len > 1 and eql(args[1], "--all")) return .help_all;
+        if (args.len > 1) return .{ .help_for = args[1] };
         return .help;
     }
+    // `cid push --help` asks how push works: it must never push. Every
+    // command but admin (which has its own help) answers the same way.
+    if (!eql(first, "admin")) for (args[1..]) |a| {
+        if (eql(a, "--help") or eql(a, "-h")) return .{ .help_for = first };
+    };
     if (eql(first, "version") or eql(first, "--version")) return .version;
     if (eql(first, "init")) return .{ .init = args[1..] };
     if (eql(first, "add")) return .{ .add = args[1..] };
@@ -80,6 +88,14 @@ fn eql(a: []const u8, b: []const u8) bool {
 
 test "no arguments means help" {
     try std.testing.expect(parse(&.{}) == .help);
+}
+
+test "one command's help, never the command" {
+    try std.testing.expectEqualStrings("push", parse(&.{ "push", "--help" }).help_for);
+    try std.testing.expectEqualStrings("commit", parse(&.{ "commit", "-m", "x", "-h" }).help_for);
+    try std.testing.expectEqualStrings("tag", parse(&.{ "help", "tag" }).help_for);
+    try std.testing.expect(parse(&.{ "help", "--all" }) == .help_all);
+    try std.testing.expect(parse(&.{ "admin", "--help" }) == .admin);
 }
 
 test "help spellings" {
