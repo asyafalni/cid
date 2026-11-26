@@ -54,7 +54,7 @@ export function SqlConsole({
     <section className="sql-console" aria-label="SQL console">
       <p className="quiet">
         One <code className="data">SELECT</code> over this version: <code className="data">items</code> (path, hash,
-        size, split, type, item_id, annotations, classes, attributes, identities, authors, policies) and{' '}
+        size, split, type, item_id, annotations, classes, attributes, identities, authors, policies, numbers) and{' '}
         <code className="data">annotations</code> (id, item_id, kind, class, geometry, attributes, author,
         policy_ver). Read-only, at most 1,000 rows, 10 seconds.
       </p>

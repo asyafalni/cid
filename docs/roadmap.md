@@ -61,7 +61,8 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
      folder tree. Done 2026-11-25: Browse's "changed since a release", size, author and
      labelling policy version filters. Done 2026-11-26: the Files
      tab's preview panel; short video previews; release notes (`cid tag <name> -m
-     "..."`, kept with the release, in its history, on the card and in git's changelog).
+     "..."`, kept with the release, in its history, on the card and in git's changelog);
+     numeric attributes as histograms in Browse (`num=`, index format v7).
   10. **Tier E, reach** (section 7; direction set 2026-11-25). Everything above that
       can be built is built, so the work turns to who can pick cid up. All four are
       done (E1 to E4, 2026-11-25/26).

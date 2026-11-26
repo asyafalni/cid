@@ -405,8 +405,23 @@ Every dataset page (all five tabs) shares one header and the release tape.
   in Postgres they cost 2.0 s, so DuckDB does that when it builds the index); a page
   0.38–0.44 s unfiltered, 0.42–0.44 s filtered by an author every item has, 0.25 s
   by a policy and a split; server memory at most 400 MB.
-  *Planned:* source (camera, video, feed), and histograms as clickable filters, like Hugging Face's, for every numeric column
-  and attribute.
+  *Built (2026-11-26):* numeric attributes as histograms (`num=confidence`): when a
+  version's annotations carry numbers (a confidence, an area, a count), a "numbers"
+  panel offers each such attribute, and picked, its values in 20 equal bins across the
+  version's whole range, counted against the other filters, drawn as a table column's
+  histogram is; each bar narrows Browse to its range (`num_from` included, `num_to`
+  excluded, the top bar open-ended so the highest value is in it) and lets go when
+  pressed again. Booleans are no numbers. Index format v7 keeps each item's numbers
+  typed (`num_set`, the SQL console's `numbers`), parsed from the attribute texts
+  when the index is built: parsed per page instead, at 1M items, the histogram cost
+  0.27 s and the key list 0.41 s; typed, 33 and 41 ms. Building it costs 0.86 s of one
+  thread per 1M items, paid where an index is built (a release of a commit the server
+  already prepared reuses that index: at 1M items with a confidence on every box,
+  main's build and this one released in 32.3 against 33.6 s, and 59.5 against
+  59.1 s under load). Pages at 1M (ReleaseFast, 2026-11-26, a loaded machine): 0.38 s
+  unfiltered, 0.52 s with the histogram, 0.59 s with a range and its histogram;
+  server memory at most 401 MB. Table columns had theirs already, in the drawer.
+  *Planned:* source (camera, video, feed).
 - **Search.** *Built:* file paths ("path contains"), and the rows of a table: the
   words in any of its text columns, ignoring case, in the rows view (`rows=` holds it
   as `{"column": "*", "contains": …}`); the matching rows are found once a page, so
@@ -443,7 +458,7 @@ Every dataset page (all five tabs) shares one header and the release tape.
 - *Built (2026-11-23):* **SQL console**, Browse's fourth view (`mode=sql`, the query in
   the URL as `sql=`, so a query is a link and opens already run): one `SELECT` over the
   version on screen, as two views, `items` (path, hash, size, split, type, item_id,
-  annotations, classes, attributes, identities, authors, policies) and `annotations` (id, item_id, kind,
+  annotations, classes, attributes, identities, authors, policies, numbers) and `annotations` (id, item_id, kind,
   class, geometry, attributes, author, policy_ver); results as a table, and as tiles
   when they name items (a `path` and a `hash`), each opening its item. Run on the
   server (decided 2026-11-23: nothing to download, works at 1M items), sandboxed,
@@ -621,7 +636,9 @@ command shows it.
   half the work at 1M items: the dashboard asks for them with a filter's first page
   only, not for its next pages, "A look inside" or an item opened from a link.
   `author=` and `policy=` keep the items with an annotation by that author or under
-  that labelling policy version, each with its facet; `size=` a size bucket.
+  that labelling policy version, each with its facet; `size=` a size bucket;
+  `num=<attribute>` answers that numeric attribute's histogram (`nums` lists them),
+  and `num_from`/`num_to` keep the items with a value of it in that range.
   `since=<release>` narrows every count and the page to what changed since that
   release, from the pair's kept diff (`…/browse/compare` builds the same one). The
   server runs these queries one at a time, the rest waiting their turn in order, so

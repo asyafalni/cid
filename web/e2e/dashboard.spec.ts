@@ -180,7 +180,7 @@ test('browse filters by who made the annotations and under which policy', async 
   await expect(author.locator('option')).toHaveText(['any', 'agent:annotator (1)', 'user:reviewer (0)']);
   // And the command says the filter has no clone flag.
   await page.getByRole('button', { name: 'Show command' }).click();
-  await expect(page.getByRole('region', { name: 'Command' })).toContainText('author and policy filters have no clone flag');
+  await expect(page.getByRole('region', { name: 'Command' })).toContainText('author, policy and number filters have no clone flag');
 });
 
 test('browse narrows to what changed since a release, and says so when no release has the name', async ({ page }) => {
@@ -639,6 +639,38 @@ test('the attribute filter keeps the items whose annotations carry the value', a
   await expect(page.getByLabel('Filter by attribute')).toHaveCount(0);
 });
 
+test('a numeric attribute is a histogram, and a bar narrows Browse to its range', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/scores?view=browse&mode=table');
+  const numbers = page.getByRole('region', { name: 'Numeric attributes' });
+  // A boolean is no number: only confidence is offered.
+  const pick = numbers.getByRole('combobox', { name: "Show a numeric attribute's histogram" });
+  await expect(pick.locator('option')).toHaveText(['pick an attribute', 'confidence']);
+  await pick.selectOption('confidence');
+  await expect(page).toHaveURL(/num=confidence/);
+  const bars = numbers.getByRole('group', { name: 'confidence: distribution' });
+  await expect(bars.getByRole('button')).toHaveCount(20);
+  await expect(page.getByText('3 items', { exact: true })).toBeVisible(); // a histogram alone filters nothing
+  // The lowest bar holds 0.2; pressed, it keeps that item only.
+  await bars.getByRole('button', { name: /^confidence 0\.2 to .*: 1 value$/ }).click();
+  await expect(page).toHaveURL(/num_from=0\.2/);
+  await expect(page.getByText('1 of 3 items')).toBeVisible();
+  const table = page.locator('.browse-table');
+  await expect(table).toContainText('street/doubtful.png');
+  await expect(table).not.toContainText('street/sure.png');
+  // The top bar is open-ended, so the highest value is in it.
+  await bars.getByRole('button', { name: /to 0\.9: 1 value$/ }).click();
+  await expect(page).not.toHaveURL(/num_to=/);
+  await expect(table).toContainText('street/sure.png');
+  await expect(page.getByText('1 of 3 items')).toBeVisible();
+  // Pressed again, it lets go.
+  await bars.getByRole('button', { name: /to 0\.9: 1 value$/ }).click();
+  await expect(page.getByText('3 items', { exact: true })).toBeVisible();
+  // A dataset whose annotations carry no numbers offers none.
+  await page.goto('/d/e2e/datasets/boxes?view=browse');
+  await expect(page.getByRole('region', { name: 'Numeric attributes' })).toHaveCount(0);
+});
+
 test('the identity filter finds an identity by its exact id, and is offered only where identities are', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/attrs2?view=browse&mode=gallery');
@@ -791,7 +823,7 @@ test('"Show command" gives the cid command for the view on screen, and it does t
   // What has no command says so.
   await page.goto('/d/e2e/datasets/demo?view=browse&q=img');
   await page.getByRole('button', { name: 'Show command' }).click();
-  await expect(page.getByRole('region', { name: 'Command' })).toContainText('The path search and the type, annotations, attribute, identity, size, author and policy filters have no clone flag');
+  await expect(page.getByRole('region', { name: 'Command' })).toContainText('The path search and the type, annotations, attribute, identity, size, author, policy and number filters have no clone flag');
   await page.getByRole('link', { name: 'Activity', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Command' })).toContainText('no command shows it');
 });
@@ -1648,12 +1680,15 @@ test('a malformed CSV shows its own error, in words, and the rest of the dataset
   await expect(page.getByRole('row', { name: /tone\.wav/ })).toBeVisible();
 });
 
-const axePages = ['/no/such/page', '/d/e2e/datasets/nope', '/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/demo?view=files&item=img-a.png', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/d/e2e/datasets/media?view=browse&mode=list', '/d/e2e/datasets/attrs2?view=health&release=v1.1.0', '/d/e2e/datasets/boxes?view=browse&mode=sql&sql=SELECT%20split%2C%20count(*)%20FROM%20items%20GROUP%20BY%20split', '/keys', '/tokens'];
+const axePages = ['/no/such/page', '/d/e2e/datasets/nope', '/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/scores?view=browse&num=confidence&num_from=0.2&num_to=0.235', '/d/e2e/datasets/demo?view=files&item=img-a.png', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/d/e2e/datasets/media?view=browse&mode=list', '/d/e2e/datasets/attrs2?view=health&release=v1.1.0', '/d/e2e/datasets/boxes?view=browse&mode=sql&sql=SELECT%20split%2C%20count(*)%20FROM%20items%20GROUP%20BY%20split', '/keys', '/tokens'];
 
 // Both themes: Daybreak as Playwright's default light scheme, Night flight
 // as the dark one. Each must pass on its own (docs/dashboard.md §3.4).
 for (const scheme of ['light', 'dark'] as const) {
   test(`accessibility: no serious or critical axe findings (${scheme === 'light' ? 'Daybreak' : 'Night flight'})`, async ({ page }) => {
+    // One test walks every page in the list: give it time for all of them,
+    // not one page's worth (it passed under 30 s on an idle machine only).
+    test.setTimeout(90_000);
     await page.emulateMedia({ colorScheme: scheme });
     await signIn(page);
     for (const path of axePages) {

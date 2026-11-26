@@ -23,6 +23,7 @@ export type ViewState = {
   size?: string;
   author?: string;
   policy?: string;
+  numRange?: string;
   a?: string;
   b?: string;
   dir?: string;
@@ -64,6 +65,7 @@ export function viewStateOf(o: Overview, search: Record<string, unknown>): ViewS
     size: str('size'),
     author: str('author'),
     policy: str('policy'),
+    numRange: search.num_from !== undefined || search.num_to !== undefined ? String(search.num ?? '') : undefined,
     a: str('a'),
     b: str('b'),
     dir: str('dir'),
@@ -82,8 +84,8 @@ export function commandFor(o: Overview, s: ViewState, host: string): Shown | nul
       else clone.push(`--split ${s.split}`);
     }
     if (s.cls !== undefined) clone.push(`--class ${s.cls}`);
-    if (s.q || s.type || s.anns || s.attr || s.identity || s.size || s.author || s.policy)
-      notes.push('The path search and the type, annotations, attribute, identity, size, author and policy filters have no clone flag; the folder holds every path.');
+    if (s.q || s.type || s.anns || s.attr || s.identity || s.size || s.author || s.policy || s.numRange !== undefined)
+      notes.push('The path search and the type, annotations, attribute, identity, size, author, policy and number filters have no clone flag; the folder holds every path.');
   }
   const steps = [clone.join(' ')];
   // A version that is no release: the clone, then a checkout of it.

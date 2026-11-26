@@ -27,6 +27,11 @@ export type Filters = {
   author?: string;
   /** A labelling policy version an annotation of the item was made under. */
   policy?: string;
+  /** A numeric attribute whose histogram is shown ('confidence'). */
+  num?: string;
+  /** Its range, as written in the URL: from included, to excluded. */
+  numFrom?: string;
+  numTo?: string;
 };
 
 /** The URL spelling of each filter, for patches back to the router. */
@@ -44,6 +49,9 @@ export type FilterPatch = {
   size?: string | undefined;
   author?: string | undefined;
   policy?: string | undefined;
+  num?: string | undefined;
+  num_from?: string | undefined;
+  num_to?: string | undefined;
 };
 
 export function extOf(path: string): string {
@@ -55,5 +63,5 @@ export function extOf(path: string): string {
 export type Facet = { value: string; count: number };
 
 export function anyFilter(f: Filters): boolean {
-  return Boolean(f.q) || f.split !== undefined || f.cls !== undefined || f.type !== undefined || f.anns !== undefined || f.attr !== undefined || f.identity !== undefined || f.since !== undefined || f.size !== undefined || f.author !== undefined || f.policy !== undefined;
+  return Boolean(f.q) || f.split !== undefined || f.cls !== undefined || f.type !== undefined || f.anns !== undefined || f.attr !== undefined || f.identity !== undefined || f.since !== undefined || f.size !== undefined || f.author !== undefined || f.policy !== undefined || f.numFrom !== undefined || f.numTo !== undefined;
 }

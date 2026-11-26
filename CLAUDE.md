@@ -558,9 +558,9 @@ If a change would weaken any of these, stop and ask.
   previews/<aa>/<hex>/page-NN.webp            a PDF's first ten pages, for the drawer
   previews/<aa>/<hex>/clip.webm               a video's first seconds, silent, for its tile
   manifests/<dataset_id>/<commit_id>.manifest the release's hashed canonical manifest
-  manifests/<dataset_id>/<commit_id>.v6.items.parquet, .v6.anns.parquet
+  manifests/<dataset_id>/<commit_id>.v7.items.parquet, .v7.anns.parquet
                                               a version's browse index (any version built;
-                                              v6 is its format, browse.index_format)
+                                              v7 is its format, browse.index_format)
   states/<dataset_id>/<commit>-<subset>-<hash>.jsonl.gz        a version's items, as the CLI downloads them
   exports/<dataset_id>/<commit>/<format>-<subset>-<hash>.jsonl.gz  an export, as a bundle of files
   diffs/<dataset_id>/<a>-<b>-<hash>.jsonl.gz        what changed between two versions

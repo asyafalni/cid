@@ -12,6 +12,8 @@ import {
   getText,
   reveal,
   type BrowseItem,
+  type NumHist,
+  type NumKey,
   type Revealed,
   type TextHead,
   type Overview,
@@ -98,7 +100,7 @@ export function BrowseTab({
   // more than what was scrolled to, whatever the dataset's size. Each
   // page brings its own thumbnails; a page whose thumbnails cannot be had
   // still shows every item, as type tiles.
-  const query = { q: filters.q, split: filters.split, cls: filters.cls, type: filters.type, anns: filters.anns, attr: filters.attr, identity: filters.identity, since: filters.since, size: filters.size, author: filters.author, policy: filters.policy };
+  const query = { q: filters.q, split: filters.split, cls: filters.cls, type: filters.type, anns: filters.anns, attr: filters.attr, identity: filters.identity, since: filters.since, size: filters.size, author: filters.author, policy: filters.policy, num: filters.num, numFrom: filters.numFrom, numTo: filters.numTo };
   const pages = useInfiniteQuery({
     queryKey: ['browse', name, commit, query],
     queryFn: async ({ pageParam }) => {
@@ -399,13 +401,24 @@ export function BrowseTab({
             <button
               className="filter-clear"
               onClick={() =>
-                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined, anns: undefined, attr: undefined, identity: undefined, since: undefined, size: undefined, author: undefined, policy: undefined })
+                onFilters({ q: undefined, split: undefined, class: undefined, type: undefined, anns: undefined, attr: undefined, identity: undefined, since: undefined, size: undefined, author: undefined, policy: undefined, num_from: undefined, num_to: undefined })
               }
             >
               Clear filters
             </button>
           )}
         </div>
+      )}
+
+      {mode !== 'sql' && (first.facets.nums.length > 0 || filters.num !== undefined) && (
+        <NumbersFilter
+          keys={first.facets.nums}
+          hist={first.facets.hist}
+          num={filters.num}
+          from={filters.numFrom}
+          to={filters.numTo}
+          onFilters={onFilters}
+        />
       )}
 
       {classes.length > 0 && mode !== 'sql' && (
@@ -840,6 +853,122 @@ function sizeWords(bucket: string): string {
     '100MB+': '100 MB or more',
   };
   return words[bucket] ?? bucket;
+}
+
+// A numeric attribute as a histogram (docs/dashboard.md, Filters): its
+// values in equal bins across the version's whole range, counted against
+// the other filters, each bar a button that narrows Browse to that range;
+// pressed again, it lets go. Drawn as a table column's histogram is, in
+// one hue, so the two read alike.
+function NumbersFilter({
+  keys,
+  hist,
+  num,
+  from,
+  to,
+  onFilters,
+}: {
+  keys: NumKey[];
+  hist: NumHist | null;
+  num: string | undefined;
+  from: string | undefined;
+  to: string | undefined;
+  onFilters: (patch: FilterPatch) => void;
+}) {
+  const ranged = from !== undefined || to !== undefined;
+  const choices = num !== undefined && !keys.some((k) => k.key === num) ? [num, ...keys.map((k) => k.key)] : keys.map((k) => k.key);
+  return (
+    <section className="numbers panel" aria-label="Numeric attributes">
+      <label className="facet">
+        <span className="facet-label" aria-hidden="true">
+          numbers
+        </span>
+        <select
+          aria-label="Show a numeric attribute's histogram"
+          value={num ?? '\u0000none'}
+          onChange={(e) =>
+            onFilters({ num: e.target.value === '\u0000none' ? undefined : e.target.value, num_from: undefined, num_to: undefined })
+          }
+        >
+          <option value={'\u0000none'}>pick an attribute</option>
+          {choices.map((k) => (
+            <option key={k} value={k}>
+              {k}
+            </option>
+          ))}
+        </select>
+      </label>
+      {num !== undefined && hist === null && (
+        <p className="quiet">No annotation here carries a number for {num}.</p>
+      )}
+      {hist && <NumBins hist={hist} from={from} to={to} onFilters={onFilters} />}
+      {ranged && (
+        <p className="numbers-range">
+          <span className="data">
+            {num} {from !== undefined ? `from ${num4(Number(from))}` : ''} {to !== undefined ? `to ${num4(Number(to))}` : 'and up'}
+          </span>{' '}
+          <button className="filter-clear" onClick={() => onFilters({ num_from: undefined, num_to: undefined })}>
+            Clear range
+          </button>
+        </p>
+      )}
+    </section>
+  );
+}
+
+function NumBins({
+  hist,
+  from,
+  to,
+  onFilters,
+}: {
+  hist: NumHist;
+  from: string | undefined;
+  to: string | undefined;
+  onFilters: (patch: FilterPatch) => void;
+}) {
+  const n = hist.bins.length;
+  const width = (hist.max - hist.min) / n;
+  const top = Math.max(1, ...hist.bins);
+  return (
+    <div className="hist numbers-hist" role="group" aria-label={`${hist.key}: distribution`}>
+      <div className="hist-bins">
+        {hist.bins.map((count, i) => {
+          const lo = hist.min + i * width;
+          const last = i === n - 1;
+          // The last bin holds the top value, so its range is left open.
+          const binFrom = String(lo);
+          const binTo = last ? undefined : String(hist.min + (i + 1) * width);
+          // By value, not text: a link written by hand says 0.235 where
+          // the edge works out to 0.23500000000000001.
+          const near = (a: string | undefined, b: number) => a !== undefined && Math.abs(Number(a) - b) <= Math.abs(width) * 1e-6;
+          const on = near(from, lo) && (last ? to === undefined : near(to, hist.min + (i + 1) * width));
+          const label = `${hist.key} ${num4(lo)} to ${num4(last ? hist.max : lo + width)}: ${count.toLocaleString()} ${count === 1 ? 'value' : 'values'}`;
+          return (
+            <button
+              key={i}
+              className={on ? 'hist-bin on' : 'hist-bin'}
+              aria-label={label}
+              aria-pressed={on}
+              title={label}
+              disabled={count === 0 && !on}
+              onClick={() => onFilters(on ? { num_from: undefined, num_to: undefined } : { num_from: binFrom, num_to: binTo })}
+            >
+              <span style={{ height: `${count === 0 ? 0 : Math.max(8, (count / top) * 100)}%` }} />
+            </button>
+          );
+        })}
+      </div>
+      <div className="hist-range data quiet">
+        <span>{num4(hist.min)}</span>
+        <span>{num4(hist.max)}</span>
+      </div>
+    </div>
+  );
+}
+
+function num4(v: number): string {
+  return Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, { maximumSignificantDigits: 4 });
 }
 
 function FacetSelect({

@@ -203,7 +203,11 @@ export type BrowsePage = {
   /** The cursor for the next page; null on the last. */
   next: string | null;
   open: BrowseItem | null;
-  facets: { split: BrowseFacet[]; class: BrowseFacet[]; type: BrowseFacet[]; anns: BrowseFacet[]; attr: BrowseFacet[]; size: BrowseFacet[]; author: BrowseFacet[]; policy: BrowseFacet[] };
+  facets: { split: BrowseFacet[]; class: BrowseFacet[]; type: BrowseFacet[]; anns: BrowseFacet[]; attr: BrowseFacet[]; size: BrowseFacet[]; author: BrowseFacet[]; policy: BrowseFacet[];
+    /** The version's numeric attributes, each with its range. */
+    nums: NumKey[];
+    /** The asked-for attribute's values in equal bins across its range. */
+    hist: NumHist | null };
   /** Annotations per class across the whole version. */
   classes: BrowseFacet[];
 };
@@ -224,6 +228,10 @@ export type BrowseQuery = {
   author?: string;
   /** A labelling policy version an annotation was made under. */
   policy?: string;
+  /** A numeric attribute: its histogram, and with `numFrom`/`numTo` a range. */
+  num?: string;
+  numFrom?: string;
+  numTo?: string;
   after?: string;
   item?: string;
   limit?: number;
@@ -251,6 +259,9 @@ export function getBrowse(name: string, commit: string, query: BrowseQuery): Pro
   if (query.size !== undefined) params.set('size', query.size);
   if (query.author !== undefined) params.set('author', query.author);
   if (query.policy !== undefined) params.set('policy', query.policy);
+  if (query.num !== undefined) params.set('num', query.num);
+  if (query.numFrom !== undefined) params.set('num_from', query.numFrom);
+  if (query.numTo !== undefined) params.set('num_to', query.numTo);
   if (query.after !== undefined) params.set('after', query.after);
   if (query.item !== undefined) params.set('item', query.item);
   if (query.limit !== undefined) params.set('limit', String(query.limit));
@@ -355,6 +366,9 @@ export function getCompare(name: string, a: string, b: string, after?: string, p
 
 /** A finished preview: its picture, and for a video its short clip (never
  * for a restricted dataset). */
+export type NumKey = { key: string; min: number; max: number; count: number };
+export type NumHist = { key: string; min: number; max: number; bins: number[] };
+
 export type Thumbnail = { hash: string; url: string; clip?: string | null };
 
 export function getThumbs(

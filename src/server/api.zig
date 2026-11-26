@@ -1010,9 +1010,18 @@ fn browse(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, ro
         .size = try param(arena, route, "size"),
         .author = try param(arena, route, "author"),
         .policy = try param(arena, route, "policy"),
+        .num = try param(arena, route, "num"),
         .limit = try limitOf(route, browse_mod.default_limit),
         .facets = !std.mem.eql(u8, (try param(arena, route, "facets")) orelse "1", "0"),
         .sample = std.mem.eql(u8, (try param(arena, route, "sample")) orelse "0", "1"),
+    };
+    // A numeric attribute's range, its ends as numbers (either may be open).
+    inline for (.{ "num_from", "num_to" }) |name| if (try param(arena, route, name)) |text| {
+        const v = std.fmt.parseFloat(f64, text) catch
+            return errorResponse(arena, .bad_request, name ++ " is not a number", "Pick a bar of the attribute's histogram, or write a number.");
+        if (!std.math.isFinite(v))
+            return errorResponse(arena, .bad_request, name ++ " is not a number", "Pick a bar of the attribute's histogram, or write a number.");
+        @field(q, name) = v;
     };
     if (q.q) |text| if (text.len == 0) {
         q.q = null;

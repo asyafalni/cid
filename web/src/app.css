@@ -2982,6 +2982,24 @@ button.tick-mark:hover {
   outline: 1px solid var(--aether);
 }
 
+.numbers {
+  display: grid;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  max-width: 520px;
+}
+
+.numbers-hist .hist-bins {
+  height: 56px;
+  gap: 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.numbers-range {
+  margin: 0;
+}
+
 .hist-range {
   display: flex;
   justify-content: space-between;

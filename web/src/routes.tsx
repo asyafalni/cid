@@ -96,6 +96,10 @@ const datasetRoute = createRoute({
     author?: string;
     /** Browse: a labelling policy version. */
     policy?: string;
+    /** Browse: a numeric attribute's histogram, and its range. */
+    num?: string;
+    num_from?: string;
+    num_to?: string;
     /** A table item's row filters, as JSON (TableView). */
     rows?: string;
     /** A table item's row, by its place in the file from 1 (TableView). */
@@ -137,6 +141,10 @@ const datasetRoute = createRoute({
     size: typeof search.size === 'string' ? search.size : undefined,
     author: typeof search.author === 'string' ? search.author : undefined,
     policy: typeof search.policy === 'string' ? search.policy : undefined,
+    num: typeof search.num === 'string' ? search.num : undefined,
+    // Numbers in a URL arrive as numbers; kept as written.
+    num_from: search.num_from === undefined ? undefined : String(search.num_from),
+    num_to: search.num_to === undefined ? undefined : String(search.num_to),
     rows: typeof search.rows === 'string' ? search.rows : Array.isArray(search.rows) ? JSON.stringify(search.rows) : undefined,
     // Text in a URL, a number when the page sets it.
     row: /^[1-9]\d*$/.test(String(search.row ?? '')) ? Number(search.row) : undefined,

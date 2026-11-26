@@ -17,7 +17,7 @@
 set -euo pipefail
 
 N=${N:-1000000}
-NAME=${NAME:-bench/datasets/items-attrs-$N}
+NAME=${NAME:-bench/datasets/items-scored-$N}
 PORT=${PORT:-7179}
 CID=${CID:-./zig-out/bin/cid}
 BROWSE_DIR=${BROWSE_DIR:-/tmp/cid-bench-browse}
@@ -82,7 +82,8 @@ INSERT INTO annotation_revisions (rev_id, ts, dataset_id, branch, annotation_id,
          'create', 'box', (ARRAY['person', 'car', 'truck'])[1 + (i + k) % 3],
          jsonb_build_object('x', 10 + k * 50, 'y', 20, 'w', 40, 'h', 30),
          -- Attributes as an annotator records them, for the attribute filter.
-         jsonb_build_object('occluded', (i + k) % 4 = 0, 'truncated', (i + k) % 7 = 0), 'agent:bench', 'p1'
+         jsonb_build_object('occluded', (i + k) % 4 = 0, 'truncated', (i + k) % 7 = 0,
+                            'confidence', round((((i::bigint * 7919 + k * 104729) % 1000) / 1000.0)::numeric, 3)), 'agent:bench', 'p1'
   FROM seed, at, generate_series(0, 1) k WHERE k = 0 OR i % 2 = 0;
 -- What autovacuum would have done by the time anyone browses.
 ANALYZE items; ANALYZE item_revisions; ANALYZE annotation_revisions;
@@ -154,6 +155,8 @@ timed "split=val" "$B&split=val"
 timed "class=truck" "$B&class=truck"
 timed "attr=occluded=true" "$B&attr=occluded%3Dtrue"
 timed "size=10KB-100KB (every item)" "$B&size=10KB-100KB"
+timed "numbers: confidence histogram" "$B&num=confidence"
+timed "confidence 0.2 to 0.25 (its histogram too)" "$B&num=confidence&num_from=0.2&num_to=0.25"
 timed "author=agent:bench (every item)" "$B&author=agent%3Abench"
 timed "policy=p1 + split=val" "$B&policy=p1&split=val"
 timed "path contains cam7/ + train + car" "$B&q=cam7%2F&split=train&class=car"

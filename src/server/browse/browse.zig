@@ -45,6 +45,12 @@ pub const Query = struct {
     author: ?[]const u8 = null,
     /// Items with an annotation made under this labelling policy version.
     policy: ?[]const u8 = null,
+    /// A numeric attribute (`confidence`): its histogram is answered, and
+    /// `num_from`/`num_to` keep the items with a value of it in
+    /// [num_from, num_to) (either end left open when absent).
+    num: ?[]const u8 = null,
+    num_from: ?f64 = null,
+    num_to: ?f64 = null,
     /// The open item's path, answered beside the page (it may be on no
     /// page loaded yet: a shared link opens straight onto it).
     item: ?[]const u8 = null,
@@ -94,7 +100,17 @@ pub const Item = struct {
 
 pub const Facet = struct { value: []const u8, count: u64 };
 
-pub const Facets = struct { split: []Facet, class: []Facet, type: []Facet, anns: []Facet = &.{}, attr: []Facet = &.{}, size: []Facet = &.{}, author: []Facet = &.{}, policy: []Facet = &.{} };
+pub const Facets = struct { split: []Facet, class: []Facet, type: []Facet, anns: []Facet = &.{}, attr: []Facet = &.{}, size: []Facet = &.{}, author: []Facet = &.{}, policy: []Facet = &.{}, nums: []NumKey = &.{}, hist: ?Hist = null };
+
+/// A numeric attribute the version's annotations carry: its range, and
+/// how many values (each item's distinct values, summed).
+pub const NumKey = struct { key: []const u8, min: f64, max: f64, count: u64 };
+
+/// One numeric attribute's values in `hist_bins` equal bins across its
+/// whole range in the version, counted against the other filters (its
+/// own range left out, as a facet's own value is).
+pub const Hist = struct { key: []const u8, min: f64, max: f64, bins: []const u64 };
+pub const hist_bins = 20;
 
 /// The attribute, author and policy facets each offer this many values at
 /// most, the most common.
@@ -215,8 +231,8 @@ fn byValue(_: void, a: Facet, b: Facet) bool {
 /// The browse index's format, in its file names (locally and in storage):
 /// changing the columns changes it, so an index in an older format is
 /// never read, only rebuilt. v2 added `class_set`, v3 `ann_count`, v4
-/// `attr_set`, v5 `ident_set`, v6 `author_set` and `policy_set`.
-pub const index_format = "v6";
+/// `attr_set`, v5 `ident_set`, v6 `author_set` and `policy_set`, v7 `num_set`.
+pub const index_format = "v7";
 
 /// A version's browse index: its items in path order, and its annotations
 /// by item, as two Parquet files — and the JSON lines they are made from.
@@ -283,11 +299,20 @@ pub fn convertIndex(arena: std.mem.Allocator, io: std.Io, db: *duck.Db, files: F
         // And their annotation count, for the `anns` filter: one class
         // per annotation, so its length.
         const extra = if (i == 0) ", " ++ ann_digest ++ " AS digest" else ", list_sort(list_distinct(classes)) AS class_set, len(classes) AS ann_count, coalesce(attrs, []) AS attr_set, coalesce(idents, []) AS ident_set, " ++
-            "list_sort(list_distinct(coalesce(authors, []))) AS author_set, list_sort(list_distinct(coalesce(policies, []))) AS policy_set";
+            "list_sort(list_distinct(coalesce(authors, []))) AS author_set, list_sort(list_distinct(coalesce(policies, []))) AS policy_set, " ++
+            num_set_sql ++ " AS num_set";
         _ = try db.scalarText(arena, try std.fmt.allocPrint(arena, "COPY (SELECT *{s} FROM read_json('{s}', format = 'newline_delimited', columns = {{{s}}})) TO '{s}' (FORMAT parquet)", .{ extra, step.lines, step.columns, tmp }));
         std.Io.Dir.rename(cwd, tmp, cwd, step.out, io) catch return error.WriteFailed;
     }
 }
+
+/// Each item's numeric attribute values, typed once when the index is
+/// built: the `key=value` texts of `attr_set` whose value is a finite
+/// number (a boolean is none: its cast fails). Parsed per page instead,
+/// at 1M items, a histogram cost 0.27 s and the key list 0.41 s; typed,
+/// 33 and 41 ms. Building it costs a 1M release 0.86 s of one thread.
+const num_set_sql = "list_filter(list_transform(coalesce(attrs, []), lambda a: {'k': a[1:strpos(a, '=') - 1], " ++
+    "'v': TRY_CAST(a[strpos(a, '=') + 1:] AS DOUBLE)}), lambda e: isfinite(e.v))";
 
 fn quote(arena: std.mem.Allocator, path: []const u8) Error![]const u8 {
     var out: std.ArrayList(u8) = .empty;
@@ -311,6 +336,7 @@ const filters = [_][2][]const u8{
     .{ "fz", filter_z },
     .{ "fu", filter_u },
     .{ "fp", filter_p },
+    .{ "fn", filter_n },
 };
 
 /// Every flag but `skip`'s, for a facet over `m` (counted against every
@@ -358,6 +384,10 @@ const filter_i = "($11::VARCHAR IS NULL OR list_contains(ident_set, $11::VARCHAR
 const filter_z = "($12::VARCHAR IS NULL OR size BETWEEN $12::BIGINT AND $13::BIGINT)";
 const filter_u = "($14::VARCHAR IS NULL OR list_contains(author_set, $14::VARCHAR))";
 const filter_p = "($15::VARCHAR IS NULL OR list_contains(policy_set, $15::VARCHAR))";
+// A numeric attribute's range: $16 is its key only when a range is asked
+// for (the histogram alone filters nothing), $17 and $18 its ends.
+const filter_n = "($16::VARCHAR IS NULL OR coalesce(list_bool_or([e.v >= coalesce($17::DOUBLE, '-inf'::DOUBLE) " ++
+    "AND e.v < coalesce($18::DOUBLE, 'inf'::DOUBLE) for e in num_set if e.k = $16::VARCHAR]), false))";
 
 /// A page's counts and facets, over every item of the version (`{0s}` is
 /// its items file): most of a page's cost at 1M items.
@@ -390,11 +420,35 @@ const counts_sql =
     \\ AS v, count(*) AS n FROM m WHERE
 ++ " " ++ flagsBut("fz") ++ " " ++
     \\GROUP BY 1)),
+    \\  'nums', (SELECT coalesce(json_group_array(json_object('key', k, 'min', lo, 'max', hi, 'count', n)), '[]'::JSON)
+    \\      FROM (SELECT e.k AS k, min(e.v) AS lo, max(e.v) AS hi, count(*) AS n
+    \\          FROM (SELECT unnest(num_set) AS e FROM read_parquet('{0s}')) GROUP BY 1 ORDER BY 1 LIMIT 50)),
+    \\  {2s}
     \\  'classes', (SELECT coalesce(json_group_array(json_object('value', v, 'count', n)), '[]'::JSON)
     \\      FROM (SELECT v, count(*) AS n FROM (SELECT unnest(classes) AS v FROM read_parquet('{0s}')) GROUP BY 1))
 ;
+
+/// One numeric attribute's histogram (`{0s}` the items file, `{1s}` the
+/// changed-since filter, `$19` the key): its values in equal bins across
+/// the version's whole range, counted against every filter but its own
+/// range. Asked for only with `num=`, so no other page pays for it.
+const hist_sql =
+    \\'hist', (WITH r AS (SELECT min(e.v) AS lo, max(e.v) AS hi FROM (SELECT unnest(num_set) AS e FROM read_parquet('{0s}')) WHERE e.k = $19::VARCHAR),
+    \\      v AS (SELECT e.v AS v FROM (SELECT unnest(num_set) AS e FROM read_parquet('{0s}') WHERE
+++ " " ++ conditionsBut("fn") ++ " " ++
+    \\) WHERE e.k = $19::VARCHAR)
+    \\    SELECT CASE WHEN r.lo IS NULL THEN NULL ELSE json_object('key', $19::VARCHAR, 'min', r.lo, 'max', r.hi, 'bins',
+    \\      (SELECT to_json(list(coalesce(c.n, 0) ORDER BY g.b)) FROM range(
+++ std.fmt.comptimePrint("{d}", .{hist_bins}) ++
+    \\) g(b) LEFT JOIN (SELECT CASE WHEN r.hi = r.lo THEN 0 ELSE least(
+++ std.fmt.comptimePrint("{d}", .{hist_bins - 1}) ++
+    \\, floor((v - r.lo) / ((r.hi - r.lo) /
+++ std.fmt.comptimePrint("{d}", .{hist_bins}) ++
+    \\)))::BIGINT END AS b, count(*) AS n FROM v GROUP BY 1) c ON c.b = g.b)) END FROM r),
+;
+
 /// The same fields, left out (Query.facets false).
-const no_counts_sql = "'total', 0, 'matched', 0, 'split', '[]'::JSON, 'class', '[]'::JSON, 'type', '[]'::JSON, 'anns', '[]'::JSON, 'attr', '[]'::JSON, 'size', '[]'::JSON, 'author', '[]'::JSON, 'policy', '[]'::JSON, 'classes', '[]'::JSON";
+const no_counts_sql = "'total', 0, 'matched', 0, 'split', '[]'::JSON, 'class', '[]'::JSON, 'type', '[]'::JSON, 'anns', '[]'::JSON, 'attr', '[]'::JSON, 'size', '[]'::JSON, 'author', '[]'::JSON, 'policy', '[]'::JSON, 'nums', '[]'::JSON, 'hist', NULL, 'classes', '[]'::JSON";
 
 /// The contract, answered from the index (inside the folder `db` is
 /// confined to). Every request value is a bound parameter.
@@ -421,13 +475,13 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
     const sql = try std.fmt.allocPrint(arena,
         \\WITH {6s} m AS (SELECT path, split, ext, class_set, ann_count, size,
     ++ " " ++ "(" ++ filter_q ++ "{7s} AND " ++ filter_i ++ ") AS fq, " ++ filter_s ++ " AS fs, " ++ filter_c ++ " AS fc, " ++ filter_t ++ " AS ft, " ++
-        filter_a ++ " AS fa, " ++ filter_x ++ " AS fx, " ++ filter_z ++ " AS fz, " ++ filter_u ++ " AS fu, " ++ filter_p ++ " AS fp " ++
+        filter_a ++ " AS fa, " ++ filter_x ++ " AS fx, " ++ filter_z ++ " AS fz, " ++ filter_u ++ " AS fu, " ++ filter_p ++ " AS fp, " ++ filter_n ++ " AS fn " ++
         \\  FROM read_parquet('{0s}')),
         \\sel AS (SELECT path FROM m WHERE
     ++ " " ++ flagsBut("") ++ "),\n" ++
         \\page1 AS (SELECT path FROM sel WHERE $5::VARCHAR IS NULL OR path > $5::VARCHAR ORDER BY {3s} LIMIT $6 + 1),
         \\page AS (SELECT path FROM page1 ORDER BY {3s} LIMIT $6),
-        \\last AS (SELECT max(path) AS p, (SELECT count(*) FROM page1) AS n FROM page),
+        \\last AS (SELECT max(path) AS p, (SELECT count(*) FROM page1) AS n, $19::VARCHAR AS hist_key FROM page),
         \\whole AS (SELECT path, hash, size, split, item_id FROM read_parquet('{0s}') WHERE path IN (SELECT path FROM page)),
         \\opened AS (SELECT path, hash, size, split, item_id FROM read_parquet('{0s}') WHERE {5s} LIMIT 1),
         \\boxes AS (SELECT item_id, to_json(list(json_object('id', id, 'item_id', item_id, 'kind', kind, 'class', class,
@@ -445,7 +499,11 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
     , .{
         items,
         anns,
-        if (q.facets) try std.fmt.allocPrint(arena, counts_sql, .{ items, since_filter }) else no_counts_sql,
+        if (q.facets) try std.fmt.allocPrint(arena, counts_sql, .{
+            items,
+            since_filter,
+            if (q.num != null) try std.fmt.allocPrint(arena, hist_sql, .{ items, since_filter }) else "",
+        }) else no_counts_sql,
         if (q.sample) "md5(path), path" else "path",
         if (q.sample) "false" else "true",
         // No item open: no scan for one (the parameter stays bound).
@@ -474,6 +532,11 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         .{ .text = if (sizes) |r| try std.fmt.allocPrint(arena, "{d}", .{r[1]}) else null },
         .{ .text = q.author },
         .{ .text = q.policy },
+        // The range filters only when an end is given.
+        .{ .text = if (q.num_from != null or q.num_to != null) q.num else null },
+        .{ .text = if (q.num_from) |v| try std.fmt.allocPrint(arena, "{d}", .{v}) else null },
+        .{ .text = if (q.num_to) |v| try std.fmt.allocPrint(arena, "{d}", .{v}) else null },
+        .{ .text = q.num },
     })) orelse return error.QueryFailed;
 
     const Raw = struct {
@@ -490,6 +553,8 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         size: []const BucketCount,
         author: []Facet,
         policy: []Facet,
+        nums: []NumKey,
+        hist: ?Hist = null,
         classes: []Facet,
     };
     const raw = std.json.parseFromSliceLeaky(Raw, arena, text, .{ .ignore_unknown_fields = true }) catch
@@ -500,7 +565,7 @@ pub fn queryIndex(arena: std.mem.Allocator, db: *duck.Db, files: Files, q: Query
         .items = raw.items,
         .next = raw.next,
         .open = raw.open,
-        .facets = .{ .split = raw.split, .class = raw.class, .type = raw.type, .anns = try bucketFacets(arena, &ann_buckets, raw.anns), .attr = raw.attr, .size = try bucketFacets(arena, &size_buckets, raw.size), .author = raw.author, .policy = raw.policy },
+        .facets = .{ .split = raw.split, .class = raw.class, .type = raw.type, .anns = try bucketFacets(arena, &ann_buckets, raw.anns), .attr = raw.attr, .size = try bucketFacets(arena, &size_buckets, raw.size), .author = raw.author, .policy = raw.policy, .nums = raw.nums, .hist = raw.hist },
         .classes = raw.classes,
     }, q);
 }
@@ -810,9 +875,9 @@ pub fn compareLines(arena: std.mem.Allocator, db: *duck.Db, d: DiffFiles, out: C
 /// one without an extension, boxes of two classes, one with no class.
 const fixture_items =
     \\{"path":"README","hash":"dd","size":4,"split":null,"item_id":null,"ext":"file","classes":[]}
-    \\{"path":"img/a.jpg","hash":"aa","size":1,"split":"train","item_id":"i1","ext":".jpg","classes":["person","person"],"authors":["agent","agent"],"policies":["p1"]}
-    \\{"path":"img/b.JPG","hash":"bb","size":2,"split":"train","item_id":"i2","ext":".jpg","classes":["car"],"attrs":["occluded=true"],"idents":["car-0042"],"authors":["agent"],"policies":["p2"]}
-    \\{"path":"img/c.png","hash":"cc","size":3,"split":"val","item_id":"i3","ext":".png","classes":[""],"authors":["user:r"],"policies":["p1"]}
+    \\{"path":"img/a.jpg","hash":"aa","size":1,"split":"train","item_id":"i1","ext":".jpg","classes":["person","person"],"attrs":["confidence=0.25"],"authors":["agent","agent"],"policies":["p1"]}
+    \\{"path":"img/b.JPG","hash":"bb","size":2,"split":"train","item_id":"i2","ext":".jpg","classes":["car"],"attrs":["confidence=0.75","occluded=true"],"idents":["car-0042"],"authors":["agent"],"policies":["p2"]}
+    \\{"path":"img/c.png","hash":"cc","size":3,"split":"val","item_id":"i3","ext":".png","classes":[""],"attrs":["confidence=0.5"],"authors":["user:r"],"policies":["p1"]}
     \\
 ;
 const fixture_anns =
@@ -920,6 +985,34 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
     try std.testing.expectEqual(@as(?u64, 0), countOf(big.facets.size, "1MB-10MB"));
     try std.testing.expectEqual(@as(u64, 0), (try queryIndex(arena, &db, v1, .{ .size = "huge" })).matched);
     try std.testing.expectEqual(@as(?u64, 2), countOf((try queryIndex(arena, &db, v1, .{ .size = "<10KB", .split = "train" })).facets.size, "<10KB"));
+    // Numeric attributes: their keys and ranges (a boolean is no number),
+    // and one key's histogram across its whole range when asked for.
+    try std.testing.expectEqual(@as(usize, 1), all.facets.nums.len);
+    try std.testing.expectEqualStrings("confidence", all.facets.nums[0].key);
+    try std.testing.expectEqual(@as(f64, 0.25), all.facets.nums[0].min);
+    try std.testing.expectEqual(@as(f64, 0.75), all.facets.nums[0].max);
+    try std.testing.expectEqual(@as(u64, 3), all.facets.nums[0].count);
+    try std.testing.expect(all.facets.hist == null); // not asked for
+    const conf = try queryIndex(arena, &db, v1, .{ .num = "confidence" });
+    try std.testing.expectEqual(@as(u64, 4), conf.matched); // a histogram filters nothing
+    const bins = conf.facets.hist.?.bins;
+    try std.testing.expectEqual(@as(usize, hist_bins), bins.len);
+    try std.testing.expectEqual(@as(u64, 1), bins[0]); // 0.25, the low end
+    try std.testing.expectEqual(@as(u64, 1), bins[10]); // 0.5, the middle
+    try std.testing.expectEqual(@as(u64, 1), bins[hist_bins - 1]); // 0.75, the high end, in the last bin
+    // A range: from included, to excluded; an open end runs to the top.
+    const upper = try queryIndex(arena, &db, v1, .{ .num = "confidence", .num_from = 0.5 });
+    try std.testing.expectEqual(@as(u64, 2), upper.matched);
+    try std.testing.expectEqual(@as(u64, 1), upper.facets.hist.?.bins[0]); // its own range left out
+    const middle = try queryIndex(arena, &db, v1, .{ .num = "confidence", .num_from = 0.5, .num_to = 0.75 });
+    try std.testing.expectEqual(@as(u64, 1), middle.matched);
+    try std.testing.expectEqualStrings("img/c.png", middle.items[0].path);
+    // Other filters narrow the histogram, as they do every facet.
+    const train_conf = try queryIndex(arena, &db, v1, .{ .num = "confidence", .split = "train" });
+    try std.testing.expectEqual(@as(u64, 0), train_conf.facets.hist.?.bins[10]); // c.png is val
+    try std.testing.expectEqual(@as(u64, 1), train_conf.facets.hist.?.bins[0]);
+    try std.testing.expect((try queryIndex(arena, &db, v1, .{ .num = "occluded" })).facets.hist == null); // no numbers
+    try std.testing.expectEqual(@as(u64, 0), (try queryIndex(arena, &db, v1, .{ .num = "confidence", .num_from = 2 })).matched);
     // By author and by labelling policy version: items with any annotation
     // of theirs, each facet counted against the other filters, an item
     // with no annotations under none.

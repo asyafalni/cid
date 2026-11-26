@@ -39,6 +39,7 @@ const pages: [string, string][] = [
   ['browse-gallery-many', `${many}?view=browse`],
   ['browse-gallery-restricted', `${faces}?view=browse`],
   ['browse-table', `${many}?view=browse&mode=table`],
+  ['browse-numbers', '/d/e2e/datasets/scores?view=browse&mode=table&num=confidence&num_from=0.2&num_to=0.235'],
   ['browse-filtered-none', `${demo}?view=browse&q=nothing-is-called-this`],
   ['item-image', `${demo}?view=browse&item=img-a.png`],
   ['item-boxes', `${boxes}?view=browse&item=frames/street.png`],

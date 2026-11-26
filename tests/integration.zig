@@ -3018,6 +3018,13 @@ test "annotated: the platform writes revisions, the server commits, state compos
     try std.testing.expectEqual(@as(u64, 0), (try browseAt(arena, &deps, &scope, c1, "&author=user%3Areviewer")).matched);
     try std.testing.expectEqual(@as(u64, 1), (try browseAt(arena, &deps, &scope, c1, "&policy=policy-v1")).matched);
     try std.testing.expectEqual(@as(u64, 0), (try browseAt(arena, &deps, &scope, c1, "&policy=policy-v2")).matched);
+    // A numeric attribute's range: none here carries one, so nothing
+    // matches; an end that is not a number is refused in words.
+    try std.testing.expectEqual(@as(u64, 0), (try browseAt(arena, &deps, &scope, c1, "&num=confidence&num_from=0.5")).matched);
+    try std.testing.expectEqual(@as(u64, 2), (try browseAt(arena, &deps, &scope, c1, "&num=confidence")).matched);
+    const not_a_number = cid.api.handle(arena, &deps, &scope, "GET", try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/ann/-/browse?commit={s}&num=confidence&num_to=high", .{c1}), "Bearer test-token", "");
+    try std.testing.expectEqual(std.http.Status.bad_request, not_a_number.status);
+    try std.testing.expect(std.mem.indexOf(u8, not_a_number.body, "num_to is not a number") != null);
     const val = try browseAt(arena, &deps, &scope, c2, "&split=val&limit=1");
     try std.testing.expectEqual(@as(u64, 1), val.matched);
     try std.testing.expectEqualStrings("val", val.items[0].split.?);
