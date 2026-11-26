@@ -122,6 +122,8 @@ export function ReleasesTab({
                   </a>
                 )}
               </div>
+              {/* The release's own words, as its maker wrote them. */}
+              {c.release && c.notes && <p className="release-notes">{c.notes}</p>}
               <p className="quiet moment-meta">
                 <span className="data">{new Date(c.at_ms).toISOString().slice(0, 10)}</span>
                 {' — '}

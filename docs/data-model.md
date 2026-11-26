@@ -269,6 +269,8 @@ CREATE TABLE refs (
   card             jsonb,                 -- snapshot of dataset_cards.body at release time
   changes_from     text,                  -- the previous release; null for the first
   changes          jsonb,                 -- counted since it, at release time
+  notes            text,                  -- the release's own words (`cid tag -m`), or null;
+                                          -- at most 4,000 bytes, never changed (migration 0011)
   PRIMARY KEY (dataset_id, name)
 );
 

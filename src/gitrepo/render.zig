@@ -10,6 +10,8 @@ const repeat = @import("../util/repeat.zig").repeat;
 pub const ReleaseInfo = struct {
     name: []const u8,
     message: []const u8,
+    /// The release's own words (`cid tag -m`), or null.
+    notes: ?[]const u8 = null,
     created_at_ms: u64,
     items: u64,
     /// What changed since the release before it (`refs.changes`), and
@@ -286,9 +288,11 @@ fn changelog(arena: std.mem.Allocator, input: Input) ![]const u8 {
         if (input.restricted) {
             try out.print(arena, "\n## {s} — {s}\n\n{d} items.", .{ r.name, &fmtDate(r.created_at_ms), r.items });
         } else {
-            try out.print(arena, "\n## {s} — {s}\n\n{s}\n\n{d} items.", .{
-                r.name, &fmtDate(r.created_at_ms), r.message, r.items,
-            });
+            // Its own words first, when it has any; then the message of
+            // the commit it was made at, as every release has.
+            try out.print(arena, "\n## {s} — {s}\n\n", .{ r.name, &fmtDate(r.created_at_ms) });
+            if (r.notes) |notes| try out.print(arena, "{s}\n\n", .{notes});
+            try out.print(arena, "{s}\n\n{d} items.", .{ r.message, r.items });
         }
         // Newest first, so the last is the first release.
         if (r.changes) |c| {
@@ -489,11 +493,15 @@ test "the changelog says what changed since the release before, in counts" {
         .items = 3,
         .bytes = 10,
         .releases = &.{
-            .{ .name = "v2", .message = "March calls", .created_at_ms = 1769904000000, .items = 3, .changes_from = "v1", .changes = .{ .added = 2, .modified = 1, .deleted = 1 } },
+            .{ .name = "v2", .message = "March calls", .notes = "Adds the March calls.\nTwo were re-transcribed.", .created_at_ms = 1769904000000, .items = 3, .changes_from = "v1", .changes = .{ .added = 2, .modified = 1, .deleted = 1 } },
             .{ .name = "v1", .message = "first", .created_at_ms = 1769817600000, .items = 2 },
         },
     };
     const files_log = try changelog(arena, input);
+    // A release's own words come first, then its commit's message; one
+    // made without notes reads as it always did.
+    try std.testing.expect(std.mem.indexOf(u8, files_log, "## v2 — 2026-02-01\n\nAdds the March calls.\nTwo were re-transcribed.\n\nMarch calls\n\n3 items.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, files_log, "## v1 — 2026-01-31\n\nfirst\n\n2 items.") != null);
     try std.testing.expect(std.mem.indexOf(u8, files_log, "3 items. Since v1: 2 files added, 1 modified, 1 deleted.\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, files_log, "2 items. The first release.\n") != null);
     // No annotations in a files dataset, so no annotation half.
@@ -504,12 +512,13 @@ test "the changelog says what changed since the release before, in counts" {
     input.kind = "annotated";
     input.restricted = true;
     input.releases = &.{
-        .{ .name = "v2", .message = "relabelled alice-smith", .created_at_ms = 1769904000000, .items = 3, .changes_from = "v1", .changes = .{ .ann_added = 1, .ann_changed = 4 } },
+        .{ .name = "v2", .message = "relabelled alice-smith", .notes = "bob-jones consented", .created_at_ms = 1769904000000, .items = 3, .changes_from = "v1", .changes = .{ .ann_added = 1, .ann_changed = 4 } },
         .{ .name = "v1", .message = "first", .created_at_ms = 1769817600000, .items = 3 },
     };
     const ann_log = try changelog(arena, input);
     try std.testing.expect(std.mem.indexOf(u8, ann_log, "Since v1: no files changed; 1 annotation added, 4 changed, 0 removed.\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, ann_log, "alice-smith") == null);
+    try std.testing.expect(std.mem.indexOf(u8, ann_log, "bob-jones") == null); // nor its notes
     const json = try releaseJson(arena, input);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"changes_from\": \"v1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ann_changed\": 4") != null);

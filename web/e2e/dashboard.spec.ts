@@ -220,6 +220,17 @@ test('the history says what each release holds and changed, and links to the com
   // An annotated dataset counts its annotations too.
   await page.goto('/d/e2e/datasets/boxes?view=releases');
   await expect(page.getByRole('region', { name: 'History' }).getByRole('link', { name: /since v1\.0\.0: .* annotations? added/ })).toBeVisible();
+  // A release made with notes shows them, its maker's line breaks kept;
+  // one made without shows none. The Overview card carries the pinned one's.
+  const annotated = page.getByRole('region', { name: 'History' });
+  const noted = annotated.locator('.moment--release').filter({ has: page.locator('.release-tag', { hasText: 'v1.1.0' }) });
+  await expect(noted.locator('.release-notes')).toHaveText('Review pass: the person box was redrawn.\nNothing else moved.');
+  await expect(annotated.locator('.release-notes')).toHaveCount(1);
+  await page.goto('/d/e2e/datasets/boxes');
+  await expect(page.getByRole('region', { name: 'Dataset card' }).locator('.release-notes')).toContainText('Review pass: the person box was redrawn.');
+  await page.goto('/d/e2e/datasets/boxes?release=v1.0.0');
+  await expect(page.getByRole('region', { name: 'Dataset card' })).toBeVisible();
+  await expect(page.locator('.release-notes')).toHaveCount(0);
 });
 
 test('the history marks a release the dataset repository does not have yet', async ({ page }) => {

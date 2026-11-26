@@ -177,7 +177,8 @@ cid init cid@cidhub.com:your-org/datasets/call-transcripts \
 cid add .                             # stage every added, changed and deleted file
 cid commit -m "Add March calls"       # save locally: instant, works offline
 cid push                              # upload; resumes if the connection drops
-cid tag v1.0.0                        # make a release (on the server, after push)
+cid tag v1.0.0                        # make a release (on the server, after push);
+                                      # -m "what it is" gives it notes, as git's -m
 cid branch cleanup                    # a draft line of work (starts from main)
 cid checkout cleanup                  # work on it: add, commit, push as usual
 cid merge cleanup                     # into main; stops and lists conflicts, if any
@@ -657,7 +658,8 @@ Everyday (shown by `cid help`):
 
 For dataset owners (`cid help --all`): `init <address> --git <url> [--model]` (both
 addresses required; `--model` when the folder holds a model's files),
-`tag` (a model's release may add `--trained-on <dataset>@<release>`, repeatable: what it
+`tag` (`-m <notes>` gives the release its own words, up to 4,000 bytes: shown in its
+history, on the card and in git's changelog, and never changed; a model's release may add `--trained-on <dataset>@<release>`, repeatable: what it
 was trained on, recorded once, shown on both pages and in git), `branch`,
 `merge [--continue]`, `deploy-key add <name> <key.pub> [--write]|list|remove <name>`
 (a machine's own SSH key on this dataset: read, or write with `--write`, never

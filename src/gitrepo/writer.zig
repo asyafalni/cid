@@ -328,9 +328,10 @@ fn loadInput(
         commit_id: []const u8,
         changes_from: ?[]const u8,
         changes: ?[]const u8,
+        notes: ?[]const u8,
     };
     const all = db.raw(All, scope, "SELECT r.name, c.message, (extract(epoch from c.recorded_at) * 1000)::bigint AS created_ms, " ++
-        "c.commit_id::text AS commit_id, r.changes_from, r.changes::text AS changes FROM refs r JOIN commits c ON c.commit_id = r.commit_id " ++
+        "c.commit_id::text AS commit_id, r.changes_from, r.changes::text AS changes, r.notes FROM refs r JOIN commits c ON c.commit_id = r.commit_id " ++
         "WHERE r.dataset_id = $1::uuid AND r.kind = 'release' ORDER BY r.commit_id DESC, r.name DESC", .{dataset_id}) catch return error.Db;
     // What each model release was trained on (none for a dataset).
     const SourceRow = struct {
@@ -357,6 +358,7 @@ fn loadInput(
             .trained_on = sources.items,
             .name = row.name,
             .message = row.message,
+            .notes = row.notes,
             .created_at_ms = @intCast(@max(0, row.created_ms)),
             .items = their.items,
             .changes_from = row.changes_from,

@@ -1,6 +1,7 @@
-//! `cid tag <name> [--trained-on <dataset>@<release>]...`: make a release
-//! from the branch head, on the server. Needs everything pushed first, and
-//! says so. A model's release may name the dataset releases it was trained
+//! `cid tag <name> [-m <notes>] [--trained-on <dataset>@<release>]...`:
+//! make a release from the branch head, on the server. Needs everything
+//! pushed first, and says so. `-m` gives the release its own words, as
+//! git's annotated tags carry a message: kept with it, never changed. A model's release may name the dataset releases it was trained
 //! on (docs/roadmap.md, C3): recorded with it, and never changed.
 
 const std = @import("std");
@@ -9,14 +10,20 @@ const workspace = @import("../client/workspace.zig");
 const local = @import("../client/local.zig");
 const Remote = @import("../client/remote.zig").Remote;
 
-const usage = "run 'cid tag <name>', e.g. cid tag v1.0.0 (a model's release may add --trained-on <dataset>@<release>, once per dataset release)";
+const usage = "run 'cid tag <name>', e.g. cid tag v1.0.0 (add -m \"what this release is\" for its notes; a model's release may add --trained-on <dataset>@<release>, once per dataset release)";
 
 pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCode {
     var given: ?[]const u8 = null;
     var sources: std.ArrayList(Remote.Source) = .empty;
+    var notes: ?[]const u8 = null;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--trained-on")) {
+        if (std.mem.eql(u8, args[i], "-m") or std.mem.eql(u8, args[i], "--message")) {
+            i += 1;
+            if (i >= args.len or notes != null)
+                return common.fail(ctx, .usage, "-m needs the release's notes, once. Run 'cid tag <name> -m \"what this release is\"'.", .{});
+            notes = args[i];
+        } else if (std.mem.eql(u8, args[i], "--trained-on")) {
             i += 1;
             if (i >= args.len) return common.fail(ctx, .usage, "--trained-on needs a dataset release. Run 'cid tag <name> --trained-on <dataset>@<release>', e.g. --trained-on your-org/datasets/person-vehicle@v4.2.0", .{});
             const at = std.mem.lastIndexOfScalar(u8, args[i], '@') orelse
@@ -45,7 +52,7 @@ pub fn run(ctx: *const common.Context, args: []const [:0]const u8) common.ExitCo
     const remote = common.remoteFor(ctx, dataset, .maintain, ws.config.address) catch |err|
         return common.noRemote(ctx, err, "cid tag");
 
-    const tagged = remote.tagWith(ctx.arena, name, sources.items) catch |err| switch (err) {
+    const tagged = remote.tagWith(ctx.arena, name, sources.items, notes) catch |err| switch (err) {
         error.ReleaseExists => return common.fail(ctx, .conflict, "release '{s}' already exists and releases never move. Run 'cid tag' with the next name, e.g. the next version number.", .{name}),
         error.BadReleaseName => return common.fail(ctx, .usage, "'{s}' is not a release name (letters, digits, dot, dash, underscore). Try something like v1.0.0.", .{name}),
         error.NothingToTag => return common.fail(ctx, .usage, "nothing to tag yet. Run 'cid push' first, then 'cid tag {s}' again.", .{name}),

@@ -188,7 +188,11 @@ function seedBoxesMoved() {
     message: 'reviewer moved the person box',
     author: 'user:reviewer',
   });
-  api('POST', `/v0/datasets/${name}/-/tag`, { name: 'v1.1.0' });
+  // With its own words, as `cid tag -m` gives a release.
+  api('POST', `/v0/datasets/${name}/-/tag`, {
+    name: 'v1.1.0',
+    notes: 'Review pass: the person box was redrawn.\nNothing else moved.',
+  });
 }
 
 // pycocotools rleToString, line for line: the compressed form every

@@ -82,7 +82,8 @@ cid push                        # uploads only what the server lacks
   `cid checkout --mine <path>` or `cid checkout --theirs <path>`, then
   `cid pull --continue`.
 - An interrupted `push`, `pull` or `checkout` is finished by running it again.
-- `cid tag <name>` makes a release, and `cid branch` and `cid merge` act on the
+- `cid tag <name>` makes a release (`-m "..."` gives it notes: what it is and why;
+  they can never be changed afterwards), and `cid branch` and `cid merge` act on the
   server: they are the dataset owner's decisions. Do them only when asked.
 
 ## What not to try

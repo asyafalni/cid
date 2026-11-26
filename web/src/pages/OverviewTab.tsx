@@ -33,6 +33,12 @@ export function OverviewTab({
           {o.items.toLocaleString()} {o.items === 1 ? 'item' : 'items'} · {humanBytes(o.bytes)}
           {o.classes.length > 0 && <> · {o.classes.length} classes</>}
         </p>
+        {/* The pinned release's own words, when its maker gave it any. */}
+        {pinned && o.commits.find((c) => c.release === pinned)?.notes && (
+          <p className="release-notes">
+            <span className="release-tag">{pinned}</span> {o.commits.find((c) => c.release === pinned)!.notes}
+          </p>
+        )}
         {o.policy && (
           <p className="quiet card-policy">
             Annotations made under labelling policy <span className="data">{o.policy}</span>.

@@ -1447,6 +1447,14 @@
   margin: 2px 0 0;
 }
 
+/* A release's own words: its maker's line breaks kept, long words wrapped. */
+.release-notes {
+  margin: var(--space-1) 0;
+  max-width: 70ch;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* --- files --- */
 
 .crumbs {

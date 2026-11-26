@@ -83,6 +83,8 @@ export type TapeCommit = {
   git_pending?: boolean;
   /** A release's item count. */
   items: number | null;
+  /** The release's own words (`cid tag -m`), when it has any. */
+  notes?: string | null;
   /** The release before this one, which the counts below are since; null for the first. */
   changes_from: string | null;
   added: number | null;

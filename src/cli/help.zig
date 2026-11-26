@@ -103,7 +103,8 @@ const commands = [_]Command{
         .{ .flag = "--git <git-url>", .does = "the dataset's git repository, where cid writes one small commit per release" },
         .{ .flag = "--model", .does = "the folder holds a model's files (weights, configuration), not a dataset" },
     } },
-    .{ .name = "tag", .usage = "cid tag <name> [--trained-on <dataset>@<release>]...", .does = "Make a release of the pushed head. A release never moves or changes; tagging an existing name is an error.", .group = .owner, .network = true, .changes = .server, .flags = &.{
+    .{ .name = "tag", .usage = "cid tag <name> [-m <notes>] [--trained-on <dataset>@<release>]...", .does = "Make a release of the pushed head. A release never moves or changes; tagging an existing name is an error.", .group = .owner, .network = true, .changes = .server, .flags = &.{
+        .{ .flag = "-m <notes>", .does = "the release's own words: what it is and why, shown in its history and in git; kept with it, never changed" },
         .{ .flag = "--trained-on <dataset>@<release>", .does = "for a model: a dataset release it was trained on; repeatable" },
     } },
     .{ .name = "branch", .usage = "cid branch <name>", .does = "Start a draft line of work from main; 'cid checkout <name>' then works on it.", .group = .owner, .network = true, .changes = .server },

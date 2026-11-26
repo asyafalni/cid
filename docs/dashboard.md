@@ -314,7 +314,9 @@ Every dataset page (all five tabs) shares one header and the release tape.
   size are (`overview?release=`; a release is found by name, so one older than the
   tape's 100 commits pins too). An annotated dataset's card also names the newest
   labelling policy its annotations were made under (not for a restricted one, as in
-  git). *Planned:* last release notes, and the owners' own words
+  git). *Built (2026-11-26):* the pinned release's notes, when it was made with any
+  (`cid tag <name> -m "..."`; a release older than the tape's 100 commits shows them
+  in its git changelog only). *Planned:* the owners' own words
   (purpose, collection method, known gaps), which wait on card editing, a parked
   decision.
 - *Planned:* **Card completeness** (owner-only): a checklist like Kaggle's usability
@@ -466,7 +468,14 @@ Every dataset page (all five tabs) shares one header and the release tape.
   form is known (GitLab, GitHub); one not there yet says "not in git yet".
   A release touched by `cid admin purge` says "intact except N purged items": a
   count, never the paths (`docs/data-model.md`), counted only for a dataset that holds
-  purged content. *Planned:* release notes and quality numbers per release.
+  purged content. *Built (2026-11-26):* release notes: a release's own words, given
+  once with `cid tag <name> -m "..."` (or `notes` in the tag API, as the annotation
+  platform gives them), at most 4,000 bytes of plain text, kept with the release and
+  never changed, as the release is not (invariant 5; `refs.notes`). Shown under the
+  release in the timeline with their line breaks, on the Overview card for the
+  pinned release, and in the dataset repository's `CHANGELOG.md` above the commit's
+  message (never for a restricted dataset). A release made without has none, and
+  renders in git exactly as before. *Planned:* quality numbers per release.
 - **Compare** any two versions (releases or commits, picked as A and B; the pair is in
   the URL; by default the two newest releases). On a branch, main's versions are on
   offer too, grouped by branch, and "Compare with main" sets main's head against the
@@ -738,8 +747,8 @@ split sizes and labelling policy only); Browse has no filter by an item's source
 (camera, video, feed) yet; the Releases timeline is partial (message, date, author,
 id, each release's item count and changes since the one before, and "not in git
 yet" on a release the server has not written to the dataset repository, else a
-link to its tag on GitLab or GitHub, and a purged-items count; no release notes or
-quality) and covers `main`
+link to its tag on GitLab or GitHub, a purged-items count, and its notes; no
+quality numbers) and covers `main`
 or the branch picked (any commit on it can be pinned).
 
 *Delivered ahead of Phase 2:* table statistics. A CSV, Parquet or JSONL item opens as a

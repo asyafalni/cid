@@ -1920,7 +1920,13 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     _ = try cid.client.workspace.add(arena, io, &pws, cache.dir, &.{"."});
     _ = try cid.client.workspace.commit(arena, io, &pws, "second release content", "user:test");
     _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
-    _ = try remote.tag(arena, "v2.0.0");
+    // With its own words (`cid tag -m`): kept, trimmed; too long is refused
+    // in the server's words before anything is made.
+    const long_notes = try arena.alloc(u8, cid.api.max_release_notes + 1);
+    @memset(long_notes, 'x');
+    try std.testing.expect((try remote.tagWith(arena, "v2.0.0", &.{}, long_notes)) == .refused);
+    const noted = (try remote.tagWith(arena, "v2.0.0", &.{}, "  Adds b.txt.\nSecond line.\n")).made;
+    try std.testing.expectEqualStrings("Adds b.txt.\nSecond line.", noted.notes.?);
 
     // Re-processing changes nothing: rendering is deterministic.
     const again = try cid.gitrepo.writer.processDataset(arena, io, &standalone.db, &scope, deps.git.?, "test/datasets/gitw");
@@ -1937,6 +1943,12 @@ test "git writer: one commit and tag per release, idempotent, resumable" {
     const v2_at = std.mem.indexOf(u8, changelog, "v2.0.0").?;
     const v1_at = std.mem.indexOf(u8, changelog, "v1.0.0").?;
     try std.testing.expect(v2_at < v1_at);
+    // The release's notes are in git, above its commit's message, and on
+    // the dashboard's tape; a release made without has none.
+    try std.testing.expect(std.mem.indexOf(u8, changelog, "\n\nAdds b.txt.\nSecond line.\n\nsecond release content\n") != null);
+    const tape = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/test/datasets/gitw/-/overview", "Bearer test-token", "");
+    try std.testing.expect(std.mem.indexOf(u8, tape.body, "\"notes\":\"Adds b.txt.\\nSecond line.\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tape.body, "\"notes\":null") != null);
     // Each release says what changed since the one before: v2 added b.txt.
     try std.testing.expect(std.mem.indexOf(u8, changelog, "Since v1.0.0: 1 file added, 0 modified, 0 deleted.") != null);
     try std.testing.expect(std.mem.indexOf(u8, changelog, "The first release.") != null);
@@ -5434,7 +5446,7 @@ test "models: a third kind, versioned exactly like a file dataset, and served to
     _ = try cid.client.workspace.commit(arena, io, &pws, "retrained", "user:test");
     _ = try cid.client.sync.push(arena, io, &pws, cache.dir, &remote);
     // Refused before anything is made: a release that does not exist.
-    switch (try remote.tagWith(arena, "v1.1.0", &.{.{ .dataset = "test/datasets/street", .release = "v9" }})) {
+    switch (try remote.tagWith(arena, "v1.1.0", &.{.{ .dataset = "test/datasets/street", .release = "v9" }}, null)) {
         .refused => |r| try std.testing.expect(std.mem.indexOf(u8, r.what, "no release 'v9'") != null),
         .made => return error.TestTaggedOnAMissingRelease,
     }
@@ -5446,11 +5458,11 @@ test "models: a third kind, versioned exactly like a file dataset, and served to
     try std.testing.expectEqual(std.http.Status.unprocessable_entity, unseen.status);
     try std.testing.expect(std.mem.indexOf(u8, unseen.body, "no release 'v4.2.0' of a dataset 'test/datasets/street' that you can read") != null);
     // A dataset's release records no sources.
-    switch (try street.tagWith(arena, "v4.3.0", &.{.{ .dataset = "test/models/detector", .release = "v1.0.0" }})) {
+    switch (try street.tagWith(arena, "v4.3.0", &.{.{ .dataset = "test/models/detector", .release = "v1.0.0" }}, null)) {
         .refused => |r| try std.testing.expect(std.mem.indexOf(u8, r.what, "only a model's release") != null),
         .made => return error.TestDatasetRecordedSources,
     }
-    const trained = switch (try remote.tagWith(arena, "v1.1.0", &.{.{ .dataset = "test/datasets/street", .release = "v4.2.0" }})) {
+    const trained = switch (try remote.tagWith(arena, "v1.1.0", &.{.{ .dataset = "test/datasets/street", .release = "v4.2.0" }}, null)) {
         .made => |r| r,
         .refused => |r| {
             std.debug.print("refused: {s}\n", .{r.what});

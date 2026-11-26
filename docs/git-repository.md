@@ -35,8 +35,9 @@ once a dataset is restricted or too large) is removed; nothing else ever is.
 README.md          dataset name; latest release, item count, total size and date;
                    `cid clone <git-url>`; one link to browse this release in the
                    dashboard; then the release's card fields (see below)
-CHANGELOG.md       every release in full, newest first: name, date, message, item count,
-                   and what changed since the release before it (see below)
+CHANGELOG.md       every release in full, newest first: name, date, its notes when it
+                   was made with any (`cid tag -m`), message, item count, and what
+                   changed since the release before it (see below)
 release.json       dataset, release, commit (cid commit id), manifest_hash,
                    created_at (date), items, changes_from and changes (the counts
                    below), clone (the git URL), dashboard (server URL); a model
@@ -70,7 +71,7 @@ in this order: purpose, collection, license, provenance, known gaps; any other t
 fields follow, by name. Empty fields are left out.
 
 **Restricted datasets** get counts only: `README.md` without the card, `CHANGELOG.md`
-without release messages (the change counts stay, with no names), `stats.yaml` without class or split names (the annotation
+without release notes or messages (the change counts stay, with no names), `stats.yaml` without class or split names (the annotation
 total only), `release.json` and `.cid`. No `files.txt`, `classes.yaml` or `policy.md`.
 
 **What cid never writes to git:** data files, previews, the Parquet manifest, and any

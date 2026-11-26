@@ -156,7 +156,8 @@ echo "hello again" > a.txt
 expect_ok   "commit -a" "$CID" commit -am "second"
 expect_hint "tag with unpushed commits"       "$CID" tag v1.1.0
 expect_ok   "push again" "$CID" push
-expect_ok   "tag v1.1.0" "$CID" tag v1.1.0
+expect_hint "tag -m without its notes"        "$CID" tag v1.1.0 -m
+expect_ok   "tag v1.1.0, with its notes" "$CID" tag v1.1.0 -m "The second hello."
 
 # --- a model, trained on that dataset's release ------------------------------
 MODEL="usability/models/detector-$(date +%s)-$$"

@@ -97,7 +97,7 @@ cd "$WORK/b" || exit 1
 printf '3,theirs\n' >> calls.csv
 run 0 "commit -a in the clone" "d['changes'] == 1" -- "$CID" commit -a -m "Theirs" --json
 run 0 "push from the clone"    "d['pushed_commits'] == 1" -- "$CID" push --json
-run 0 "a second release"       "True" -- "$CID" tag v1.1.0 --json
+run 0 "a second release, with its notes" "d['notes'] == 'Adds a call.'" -- "$CID" tag v1.1.0 -m "Adds a call." --json
 
 cd "$WORK/a" || exit 1
 printf '3,mine\n' >> calls.csv

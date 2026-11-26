@@ -2248,6 +2248,8 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Calle
         ann_removed: ?i64,
         /// Absent from releases made before it was counted.
         split: ?i64,
+        /// The release's own words (`cid tag -m`), when it has any.
+        notes: ?[]const u8,
     };
     const tape = deps.db.raw(TapeEntry, scope, "SELECT c.commit_id::text AS id, c.message, c.author, " ++
         "(extract(epoch from c.recorded_at) * 1000)::bigint AS at_ms, rel.name AS release, coalesce(rel.pending, false) AS git_pending, " ++
@@ -2255,9 +2257,9 @@ fn overview(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Calle
         "(rel.changes->>'added')::bigint AS added, (rel.changes->>'modified')::bigint AS modified, " ++
         "(rel.changes->>'deleted')::bigint AS deleted, (rel.changes->>'ann_added')::bigint AS ann_added, " ++
         "(rel.changes->>'ann_changed')::bigint AS ann_changed, (rel.changes->>'ann_removed')::bigint AS ann_removed, " ++
-        "(rel.changes->>'split')::bigint AS split " ++
+        "(rel.changes->>'split')::bigint AS split, rel.notes " ++
         "FROM commits c LEFT JOIN LATERAL (" ++
-        "  SELECT name, changes_from, changes, " ++ git_pending_sql ++ " AS pending FROM refs r WHERE r.dataset_id = c.dataset_id " ++
+        "  SELECT name, changes_from, changes, notes, " ++ git_pending_sql ++ " AS pending FROM refs r WHERE r.dataset_id = c.dataset_id " ++
         "  AND r.commit_id = c.commit_id AND r.kind = 'release' ORDER BY name LIMIT 1) rel ON true " ++
         "WHERE c.dataset_id = $1::uuid AND c.branch = $2 " ++
         "ORDER BY c.commit_id DESC LIMIT 100", .{ ds.id, branch }) catch return error.Db;
@@ -2878,7 +2880,14 @@ const TagBody = struct {
     branch: []const u8 = "main",
     /// A model release: the dataset releases it was trained on.
     trained_on: []const Source = &.{},
+    /// The release's own words (`cid tag -m`): what it is and why, kept
+    /// with it and never changed.
+    notes: ?[]const u8 = null,
 };
+
+/// A release's notes hold this many bytes at most: a few paragraphs, small
+/// enough for every release's to sit in the dataset repository's changelog.
+pub const max_release_notes = 4000;
 
 pub const Source = struct { dataset: []const u8, release: []const u8 };
 
@@ -2900,12 +2909,24 @@ const SourceRow = struct { dataset_id: []const u8, name: []const u8, release: []
 /// A refusal of `--trained-on`, told apart from the other 422s so `cid tag`
 /// prints the server's words.
 fn refusedSources(arena: std.mem.Allocator, what: []const u8, next: []const u8) HandleError!Response {
-    return json(arena, .unprocessable_entity, .{ .@"error" = what, .next = next, .trained_on = true });
+    return json(arena, .unprocessable_entity, .{ .@"error" = what, .next = next, .trained_on = true, .said = true });
 }
 
 /// `cid tag`: a release never moves once this returns (invariant 5).
 fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds: Dataset, body: []const u8) HandleError!Response {
     const req = parseBody(TagBody, arena, body) orelse return error.BadRequest;
+
+    // The release's own words, checked before anything is made: text a
+    // changelog can hold. Blank is none.
+    const notes: ?[]const u8 = if (req.notes) |raw| blk: {
+        const text = std.mem.trim(u8, raw, " \t\r\n");
+        if (text.len == 0) break :blk null;
+        if (text.len > max_release_notes)
+            return json(arena, .unprocessable_entity, .{ .@"error" = "the release notes are longer than 4,000 bytes", .next = "Shorten them (the card holds longer text), then run 'cid tag' again.", .said = true });
+        if (!std.unicode.utf8ValidateSlice(text) or std.mem.indexOfScalar(u8, text, 0) != null)
+            return json(arena, .unprocessable_entity, .{ .@"error" = "the release notes are not text", .next = "Give plain text with -m, then run 'cid tag' again.", .said = true });
+        break :blk text;
+    } else null;
 
     // What a model release was trained on, checked before anything is made:
     // a model's only, each a release the person tagging can read. One
@@ -2979,7 +3000,7 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
         work.annotations = lines.?.anns();
     }
     const t_start = std.Io.Timestamp.now(deps.io, .awake);
-    const created = release_mod.create(arena, work, deps.db, scope, deps.s3, ds.id, req.name, commit_id) catch |err| {
+    const created = release_mod.create(arena, work, deps.db, scope, deps.s3, ds.id, req.name, commit_id, notes) catch |err| {
         if (lines) |l| {
             l.discard(deps, index_files.?);
             releaseSlot(deps);
@@ -3049,6 +3070,7 @@ fn tag(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller, ds
         .items = created.items,
         .git = git_status,
         .trained_on = try sourcesOut(arena, sources.items),
+        .notes = notes,
     });
 }
 

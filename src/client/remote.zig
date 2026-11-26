@@ -413,28 +413,31 @@ pub const Remote = struct {
         manifest_hash: []const u8,
         items: u64,
         trained_on: []const Source = &.{},
+        /// The release's own words, as the server kept them.
+        notes: ?[]const u8 = null,
     };
 
     pub fn tag(self: *const Remote, arena: std.mem.Allocator, name: []const u8) Error!TagResult {
-        return switch (try self.tagWith(arena, name, &.{})) {
+        return switch (try self.tagWith(arena, name, &.{}, null)) {
             .made => |r| r,
             .refused => error.ServerRefused,
         };
     }
 
-    /// A release; a model's may name the dataset releases it was trained
-    /// on, and the server's refusal of one of those comes back in its words.
+    /// A release, with its own words if any; a model's may name the dataset
+    /// releases it was trained on. The server's refusal of the notes or of
+    /// one of those comes back in its words.
     pub const Tagged = union(enum) {
         made: TagResult,
         refused: struct { what: []const u8, next: []const u8 },
     };
 
-    pub fn tagWith(self: *const Remote, arena: std.mem.Allocator, name: []const u8, trained_on: []const Source) Error!Tagged {
-        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .name = name, .trained_on = trained_on }, .{})});
+    pub fn tagWith(self: *const Remote, arena: std.mem.Allocator, name: []const u8, trained_on: []const Source, notes: ?[]const u8) Error!Tagged {
+        const body = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(.{ .name = name, .trained_on = trained_on, .notes = notes }, .{})});
         const res = try self.send(arena, "POST", try self.target(arena, "tag", .{}), body);
         if (res.status == .unprocessable_entity) {
-            const Refusal = struct { @"error": []const u8, next: []const u8 = "", trained_on: bool = false };
-            if (parse(Refusal, arena, res.body)) |r| if (r.trained_on) return .{ .refused = .{ .what = r.@"error", .next = r.next } };
+            const Refusal = struct { @"error": []const u8, next: []const u8 = "", said: bool = false };
+            if (parse(Refusal, arena, res.body)) |r| if (r.said) return .{ .refused = .{ .what = r.@"error", .next = r.next } };
         }
         if (res.status == .conflict) return error.ReleaseExists;
         if (res.status == .bad_request) return error.BadReleaseName;

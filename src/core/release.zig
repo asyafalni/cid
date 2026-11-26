@@ -85,6 +85,8 @@ pub fn create(
     dataset_id: []const u8,
     name: []const u8,
     commit_id: []const u8,
+    /// The release's own words, or null: kept with it, never changed.
+    notes: ?[]const u8,
 ) Error!Created {
     if (!validName(name)) return error.BadName;
     const existing = db.rawOne(i64, scope, "SELECT 1::bigint FROM refs WHERE dataset_id = $1::uuid AND name = $2", .{ dataset_id, name }) catch return error.Db;
@@ -137,10 +139,10 @@ pub fn create(
         scope,
         // The card as it is now, kept with the release: re-rendering this
         // release later cannot pick up an edited card.
-        "INSERT INTO refs (dataset_id, name, kind, commit_id, manifest_path, manifest_hash, card, changes_from, changes) " ++
+        "INSERT INTO refs (dataset_id, name, kind, commit_id, manifest_path, manifest_hash, card, changes_from, changes, notes) " ++
             "VALUES ($1::uuid, $2, 'release', $3::uuid, $4, decode($5, 'hex'), " ++
-            "(SELECT body FROM dataset_cards WHERE dataset_id = $1::uuid), $6, $7::jsonb)",
-        .{ dataset_id, name, commit_id, key, @as([]const u8, &written.hash_hex.?), if (previous) |p| @as(?[]const u8, p.name) else null, changes },
+            "(SELECT body FROM dataset_cards WHERE dataset_id = $1::uuid), $6, $7::jsonb, $8)",
+        .{ dataset_id, name, commit_id, key, @as([]const u8, &written.hash_hex.?), if (previous) |p| @as(?[]const u8, p.name) else null, changes, notes },
     ) catch return error.Db;
     return .{ .name = name, .commit_id = commit_id, .manifest_hash = written.hash_hex.?, .items = written.items };
 }
