@@ -1281,6 +1281,24 @@ test "sync: the file-dataset round trip (push, clone, pull, checkout, stale)" {
     _ = try cid.client.workspace.commit(arena, io, &pws, "second", "user:producer");
     const push2 = try cid.client.sync.push(arena, io, &pws, producer_cache.dir, &remote);
     try std.testing.expectEqual(@as(u32, 1), push2.pushed_commits);
+    // The producer goes back to a commit it made itself: it was pushed, so
+    // nothing reads as unpushed there, and it can come back to the head.
+    {
+        const unpushedAt = struct {
+            fn n(al: std.mem.Allocator, i: std.Io, ws: *cid.client.workspace.Workspace) !usize {
+                return (try cid.client.local.listUnpushed(al, i, ws.cid_dir, cid.client.local.readLastPushed(al, i, ws.cid_dir))).len;
+            }
+        }.n;
+        var commits_dir = try pws.cid_dir.openDir(io, "commits", .{ .iterate = true });
+        defer commits_dir.close(io);
+        var left = commits_dir.iterate();
+        try std.testing.expect((try left.next(io)) == null); // pushed: no commit file stays
+        const head2 = (try remote.head(arena, "main")).?;
+        _ = try cid.client.sync.checkout(arena, io, &pws, producer_cache.dir, &remote, "main", &first.id.toString(), false);
+        try std.testing.expectEqual(@as(usize, 0), try unpushedAt(arena, io, &pws));
+        _ = try cid.client.sync.checkout(arena, io, &pws, producer_cache.dir, &remote, "main", head2, false);
+        try std.testing.expectEqual(@as(usize, 0), try unpushedAt(arena, io, &pws));
+    }
 
     // Reader pulls the fast-forward.
     const pulled = try cid.client.sync.pull(arena, io, &rws, reader_cache.dir, &remote);

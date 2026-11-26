@@ -138,6 +138,10 @@ pub fn push(
     outcome.pushed_commits = @intCast(unpushed.len);
     local.writeLastPushed(io, ws.cid_dir, &unpushed[unpushed.len - 1].id.toString()) catch
         return error.CorruptLocalState;
+    // Pushed, so their history is the server's now: .cid/commits/ holds
+    // only what is not pushed. A file left behind would be taken for an
+    // unpushed commit once the folder sits on an older commit (checkout).
+    for (unpushed) |c| deleteCommitFile(io, ws, c.id);
     return outcome;
 }
 
@@ -508,6 +512,15 @@ fn deletePullState(io: std.Io, ws: *workspace.Workspace) void {
     ws.cid_dir.deleteFile(io, "pull-state") catch {};
 }
 
+fn clearCommitFiles(io: std.Io, ws: *workspace.Workspace) void {
+    var dir = ws.cid_dir.openDir(io, "commits", .{ .iterate = true }) catch return;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch return) |entry| {
+        if (entry.kind == .file) dir.deleteFile(io, entry.name) catch {};
+    }
+}
+
 fn deleteCommitFile(io: std.Io, ws: *workspace.Workspace, id: anytype) void {
     var buf: [64]u8 = undefined;
     const name = std.fmt.bufPrint(&buf, "commits/{s}", .{&id.toString()}) catch return;
@@ -537,6 +550,10 @@ pub fn checkout(
     const unpushed = local.listUnpushed(arena, io, ws.cid_dir, last_pushed) catch
         return error.CorruptLocalState;
     if (unpushed.len > 0) return error.UnpushedCommits;
+    // Nothing is unpushed, so any commit file still here was pushed (a
+    // folder from before push removed them): clear them, or the commit
+    // checked out would read as unpushed.
+    clearCommitFiles(io, ws);
 
     const items = (try subsetItems(arena, remote, workspace.Subset.of(ws.config), commit_id)).items;
     const changed = (try materialize(arena, io, ws, cache_dir, remote, items)).changed;
