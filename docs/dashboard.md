@@ -180,11 +180,6 @@ the tagline in its three places, and the reduced-motion switch. Items marked
 - **The logo is the airship** (decided with the owner 2026-11-27). The top bar
   carries it small beside the name (`AirshipMark`, a few heavy lines that hold at
   24 px), the favicon draws it in pixels, and the home page flies it large.
-- **The goggles** (2026-11-27): an engineer's goggles that spell the name, on the
-  sign-in page. The left lens is the c, the bridge with its rivet the i, the right
-  lens and its stem the d; brass rims, an aether rivet, the sky at dusk in the
-  lenses (`web/src/Goggles.tsx`). Our own drawing, like the airship: goggles are
-  an engineer's, not any character's (the name rule in `CLAUDE.md`).
 - **Pixel touches, small and few:** the favicon is a pixel airship, and each release
   badge carries a 6 × 4 pixel gem in brass. Nowhere else.
 - **Tagline.** In the product UI, "cid · Controlled Iterative Datasets" appears in

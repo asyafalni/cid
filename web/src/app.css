@@ -407,13 +407,6 @@
 
 .signin-wordmark {
   font-size: 3rem;
-  line-height: 1;
-}
-
-.signin-logo {
-  display: block;
-  height: 4.5rem;
-  width: auto;
 }
 
 .signin form {
