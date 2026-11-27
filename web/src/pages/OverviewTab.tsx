@@ -104,10 +104,10 @@ export function OverviewTab({
           <BarTable caption="Items by split" noun="items" rows={o.splits.map((s) => ({ name: s.name, value: s.count }))} />
         )}
         <Lineage overview={o} />
-        <DeployKeys name={o.name} />
+        <DeployKeys name={o.name} noun={o.kind === 'model' ? 'model' : 'dataset'} />
         <p className="quiet">
-          Purpose, collection method and known gaps are written by the owners in the dataset's
-          card; each release keeps a copy, shown in its git repository's README.
+          Purpose, collection method and known gaps are written by the owners in the{' '}
+          {o.kind === 'model' ? "model's" : "dataset's"} card; each release keeps a copy, shown in its git repository's README.
         </p>
       </section>
 
@@ -154,17 +154,32 @@ const shownTypes = 8;
 
 const noneHidden: ReadonlySet<string> = new Set();
 
+/** A file whose name starts with a dot: cid's or a tool's settings, not data. */
+function dotfile(path: string): boolean {
+  return (path.split('/').pop() ?? '').startsWith('.');
+}
+
 // A look inside: eight items spread over the version, the same eight each
 // time (chosen by a hash of their paths), as Browse shows them (real
 // previews with their annotations drawn, or type tiles), each opening in
-// Browse. One request for the sample and one for its thumbnails.
+// Browse. One request for a wider sample and one for its thumbnails; the
+// eight shown are those with a picture first, a settings file such as
+// .cidkeys last, in the sample's own order.
+const shown_inside = 8;
+const sampled_inside = 24;
 function LookInside({ overview: o, commit, pin }: { overview: Overview; commit: string; pin: Pin }) {
   const sample = useQuery({
     queryKey: ['look-inside', o.name, commit],
     queryFn: async () => {
-      const page = await getBrowse(o.name, commit, { limit: 8, facets: false, sample: true });
-      const thumbs = await thumbsFor(o.name, page.items);
-      return { items: page.items, thumbs: new Map(thumbs.map((t) => [t.hash, t.url])) };
+      const page = await getBrowse(o.name, commit, { limit: sampled_inside, facets: false, sample: true });
+      const thumbs = new Map((await thumbsFor(o.name, page.items)).map((t) => [t.hash, t.url]));
+      const rank = (path: string, hash: string) => (thumbs.has(hash) ? 0 : 1) + (dotfile(path) ? 2 : 0);
+      const items = page.items
+        .map((item, i) => ({ item, i }))
+        .sort((x, y) => rank(x.item.path, x.item.hash) - rank(y.item.path, y.item.hash) || x.i - y.i)
+        .slice(0, shown_inside)
+        .map((x) => x.item);
+      return { items, thumbs };
     },
   });
   // Its room is kept while the sample is on its way (U3: nothing jumps).
@@ -175,7 +190,7 @@ function LookInside({ overview: o, commit, pin }: { overview: Overview; commit: 
           <h2>A look inside</h2>
         </div>
         <ul className="look-inside-strip">
-          {Array.from({ length: Math.min(8, o.items) }, (_, i) => (
+          {Array.from({ length: Math.min(shown_inside, o.items) }, (_, i) => (
             <li key={i}>
               <span className="tile look-tile tile--skeleton">
                 <span className="skeleton-block tile-skeleton-media" />
@@ -450,7 +465,7 @@ function pythonFor(format: string, folder: string): string {
 // A dataset's deploy keys, for its owners: read here, changed with
 // `cid deploy-key` (invariant 17: the dashboard changes no data). Anyone
 // else is refused by the server, and sees nothing of them.
-function DeployKeys({ name }: { name: string }) {
+function DeployKeys({ name, noun }: { name: string; noun: string }) {
   const keys = useQuery({
     queryKey: ['deploy-keys', name],
     queryFn: () => getDeployKeys(name),
@@ -472,7 +487,7 @@ function DeployKeys({ name }: { name: string }) {
         </tbody>
       </table>
       <p className="quiet">
-        {keys.data.keys.length === 0 ? 'None yet. ' : ''}A machine (CI) reaches this dataset with its own SSH key:{' '}
+        {keys.data.keys.length === 0 ? 'None yet. ' : ''}A machine (CI) reaches this {noun} with its own SSH key:{' '}
         <code className="data">cid deploy-key add &lt;name&gt; &lt;key.pub&gt; [--write]</code> in a clone.
       </p>
     </section>

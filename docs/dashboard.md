@@ -325,7 +325,10 @@ Every dataset page (all five tabs) shares one header and the release tape.
 - **A look inside** (built): eight of the pinned version's items, spread over it and
   the same eight on every visit (chosen by a hash of their paths, so a release that
   keeps most paths keeps most of its sample), as Browse shows them (previews with annotations drawn, type tiles for the rest),
-  each opening in Browse; one sample request and one thumbnail request.
+  each opening in Browse; one sample request and one thumbnail request. The eight come
+  from a sample of 24: those with a preview first, a settings file (a name starting
+  with a dot, such as `.cidkeys`) last, so a dataset with waveforms never opens on a
+  tile that says "file".
 - **Use this dataset** (built; "Use this model" on a model): a second snippet reads
   the pinned release with Hugging Face libraries and no clone (`load_dataset`, or
   `AutoModel.from_pretrained` for a model) through the server's Hugging Face door,

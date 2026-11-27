@@ -464,6 +464,10 @@ test('the overview opens with a look inside: real items, their annotations, each
   const media = page.getByRole('region', { name: 'A look inside' });
   await expect(media.getByRole('link', { name: /notes\.txt/ }).getByText('.txt', { exact: true })).toBeVisible();
   await expect(media.getByRole('link', { name: /tone\.wav/ }).locator('img')).toBeVisible();
+  // A settings file such as .cidkeys is shown last, after the data.
+  await page.goto('/d/e2e/datasets/tables');
+  await expect(page.getByRole('region', { name: 'A look inside' }).getByRole('link').last()).toHaveAccessibleName(/\.cidkeys/);
+  await page.goto('/d/e2e/datasets/media');
   // No release yet: the facts, not an empty tape.
   await expect(page.getByText(/\d+ commits, no releases yet\./)).toBeVisible();
 
