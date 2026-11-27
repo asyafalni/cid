@@ -359,7 +359,8 @@ Every dataset page (all five tabs) shares one header and the release tape.
 - **Filters.** *Built:* path contains, split, class, file type and (annotated datasets)
   annotation count in buckets (none, 1, 2–4, 5–9, 10+: "none" finds what is left to
   label; the counts read as a histogram, in bucket order), each a facet counted
-  against the other filters, all in the URL. The count is a column of the browse
+  against the other filters, all in the URL. A version none of whose items has a
+  split shows no split filter, and the table view no split column. The count is a column of the browse
   index (format v3, `ann_count`); measured at 1M items against the build before it,
   same data, back to back: 5–8% more server CPU for a page with its facets, medians
   0–10% slower (unfiltered about 360 to 390 ms). And by attribute value

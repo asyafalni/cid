@@ -162,7 +162,8 @@ export function BrowseTab({
           if (openItem !== undefined) step(-1);
           return;
         case 'f': {
-          // The first filter after the path search: the split.
+          // The first filter after the path search: the split, when the
+          // version has splits.
           const first = searchRef.current?.parentElement?.querySelector('select');
           if (!first) return;
           e.preventDefault();
@@ -224,6 +225,9 @@ export function BrowseTab({
   const matched = first.matched;
   const items = loaded;
   const splitFacet = first.facets.split;
+  // A version none of whose items has a split shows no split filter or
+  // column: a choice of only "no split" says nothing.
+  const hasSplits = overview.splits.length > 0 || filters.split !== undefined;
   const classFacet = first.facets.class;
   const typeFacet = first.facets.type;
   const filtered = anyFilter(filters);
@@ -292,13 +296,15 @@ export function BrowseTab({
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
           />
-          <FacetSelect
-            label="split"
-            facets={splitFacet}
-            value={filters.split}
-            blank="no split"
-            onChange={(v) => onFilters({ split: v })}
-          />
+          {hasSplits && (
+            <FacetSelect
+              label="split"
+              facets={splitFacet}
+              value={filters.split}
+              blank="no split"
+              onChange={(v) => onFilters({ split: v })}
+            />
+          )}
           {classFacet.length > 0 && (
             <FacetSelect
               label="class"
@@ -538,7 +544,7 @@ export function BrowseTab({
           onOpenItem={onOpenItem}
         />
       ) : (
-        <VirtualTable items={items} openItem={openItem} onOpenItem={onOpenItem} />
+        <VirtualTable items={items} splits={hasSplits} openItem={openItem} onOpenItem={onOpenItem} />
       )}
 
       {pages.hasNextPage && mode !== 'sql' && (
@@ -1195,10 +1201,12 @@ function VirtualGallery({
 // full count told to assistive technology.
 function VirtualTable({
   items,
+  splits,
   openItem,
   onOpenItem,
 }: {
   items: BrowseItem[];
+  splits: boolean;
   openItem: string | undefined;
   onOpenItem: (path: string | undefined) => void;
 }) {
@@ -1223,14 +1231,14 @@ function VirtualTable({
         <tr aria-rowindex={1}>
           <th className="path-col">path</th>
           <th className="num">size</th>
-          <th>split</th>
+          {splits && <th>split</th>}
           <th>hash</th>
         </tr>
       </thead>
       <tbody ref={ref}>
         {top > 0 && (
           <tr aria-hidden="true" className="spacer" style={{ height: top }}>
-            <td colSpan={4} />
+            <td colSpan={splits ? 4 : 3} />
           </tr>
         )}
         {rows.map((row) => {
@@ -1246,7 +1254,7 @@ function VirtualTable({
             >
               <td className="data">{item.path}</td>
               <td className="data num">{humanBytes(item.size)}</td>
-              <td>{item.split ?? '—'}</td>
+              {splits && <td>{item.split ?? '—'}</td>}
               <td>
                 <HashChip hash={item.hash} />
               </td>
@@ -1255,7 +1263,7 @@ function VirtualTable({
         })}
         {bottom > 0 && (
           <tr aria-hidden="true" className="spacer" style={{ height: bottom }}>
-            <td colSpan={4} />
+            <td colSpan={splits ? 4 : 3} />
           </tr>
         )}
       </tbody>

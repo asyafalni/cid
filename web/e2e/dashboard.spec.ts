@@ -1578,6 +1578,17 @@ test('the List view plays sound in place and reads text\'s opening line', async 
   await expect(page.getByRole('complementary', { name: 'notes.txt' })).toBeVisible();
 });
 
+test('a version without splits shows no split filter or column', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/tables?view=browse&mode=table');
+  await expect(page.getByRole('row', { name: /people\.csv/ })).toBeVisible();
+  await expect(page.getByLabel('Filter by split')).toHaveCount(0);
+  await expect(page.getByRole('columnheader', { name: 'split' })).toHaveCount(0);
+  await page.goto('/d/e2e/datasets/boxes?view=browse&mode=table');
+  await expect(page.getByLabel('Filter by split')).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: 'split' })).toBeVisible();
+});
+
 test('every tab answers the keyboard: numbers switch tabs, c compares, f filters, ? lists them', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/boxes?view=overview');
