@@ -131,7 +131,7 @@ function CopyLine({ label, text }: { label: string; text: string }) {
     <div className="token-line">
       <span className="quiet token-line-label">{label}</span>
       <div className="command-row">
-        <code className="command data">{text}</code>
+        <code className="command data" tabIndex={0}>{text}</code>
         <button
           className="chip"
           aria-label={`Copy: ${label}`}

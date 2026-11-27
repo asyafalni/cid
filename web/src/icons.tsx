@@ -1,7 +1,10 @@
 import type { ReactNode } from 'react';
 
 // cid's own icons (docs/dashboard.md §3.5, roadmap U16): one small set in
-// the airship's hand. A 20 px grid, 1.5 px strokes in the text's colour,
+// the airship's hand, and where a thing has one, an object from its
+// engineer's workshop: a gauge for health, goggles for looking, a pennant
+// for a release, the logbook, a blueprint, a crate, a gear. Marks that
+// must be read at once (tick, cross, copy, download) stay the plain ones. A 20 px grid, 1.5 px strokes in the text's colour,
 // square caps and mitred corners, as a draughtsman's pen leaves them; a
 // filled dot or square where a rivet or a handle would be. Inline SVG, no
 // icon font and no dependency. An icon is decoration beside its words
@@ -24,34 +27,61 @@ const shapes = {
     </>
   ),
   model: (
+    // A gear: the engine a training run built.
     <>
-      <path d="M5.4 8.8l3.2-2.6M5.4 11.2l3.2 2.6M11.4 6.2l3.2 2.6M11.4 13.8l3.2-2.6" />
-      <circle cx="4" cy="10" r="1.75" />
-      <circle cx="10" cy="5" r="1.75" />
-      <circle cx="10" cy="15" r="1.75" />
-      <circle cx="16" cy="10" r="1.75" />
+      <circle cx="10" cy="10" r="4.6" />
+      <circle className="icon-fill" cx="10" cy="10" r="1.3" />
+      <path d="M10 2.5v2.9M10 14.6v2.9M2.5 10h2.9M14.6 10h2.9M4.7 4.7l2 2M13.3 13.3l2 2M4.7 15.3l2-2M13.3 6.7l2-2" />
     </>
   ),
   // Where you are: the tabs.
   overview: (
+    // A blueprint: the drawing of the whole machine.
     <>
       <path d="M3.5 3.5h13v13h-13z" />
-      <path d="M6.5 7.5h7M6.5 10.5h7M6.5 13.5h4" />
+      <circle cx="8.5" cy="8.7" r="2.4" />
+      <path d="M11 8.7h3M6 13.5h8" />
     </>
   ),
-  browse: <path d="M3.5 3.5H9V9H3.5zM11 3.5h5.5V9H11zM3.5 11H9v5.5H3.500zM11 11h5.5v5.5H11z" />,
-  releases: (
+  browse: (
+    // The engineer's goggles: for looking closely.
     <>
-      <path d="M3.5 3.5H10l6.5 6.5-6.5 6.5L3.5 10z" />
-      <circle className="icon-fill" cx="7" cy="7" r="1.1" />
+      <circle cx="5.9" cy="10.5" r="3.6" />
+      <circle cx="14.1" cy="10.5" r="3.6" />
+      <path d="M9.5 9.8h1M2.3 9.6L1 9.2M17.7 9.6l1.3-.4" />
     </>
   ),
-  health: <path d="M2.5 10.5H6l2-5 3.5 9.5 2-4.5h4" />,
+  releases: (
+    // A pennant on its mast: flown when a release is made.
+    <>
+      <path d="M5 2.5v15" />
+      <path d="M5 4h11l-3 3 3 3H5" />
+    </>
+  ),
+  health: (
+    // A pressure gauge.
+    <>
+      <circle cx="10" cy="10" r="7.25" />
+      <path d="M10 2.750v1.750M2.75 10H4.500M17.25 10H15.500M4.9 4.900l1.2 1.200M15.1 4.900l-1.2 1.2" />
+      <path d="M10 10l3.2-3.7" />
+      <circle className="icon-fill" cx="10" cy="10" r="1.3" />
+    </>
+  ),
+  // A cargo crate: the hold, where the files are.
+  crate: (
+    <>
+      <path d="M2.5 7.500h15v9h-15z" />
+      <path d="M4 7.500v-3h12v3" />
+      <path d="M7.5 7.500v9M12.5 7.500v9" />
+    </>
+  ),
   folder: <path d="M2.5 4.5h5l2 2.5h8v9h-15z" />,
   activity: (
+    // The logbook.
     <>
-      <circle cx="10" cy="10" r="7" />
-      <path d="M10 6v4.5l3 1.5" />
+      <path d="M4 3h12v14H4z" />
+      <path d="M7 3v14" />
+      <path d="M9.5 7h4M9.5 10h4M9.5 13h2.5" />
     </>
   ),
   // How it is.
@@ -132,8 +162,11 @@ const shapes = {
   ),
   eye: (
     <>
-      <path d="M2 10c2-3.5 4.7-5 8-5s6 1.5 8 5c-2 3.5-4.7 5-8 5s-6-1.5-8-5z" />
-      <circle cx="10" cy="10" r="2.2" />
+      <circle cx="5.9" cy="10.5" r="3.6" />
+      <circle cx="14.1" cy="10.5" r="3.6" />
+      <path d="M9.5 9.8h1M2.3 9.6L1 9.2M17.7 9.6l1.3-.4" />
+      <circle className="icon-fill" cx="5.9" cy="10.5" r="1.1" />
+      <circle className="icon-fill" cx="14.1" cy="10.5" r="1.1" />
     </>
   ),
   clock: (

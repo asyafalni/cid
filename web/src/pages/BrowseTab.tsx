@@ -817,7 +817,7 @@ export function ItemDrawer({
           {children}
           {url && (
             <a className="action drawer-download" href={url} download>
-              Download the file
+              <Icon name="download" /> Download the file
             </a>
           )}
         </div>

@@ -253,7 +253,7 @@ export function DatasetOverview() {
           className={view === 'files' ? 'tab on' : 'tab'}
           aria-current={view === 'files' ? 'page' : undefined}
         >
-          <Icon name="folder" />
+          <Icon name="crate" />
           Files
         </Link>
         <Link
@@ -392,7 +392,7 @@ function CommandBar({ shown, view }: { shown: Shown | null; view: string }) {
   return (
     <section className="command-bar" aria-label="Command">
       <div className="command-row">
-        <code className="command data">{shown.command}</code>
+        <code className="command data" tabIndex={0}>{shown.command}</code>
         <button
           className="action"
           onClick={() =>

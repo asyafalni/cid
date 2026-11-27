@@ -258,14 +258,20 @@ the text's size.
   dataset's header; a file's kind on its type tile (picture, table, text, sound,
   video, document, weights, or a plain file), over its type in words (`TypeTile`).
 - **Where you are:** the six tabs; the sidebar's headings; a folder in Files.
+- **From the engineer's workshop** (the owner's direction, 2026-11-27): where a
+  thing has an object there, the icon is that object. A blueprint for Overview,
+  goggles for Browse (and for revealing), a pennant for Releases, a pressure gauge
+  for Health, a cargo crate for Files, the logbook for Activity, a gear for a
+  model. Marks that must be read at once (tick, cross, warning, copy, download,
+  search) stay the plain ones. All our own drawings (the name rule, `CLAUDE.md`).
 - **How it is:** pass, warning, fail and note in Health and on a card.
-- **What you can do:** star (filled when on), close, the chip's ×, "View in git",
-  "Show command", "Filters".
+- **What you can do:** copy (a tick once copied), download, star (filled when on),
+  close, the chip's ×, "View in git", "Show command", "Filters".
+- **What changed:** added, removed and changed beside the word, in a compare.
 
 Rules: an icon is decoration beside its words (`aria-hidden`), and where it stands
 alone the control carries the name; never colour alone; none in a table's cells of
-data or over a picture (3.4). Not yet drawn in: copy and download beside their
-words, and compare's added, changed and removed.
+data or over a picture (3.4).
 
 ### 3.4 Rules that keep beauty from hurting use
 

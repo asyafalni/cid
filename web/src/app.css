@@ -3915,3 +3915,16 @@ button.ann-attr:focus-visible {
   width: 1rem;
   height: 1rem;
 }
+
+.action .icon,
+.file-download .icon,
+.change-verb .icon {
+  width: 1.1em;
+  height: 1.1em;
+}
+
+/* A long command scrolls sideways in its box: the keyboard reaches it. */
+.command:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}

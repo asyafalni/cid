@@ -9,6 +9,7 @@ import { gitTagUrl, humanBytes } from '../format';
 import { DumbbellTable, type PairRow } from '../Bars';
 import { classColor } from '../shapes';
 import { VisualDiff } from '../VisualDiff';
+import { Icon } from '../icons';
 
 /** The most pairs a compare's first page pictures (browse.visual_items). */
 const visual_items = 60;
@@ -472,7 +473,9 @@ function Comparison({
         <ul className="change-list">
           {changes.map((c) => (
             <li key={c.path} className="change">
-              <span className={`change-verb change-verb--${c.change === 'split' ? 'modified' : c.change}`}>{c.change}</span>
+              <span className={`change-verb change-verb--${c.change === 'split' ? 'modified' : c.change}`}>
+                <Icon name={c.change === 'added' ? 'added' : c.change === 'deleted' ? 'removed' : 'changed'} /> {c.change}
+              </span>
               <span className="data change-path">{c.path}</span>
               {c.change === 'split' ? (
                 <span className="data">
@@ -525,7 +528,7 @@ function Comparison({
           {first.ann_changes.map((c, i) => (
             <li key={i} className="change">
               <span className={`change-verb change-verb--${c.change === 'removed' ? 'deleted' : c.change === 'changed' ? 'modified' : 'added'}`}>
-                {c.change}
+                <Icon name={c.change === 'removed' ? 'removed' : c.change === 'changed' ? 'changed' : 'added'} /> {c.change}
               </span>
               <span>
                 {c.kind ?? '?'} {c.class ?? ''}

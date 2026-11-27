@@ -12,6 +12,7 @@ import { BarTable } from '../Bars';
 import { classColor } from '../shapes';
 import { TextTile } from '../TextTile';
 import { TypeTile } from '../TypeTile';
+import { Icon } from '../icons';
 
 export function OverviewTab({
   overview: o,
@@ -388,9 +389,9 @@ function UseThisDataset({
           )}
 
           <div className="command-row">
-            <code className="command data">{command}</code>
+            <code className="command data" tabIndex={0}>{command}</code>
             <button className="action" onClick={() => copy('command', command)}>
-              {copied === 'command' ? 'Copied' : 'Copy'}
+              <Icon name={copied === 'command' ? 'pass' : 'copy'} /> {copied === 'command' ? 'Copied' : 'Copy'}
             </button>
           </div>
           <p className="quiet data subset-size" aria-live="polite">
@@ -417,7 +418,7 @@ function UseThisDataset({
             <div className="snippet-head">
               <span className="quiet">Then, in Python</span>
               <button className="action action--quiet" onClick={() => copy('snippet', snippet)}>
-                {copied === 'snippet' ? 'Copied' : 'Copy'}
+                <Icon name={copied === 'snippet' ? 'pass' : 'copy'} /> {copied === 'snippet' ? 'Copied' : 'Copy'}
               </button>
             </div>
             <pre className="data">
@@ -439,7 +440,7 @@ function UseThisDataset({
                     : 'Read it with Hugging Face libraries, no clone'}
               </span>
               <button className="action action--quiet" onClick={() => copy('hf', hf)}>
-                {copied === 'hf' ? 'Copied' : 'Copy'}
+                <Icon name={copied === 'hf' ? 'pass' : 'copy'} /> {copied === 'hf' ? 'Copied' : 'Copy'}
               </button>
             </div>
             <pre className="data">

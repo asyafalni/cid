@@ -241,7 +241,7 @@ function DownloadLink({ name, hash }: { name: string; hash: string }) {
         });
       }}
     >
-      download
+      <Icon name="download" /> download
     </button>
   );
 }
