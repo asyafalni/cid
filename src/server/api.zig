@@ -290,6 +290,8 @@ fn handleInner(
         return deployKeys(arena, deps, scope, caller, ds, method, route, body);
     if (eql(method, "GET") and eql(route.action, "health"))
         return health(arena, deps, scope, ds, route);
+    if (eql(method, "GET") and eql(route.action, "pending"))
+        return pending(arena, deps, scope, ds, route);
     if (eql(method, "POST") and eql(route.action, "sql"))
         return sqlConsole(arena, deps, scope, ds, body);
     if (eql(method, "GET") and eql(route.action, "browse"))
@@ -873,6 +875,27 @@ fn sqlConsole(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset
 /// A version's health (core/health.zig): its checks, marked by the fixed
 /// rules, and the distributions the Health tab draws. Kept on the commit,
 /// so asking twice costs one lookup; prepared ahead for releases and heads.
+/// What the server is still doing for a dataset (docs/dashboard.md, the
+/// header): whether a version is being prepared (its statistics, browse
+/// index, items file and default export, `version_jobs`), and how many of
+/// its files still wait for a preview (the `previews` queue). Both are
+/// cheap: one row by key, and the queue's pending rows (a partial index)
+/// matched against this dataset's hashes, so a finished dataset costs
+/// nothing however large. The git copy's state is on the overview already.
+fn pending(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, route: DatasetRoute) HandleError!Response {
+    const commit = route.queryParam("commit");
+    if (commit) |c| if (Uuid.parse(c) == error.InvalidUuid)
+        return errorResponse(arena, .bad_request, "that is not a commit id", "Pick a version from the version picker.");
+    const preparing = if (commit) |c|
+        (deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM version_jobs WHERE commit_id = $1::uuid AND dataset_id = $2::uuid " ++
+            "AND status IN ('pending', 'building')", .{ c, ds.id }) catch return error.Db) != null
+    else
+        false;
+    const previews = (deps.db.rawOne(i64, scope, "SELECT count(*)::bigint FROM previews p WHERE p.status = 'pending' AND EXISTS " ++
+        "(SELECT 1 FROM dataset_hashes h WHERE h.dataset_id = $1::uuid AND h.item_hash = p.item_hash)", .{ds.id}) catch return error.Db) orelse 0;
+    return json(arena, .ok, .{ .preparing = preparing, .previews = previews });
+}
+
 fn health(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, route: DatasetRoute) HandleError!Response {
     const commit = route.queryParam("commit") orelse
         return errorResponse(arena, .bad_request, "this needs a version", "Pick a version from the version picker.");

@@ -1005,7 +1005,16 @@ test "api: create, check-hashes, push (forward-only), state, downloads, log" {
         var prep_tmp = std.testing.tmpDir(.{});
         defer prep_tmp.cleanup();
         deps.browse_dir = try prep_tmp.dir.realPathFileAlloc(io, ".", arena);
+        // The header says so while it waits, and its files wait for previews.
+        const Pending = struct { preparing: bool, previews: i64 };
+        const pending_route = try std.fmt.allocPrint(arena, "/v0/datasets/" ++ name ++ "/-/pending?commit={s}", .{&id2});
+        const waiting = try std.json.parseFromSliceLeaky(Pending, arena, cid.api.handle(arena, &deps, &scope, "GET", pending_route, "Bearer test-token", "").body, .{});
+        try std.testing.expect(waiting.preparing);
+        try std.testing.expect(waiting.previews >= 1);
+        try std.testing.expectEqual(std.http.Status.bad_request, cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets/" ++ name ++ "/-/pending?commit=nope", "Bearer test-token", "").status);
         while (try cid.api.prepareNext(arena, &deps, &scope)) {}
+        const ready = try std.json.parseFromSliceLeaky(Pending, arena, cid.api.handle(arena, &deps, &scope, "GET", pending_route, "Bearer test-token", "").body, .{});
+        try std.testing.expect(!ready.preparing);
         const Job = struct {
             pub const nilo_table = .projection;
             status: []const u8,

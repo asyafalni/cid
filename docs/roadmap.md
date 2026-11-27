@@ -16,8 +16,8 @@ same change.
 ## 0. Where the work stands
 
 Everything is on `main`; no branch or pull request is open (rechecked 2026-11-27).
-What is left that the code alone can settle is U14 and U15 (Tier U, taken from a look
-at Hangar on 2026-11-27; U12, the home sidebar, and U13 were built that day), U16
+What is left that the code alone can settle is U15 (Tier U, taken from a look
+at Hangar on 2026-11-27; U12, the home sidebar, U13 and U14 were built that day), U16
 (cid's own icons, asked for that day), E5 (FiftyOne,
 asked for the same day; Tier E) and item 11's local disk (below); the rest
 waits on the owner (U11, the first release, the GitHub live check, card editing and
@@ -416,7 +416,8 @@ today is the hub's own ground: finding one thing among many, and saying how to u
   `tests/mcp_client.sh` drives for real. Left out until a test runs them: DuckDB,
   pandas and Polars over the door. A restricted dataset shows the same tabs: both
   doors apply its limits and log its reads themselves.
-- **U14. Say what the server is still doing.** A new head is prepared in the
+- **U14. Say what the server is still doing.** *Built 2026-11-27: the header's
+  "preparing this version · previews: N to go", from the `pending` route.* A new head is prepared in the
   background (statistics, browse index, items file, export), previews are drawn one
   file at a time, and a release's git copy may be waiting; today only git's state is
   said. In the dataset's header, one quiet line while any of it is pending

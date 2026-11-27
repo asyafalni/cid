@@ -99,6 +99,18 @@ test('browse shows thumbnails for images and honest tiles for the rest', async (
   await expect(page.getByText('200×150')).toBeVisible();
 });
 
+test('the header says what the server is still doing, and nothing once it is done', async ({ page }) => {
+  await signIn(page);
+  let answer = { preparing: true, previews: 1240 };
+  await page.route('**/-/pending**', (route) => route.fulfill({ json: answer }));
+  await page.goto('/d/e2e/datasets/demo');
+  const busy = page.locator('.dataset-meta .server-busy');
+  await expect(busy).toHaveText('preparing this version · previews: 1,240 to go');
+  // Asked again while busy; once the server is done, the line goes.
+  answer = { preparing: false, previews: 0 };
+  await expect(busy).toHaveCount(0, { timeout: 10_000 });
+});
+
 test('a text tile with a long line never widens the page on a phone', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await signIn(page);

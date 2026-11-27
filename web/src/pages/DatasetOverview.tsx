@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
-import { ApiError, getOverview, type Pin } from '../api';
+import { ApiError, getOverview, getPending, type Pin } from '../api';
 import { ReleaseTape } from '../ReleaseTape';
 import { DatasetSkeleton } from '../Skeleton';
 import { commandFor, type Shown } from '../command';
@@ -65,6 +65,21 @@ export function DatasetOverview() {
     placeholderData: (previous, previousQuery) =>
       previousQuery?.queryKey[1] === name ? previous : undefined,
   });
+  // What the server is still doing: asked again every few seconds while
+  // anything is, and no more once nothing is.
+  const shownCommit = query.data ? (query.data.pinned_commit ?? query.data.commits[0]?.id ?? null) : null;
+  const pending = useQuery({
+    queryKey: ['pending', name, shownCommit],
+    queryFn: () => getPending(name, shownCommit),
+    enabled: query.isSuccess,
+    refetchInterval: (q) => (q.state.data && (q.state.data.preparing || q.state.data.previews > 0) ? 5000 : false),
+  });
+  const busy = [
+    pending.data?.preparing ? 'preparing this version' : null,
+    pending.data && pending.data.previews > 0
+      ? `previews: ${pending.data.previews.toLocaleString()} to go`
+      : null,
+  ].filter((s): s is string => s !== null);
   // Remembered only once the dataset answered: a mistyped link is not a visit.
   const found = query.isSuccess;
   useEffect(() => {
@@ -166,6 +181,15 @@ export function DatasetOverview() {
                         .slice(0, 3)
                         .map((c) => c.release)
                         .join(', ')}${waitingForGit.length > 3 ? ` and ${waitingForGit.length - 3} more` : ''}`}
+                </span>
+              )}
+              {busy.length > 0 && (
+                <span
+                  className="dataset-fact server-busy"
+                  role="status"
+                  title="The server prepares a new version ahead of its first visitor, and draws previews one file at a time. Everything already shown works meanwhile."
+                >
+                  {busy.join(' · ')}
                 </span>
               )}
             </p>

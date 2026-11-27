@@ -718,6 +718,14 @@ export type Health = {
 };
 
 /** A version's health (docs/dashboard.md, 4.5), computed once and kept. */
+/** What the server is still doing for a dataset: preparing the version
+ * (its index, statistics and files), and its files waiting for a preview. */
+export type Pending = { preparing: boolean; previews: number };
+
+export function getPending(name: string, commit: string | null): Promise<Pending> {
+  return request(`/v0/datasets/${name}/-/pending${commit ? `?commit=${commit}` : ''}`);
+}
+
 export function getHealth(name: string, commit: string): Promise<Health> {
   return request(`/v0/datasets/${name}/-/health?commit=${commit}`);
 }

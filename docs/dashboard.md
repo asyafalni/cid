@@ -342,7 +342,12 @@ Every dataset page (all five tabs) shares one header and the release tape.
   card) and a plain **"View in git"** link to the dataset repository; the release tape
   rides the bottom of the sky, over a faint drifting cloud bank. The `cid clone`
   command lives in "Use this dataset". Beside the link, the repository's status: "up to
-  date", or the releases made but not written there yet.
+  date", or the releases made but not written there yet. *Built (2026-11-27, U14):*
+  then, only while the server is still at work on the dataset, one quiet line of what
+  it is doing: "preparing this version" (its statistics, browse index and files, from
+  `version_jobs`) and "previews: 1,240 to go" (its files in the `previews` queue).
+  Asked again every five seconds while either holds, gone when both are done; one
+  read route (`pending`), costing nothing for a dataset with nothing pending.
 - **Release tape** (built): the history of `main`, newest 100 commits, oldest on the
   left. Each release is a button that pins the page to it (`?release=` in the URL);
   with none chosen, the newest release is pinned. Commits are ticks that show their
