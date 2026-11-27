@@ -85,9 +85,11 @@ test('the overview carries the tape, the card and the paste-ready command', asyn
 test('browse shows thumbnails for images and honest tiles for the rest', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?view=browse');
-  // Two image tiles with real thumbnails, one type tile for the text files.
+  // Two image tiles with real thumbnails; a text file shows its first lines.
   await expect(page.locator('.tile img')).toHaveCount(2);
-  await expect(page.locator('.tile-type').first()).toBeVisible();
+  const readme = page.getByRole('button', { name: /README\.txt/ });
+  await expect(readme.locator('.tile-text-lines')).toHaveText('the e2e dataset\n');
+  await expect(readme.locator('.tile-text-type')).toHaveText('.txt');
   // The drawer: facts, hash chip, annotations absent on a file dataset.
   await page.getByRole('button', { name: /img-a\.png/ }).click();
   await expect(page).toHaveURL(/item=img/);
@@ -1590,6 +1592,14 @@ test('the List view plays sound in place and reads text\'s opening line', async 
   await notes.getByRole('button', { name: 'Open notes.txt' }).click();
   await expect(page).toHaveURL(/item=notes\.txt/);
   await expect(page.getByRole('complementary', { name: 'notes.txt' })).toBeVisible();
+});
+
+test('a text file\'s gallery tile shows its first lines, a binary one its type', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/media?view=browse&mode=gallery');
+  const note = page.locator('.tile', { hasText: 'notes.txt' });
+  await expect(note.locator('.tile-text-lines')).not.toBeEmpty();
+  await expect(note.locator('.tile-text-type')).toHaveText('.txt');
 });
 
 test('a version without splits shows no split filter or column', async ({ page }) => {

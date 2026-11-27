@@ -345,7 +345,9 @@ Every dataset page (all five tabs) shares one header and the release tape.
 
 ### 4.3 Dataset › Browse (the viewer)
 - **Views.** *Built:* Gallery (every item: a thumbnail where the worker built one —
-  images, video posters, audio waveforms — else a type tile) and Table (any dataset as
+  images, video posters, audio waveforms; a text file, a CSV or JSON lines its first
+  lines, the first 2 KB read only for the tiles on screen, never on a restricted
+  dataset; else a type tile) and Table (any dataset as
   rows), and List (a row per item for audio and text: the waveform, path, size,
   split, an annotated item's classes, a text file's opening line read for the rows on
   screen only, and audio that plays in place, its bytes fetched only on a click and

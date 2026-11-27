@@ -507,8 +507,9 @@ export type TextHead = {
   withheld?: boolean;
 };
 
-export function getText(name: string, hash: string): Promise<TextHead> {
-  return request(`/v0/datasets/${name}/-/text?hash=${hash}`);
+/** A text file's opening, up to 64 KB, or `bytes` of it for a glance. */
+export function getText(name: string, hash: string, bytes?: number): Promise<TextHead> {
+  return request(`/v0/datasets/${name}/-/text?hash=${hash}${bytes === undefined ? '' : `&bytes=${bytes}`}`);
 }
 
 /** A PDF's pages the preview worker drew (its first ten at most). */

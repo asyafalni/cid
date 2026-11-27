@@ -4663,6 +4663,16 @@ test "media: audio gets its waveform, text reads as text, restricted text withhe
     try std.testing.expect(head.truncated);
     try std.testing.expectEqual(@as(usize, 64 * 1024), head.text.?.len);
     try std.testing.expectEqual(@as(u64, 70 * 1024), head.size);
+    // A tile asks for its first lines only: that much is read, still cut
+    // back to whole characters; a nonsense size is refused.
+    const tile_route = try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/media/-/text?hash={s}&bytes=10", .{&hashes[3]});
+    const tile = cid.api.handle(arena, &deps, &scope, "GET", tile_route, "Bearer test-token", "");
+    try std.testing.expectEqual(std.http.Status.ok, tile.status);
+    const short = try std.json.parseFromSliceLeaky(Text, arena, tile.body, .{ .ignore_unknown_fields = true });
+    try std.testing.expect(short.truncated);
+    try std.testing.expect(short.text.?.len <= 10);
+    const silly = try std.fmt.allocPrint(arena, "/v0/datasets/test/datasets/media/-/text?hash={s}&bytes=lots", .{&hashes[3]});
+    try std.testing.expectEqual(std.http.Status.bad_request, cid.api.handle(arena, &deps, &scope, "GET", silly, "Bearer test-token", "").status);
 
     // Restricted: withheld, and given by the logged reveal.
     _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = 'test/datasets/media'", .{});

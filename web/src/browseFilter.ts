@@ -54,6 +54,10 @@ export type FilterPatch = {
   num_to?: string | undefined;
 };
 
+/** Files whose opening lines say what they are: plain text and its kin,
+ * and cid's own rule files. */
+export const textLike = /(\.(txt|md|json|jsonl|csv|tsv|srt|vtt|xml|ya?ml|log|ini|toml|html?)|(^|\/)\.cid(keys|ignore))$/i;
+
 export function extOf(path: string): string {
   const base = path.slice(path.lastIndexOf('/') + 1);
   const dot = base.lastIndexOf('.');

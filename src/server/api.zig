@@ -279,7 +279,7 @@ fn handleInner(
         try logActivity(arena, deps, scope, ds, try actorOf(arena, deps, caller), read.action, read.ref, null);
 
     if (eql(method, "GET") and eql(route.action, "text"))
-        return textHead(arena, deps, scope, ds, route.queryParam("hash") orelse "");
+        return textHead(arena, deps, scope, ds, route.queryParam("hash") orelse "", route.queryParam("bytes"));
     if (eql(method, "GET") and eql(route.action, "pages"))
         return pdfPages(arena, deps, scope, ds, route.queryParam("hash") orelse "");
     if (eql(method, "GET") and eql(route.action, "table"))
@@ -1559,8 +1559,11 @@ const text_head_bytes = 64 * 1024;
 /// whole character, read with a ranged GET so a large file is never held.
 /// Shown, never interpreted (invariant 15). A restricted dataset's text is
 /// content: withheld, and handed out by a logged reveal (invariant 20).
-fn textHead(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, hash: []const u8) HandleError!Response {
+/// `bytes` asks for less than the drawer's 64 KB: a gallery tile shows a
+/// few lines, and reads only those from storage.
+fn textHead(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, hash: []const u8, bytes: ?[]const u8) HandleError!Response {
     if (!validHashHex(hash)) return error.BadRequest;
+    const most: u64 = if (bytes) |b| std.math.clamp(std.fmt.parseInt(u64, b, 10) catch return error.BadRequest, 1, text_head_bytes) else text_head_bytes;
     const Here = struct {
         pub const nilo_table = .projection;
         size_bytes: i64,
@@ -1569,7 +1572,7 @@ fn textHead(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, 
         "(SELECT 1 FROM item_revisions r WHERE r.dataset_id = $2::uuid AND r.item_hash = i.item_hash)", .{ hash, ds.id }) catch return error.Db) orelse
         return errorResponse(arena, .not_found, "no such item in this dataset", "Pick the item from this dataset's Browse view.");
     if (ds.restricted) return json(arena, .ok, .{ .withheld = true, .size = here.size_bytes });
-    return json(arena, .ok, try readTextHead(arena, deps, scope, hash, @intCast(here.size_bytes)));
+    return json(arena, .ok, try readTextHead(arena, deps, scope, hash, @intCast(here.size_bytes), most));
 }
 
 /// A PDF's pages the worker drew (at most `max_pages`), as presigned
@@ -1603,9 +1606,9 @@ fn isPictureOrSound(media_type: []const u8) bool {
 
 const TextHead = struct { text: ?[]const u8, truncated: bool, binary: bool, size: u64, withheld: bool = false };
 
-fn readTextHead(arena: std.mem.Allocator, deps: *Deps, scope: anytype, hash: []const u8, size: u64) HandleError!TextHead {
+fn readTextHead(arena: std.mem.Allocator, deps: *Deps, scope: anytype, hash: []const u8, size: u64, most: u64) HandleError!TextHead {
     if (size == 0) return .{ .text = "", .truncated = false, .binary = false, .size = 0 };
-    const bytes = deps.s3.getHead(scope, itemKey(arena, hash) catch return error.OutOfMemory, @min(size, text_head_bytes)) catch return error.Storage;
+    const bytes = deps.s3.getHead(scope, itemKey(arena, hash) catch return error.OutOfMemory, @min(size, most)) catch return error.Storage;
     // Cut back to a whole character; a NUL or broken UTF-8 is not text.
     var end = bytes.len;
     if (size > bytes.len) {
@@ -1668,7 +1671,7 @@ fn reveal(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Caller,
         media_type: []const u8,
     };
     const media = deps.db.rawOne(Media, scope, "SELECT size_bytes, media_type FROM items WHERE item_hash = decode($1, 'hex')", .{req.hash}) catch return error.Db;
-    const text: ?TextHead = if (media) |m| (if (isPictureOrSound(m.media_type)) null else readTextHead(arena, deps, scope, req.hash, @intCast(@max(m.size_bytes, 0))) catch null) else null;
+    const text: ?TextHead = if (media) |m| (if (isPictureOrSound(m.media_type)) null else readTextHead(arena, deps, scope, req.hash, @intCast(@max(m.size_bytes, 0)), text_head_bytes) catch null) else null;
     return json(arena, .ok, .{ .hash = req.hash, .thumb = thumb, .download = download, .table = table, .text = text, .logged = ds.restricted });
 }
 

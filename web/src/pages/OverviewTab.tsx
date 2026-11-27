@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { ApiError, commitAlias, getBrowse, getDeployKeys, getSubsetSize, type Overview, type Pin } from '../api';
-import { extOf } from '../browseFilter';
+import { extOf, textLike } from '../browseFilter';
 import { hfRepoId, humanBytes } from '../format';
 import { AnnotationOverlay } from '../overlays';
 import { Thumb } from '../Thumb';
@@ -10,6 +10,7 @@ import { thumbsFor } from '../thumbs';
 import { Bar } from '../Skeleton';
 import { BarTable } from '../Bars';
 import { classColor } from '../shapes';
+import { TextTile } from '../TextTile';
 
 export function OverviewTab({
   overview: o,
@@ -238,6 +239,8 @@ function LookInside({ overview: o, commit, pin }: { overview: Overview; commit: 
                 ) : (
                   <Thumb src={thumbs.get(item.hash)} alt={item.path} label={extOf(item.path)} lazy />
                 )
+              ) : textLike.test(item.path) ? (
+                <TextTile name={o.name} hash={item.hash} path={item.path} restricted={o.restricted} />
               ) : (
                 <span className="tile-type data">{extOf(item.path)}</span>
               )}

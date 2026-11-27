@@ -32,7 +32,8 @@ import { timeline } from '../history';
 import { TableView } from '../TableView';
 import { ClipThumb, Thumb } from '../Thumb';
 import { thumbsFor } from '../thumbs';
-import { anyFilter, extOf, type FilterPatch, type Filters } from '../browseFilter';
+import { anyFilter, extOf, textLike, type FilterPatch, type Filters } from '../browseFilter';
+import { TextTile } from '../TextTile';
 
 // The file types the preview worker draws: pictures, video posters and
 // sound waveforms (src/preview/).
@@ -526,6 +527,8 @@ export function BrowseTab({
                 ) : (
                   <Thumb src={thumbByHash.get(item.hash)} alt={item.path} label={extOf(item.path)} lazy />
                 )
+              ) : textLike.test(item.path) ? (
+                <TextTile name={name} hash={item.hash} path={item.path} restricted={overview.restricted} />
               ) : (
                 <span className="tile-type data">{extOf(item.path)}</span>
               )}
@@ -1412,9 +1415,6 @@ function ListRow({
     </>
   );
 }
-
-/** Files whose opening line says what they are: plain text and its kin. */
-const textLike = /\.(txt|md|json|jsonl|csv|tsv|srt|vtt|xml|ya?ml|log|ini|toml|html?)$/i;
 
 // The next page: fetched while the button is still two screens below the
 // view, so a quick scroll finds the items already there instead of

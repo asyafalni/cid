@@ -3601,3 +3601,35 @@ button.ann-attr:hover,
 button.ann-attr:focus-visible {
   border-color: var(--aether);
 }
+
+/* A text file's tile: its first lines as a small page of it, fading out
+   at the foot, with its type in the corner. */
+.tile-text {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  background: var(--panel-raised);
+}
+.tile-text-lines {
+  display: block;
+  padding: var(--space-2);
+  font-size: 0.625rem;
+  line-height: 1.35;
+  white-space: pre;
+  color: var(--text-muted);
+  text-align: left;
+  mask-image: linear-gradient(to bottom, black 60%, transparent);
+}
+.tile-text-type {
+  position: absolute;
+  right: var(--space-1);
+  bottom: var(--space-1);
+  padding: 0 var(--space-1);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+}
