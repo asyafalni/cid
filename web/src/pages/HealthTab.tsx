@@ -59,7 +59,7 @@ export function HealthTab({ name, overview, commit, pin }: { name: string; overv
               <span aria-hidden="true">{marks[c.status].icon}</span> {marks[c.status].word}
             </span>
             <div>
-              <h3>{c.title}</h3>
+              <h3>{c.title}</h3>{' '}
               <p>{c.says}</p>
               {c.sample.length > 0 && (
                 <ul className="health-sample">

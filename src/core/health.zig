@@ -207,7 +207,7 @@ fn balance(arena: std.mem.Allocator, raw: Raw) error{OutOfMemory}!Check {
         }
     }
     if (least * 10 < most)
-        return .{ .id = "balance", .status = .warn, .title = "Class balance", .says = try std.fmt.allocPrint(arena, "'{s}' has {d} annotations, under a tenth of the most common class's {d}.", .{ if (rare.len == 0) "(no class)" else rare, least, most }) };
+        return .{ .id = "balance", .status = .warn, .title = "Class balance", .says = try std.fmt.allocPrint(arena, "'{s}' has {d} annotation{s}, under a tenth of the most common class's {d}.", .{ if (rare.len == 0) "(no class)" else rare, least, if (least == 1) "" else "s", most }) };
     return .{ .id = "balance", .status = .pass, .title = "Class balance", .says = try std.fmt.allocPrint(arena, "{d} classes, the rarest at least a tenth of the most common.", .{totals.count()}) };
 }
 
@@ -226,7 +226,9 @@ test "the rules: leakage fails, the rest warns, balance by tenths" {
     try std.testing.expectEqualStrings("img/a.png", bad[0].sample[0]);
     try std.testing.expectEqual(Status.warn, bad[4].status);
     try std.testing.expectEqual(Status.warn, bad[7].status);
-    try std.testing.expect(std.mem.indexOf(u8, bad[7].says, "'truck' has 9") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bad[7].says, "'truck' has 9 annotations,") != null);
+    const one = try checks(a, .{ .class_split = &.{ .{ .class = "car", .split = "train", .n = 100 }, .{ .class = "sign", .split = "train", .n = 1 } } }, true);
+    try std.testing.expect(std.mem.indexOf(u8, one[7].says, "'sign' has 1 annotation,") != null);
     // Tables not read yet: a note, not a pass.
     const waiting = try checks(a, .{ .tables_waiting = 2 }, false);
     try std.testing.expectEqual(Status.info, waiting[3].status);
