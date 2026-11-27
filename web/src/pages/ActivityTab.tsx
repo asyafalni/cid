@@ -101,7 +101,11 @@ export function ActivityTab({
       <tbody>
         {events.map((e, i) => (
           <tr key={i}>
-            <td className="data">{e.at.replace('T', ' ').replace('Z', '')}</td>
+            {/* The date and the time each kept whole: a narrow screen puts
+                the time under the date, never a date across lines. */}
+            <td className="data activity-when">
+              <span>{e.at.slice(0, 10)}</span> <span>{e.at.slice(11).replace('Z', '')}</span>
+            </td>
             <td title={e.account_id}>{e.display_name ?? e.account_id}</td>
             <td>
               <span className="chip">{e.action}</span>

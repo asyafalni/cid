@@ -1846,6 +1846,9 @@
   font-size: 0.85rem;
 }
 
+.activity-when span {
+  white-space: nowrap;
+}
 .activity-table caption {
   caption-side: bottom;
   text-align: left;

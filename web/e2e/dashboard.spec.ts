@@ -1112,6 +1112,12 @@ test('restricted: blurred until a logged reveal, and the log is for owners', asy
   await page.goto('/d/e2e/datasets/faces?view=activity');
   await expect(page.locator('.activity-table')).toContainText('reveal');
   await expect(page.locator('.activity-table')).toContainText('server-token');
+  // On a phone the time goes under the date; neither is broken across lines.
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const part of await page.locator('.activity-when span').first().locator('..').locator('span').all()) {
+    expect((await part.boundingBox())!.height).toBeLessThan(30);
+  }
+  await page.setViewportSize({ width: 1280, height: 720 });
   // A long log shows its newest 200 and says older ones follow; a release
   // it names is a link.
   await expect(page.locator('.activity-table caption')).toContainText('the newest 200 events, older ones below');
