@@ -538,17 +538,16 @@ boxes (2026-11-23): 14.9 s the first time, inside Postgres (server at 45 MB), 0.
 after; background preparation of a head about 15 s longer. Show command says no
 command shows it.
 
-*Planned:*
+*Planned* (the rest of the list first written here was built on 2026-11-22, above):
 
-- Annotated datasets: class balance per split, objects per item, object size
-  distribution, **annotation heat map**, aspect ratios, items without annotations,
-  near-duplicates across splits, split leakage (same source in two splits), estimated
-  miss rate and audited accuracy (from the Validator — the annotation platform's
-  quality-audit service; when no Validator reports exist, those tiles are absent, not
-  broken), label-error candidates linked to the item drawer.
-- File datasets: file types and sizes, table column stats (nulls, distinct values,
-  ranges), schema changes between releases.
-- Each check shows pass / warning / fail with an icon and words, never color alone.
+- Annotated datasets: near-duplicates across splits (by look, not only by identical
+  bytes, which the leakage check already finds), split leakage by source (the same
+  video or camera in two splits, once an item's source is recorded), estimated miss
+  rate and audited accuracy, and label-error candidates linked to the item drawer
+  (these three from the Validator, the annotation platform's quality-audit service;
+  when no Validator reports exist, those tiles are absent, not broken).
+- File datasets: schema changes between releases (a table's columns added, dropped
+  or retyped).
 
 ### 4.6 Dataset › Files
 - *Built:* shown for every dataset, file or annotated. The folder tree exactly as

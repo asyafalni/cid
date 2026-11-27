@@ -15,7 +15,11 @@ same change.
 
 ## 0. Where the work stands
 
-Everything is on `main`; no branch or pull request is open (2026-11-20).
+Everything is on `main`; no branch or pull request is open (rechecked 2026-11-27).
+What is left that the code alone can settle is item 11's local disk (below); the rest
+waits on the owner (U11, the first release, the GitHub live check, card editing and
+the decisions named in item 11), on the annotation platform (the Validator's report
+format, its embedder, an item's source) or on a parked decision (U10).
 
 - **Done:** all of Tier A; Tier B except the rest of B6; the Hugging Face door (C1),
   models (C2) and lineage (C3); the first half of U1. The toolchain is Zig 0.17.1
@@ -93,6 +97,17 @@ Everything is on `main`; no branch or pull request is open (2026-11-20).
       name and `cid status` lists them; the import script switches such a clone
       to hard links. Open, the owner's to decide: should `cid add` follow a link
       to a file and store the file, as `cp -L` would?
+      Found 2026-11-27, rechecking: the machine that runs a large import needed up
+      to three times the data's size free (DVC's cache, the checked-out files, and
+      cid's cache), likely the first thing to stop a 1 TB import. Done the same day:
+      `deploy/import-tags.sh` checks DVC's files out as hard links and pushes each
+      tag in batches (`CID_IMPORT_BATCH_MB`, 10 GB) from a cache of its own,
+      emptied after every push, and says where each tag's time went;
+      `tests/bench/import_rehearsal.sh` rehearses a whole import at any size
+      (DVC in MinIO, cid on an NFS share). At 1 GB: 3.0 times the data on the
+      importing machine before, 1.26 after; 208 s, every release DVC's checkout.
+      Next, the owner's (agreed 2026-11-27): the rehearsal at a tenth of the real
+      size on the office staging server, then 1 TB there.
       Left: the numbers on the owner's own NAS (`deploy/nas/README.md` says how to
       take them; the test share is a laptop's), SMB untried, and the owner's own
       import. Still open, and the owner's to decide because it touches invariant 2:
@@ -180,9 +195,9 @@ Where cid stands against Hugging Face today:
 
 Close the "behind" rows without giving up an "ahead" one.
 
-- **U1. Look at every page, and write down what is off.** *Half done (2026-11-20):
-  the script is `web/e2e/screens.spec.ts`, and the light theme at 1440 px has been
-  read; see U2 for what is still to take.* A Playwright script that
+- ~~**U1. Look at every page, and write down what is off.**~~ (done 2026-11-20, with
+  U2: every page in both themes at 1440, 1024 and 390 px, `web/e2e/screens.spec.ts`;
+  each new page is added to it and read the same way.) A Playwright script that
   takes a screenshot of every page in the e2e fixtures, in both themes, at 1440, 1024
   and 390 pixels wide, into one folder. Read them all against the design language
   (`docs/dashboard.md`, section 3) and its rules (3.4): spacing, alignment, type

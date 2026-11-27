@@ -133,8 +133,15 @@ if command -v dvc >/dev/null 2>&1; then
     has "dvc: and nothing half-fetched became a release" "has nothing pushed yet" "$CID" clone "cid@127.0.0.1:$DS" "$WORK/none"
     mv "$WORK/dvc-remote.away" "$WORK/dvc-remote"
 
+    # In parts: batches of at most 20 KB here, so v1.0's 12 pictures and
+    # two sounds go up as several commits, cid's cache emptied after each.
+    has "dvc: a tag larger than a batch goes up in parts" " parts" env CID_IMPORT_BATCH_MB=0 sh "$IMPORT" v1.0
+    has "dvc: each part is its own commit, the release at the last" "Import v1.0 (part 1 of" "$CID" log
+    ok  "dvc: and the import's own cache is empty after it" sh -c 'test -z "$(ls -A "$(git rev-parse --absolute-git-dir)/cid-import-cache/cid/items" 2>/dev/null)"'
     ok  "dvc: two tags first" sh "$IMPORT" v1.0 v1.1
     has "dvc: the rest carries on after them" "2 of 5 tags are already releases" sh "$IMPORT"
+    ok  "dvc: the checked-out files are hard links into DVC's cache, not copies" sh -c \
+        'test "$(find data -type f -links +1 | wc -l)" -gt 0 && test "$(find data -type f -links 1 | wc -l)" -eq 0'
     has "dvc: once more does nothing" "nothing to do" sh "$IMPORT"
     has "dvc: a tag that changed only code is a release too" "v1.1, v1.1-code" "$CID" log
     has "dvc: a tag cid cannot spell is released under a name it can" "release-2.1" "$CID" log
@@ -160,7 +167,7 @@ if command -v dvc >/dev/null 2>&1; then
     git init -q --bare "$WORK/links-cid.git"
     ok  "dvc links: init" "$CID" init "cid@127.0.0.1:$DS" --git "$WORK/links-cid.git"
     sh "$IMPORT" >/dev/null 2>&1
-    has "dvc links: the clone is switched to hard links, and says so" "now uses hard links" sh "$IMPORT"
+    has "dvc links: the clone is switched to hard links, and says so" "as hard links or clones" sh "$IMPORT"
     rm -rf "$WORK/out"
     ok  "dvc links: every file is in the release" sh -c \
         "cd '$WORK' && '$CID' clone 'cid@127.0.0.1:$DS' out --release v1 >/dev/null && cmp out/data/1.bin links-old/data/1.bin && cmp out/data/3.bin links-old/data/3.bin"

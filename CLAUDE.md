@@ -815,6 +815,8 @@ pnpm --dir web test:e2e            # Playwright, against zig-out/bin/cid
 
 tests/bench/browse_1m.sh           # 1M items: release, browse, compare (ReleaseFast)
 tests/bench/ingest_10m.sh          # 10M revisions through the platform's path
+tests/bench/import_rehearsal.sh    # a DVC import rehearsed at SIZE_MB: DVC in MinIO, cid on an
+                                   # NFS share; time, local disk, every release checked
 ```
 
 Integration tests, the usability script and the benchmarks share the test database:

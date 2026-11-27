@@ -105,13 +105,27 @@ naming the tag and its date. What to know:
 - A commit's author in cid is whoever runs the import (`CID_AUTHOR`); the release's
   note carries the tag's date and message.
 
-**Room on the machine that runs the import.** Besides DVC's own cache, cid keeps a
-copy of every file it adds in its cache (`~/.cache/cid`, or under `$XDG_CACHE_HOME`)
-until you delete it, so have free space the size of all the data, once more. Point
-`XDG_CACHE_HOME` at a larger disk if the home disk is small. When the import is done
-and `cid status` shows no local commit left to push, the cache can go
-(`rm -rf ~/.cache/cid`): cid fetches a file again when a checkout needs it. The clone
-itself can be deleted too; `cid clone` gives a fresh one.
+**Room on the machine that runs the import: the data's size, plus 10 GB.** DVC's
+cache holds the data once. The clone checks DVC's files out as hard links into that
+cache (or as clones, where the disk makes them), so the checked-out files take no
+more space; they are read-only, which an import never minds. cid keeps what it stages
+in a cache of the import's own, inside `.git/`, emptied after every push, and a tag
+with more new or changed data than a batch goes up in parts of at most
+`CID_IMPORT_BATCH_MB` (10240, so 10 GB, unless you say otherwise), each its own
+commit, with the release made at the last. Measured on 1 GB over five tags
+(`tests/bench/import_rehearsal.sh`, 200 MB batches): at most 1.26 times the data on
+the importing machine, where copies and cid's usual cache took 3.0 times.
+
+Each tag's line says where its time went (`fetched in 19 s, staged in 16 s, pushed in
+60 s, in 4 parts`): fetching is DVC's remote, staging is reading the files for their
+hashes, pushing is the network to cid and the store's disk.
+
+**Rehearse first.** `tests/bench/import_rehearsal.sh` builds a DVC repository of the
+size you give it (`SIZE_MB`), with its remote in MinIO, and imports it into a cid
+whose files are on an NFS share, as `deploy/nas` sets up. It reports the time, the
+local disk and the share's use, and checks every release against DVC's own checkout.
+Run it at 1 GB, then at a tenth of the real size on the machines the real import will
+use, before the real one.
 
 Where the files will live matters before a large import: cid's store can keep them
 on a NAS ([`deploy/nas`](../deploy/nas/README.md), which also says how much room and

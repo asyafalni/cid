@@ -13,7 +13,16 @@
 # It stops at the first thing that fails and says what. Run it again and it
 # carries on after the last tag that is already a release: nothing is
 # imported twice, and files already uploaded are not sent again.
+#
+# Local disk: the data once for DVC's cache, and at most one batch more.
+# DVC checks the files out as hard links into its cache, and cid keeps what
+# it stages in a cache of the import's own (inside .git/), emptied after
+# every push. A tag holding more new or changed data than a batch,
+# CID_IMPORT_BATCH_MB (default 10240, so 10 GB), goes up in parts, each
+# its own commit; the release is made at the last.
 set -u
+batch_mb="${CID_IMPORT_BATCH_MB:-10240}"
+case "$batch_mb" in ''|*[!0-9]*) printf 'import-tags: CID_IMPORT_BATCH_MB must be a number of MB.\n' >&2; exit 1 ;; esac
 
 say() { printf '%s\n' "$*"; }
 die() { say "import-tags: $*" >&2; exit 1; }
@@ -28,6 +37,11 @@ top="$(git rev-parse --show-toplevel 2>/dev/null)" || die "this is not a git rep
 for line in .cid/ .cidignore; do
     grep -qxF "$line" .git/info/exclude 2>/dev/null || printf '%s\n' "$line" >> .git/info/exclude
 done
+
+# cid's cache for the import: its own, so emptying it after each push can
+# never take a file another folder of yours has not pushed yet.
+gitdir="$(git rev-parse --absolute-git-dir)"
+export XDG_CACHE_HOME="$gitdir/cid-import-cache"
 
 # What is not data. Written once, for you to finish: code beside the data
 # is yours to name.
@@ -49,6 +63,18 @@ if [ -n "$stray" ]; then
 fi
 [ -z "$(git status --porcelain --untracked-files=no)" ] ||
     die "this clone has uncommitted changes (git status). Commit or discard them, then run this again."
+grep -qxF '.git/' .cidignore ||
+    die ".cidignore must leave out .git/ (git's own files, and this import's cache). Add the line '.git/' to it, then run this again."
+
+# A file's size, many at a time: GNU stat, else BSD's.
+if stat -c %s /dev/null >/dev/null 2>&1; then sizes() { tr '\n' '\0' | xargs -0 stat -c '%s %n'; }
+else sizes() { tr '\n' '\0' | xargs -0 stat -f '%z %N'; }; fi
+
+# The folder's unstaged changes, from cid status: "new", "modified" or
+# "deleted", then the path. (Its words are checked by tests/import_tags.sh.)
+changes() { cid status | sed -nE 's/^  (new|modified|deleted) +(.*)$/\1 \2/p'; }
+
+secs_since() { echo $(( $(date +%s) - $1 )); }
 
 if [ "$#" -gt 0 ]; then tags="$*"; else tags="$(git tag --sort=creatordate)"; fi
 [ -n "$tags" ] || die "this repository has no tags. Tag the versions to keep (git tag v1.0 <commit>), then run this again."
@@ -59,6 +85,8 @@ release_of() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-'; }
 # The releases cid already has, one a line.
 released="$(cid log --json 2>/dev/null | tr '{' '\n' | sed -n 's/.*"releases":"\([^"]*\)".*/\1/p' | sed 's/, /,/g' | tr ',' '\n')"
 is_released() { printf '%s\n' "$released" | grep -qxF "$1"; }
+
+WORK_DIR="$gitdir/cid-import-batches"
 
 # Carry on after the last tag that is already a release.
 total=0; done_upto=0
@@ -84,6 +112,7 @@ for tag in $tags; do
     say "[$n/$total] $tag"
     [ "$rel" = "$tag" ] || say "  (released as '$rel': a release name cannot hold every character a git tag can)"
 
+    started=$(date +%s)
     git checkout -q "$tag" || stop "$tag" "git could not check it out."
     # What an earlier tag left behind and this one does not have.
     git clean -fdq || stop "$tag" "git clean failed."
@@ -93,30 +122,76 @@ for tag in $tags; do
         # cache (cache.type symlink, usual for large data) would give cid
         # links, and cid stores files. Hard links are files, and cost no
         # more space; the setting is this clone's own (.dvc/config.local).
-        case "$(dvc config cache.type 2>/dev/null)" in *symlink*)
-            dvc config --local cache.type hardlink,copy || stop "$tag" "could not set this clone's DVC cache.type."
-            say "  (DVC checks files out as symbolic links here; this clone now uses hard links, which take no more space)" ;;
+        # The usual copies (DVC's default where the disk cannot clone) would
+        # hold the data a second time. So this clone checks files out as
+        # clones where the disk makes them, else hard links into DVC's
+        # cache: files to cid, and no more space. They are read-only, which
+        # an import never minds. The setting is this clone's own
+        # (.dvc/config.local).
+        case "$(dvc config --local cache.type 2>/dev/null)" in
+            reflink,hardlink,copy) ;;
+            *) dvc config --local cache.type reflink,hardlink,copy || stop "$tag" "could not set this clone's DVC cache.type."
+               say "  (this clone checks DVC's files out as hard links or clones, which take no more space)" ;;
         esac
         # Fetches what is missing, then checks it out; it fails if any file is absent from the remote.
         dvc pull -q || stop "$tag" "'dvc pull' failed: is the DVC remote reachable, with its credentials set?"
-        # Links an earlier checkout left become files too.
-        if [ -n "$(find . -type l -not -path './.git/*' -not -path './.dvc/*' -not -path './.cid/*' | head -1)" ]; then
-            dvc checkout --relink -q || stop "$tag" "'dvc checkout --relink' failed."
-        fi
+        # What an earlier checkout left as links or copies is linked too.
+        dvc checkout --relink -q || stop "$tag" "'dvc checkout --relink' failed."
     fi
     if git ls-files -z '*.gitattributes' '.gitattributes' | xargs -0 grep -qs 'filter=lfs' 2>/dev/null; then
         git lfs version >/dev/null 2>&1 || stop "$tag" "this tag uses Git LFS and 'git lfs' is not installed."
         git lfs pull || stop "$tag" "'git lfs pull' failed: is the LFS server reachable?"
     fi
 
-    out="$(cid add . 2>&1)" || { say "$out" >&2; stop "$tag" "'cid add .' failed."; }
-    # A tag that changed no data has nothing to commit: it is released all
-    # the same, at the commit before it, so every old name has a release.
-    out="$(cid commit -m "Import $tag" 2>&1)" || case "$out" in
-        *"nothing staged"*) ;;
-        *) say "$out" >&2; stop "$tag" "'cid commit' failed." ;;
-    esac
-    cid push || stop "$tag" "'cid push' failed. It resumes: nothing already uploaded is sent again."
+    fetched=$(secs_since "$started")
+
+    # This tag's new and changed files in batches of batch_mb at most (one
+    # file larger than that is a batch of its own), its deletions with the
+    # first. Each batch is added, committed and pushed, then cid's cache is
+    # emptied: pushed, its files are on the server.
+    rm -rf "$WORK_DIR" && mkdir -p "$WORK_DIR" || stop "$tag" "could not make a scratch folder in .git/."
+    changes > "$WORK_DIR/changes" || stop "$tag" "'cid status' failed."
+    sed -n 's/^deleted //p' "$WORK_DIR/changes" > "$WORK_DIR/deleted"
+    sed -nE 's/^(new|modified) //p' "$WORK_DIR/changes" | sizes |
+        awk -v max=$((batch_mb * 1024 * 1024)) -v dir="$WORK_DIR" '
+            { size = $1; sub(/^[0-9]+ /, ""); if (n == 0 || (sum > 0 && sum + size > max)) { n++; sum = 0 }
+              sum += size; print > (dir "/batch-" n) }
+            END { print n + 0 > (dir "/batches") }' || stop "$tag" "could not size this tag's files."
+    batches=$(cat "$WORK_DIR/batches" 2>/dev/null || echo 0)
+    [ "$batches" -gt 0 ] || batches=1
+    staged_s=0; pushed_s=0
+    part=1
+    while [ "$part" -le "$batches" ]; do
+        t=$(date +%s)
+        list="$WORK_DIR/batch-$part"
+        [ "$part" -eq 1 ] && cat "$WORK_DIR/deleted" >> "$list"
+        if [ -s "$list" ]; then
+            out="$(sed 's|^|./|' "$list" | tr '\n' '\0' | xargs -0 cid add 2>&1)" ||
+                { say "$out" >&2; stop "$tag" "'cid add' failed."; }
+        fi
+        if [ "$part" -eq "$batches" ]; then
+            # The last part also takes anything the batches did not name.
+            out="$(cid add . 2>&1)" || { say "$out" >&2; stop "$tag" "'cid add .' failed."; }
+            message="Import $tag"
+        else
+            message="Import $tag (part $part of $batches)"
+        fi
+        staged_s=$((staged_s + $(secs_since "$t")))
+        # A tag that changed no data has nothing to commit: it is released all
+        # the same, at the commit before it, so every old name has a release.
+        out="$(cid commit -m "$message" 2>&1)" || case "$out" in
+            *"nothing staged"*) ;;
+            *) say "$out" >&2; stop "$tag" "'cid commit' failed." ;;
+        esac
+        t=$(date +%s)
+        cid push >/dev/null || stop "$tag" "'cid push' failed. It resumes: nothing already uploaded is sent again."
+        pushed_s=$((pushed_s + $(secs_since "$t")))
+        rm -rf "$XDG_CACHE_HOME/cid"
+        part=$((part + 1))
+    done
+    rm -rf "$WORK_DIR"
+    parts=""; [ "$batches" -gt 1 ] && parts=", in $batches parts"
+    say "  fetched in ${fetched} s, staged in ${staged_s} s, pushed in ${pushed_s} s$parts"
     notes="Imported from git tag $tag ($(git log -1 --format=%as "$tag")): $(git log -1 --format=%s "$tag")"
     out="$(cid tag "$rel" -m "$notes" 2>&1)" || case "$out" in
         *"nothing to tag"*) say "  no data yet at this tag: no release" ;;
