@@ -479,7 +479,7 @@ function Comparison({
                   {c.split_a ?? 'no split'} → {c.split_b ?? 'no split'}
                 </span>
               ) : (
-                c.size_b !== null && <span className="quiet data">{humanBytes(c.size_b)}</span>
+                <ChangeSize before={c.size_a ?? null} after={c.size_b} />
               )}
               {c.change === 'modified' && !isTable(c.path) && thumbBy.has(c.hash_a!) && thumbBy.has(c.hash_b!) && (
                 <span className="before-after">
@@ -771,4 +771,17 @@ function resolve(commits: TapeCommit[], label: string): string | null {
   if (byRelease) return byRelease.id;
   const byId = commits.find((c) => c.id === label);
   return byId ? byId.id : null;
+}
+
+/** A changed file's size: what it was and is when modified, else the one
+ * it has (added) or had (deleted). */
+function ChangeSize({ before, after }: { before: number | null; after: number | null }) {
+  if (before !== null && after !== null && before !== after)
+    return (
+      <span className="quiet data">
+        {humanBytes(before)} → {humanBytes(after)}
+      </span>
+    );
+  const size = after ?? before;
+  return size === null ? null : <span className="quiet data">{humanBytes(size)}</span>;
 }

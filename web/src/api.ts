@@ -335,6 +335,8 @@ export type ComparePage = {
     path: string;
     hash_a: string | null;
     hash_b: string | null;
+    /** The size before (null when added); absent from an older server. */
+    size_a?: number | null;
     size_b: number | null;
     split_a?: string | null;
     split_b?: string | null;

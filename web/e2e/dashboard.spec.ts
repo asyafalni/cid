@@ -1374,6 +1374,8 @@ test('compare shows a modified table by its rows: counts, then the rows themselv
   await page.goto('/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0');
   const change = page.locator('.change', { hasText: 'people.csv' });
   await expect(change).toContainText('modified');
+  // Its size then and now.
+  await expect(change).toContainText('119 B → 120 B');
   await expect(change.locator('.row-changes')).toContainText('2 rows added, 2 removed');
   await expect(change.locator('.row-changes')).toContainText('5 → 5 rows');
   // A table has no picture to set side by side, and a change this small

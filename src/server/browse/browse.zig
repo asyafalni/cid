@@ -734,7 +734,7 @@ pub const VisualSide = struct { path: []const u8, hash: []const u8, item_id: ?[]
 
 pub const ComparePage = struct {
     summary: DiffSummary,
-    changes: []const struct { change: []const u8, path: []const u8, hash_a: ?[]const u8, hash_b: ?[]const u8, size_b: ?u64, split_a: ?[]const u8 = null, split_b: ?[]const u8 = null },
+    changes: []const struct { change: []const u8, path: []const u8, hash_a: ?[]const u8, hash_b: ?[]const u8, size_a: ?u64 = null, size_b: ?u64, split_a: ?[]const u8 = null, split_b: ?[]const u8 = null },
     next: ?[]const u8,
     visual: []const struct {
         path: []const u8,
@@ -827,7 +827,7 @@ pub fn comparePage(arena: std.mem.Allocator, db: *duck.Db, a: Files, b: Files, d
         \\sb AS (SELECT path, hash, item_id FROM read_parquet('{3s}') WHERE item_id IN (SELECT item FROM vis))
         \\SELECT json_object(
         \\  'summary', {5s},
-        \\  'changes', (SELECT coalesce(to_json(list(json_object('change', change, 'path', path, 'hash_a', hash_a, 'hash_b', hash_b, 'size_b', size_b, 'split_a', split_a, 'split_b', split_b) ORDER BY path)), '[]'::JSON) FROM page),
+        \\  'changes', (SELECT coalesce(to_json(list(json_object('change', change, 'path', path, 'hash_a', hash_a, 'hash_b', hash_b, 'size_a', size_a, 'size_b', size_b, 'split_a', split_a, 'split_b', split_b) ORDER BY path)), '[]'::JSON) FROM page),
         \\  'next', (SELECT CASE WHEN n > $2 THEN p END FROM last),
         \\  'folders', (SELECT coalesce(to_json(list(json_object('name', name, 'added', ad, 'modified', mo, 'deleted', de, 'split', sp) ORDER BY name)), '[]'::JSON)
         \\    FROM (SELECT split_part(rest, '/', 1) AS name, count(*) FILTER (WHERE change = 'added') AS ad,
@@ -1108,7 +1108,12 @@ test "browse: pages, facets, cursor, the open item, sizes, folders and compare" 
     try std.testing.expectEqual(DiffSummary{ .added = 1, .modified = 1, .deleted = 1, .ann_added = 1, .ann_changed = 1, .ann_removed = 1, .split = 1 }, cmp.summary);
     try std.testing.expectEqualStrings("README", cmp.changes[0].path);
     try std.testing.expectEqualStrings("deleted", cmp.changes[0].change);
+    // Each change has its size before and after: gone, then new.
+    try std.testing.expectEqual(@as(?u64, 4), cmp.changes[0].size_a);
+    try std.testing.expectEqual(@as(?u64, null), cmp.changes[0].size_b);
     try std.testing.expectEqualStrings("d.txt", cmp.changes[1].path);
+    try std.testing.expectEqual(@as(?u64, null), cmp.changes[1].size_a);
+    try std.testing.expectEqual(@as(?u64, 5), cmp.changes[1].size_b);
     try std.testing.expectEqualStrings("d.txt", cmp.next.?);
     try std.testing.expectEqual(@as(usize, 2), cmp.visual.len); // a.jpg (moved box), b.JPG (one gone, one new)
     try std.testing.expectEqualStrings("img/a.jpg", cmp.visual[0].path);
