@@ -34,6 +34,8 @@ import { ClipThumb, Thumb } from '../Thumb';
 import { thumbsFor } from '../thumbs';
 import { anyFilter, extOf, textLike, type FilterPatch, type Filters } from '../browseFilter';
 import { TextTile } from '../TextTile';
+import { TypeTile } from '../TypeTile';
+import { Icon } from '../icons';
 
 // The file types the preview worker draws: pictures, video posters and
 // sound waveforms (src/preview/).
@@ -530,7 +532,7 @@ export function BrowseTab({
               ) : textLike.test(item.path) ? (
                 <TextTile name={name} hash={item.hash} path={item.path} restricted={overview.restricted} />
               ) : (
-                <span className="tile-type data">{extOf(item.path)}</span>
+                <TypeTile path={item.path} />
               )}
               <span className="tile-path data">{item.path}</span>
             </button>
@@ -680,7 +682,7 @@ export function ItemDrawer({
       <div className="drawer-head">
         <h2 className="data drawer-path">{item.path}</h2>
         <button className="drawer-close" onClick={onClose} aria-label="Close">
-          ✕
+          <Icon name="fail" />
         </button>
       </div>
       {isVideo(item.path) && url ? (
@@ -1375,7 +1377,7 @@ function ListRow({
         ) : thumb ? (
           <Thumb className="list-thumb" src={thumb} alt={item.path} label={extOf(item.path)} lazy />
         ) : (
-          <span className="tile-type data">{extOf(item.path)}</span>
+          <TypeTile path={item.path} />
         )}
       </span>
       <button className="list-main" onClick={onOpen} aria-label={`Open ${item.path}`}>

@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { getText } from './api';
 import { extOf } from './browseFilter';
+import { TypeTile } from './TypeTile';
 
 /** How much a tile reads: a few lines' worth, never the drawer's 64 KB. */
 const glance_bytes = 2048;
@@ -16,7 +17,7 @@ export function TextTile({ name, hash, path, restricted }: { name: string; hash:
     staleTime: Infinity,
   });
   const text = head.data && !head.data.withheld && !head.data.binary ? head.data.text : null;
-  if (text === null || text.trim() === '') return <span className="tile-type data">{extOf(path)}</span>;
+  if (text === null || text.trim() === '') return <TypeTile path={path} />;
   return (
     <span className="tile-text">
       <span className="tile-text-lines data">{text.split('\n').slice(0, 12).join('\n')}</span>

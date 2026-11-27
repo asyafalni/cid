@@ -15,6 +15,7 @@ import { ActivityTab } from './ActivityTab';
 import { noteVisit } from '../recent';
 import { NotFound } from './NotFound';
 import { DatasetKeys } from '../Shortcuts';
+import { Icon } from '../icons';
 
 // The dataset page: the sky header (name, facts, the release tape), then
 // the tabs.
@@ -135,7 +136,7 @@ export function DatasetOverview() {
             </h1>
             <p className="dataset-meta">
               <span className="dataset-fact">
-                {o.kind === 'annotated' ? 'Annotated dataset' : o.kind === 'model' ? 'Model' : 'File dataset'}
+                <Icon name={o.kind} /> {o.kind === 'annotated' ? 'Annotated dataset' : o.kind === 'model' ? 'Model' : 'File dataset'}
                 {o.restricted && <span className="chip restricted-badge">restricted</span>}
               </span>
               <span className="dataset-fact">
@@ -147,7 +148,7 @@ export function DatasetOverview() {
               </span>
               <span className="dataset-fact">
                 <a href={gitWebUrl(o.git_url)} target="_blank" rel="noreferrer">
-                  View in git
+                  <Icon name="git" /> View in git
                 </a>
               </span>
               {releases.length > 0 && (
@@ -212,6 +213,7 @@ export function DatasetOverview() {
           className={view === 'overview' ? 'tab on' : 'tab'}
           aria-current={view === 'overview' ? 'page' : undefined}
         >
+          <Icon name="overview" />
           Overview
         </Link>
         <Link
@@ -221,6 +223,7 @@ export function DatasetOverview() {
           className={view === 'browse' ? 'tab on' : 'tab'}
           aria-current={view === 'browse' ? 'page' : undefined}
         >
+          <Icon name="browse" />
           Browse
         </Link>
         <Link
@@ -230,6 +233,7 @@ export function DatasetOverview() {
           className={view === 'releases' ? 'tab on' : 'tab'}
           aria-current={view === 'releases' ? 'page' : undefined}
         >
+          <Icon name="releases" />
           Releases
         </Link>
         <Link
@@ -239,6 +243,7 @@ export function DatasetOverview() {
           className={view === 'health' ? 'tab on' : 'tab'}
           aria-current={view === 'health' ? 'page' : undefined}
         >
+          <Icon name="health" />
           Health
         </Link>
         <Link
@@ -248,6 +253,7 @@ export function DatasetOverview() {
           className={view === 'files' ? 'tab on' : 'tab'}
           aria-current={view === 'files' ? 'page' : undefined}
         >
+          <Icon name="folder" />
           Files
         </Link>
         <Link
@@ -257,6 +263,7 @@ export function DatasetOverview() {
           className={view === 'activity' ? 'tab on' : 'tab'}
           aria-current={view === 'activity' ? 'page' : undefined}
         >
+          <Icon name="activity" />
           Activity
         </Link>
         <button
@@ -265,7 +272,7 @@ export function DatasetOverview() {
           onClick={() => setShowCommand((v) => !v)}
           title="The cid command that reaches this view from a terminal"
         >
-          Show command
+          <Icon name="terminal" /> Show command
         </button>
       </nav>
       {showCommand && (

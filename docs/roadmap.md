@@ -429,7 +429,10 @@ today is the hub's own ground: finding one thing among many, and saying how to u
   activity log a restricted dataset already keeps). One small table and one route;
   about a day. Take it after U12, which gives the sort a place.
 
-- **U16. cid's own icons.** *Asked for by the owner 2026-11-27: the dashboard has
+- **U16. cid's own icons.** *First pass built 2026-11-27 (35 icons, on the tabs,
+  the header, cards, the sidebar, Health and type tiles; `docs/dashboard.md`, 3.5).
+  Left: copy and download beside their words, compare's marks, and the screens
+  photographed again.* *Asked for by the owner 2026-11-27: the dashboard has
   few icons, and reads plainer than it should.* Today's marks are type and Unicode
   (`✓`, `!`, `★`, `×`, `?`), which differ from font to font. One small set, drawn
   for cid in the airship's hand (`docs/dashboard.md`, 3: the workshop up close):

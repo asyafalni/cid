@@ -246,6 +246,27 @@ and tooltip, never by colour alone. *Planned:* share one categorical class palet
 with the annotation platform, validated with the dataviz validator; the `ann-*` hues
 are cid's own for now.
 
+### 3.5 Icons
+
+cid's own set (`web/src/icons.tsx`, roadmap U16, first drawn 2026-11-27): line
+drawings in the airship's hand. A 20 px grid, 1.5 px strokes in the text's colour,
+square caps and mitred corners; a filled dot or square where a rivet or a handle
+would be. Inline SVG: no icon font, no dependency. `<Icon name="…" />` draws one at
+the text's size.
+
+- **What a thing is:** the three kinds (files, annotated, model) on cards and in a
+  dataset's header; a file's kind on its type tile (picture, table, text, sound,
+  video, document, weights, or a plain file), over its type in words (`TypeTile`).
+- **Where you are:** the six tabs; the sidebar's headings; a folder in Files.
+- **How it is:** pass, warning, fail and note in Health and on a card.
+- **What you can do:** star (filled when on), close, the chip's ×, "View in git",
+  "Show command", "Filters".
+
+Rules: an icon is decoration beside its words (`aria-hidden`), and where it stands
+alone the control carries the name; never colour alone; none in a table's cells of
+data or over a picture (3.4). Not yet drawn in: copy and download beside their
+words, and compare's added, changed and removed.
+
 ### 3.4 Rules that keep beauty from hurting use
 
 - Data areas are calm: solid panels, no gradients, glow or texture behind images,

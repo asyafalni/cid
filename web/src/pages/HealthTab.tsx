@@ -4,6 +4,7 @@ import { getHealth, type HealthCheck, type Overview, type Pin } from '../api';
 import { BarTable } from '../Bars';
 import { classColor } from '../shapes';
 import { RowsSkeleton } from '../Skeleton';
+import { Icon, type IconName } from '../icons';
 
 // Dataset › Health (docs/dashboard.md, 4.5): the checks cid makes of the
 // version on screen, computed once on the server and kept, never on page
@@ -11,11 +12,11 @@ import { RowsSkeleton } from '../Skeleton';
 // what it found in words, and the paths it found, each a link into Browse
 // at the same version; then the distributions, as tables with bars.
 
-const marks: Record<HealthCheck['status'], { icon: string; word: string }> = {
-  pass: { icon: '✓', word: 'pass' },
-  warn: { icon: '!', word: 'warning' },
-  fail: { icon: '✕', word: 'fail' },
-  info: { icon: 'i', word: 'note' },
+const marks: Record<HealthCheck['status'], { icon: IconName; word: string }> = {
+  pass: { icon: 'pass', word: 'pass' },
+  warn: { icon: 'warn', word: 'warning' },
+  fail: { icon: 'fail', word: 'fail' },
+  info: { icon: 'info', word: 'note' },
 };
 
 export function HealthTab({ name, overview, commit, pin }: { name: string; overview: Overview; commit: string | null; pin: Pin }) {
@@ -56,7 +57,7 @@ export function HealthTab({ name, overview, commit, pin }: { name: string; overv
         {checks.map((c) => (
           <li key={c.id} className={`health-check health-check--${c.status}`}>
             <span className="health-mark" aria-label={marks[c.status].word}>
-              <span aria-hidden="true">{marks[c.status].icon}</span> {marks[c.status].word}
+              <Icon name={marks[c.status].icon} /> {marks[c.status].word}
             </span>
             <div>
               <h3>{c.title}</h3>{' '}

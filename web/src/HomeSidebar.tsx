@@ -2,11 +2,21 @@ import { useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import type { DatasetSummary } from './api';
 import { facetKeys, facetTitle, facetValues, valueLabel, worthShowing, type FacetKey, type HomeSearch } from './homeFilter';
+import { Icon, type IconName } from './icons';
 
 // The home page's sidebar (docs/dashboard.md §4.1): the way back to the
 // datasets a person uses, then each filter as a list with its counts.
 
 const few = 8;
+
+const facetIcon: Record<FacetKey, IconName> = {
+  group: 'folder',
+  kind: 'files',
+  type: 'file',
+  released: 'releases',
+  restricted: 'restricted',
+  health: 'health',
+};
 
 export function HomeSidebar({
   datasets,
@@ -35,7 +45,9 @@ export function HomeSidebar({
         const shown = long && !all[key] ? values.filter((v, i) => i < few || v.value === on) : values;
         return (
           <section key={key} className="side-group" aria-label={facetTitle[key]}>
-            <h2 className="side-title">{facetTitle[key]}</h2>
+            <h2 className="side-title">
+              <Icon name={facetIcon[key]} /> {facetTitle[key]}
+            </h2>
             <ul className="side-list">
               {shown.map((v) => {
                 const active = on === v.value;
@@ -75,7 +87,9 @@ export function HomeSidebar({
 function Shortcuts({ title, names }: { title: string; names: string[] }) {
   return (
     <nav className="side-group" aria-label={title}>
-      <h2 className="side-title">{title}</h2>
+      <h2 className="side-title">
+        <Icon name={title === 'Starred' ? 'star' : 'clock'} /> {title}
+      </h2>
       <ul className="side-list">
         {names.map((n) => (
           <li key={n}>

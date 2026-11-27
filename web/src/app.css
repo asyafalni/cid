@@ -777,15 +777,21 @@
 .tabs {
   display: flex;
   gap: var(--space-4);
-  border-bottom: 1px solid var(--line);
+  /* The bar's line is drawn inside it, and a tab's underline over that:
+     nothing hangs below the bar. It scrolls sideways when narrow, and a
+     tab hanging 1px out gave it a scrollbar of its own, up and down. */
+  box-shadow: inset 0 -1px 0 var(--line);
   margin-bottom: var(--space-6);
 }
 
 .tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
   color: var(--text-muted);
   padding: var(--space-2) 0;
   border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
+  white-space: nowrap;
 }
 
 .tab:hover {
@@ -2432,6 +2438,7 @@
 .dataset > .tabs {
   margin-top: var(--space-2);
   overflow-x: auto;
+  overflow-y: hidden;
 }
 
 /* --- lost in the clouds (404) --- */
@@ -3230,7 +3237,7 @@ button.tick-mark:hover {
 
 .health-checks {
   list-style: none;
-  margin: 0 0 var(--space-5);
+  margin: 0 0 var(--space-6);
   padding: 0;
 }
 
@@ -3846,4 +3853,65 @@ button.ann-attr:focus-visible {
 
 .snippet--first {
   margin-top: 0;
+}
+
+/* cid's icons (web/src/icons.tsx): line drawings in the text's colour. */
+.icon {
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  vertical-align: -0.24em;
+}
+
+.icon .icon-fill {
+  fill: currentColor;
+  stroke: none;
+}
+
+/* A star that is on is filled: shape, not colour alone. */
+.star--on .icon {
+  fill: currentColor;
+}
+
+.side-title .icon {
+  width: 1.1em;
+  height: 1.1em;
+  margin-right: 2px;
+}
+
+.show-command {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  align-self: center;
+}
+
+.mosaic-type-icon {
+  color: var(--text-muted);
+}
+
+/* A type tile: the kind of file, drawn, over its type in words. */
+.tile-type {
+  grid-auto-flow: row;
+  align-content: center;
+  gap: var(--space-1);
+}
+
+.tile-type .icon {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.list-media .tile-type {
+  grid-auto-flow: column;
+  gap: var(--space-1);
+  font-size: 0.7rem;
+}
+
+.list-media .tile-type .icon {
+  width: 1rem;
+  height: 1rem;
 }

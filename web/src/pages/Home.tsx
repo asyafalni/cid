@@ -10,6 +10,8 @@ import { recentDatasets } from '../recent';
 import { HomeSidebar } from '../HomeSidebar';
 import { facetKeys, facetTitle, matching, valueLabel, type HomeSearch } from '../homeFilter';
 import { typingIn } from '../keys';
+import { Icon } from '../icons';
+import { TypeIcon } from '../TypeTile';
 
 // Datasets home (docs/dashboard.md §4.1): the fleet. A sky with the search
 // in it, then a card per dataset, led by a mosaic of real previews (or type
@@ -110,7 +112,7 @@ export function Home() {
         aria-label={d.starred ? `Unstar ${d.name}` : `Star ${d.name}`}
         onClick={() => toggleStar.mutate({ name: d.name, on: !d.starred })}
       >
-        {d.starred ? '★' : '☆'}
+        <Icon name="star" />
       </button>
     );
 
@@ -146,7 +148,7 @@ export function Home() {
           aria-controls="home-side"
           onClick={() => setFiltersOpen((o) => !o)}
         >
-          Filters{on.length > 0 ? ` (${on.length} on)` : ''}
+          <Icon name="filter" /> Filters{on.length > 0 ? ` (${on.length} on)` : ''}
         </button>
         <aside id="home-side" ref={sideRef} className={filtersOpen ? 'home-side home-side--open' : 'home-side'} aria-label="Filter datasets">
           <HomeSidebar datasets={datasets} search={search} starred={starred} recent={recent} onPick={setSearch} />
@@ -163,7 +165,7 @@ export function Home() {
                 onClick={() => setSearch({ [k]: undefined })}
               >
                 <span className="quiet">{facetTitle[k].toLowerCase()}</span> {valueLabel(k, search[k]!)}
-                <span aria-hidden="true"> ×</span>
+                <Icon name="fail" size="0.9em" />
               </button>
             ))}
             {filtered && (
@@ -215,7 +217,9 @@ export function Home() {
                     <Link to="/d/$" params={{ _splat: d.name }} className="data manifest-name">
                       {d.name}
                     </Link>
-                    <span className="manifest-kind">{kindLabel(d.kind)}</span>
+                    <span className="manifest-kind">
+                      <Icon name={d.kind} /> {kindLabel(d.kind)}
+                    </span>
                     {d.restricted && <span className="chip restricted-badge">restricted</span>}
                     {d.owners.length > 0 && <span className="quiet manifest-owners">owned by {d.owners.join(', ')}</span>}
                     <p className="manifest-facts quiet data">
@@ -243,7 +247,7 @@ export function Home() {
                       {star(d)}
                     </div>
                     <p className="ds-card-kind">
-                      {kindLabel(d.kind)}
+                      <Icon name={d.kind} /> {kindLabel(d.kind)}
                       {d.restricted && <span className="chip restricted-badge">restricted</span>}
                       {d.owners.length > 0 && <span className="quiet"> · owned by {d.owners.join(', ')}</span>}
                     </p>
@@ -321,7 +325,7 @@ function HealthMark({ d }: { d: DatasetSummary }) {
       className={`ds-card-health ds-card-health--${level} data`}
       aria-label={`Health: ${words}`}
     >
-      <span aria-hidden="true">{level === 'pass' ? '✓' : level === 'warn' ? '!' : '✕'}</span> {words}
+      <Icon name={level} /> {words}
     </Link>
   );
 }
@@ -349,6 +353,7 @@ function Mosaic({ dataset: d }: { dataset: DatasetSummary }) {
         // card says what the dataset holds instead of showing a pale tile.
         tiles.map((t) => (
           <span key={t.ext} className="mosaic-type data">
+            <TypeIcon ext={t.ext} className="mosaic-type-icon" />
             <span className="mosaic-type-ext">{t.ext}</span>
             <span className="mosaic-type-count">{t.count.toLocaleString()}</span>
           </span>

@@ -1696,6 +1696,22 @@ test('a text file\'s gallery tile shows its first lines, a binary one its type',
   await expect(note.locator('.tile-text-type')).toHaveText('.txt');
 });
 
+test('the tab bar has no scrollbar of its own, and each tab carries its icon beside its name', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/boxes');
+  const tabs = page.getByRole('navigation', { name: 'Dataset views' });
+  // Nothing hangs out of the bar: it has nothing to scroll, up or down.
+  expect(await tabs.evaluate((n) => n.scrollHeight - n.clientHeight)).toBe(0);
+  // The icon is decoration: the tab is still named by its word alone.
+  const health = tabs.getByRole('link', { name: 'Health', exact: true });
+  await expect(health.locator('svg.icon')).toHaveAttribute('aria-hidden', 'true');
+  // A file with no preview is drawn as its kind, with its type in words.
+  await page.goto('/d/e2e/datasets/media?view=browse&mode=gallery');
+  const tile = page.locator('.tile', { hasText: 'broken.csv' }).locator('.tile-type');
+  await expect(tile.locator('svg.icon')).toHaveCount(1);
+  await expect(tile).toHaveText('.csv');
+});
+
 test('a version without splits shows no split filter or column', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/tables?view=browse&mode=table');

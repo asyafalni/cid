@@ -8,6 +8,7 @@ import { humanBytes } from '../format';
 import { typingIn } from '../keys';
 import { thumbsFor } from '../thumbs';
 import { ItemDrawer, MissingItem } from './BrowseTab';
+import { Icon } from '../icons';
 
 const noneHidden: ReadonlySet<string> = new Set();
 
@@ -133,7 +134,7 @@ export function FilesTab({
           {folders.map((f) => (
             <tr key={f.name} onClick={() => onOpenDir(prefix + f.name)}>
               <td>
-                <span className="data">{f.name}/</span>{' '}
+                <Icon name="folder" /> <span className="data">{f.name}/</span>{' '}
                 <span className="quiet">
                   {f.items.toLocaleString()} {f.items === 1 ? 'file' : 'files'}
                 </span>

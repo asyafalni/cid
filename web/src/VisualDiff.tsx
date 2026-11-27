@@ -5,6 +5,7 @@ import { AnnotationOverlay } from './overlays';
 import { Thumb } from './Thumb';
 import { extOf } from './browseFilter';
 import { classColor } from './shapes';
+import { Icon } from './icons';
 
 // Compare's pictures: every item whose annotations or bytes changed, the
 // version before beside the version after, as a grid of pairs that each
@@ -150,7 +151,7 @@ function PairDialog({
               next →
             </button>
             <button type="button" className="drawer-close" onClick={onClose} aria-label="Close">
-              ✕
+              <Icon name="fail" />
             </button>
           </span>
         </div>

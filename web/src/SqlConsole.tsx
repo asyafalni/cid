@@ -4,6 +4,7 @@ import { ApiError, getThumbs, runSql } from './api';
 import { looksVisual } from './thumbs';
 import { Thumb } from './Thumb';
 import { extOf } from './browseFilter';
+import { TypeTile } from './TypeTile';
 
 // The SQL console (docs/dashboard.md, 4.3): one SELECT over the version
 // on screen, as two views, `items` and `annotations`, run on the server in
@@ -173,7 +174,7 @@ function ResultGallery({ name, rows, onOpenItem }: { name: string; rows: Record<
             {by.has(it.hash) ? (
               <Thumb src={by.get(it.hash)} alt={it.path} label={extOf(it.path)} lazy />
             ) : (
-              <span className="tile-type data">{extOf(it.path)}</span>
+              <TypeTile path={it.path} />
             )}
             <span className="tile-path data">{it.path}</span>
           </button>

@@ -11,6 +11,7 @@ import { Bar } from '../Skeleton';
 import { BarTable } from '../Bars';
 import { classColor } from '../shapes';
 import { TextTile } from '../TextTile';
+import { TypeTile } from '../TypeTile';
 
 export function OverviewTab({
   overview: o,
@@ -242,7 +243,7 @@ function LookInside({ overview: o, commit, pin }: { overview: Overview; commit: 
               ) : textLike.test(item.path) ? (
                 <TextTile name={o.name} hash={item.hash} path={item.path} restricted={o.restricted} />
               ) : (
-                <span className="tile-type data">{extOf(item.path)}</span>
+                <TypeTile path={item.path} />
               )}
               <span className="tile-path data">{item.path}</span>
             </Link>
