@@ -1455,6 +1455,11 @@
   overflow-wrap: anywhere;
 }
 
+/* On a card, the notes stand apart from the tables below, as the policy line does. */
+.card .release-notes {
+  margin-bottom: var(--space-4);
+}
+
 /* --- files --- */
 
 .crumbs {
