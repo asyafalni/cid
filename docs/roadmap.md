@@ -16,7 +16,8 @@ same change.
 ## 0. Where the work stands
 
 Everything is on `main`; no branch or pull request is open (rechecked 2026-11-27).
-What is left that the code alone can settle is item 11's local disk (below); the rest
+What is left that the code alone can settle is U12 (the home sidebar, decided
+2026-11-27, Tier U) and item 11's local disk (below); the rest
 waits on the owner (U11, the first release, the GitHub live check, card editing and
 item 11's run on the office staging server), on the annotation platform (the Validator's report
 format, its embedder, an item's source) or on a parked decision (U10).
@@ -324,6 +325,48 @@ Close the "behind" rows without giving up an "ahead" one.
   changed in the last release, get a subset onto their machine, say whether the
   labels look right), and watch without helping. What they stumble on goes to the
   top of this tier.
+
+- **U12. The home sidebar.** *Decided 2026-11-27 with the owner, who found the home
+  page awkward without one.* Not a rail on every page: cid has four destinations, and
+  Browse and Compare need their width. Hugging Face has no sidebar on a dataset's own
+  page either; its sidebar is on the listing, and holds the filters. So the home page
+  gets a left sidebar in place of its row of dropdowns, and a dataset's page keeps its
+  tabs. Reopen as a slim collapsible rail (Starred, Recent) on every page only if
+  getting from one dataset to another still feels far once this is in.
+
+  What it holds, top to bottom, and where each must beat Hugging Face's listing:
+  1. **Starred** and **Recently viewed**, as links (they are chips above the grid
+     today). Hugging Face keeps neither on its listing.
+  2. **Groups**: the dataset paths as a tree (`your-org/datasets`, `your-org/models`),
+     a count beside each, a click narrowing the grid (`group=`). Hugging Face is flat.
+  3. **Kind**, **file type**, **releases**, **restricted** (only when some dataset
+     is) and, new, **health** (failing, warnings, passing): find what needs attention,
+     which Hugging Face cannot ask. Each is a list, not a dropdown: every choice
+     visible without a click.
+  4. **Every value carries its count, counted against the other filters**, as
+     Browse's facets are; a value that would give nothing is dimmed, never hidden, so
+     nobody clicks into an empty page. Hugging Face shows no counts on most filters.
+
+  Around it:
+  - **Instant.** The listing is already in the browser: a click filters with no
+    request and no reload (Hugging Face reloads its list). One history entry a click;
+    back undoes it; everything in the URL, the old links still working.
+  - **What is on, said above the grid**: each active filter as a chip with its own
+    ×, and "Clear filters". A sort beside the layout switch: newest push (default),
+    name, size, items (`sort=`).
+  - **Keyboard:** `/` to the search, `f` to the first filter, as in Browse.
+  - **Narrow screens:** below 900 px the sidebar is a "Filters" button over the
+    grid, saying how many are on; it opens in place, never as an overlay that hides
+    the count.
+  - **Calm:** a solid panel on the page's ground, sticky under the header, no
+    decoration of its own (the sky stays the page's one). It scrolls by itself when
+    taller than the window.
+
+  Done when: at 1440 px the grid still shows three cards a row; a filter change
+  repaints in under 100 ms with 500 datasets; axe passes in both themes; every
+  control is reachable and operable by keyboard; an e2e test covers a group, a
+  facet's counts under another filter, a dimmed empty value, the chips, the sort,
+  the old `?kind=` links and the phone layout.
 
 Every change here keeps the budgets in `docs/dashboard.md`, section 7, passes axe in
 both themes, and works with reduced motion. Beauty never costs a budget.
