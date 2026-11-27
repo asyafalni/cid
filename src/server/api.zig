@@ -3150,8 +3150,11 @@ fn thumbs(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, bo
         // A restricted dataset is answered with the blurred rendition and
         // nothing else (invariant 20): a missing blur is an absent preview,
         // never the clear one in its place. The clear one is /reveal's.
+        // Only content this dataset holds: a hash learned elsewhere opens
+        // nothing (invariant 12), so it is absent, as a missing preview is.
         const done = deps.db.rawOne(Done, scope, "SELECT coalesce((i.meta->>'clip')::boolean, false) AS clip FROM previews p JOIN items i USING (item_hash) " ++
-            "WHERE p.item_hash = decode($1, 'hex') AND p.status = 'done' AND (p.blurred OR NOT $2)", .{ hash, ds.restricted }) catch return error.Db;
+            "JOIN dataset_hashes h ON h.item_hash = p.item_hash AND h.dataset_id = $3::uuid " ++
+            "WHERE p.item_hash = decode($1, 'hex') AND p.status = 'done' AND (p.blurred OR NOT $2)", .{ hash, ds.restricted, ds.id }) catch return error.Db;
         const found = done orelse continue;
         const key = (if (ds.restricted) preview_worker.blurKey(arena, hash) else preview_worker.thumbKey(arena, hash)) catch return error.OutOfMemory;
         const url = deps.s3.presignGet(scope, key, presign_secs) catch return error.Storage;
@@ -3180,6 +3183,14 @@ fn downloads(arena: std.mem.Allocator, deps: *Deps, scope: anytype, caller: Call
         try set.appendSlice(arena, hash);
     }
     try set.append(arena, '}');
+    // Only content this dataset holds: a hash learned elsewhere opens
+    // nothing (invariant 12). Every hash a version of it lists is held, so
+    // a clone never meets this; one that is not is refused whole, unnamed.
+    const foreign = deps.db.rawOne(i64, scope, "SELECT count(*)::bigint FROM unnest($1::text[]) h " ++
+        "WHERE NOT EXISTS (SELECT 1 FROM dataset_hashes d WHERE d.dataset_id = $2::uuid AND d.item_hash = decode(h, 'hex'))", .{ set.items, ds.id }) catch return error.Db;
+    if (foreign.? > 0) return errorResponse(arena, .not_found, try std.fmt.allocPrint(arena, "{d} of the files asked for {s} not in {s}", .{
+        foreign.?, if (foreign.? == 1) "is" else "are", ds.name,
+    }), "Run 'cid pull' to list this dataset's files again, then retry.");
     // Bytes cleanup took (not in any release or branch head) are said so,
     // not handed out as links that answer 404.
     const collected = deps.db.rawOne(i64, scope, "SELECT count(*)::bigint FROM collected_items " ++

@@ -294,7 +294,10 @@ clients (a personal token is the credential), and server-sent streams.
   check is answered truthfully only for hashes already referenced by datasets the
   token can read; otherwise the server requests the upload even when the bytes exist,
   and discards the duplicate. This stops push access from becoming an oracle for
-  "does this exact file exist in a restricted dataset?".
+  "does this exact file exist in a restricted dataset?". Every route that takes a
+  hash answers only for content the named dataset holds: download links, thumbnails,
+  a text's start, a PDF's pages, a table's statistics and rows, row diffs and reveals.
+  A hash read from one dataset never opens another's bytes through the first.
 - **Restricted datasets** follow the same flow: only people whose GitLab role lets them
   in reach one at all. "Restricted" is then a flag on the dataset, enforced by the
   server: previews are blurred until a logged reveal, table rows and text are withheld

@@ -3969,6 +3969,25 @@ test "preview worker: builds image thumbs under discipline, skips the rest" {
             try std.testing.expect(std.mem.indexOf(u8, t.clip.?, "clip.webm") != null);
         } else try std.testing.expect(t.clip == null);
     }
+    // A hash learned elsewhere opens nothing (invariant 12): asked through
+    // a dataset that does not hold it, the picture has no thumbnail and
+    // its bytes no link, though the caller may read that other dataset.
+    {
+        _ = try db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/fmt-other'", .{});
+        const made = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets", "Bearer test-token", "{\"name\":\"test/datasets/fmt-other\",\"kind\":\"files\",\"git_url\":\"g@h:o.git\"}");
+        try std.testing.expect(@backingInt(made.status) < 300);
+        defer _ = db.exec(&fscope, "DELETE FROM datasets WHERE name = 'test/datasets/fmt-other'", .{}) catch {};
+        const one = try std.fmt.allocPrint(arena, "{{\"hashes\":[\"{s}\"]}}", .{&png_hash});
+        const other_thumbs = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/fmt-other/-/thumbs", "Bearer test-token", one);
+        try std.testing.expectEqual(std.http.Status.ok, other_thumbs.status);
+        try std.testing.expect(std.mem.indexOf(u8, other_thumbs.body, &png_hash) == null);
+        const other_dl = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/fmt-other/-/downloads", "Bearer test-token", one);
+        try std.testing.expectEqual(std.http.Status.not_found, other_dl.status);
+        try std.testing.expect(std.mem.indexOf(u8, other_dl.body, &png_hash) == null);
+        // Through its own dataset, the same request is answered.
+        const own_dl = cid.api.handle(arena, &deps, &scope, "POST", "/v0/datasets/test/datasets/fmt/-/downloads", "Bearer test-token", one);
+        try std.testing.expectEqual(std.http.Status.ok, own_dl.status);
+    }
     // A restricted dataset never gets the clip: its frames are clear.
     _ = try db.exec(&fscope, "UPDATE datasets SET restricted = true WHERE name = 'test/datasets/fmt'", .{});
     defer _ = db.exec(&fscope, "UPDATE datasets SET restricted = false WHERE name = 'test/datasets/fmt'", .{}) catch {};

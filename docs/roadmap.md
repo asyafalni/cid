@@ -82,6 +82,11 @@ format, its embedder, an item's source) or on a parked decision (U10).
      a link (`pair=`) with every box's change to the pixel and who made it, the
      arrow keys stepping through; at full size unless the dataset is restricted.
      It was one full-width pair after another, 14,000 pixels for 21 photos.
+     Found and fixed 2026-11-27, reading the thumbnail route: `downloads` and
+     `thumbs` presigned any hash sent, whichever dataset was named, so a reader of
+     one dataset who knew a hash of another (a restricted one included) got its clear
+     bytes. Both now answer only for content the named dataset holds (invariant 12),
+     as every other hash route already did.
   10. **Tier E, reach** (section 7; direction set 2026-11-25). Everything above that
       can be built is built, so the work turns to who can pick cid up. All four are
       done (E1 to E4, 2026-11-25/26).
