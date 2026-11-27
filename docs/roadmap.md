@@ -18,7 +18,7 @@ same change.
 Everything is on `main`; no branch or pull request is open (rechecked 2026-11-27).
 What is left that the code alone can settle is item 11's local disk (below); the rest
 waits on the owner (U11, the first release, the GitHub live check, card editing and
-the decisions named in item 11), on the annotation platform (the Validator's report
+item 11's run on the office staging server), on the annotation platform (the Validator's report
 format, its embedder, an item's source) or on a parked decision (U10).
 
 - **Done:** all of Tier A; Tier B except the rest of B6; the Hugging Face door (C1),
@@ -105,8 +105,8 @@ format, its embedder, an item's source) or on a parked decision (U10).
       skipped symbolic links in silence, so the import released an empty dataset
       and `cid status` called the folder clean. `cid add` now refuses a link by
       name and `cid status` lists them; the import script switches such a clone
-      to hard links. Open, the owner's to decide: should `cid add` follow a link
-      to a file and store the file, as `cp -L` would?
+      to hard links. Decided by the owner 2026-11-27: no; cid stores files,
+      not links, and the importing machine's twice the data covers DVC's copy.
       Found 2026-11-27, rechecking: the machine that runs a large import needed up
       to three times the data's size free (DVC's cache, the checked-out files, and
       cid's cache), likely the first thing to stop a 1 TB import. Done the same day:
@@ -122,14 +122,13 @@ format, its embedder, an item's source) or on a parked decision (U10).
       machine; DVC's cache shared, on the NAS; files of every size. With DVC's
       cache on another disk than the checkout, hard links cannot reach it, so DVC
       copies: the importing machine then holds the data once plus one batch,
-      inside the twice it has. Fewer bytes there would need DVC's symbolic links
-      read through by `cid add`, the decision left open above.
+      inside the twice it has.
       Left: the numbers on the owner's own NAS (`deploy/nas/README.md` says how to
       take them; the test share is a laptop's), SMB untried, and the owner's own
-      import. Still open, and the owner's to decide because it touches invariant 2:
-      each pushed byte is written to the store twice (staged, then into place);
-      writing once would mean a client's bytes at an item's key before their hash
-      is checked.
+      import. Decided by the owner 2026-11-27, as invariant 2 stands: each pushed
+      byte stays written to the store twice (staged, then into place), so nothing
+      is ever at an item's key unchecked; revisited only if the staging run shows
+      the NAS's writes are what limits it.
 - Running the e2e suite needs Playwright's browser:
   `pnpm --dir web exec playwright install chromium`.
 - The e2e database is seeded once and kept. A fixture change must be its own
