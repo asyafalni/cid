@@ -472,7 +472,7 @@ function Comparison({
               ) : (
                 c.size_b !== null && <span className="quiet data">{humanBytes(c.size_b)}</span>
               )}
-              {c.change === 'modified' && thumbBy.has(c.hash_a!) && thumbBy.has(c.hash_b!) && (
+              {c.change === 'modified' && !isTable(c.path) && thumbBy.has(c.hash_a!) && thumbBy.has(c.hash_b!) && (
                 <span className="before-after">
                   <Thumb src={thumbBy.get(c.hash_a!)} alt={`${c.path} before`} label={extOf(c.path)} />
                   <span aria-hidden="true">→</span>
@@ -588,6 +588,10 @@ function Balance({
   );
 }
 
+// A table that changed in this few rows shows them without a click.
+const few_rows = 10;
+
+// A table has no picture: its rows below say what changed.
 const tableExt = /\.(csv|parquet|jsonl|ndjson)$/i;
 function isTable(path: string): boolean {
   return tableExt.test(path);
@@ -675,7 +679,7 @@ function RowChanges({ name, path, a, b, commitB }: { name: string; path: string;
       {r.withheld ? (
         <p className="quiet">The rows themselves are withheld: this dataset is restricted.</p>
       ) : (
-        <details>
+        <details open={added + removed + changed <= few_rows}>
           <summary>Show the changed rows</summary>
           {key && (d.changed_sample ?? []).length > 0 && (
             <div className="table-scroll">

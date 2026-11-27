@@ -533,7 +533,9 @@ one SQL aggregate over its live items and annotations (`src/core/health.zig`), k
 the commit (`commits.health`, migration 0010) and prepared in the background with its
 statistics; never computed on page load. Each check is a mark (✓ pass, ! warning,
 ✕ fail, i note: an icon and a word, never colour alone), what it found in words, and up
-to 20 of the paths, each a link into Browse at the same version. The rules are fixed
+to 20 of the paths, each a link into Browse at the same version. Failures come first,
+then warnings and notes, each in its own box; the checks that passed follow, a line
+each, so the one thing to look at is never under seven that are fine. The rules are fixed
 and conservative (decided 2026-11-22): **fail** only for the same content in two splits
 (leakage); **warning** for duplicate content within a split, empty files, tables the
 preview worker could not read, and, in annotated datasets, items with no annotation,
@@ -809,7 +811,8 @@ checklist (it also needs card editing, a parked decision). The Health tab's own 
 
 *Built:* the row-level table diff. Compare shows, under each modified CSV, Parquet or
 JSONL file, its rows added and removed, with the rows themselves one click away (the
-first 20 each way); it is the same answer `cid diff` prints. A table keyed in
+first 20 each way), or already open when ten rows or fewer changed; a table gets no
+before/after picture, since it has none; it is the same answer `cid diff` prints. A table keyed in
 `.cidkeys` also shows rows changed, cell by cell.
 
 **Phase 3 — find anything**

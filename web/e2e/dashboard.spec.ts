@@ -1297,7 +1297,9 @@ test('compare shows a modified table by its rows: counts, then the rows themselv
   await expect(change).toContainText('modified');
   await expect(change.locator('.row-changes')).toContainText('2 rows added, 2 removed');
   await expect(change.locator('.row-changes')).toContainText('5 → 5 rows');
-  await change.getByText('Show the changed rows').click();
+  // A table has no picture to set side by side, and a change this small
+  // shows its rows without a click.
+  await expect(change.locator('.before-after')).toHaveCount(0);
   await expect(change.locator('table', { hasText: 'Removed' })).toContainText('Budi');
   await expect(change.locator('table', { hasText: 'Added' })).toContainText('Fajar');
 });
@@ -1473,6 +1475,8 @@ test('the Health tab marks each check, names what it found, and links to it', as
   await expect(leakage).toContainText('fail');
   await expect(leakage).toContainText('in more than one split');
   await expect(page.getByRole('status')).toContainText('1 failed');
+  // What needs a look comes first.
+  await expect(checks.getByRole('listitem').first()).toContainText('Splits kept apart');
   await leakage.getByRole('link', { name: /street\/clear\.png/ }).click();
   await expect(page).toHaveURL(/view=browse/);
   await expect(page).toHaveURL(/item=street(%2F|\/)clear\.png/);
@@ -1520,7 +1524,6 @@ test('a declared key turns a removed-and-added pair into one row changed, cell b
   const keyed = page.locator('.change', { hasText: 'people.csv' });
   await expect(keyed).toContainText('1 row added, 1 removed, 1 changed');
   await expect(keyed).toContainText('paired by id');
-  await keyed.getByText('Show the changed rows').click();
   const changed = keyed.locator('table', { hasText: 'Changed' });
   await expect(changed.getByRole('row', { name: /3 score 77(\.0)? 79(\.0)?/ })).toBeVisible();
 });

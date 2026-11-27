@@ -33,6 +33,9 @@ export function HealthTab({ name, overview, commit, pin }: { name: string; overv
       </p>
     );
   const h = health.data;
+  // What needs a look first; the passes after it, a line each.
+  const order: Record<HealthCheck['status'], number> = { fail: 0, warn: 1, info: 2, pass: 3 };
+  const checks = [...h.checks].sort((x, y) => order[x.status] - order[y.status]);
   const fails = h.checks.filter((c) => c.status === 'fail').length;
   const warns = h.checks.filter((c) => c.status === 'warn').length;
   const annotated = overview.kind === 'annotated';
@@ -50,7 +53,7 @@ export function HealthTab({ name, overview, commit, pin }: { name: string; overv
               .join(', ') + ` of ${h.checks.length} checks.`}
       </p>
       <ul className="health-checks" aria-label="Checks">
-        {h.checks.map((c) => (
+        {checks.map((c) => (
           <li key={c.id} className={`health-check health-check--${c.status}`}>
             <span className="health-mark" aria-label={marks[c.status].word}>
               <span aria-hidden="true">{marks[c.status].icon}</span> {marks[c.status].word}
