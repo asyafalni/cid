@@ -76,7 +76,9 @@ for (const [scheme, theme] of [['dark', 'night'], ['light', 'daybreak']]) {
 
     // Compare a table: the rows that changed, cell by cell.
     await open(page, `${sounds}?view=releases&a=v1.0&b=v1.1`);
-    await page.getByText('Show the changed rows').click();
+    // A small diff opens by itself; a larger one waits for a click.
+    const rows = page.locator('details', { has: page.getByText('Show the changed rows') }).first();
+    if (!(await rows.evaluate((d) => d.open))) await rows.locator('summary').click();
     await page.waitForLoadState('networkidle');
     await shot(page, 'compare-table-rows');
 
