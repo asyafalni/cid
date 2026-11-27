@@ -145,9 +145,15 @@ first=$?
 if [ "$first" -ne 0 ]; then
     # It said to run it again, and running it again finishes the job.
     has "a push the outage stopped says to run it again" "cid push" cat "$WORK/push-outage.log"
+    # The share is back, but the store may take a while to find its files
+    # again: try for two minutes, and when it never does, show why.
     pushed=
-    for _ in 1 2 3; do "$CID" push >"$WORK/push-again.log" 2>&1 && { pushed=1; break; }; sleep 5; done
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do "$CID" push >"$WORK/push-again.log" 2>&1 && { pushed=1; break; }; sleep 10; done
     ok "and running it again finishes it" test -n "$pushed"
+    if [ -z "$pushed" ]; then
+        tail -5 "$WORK/push-again.log"
+        compose logs --tail 30 seaweedfs cid
+    fi
 else
     say "ok: the push waited the outage out"
 fi
