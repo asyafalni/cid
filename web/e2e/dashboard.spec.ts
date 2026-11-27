@@ -1765,6 +1765,25 @@ test('the tab bar has no scrollbar of its own, and each tab carries its icon bes
   await expect(tile).toHaveText('.csv');
 });
 
+test('"Use this" says when a yolo clone cannot train: Ultralytics needs a train and a val split', async ({ page }) => {
+  await signIn(page);
+  // boxes at v1.0.0 has its one frame in train, and no val.
+  await page.goto('/d/e2e/datasets/boxes?release=v1.0.0');
+  const use = page.getByRole('region', { name: 'Use this dataset' });
+  await expect(use.locator('.snippet-caution')).toHaveCount(0);
+  await use.getByRole('radio', { name: 'yolo' }).click();
+  await expect(use.locator('.snippet-caution')).toContainText('this version has no val split');
+  // attrs2 at v1.1.0 has both, so nothing is said.
+  await page.goto('/d/e2e/datasets/attrs2?release=v1.1.0');
+  const both = page.getByRole('region', { name: 'Use this dataset' });
+  await both.getByRole('radio', { name: 'yolo' }).click();
+  await expect(both.getByText('YOLO("yolov8n.pt")')).toBeVisible();
+  await expect(both.locator('.snippet-caution')).toHaveCount(0);
+  // Narrowing to one split takes the other away again.
+  await both.getByRole('group', { name: 'Splits' }).getByRole('button', { name: 'train' }).click();
+  await expect(both.locator('.snippet-caution')).toContainText('this subset has no val split');
+});
+
 test('a version without splits shows no split filter or column', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/tables?view=browse&mode=table');

@@ -316,6 +316,9 @@ function UseThisDataset({
     .join(' ')
     .concat(atCommit ? ` && cd ${folder} && cid checkout ${atCommit}` : atBranch ? ` && cd ${folder} && cid checkout ${atBranch}` : '');
   const snippet = pythonFor(format, folder);
+  // What the chosen subset leaves of train and val: `--split` narrows them.
+  const keptSplits = o.splits.map((x) => x.name).filter((name) => splits.size === 0 || splits.has(name));
+  const yoloLacks = ['train', 'val'].filter((name) => !keptSplits.includes(name));
   const revision = pinned ?? (atCommit ? commitAlias(atCommit) : atBranch);
   const hf =
     way === 'hub'
@@ -434,6 +437,23 @@ function UseThisDataset({
             <pre className="data">
               <code>{snippet}</code>
             </pre>
+            {format === 'yolo' && yoloLacks.length > 0 && (
+              // Ultralytics refuses a dataset.yaml without both; cid lists
+              // the splits a version has and invents none.
+              <p className="quiet snippet-caution">
+                <Icon name="warn" /> Ultralytics trains from a <code className="data">train</code> and a{' '}
+                <code className="data">val</code> split, and this {splits.size > 0 ? 'subset' : 'version'} has no{' '}
+                {yoloLacks.map((name, i) => (
+                  <span key={name}>
+                    {i > 0 && ' or '}
+                    <code className="data">{name}</code>
+                  </span>
+                ))}
+                {' '}
+                split: it will refuse the folder.{' '}
+                {splits.size > 0 ? 'Pick both, or none.' : 'Splits are set in the annotation platform.'}
+              </p>
+            )}
           </div>
           </>
         ) : (

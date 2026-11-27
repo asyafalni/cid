@@ -3940,3 +3940,13 @@ button.ann-attr:focus-visible {
   width: auto;
   white-space: nowrap;
 }
+
+.snippet-caution {
+  margin-top: var(--space-2);
+  color: var(--warn);
+}
+
+.snippet-caution .icon {
+  width: 1.1em;
+  height: 1.1em;
+}
