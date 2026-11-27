@@ -1557,12 +1557,145 @@
   border-style: solid;
 }
 
+.visual-diff-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  margin-bottom: var(--space-3);
+}
+
+.visual-diff-head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+/* The changed items as cards of two pictures: three a row on a wide page,
+   so a review pass reads as a list to scan. */
 .visual-diff-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  gap: var(--space-6);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
+  gap: var(--space-4);
+}
+
+.pair-card {
+  display: grid;
+  gap: var(--space-2);
+  width: 100%;
+  height: 100%;
+  align-content: start;
+  padding: var(--space-2);
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  cursor: pointer;
+}
+
+.pair-card:hover,
+.pair-card--open {
+  border-color: color-mix(in srgb, var(--aether) 45%, var(--line));
+}
+
+.pair-card .before-after-pair {
+  gap: var(--space-2);
+}
+
+.pair-card-path {
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pair-card-summary {
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+/* One pair, large, over the page. */
+.pair-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+}
+
+.pair-dialog {
+  width: min(78rem, 100%);
+  max-height: calc(100vh - 2 * var(--space-4));
+  overflow-y: auto;
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.25);
+}
+
+.pair-dialog:focus {
+  outline: none;
+}
+
+.pair-dialog-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.pair-dialog-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.pair-dialog-nav {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.pair-dialog-nav .filter-clear {
+  margin: 0;
+}
+
+.pair-changes {
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.pair-changes th,
+.pair-changes td {
+  text-align: left;
+  padding: var(--space-1) var(--space-4) var(--space-1) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.pair-changes th {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.pair-changes .class-dot {
+  margin-right: var(--space-2);
+}
+
+.pair-changes del {
+  color: var(--text-muted);
+}
+
+.pair-dialog-keys {
+  margin: 0;
+  font-size: 0.8rem;
 }
 
 .before-after-pair {

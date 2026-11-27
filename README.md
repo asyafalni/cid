@@ -90,10 +90,11 @@ command for any format or subset.
 
 ![A dataset's overview: the release tape, eight of its photos with their boxes, the card with the release's notes, and the clone command](docs/screenshots/overview.png)
 
-**Compare two releases of an annotated dataset:** a review pass, photo by photo. The
-boxes as the detector left them in v1.0 (dashed) beside the reviewer's in v1.1.
+**Compare two releases of an annotated dataset:** a review pass, photo by photo, each
+saying what changed. One opened: the boxes as the detector left them in v1.0 (dashed)
+beside the reviewer's in v1.1, and every box's change in words.
 
-![Comparing two releases: on a photo of a bus, the boxes of v1.0 sit left of their objects, and v1.1 puts them right](docs/screenshots/compare-annotations.png)
+![Comparing two releases: a photo of a bus opened large, its v1.0 boxes 40 pixels left of their objects beside v1.1's, and a table naming each box's change: a truck renamed car, every box moved 40 px right, by the reviewer](docs/screenshots/compare-annotations.png)
 
 **Compare a table:** the rows added, removed and changed, cell by cell, computed on the
 server.

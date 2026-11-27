@@ -100,6 +100,8 @@ const datasetRoute = createRoute({
     num?: string;
     num_from?: string;
     num_to?: string;
+    /** Releases: the changed item compared large. */
+    pair?: string;
     /** A table item's row filters, as JSON (TableView). */
     rows?: string;
     /** A table item's row, by its place in the file from 1 (TableView). */
@@ -145,6 +147,7 @@ const datasetRoute = createRoute({
     // Numbers in a URL arrive as numbers; kept as written.
     num_from: search.num_from === undefined ? undefined : String(search.num_from),
     num_to: search.num_to === undefined ? undefined : String(search.num_to),
+    pair: typeof search.pair === 'string' ? search.pair : undefined,
     rows: typeof search.rows === 'string' ? search.rows : Array.isArray(search.rows) ? JSON.stringify(search.rows) : undefined,
     // Text in a URL, a number when the page sets it.
     row: /^[1-9]\d*$/.test(String(search.row ?? '')) ? Number(search.row) : undefined,

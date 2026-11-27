@@ -735,19 +735,37 @@ test('compare: a changed box shows before and after on the same image', async ({
   await expect(byClass.getByRole('row', { name: /vehicle/ })).toHaveCount(0);
 
   // docs/dashboard.md §9: the same image twice, the box where each
-  // version had it — dashed for the old, solid for the new.
-  const pair = page.locator('.visual-diff-item');
-  await expect(pair).toHaveCount(1);
+  // version had it — dashed for the old, solid for the new — in a card
+  // that says what changed.
+  const pair = page.getByRole('button', { name: /^frames\/street\.png: 1 moved\. Open it large\.$/ });
+  await expect(pair).toBeVisible();
   await expect(pair.locator('img')).toHaveCount(2);
   const before = pair.locator('.overlay--before rect');
   const after = pair.locator('.overlay--after rect');
+  // Only the changed shape is drawn: the vehicle that did not move is not.
   await expect(before).toHaveCount(1);
   await expect(after).toHaveCount(1);
   await expect(before).toHaveAttribute('x', '20');
   await expect(after).toHaveAttribute('x', '45');
-  // Only the changed shape is drawn: the vehicle that did not move is not.
-  await expect(pair.getByText('v1.0.0 · 1 shape')).toBeVisible();
-  await expect(pair.getByText('v1.1.0 · 1 shape')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '1 changed item' })).toBeVisible();
+
+  // Opened large: a link of its own, the change in words to the pixel, and
+  // who made it; Escape closes it and the link with it.
+  await pair.click();
+  await expect(page).toHaveURL(/pair=frames%2Fstreet\.png/);
+  const dialog = page.getByRole('dialog', { name: 'frames/street.png, before and after' });
+  await expect(dialog.getByText('1 of 1')).toBeVisible();
+  const row = dialog.getByRole('row', { name: /person/ });
+  await expect(row).toContainText('moved 25 px right');
+  await expect(row).toContainText('user:reviewer');
+  await expect(dialog.getByText('v1.0.0 · 1 shape')).toBeVisible();
+  await expect(dialog.getByText('v1.1.0 · 1 shape')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(page).not.toHaveURL(/pair=/);
+  // The link opens it straight away.
+  await page.goto('/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0&pair=frames%2Fstreet.png');
+  await expect(page.getByRole('dialog', { name: 'frames/street.png, before and after' })).toBeVisible();
 });
 
 test('the command copied from "Use this dataset" works as pasted, subset and all', async ({ page }) => {
@@ -1680,7 +1698,7 @@ test('a malformed CSV shows its own error, in words, and the rest of the dataset
   await expect(page.getByRole('row', { name: /tone\.wav/ })).toBeVisible();
 });
 
-const axePages = ['/no/such/page', '/d/e2e/datasets/nope', '/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/scores?view=browse&num=confidence&num_from=0.2&num_to=0.235', '/d/e2e/datasets/demo?view=files&item=img-a.png', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/d/e2e/datasets/media?view=browse&mode=list', '/d/e2e/datasets/attrs2?view=health&release=v1.1.0', '/d/e2e/datasets/boxes?view=browse&mode=sql&sql=SELECT%20split%2C%20count(*)%20FROM%20items%20GROUP%20BY%20split', '/keys', '/tokens'];
+const axePages = ['/no/such/page', '/d/e2e/datasets/nope', '/', '/d/e2e/datasets/demo', '/d/e2e/datasets/demo?view=browse', '/d/e2e/datasets/scores?view=browse&num=confidence&num_from=0.2&num_to=0.235', '/d/e2e/datasets/demo?view=files&item=img-a.png', '/d/e2e/datasets/boxes?view=browse', '/d/e2e/datasets/demo?view=browse&type=.txt&mode=table', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0&pair=frames%2Fstreet.png', '/d/e2e/datasets/boxes', '/?type=.txt', '/d/e2e/datasets/faces?view=browse&item=person-01.png', '/d/e2e/datasets/tables?view=browse&release=v1.0.0&item=people.csv', '/d/e2e/datasets/tables?view=releases&a=v1.0.0&b=v1.1.0', '/d/e2e/datasets/media?view=browse&item=tone.wav', '/d/e2e/datasets/media?view=browse&item=notes.txt', '/d/e2e/datasets/media?view=browse&mode=list', '/d/e2e/datasets/attrs2?view=health&release=v1.1.0', '/d/e2e/datasets/boxes?view=browse&mode=sql&sql=SELECT%20split%2C%20count(*)%20FROM%20items%20GROUP%20BY%20split', '/keys', '/tokens'];
 
 // Both themes: Daybreak as Playwright's default light scheme, Night flight
 // as the dark one. Each must pass on its own (docs/dashboard.md §3.4).

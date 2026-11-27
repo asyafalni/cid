@@ -66,12 +66,11 @@ for (const [scheme, theme] of [['dark', 'night'], ['light', 'daybreak']]) {
     await open(page, street);
     await shot(page, 'overview');
 
-    // Compare: a photo whose boxes the review moved and renamed.
-    await open(page, `${street}?view=releases&a=v1.0&b=v1.1`);
-    // Its heading just under the top bar, so both pictures are whole.
-    const pair = page.getByText('frames/frame-007.jpg', { exact: true }).last();
-    await pair.evaluate((el) => window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - 130));
-    await page.waitForTimeout(300);
+    // Compare: one photo of the review pass opened large, every box's
+    // change in words beneath it.
+    await open(page, `${street}?view=releases&a=v1.0&b=v1.1&pair=frames%2Fframe-007.jpg`);
+    await page.getByRole('dialog').waitFor();
+    await page.waitForLoadState('networkidle');
     await page.evaluate(() => Promise.all([...document.images].map((i) => i.decode().catch(() => {}))));
     await shot(page, 'compare-annotations');
 

@@ -2,13 +2,16 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { comparePair } from '../command';
 import { RowsSkeleton } from '../Skeleton';
-import { getCompare, getOverview, getRowDiff, getThumbs, type CompareSide, type Overview, type StateAnnotation, type TapeCommit } from '../api';
-import { AnnotationOverlay } from '../overlays';
+import { getCompare, getDownloads, getOverview, getRowDiff, getThumbs, type Overview, type TapeCommit } from '../api';
 import { Thumb } from '../Thumb';
 import { extOf } from '../browseFilter';
 import { gitTagUrl, humanBytes } from '../format';
 import { DumbbellTable, type PairRow } from '../Bars';
 import { classColor } from '../shapes';
+import { VisualDiff } from '../VisualDiff';
+
+/** The most pairs a compare's first page pictures (browse.visual_items). */
+const visual_items = 60;
 
 // Releases & history: the timeline, and compare between any two
 // versions. A and B live in the URL, so a comparison is a link.
@@ -20,6 +23,8 @@ export function ReleasesTab({
   onPick,
   dir,
   onDir,
+  openPair,
+  onOpenPair,
 }: {
   name: string;
   overview: Overview;
@@ -29,6 +34,9 @@ export function ReleasesTab({
   /** The folder the change list is narrowed to, from the URL. */
   dir?: string;
   onDir?: (dir: string | undefined) => void;
+  /** The changed item opened large, from the URL. */
+  openPair?: string;
+  onOpenPair?: (path: string | undefined) => void;
 }) {
   const commits = overview.commits; // newest first
   // On a branch, main's versions are on offer too (B7): a branch is
@@ -80,7 +88,7 @@ export function ReleasesTab({
           )}
         </div>
         {aSel && bSel && aSel !== bSel && (
-          <Comparison name={name} overview={overview} commits={every} aLabel={aSel} bLabel={bSel} dir={dir} onDir={onDir} />
+          <Comparison name={name} overview={overview} commits={every} aLabel={aSel} bLabel={bSel} dir={dir} onDir={onDir} openPair={openPair} onOpenPair={onOpenPair} />
         )}
         {aSel === bSel && <p className="quiet">Pick two different versions to compare.</p>}
       </section>
@@ -310,11 +318,15 @@ function Comparison({
   bLabel,
   dir,
   onDir,
+  openPair,
+  onOpenPair,
 }: {
   name: string;
   overview: Overview;
   /** Every version on offer: the branch's, and main's when on a branch. */
   commits: TapeCommit[];
+  openPair?: string;
+  onOpenPair?: (path: string | undefined) => void;
   aLabel: string;
   bLabel: string;
   dir?: string;
@@ -351,6 +363,18 @@ function Comparison({
     enabled: pairHashes.length > 0,
   });
   const thumbBy = new Map((thumbs.data?.thumbs ?? []).map((t) => [t.hash, t.url]));
+  // The pair opened large, at full size: a reviewer judges a box's edge on
+  // the real pixels. Never for a restricted dataset, where clear bytes come
+  // only with a logged reveal (invariant 20); its blurred preview stands in.
+  const opened = visual.find((v) => v.path === openPair);
+  const openHashes = opened ? [opened.before?.hash, opened.after?.hash].filter((h): h is string => !!h) : [];
+  const originals = useQuery({
+    queryKey: ['downloads', name, ...openHashes],
+    queryFn: () => getDownloads(name, openHashes),
+    enabled: openHashes.length > 0 && !overview.restricted,
+    staleTime: 5 * 60 * 1000,
+  });
+  const large = new Map((originals.data?.downloads ?? []).map((d) => [d.hash, d.url]));
 
   if (pages.isPending) return <RowsSkeleton rows={4} cols={3} />;
   if (pages.isError || !first)
@@ -475,35 +499,16 @@ function Comparison({
       )}
 
       {visual.length > 0 && (
-        <section className="visual-diff" aria-label="Changed items, before and after">
-          <p className="quiet visual-diff-key">
-            <span className="key-before">dashed</span> {aLabel} ·{' '}
-            <span className="key-after">solid</span> {bLabel}
-          </p>
-          <ul className="visual-diff-list">
-            {visual.map((v) => (
-              <li key={v.path} className="visual-diff-item">
-                <p className="data change-path">{v.path}</p>
-                <div className="before-after-pair">
-                  <DiffSide
-                    label={aLabel}
-                    item={v.before ?? undefined}
-                    annotations={v.shapes_before}
-                    variant="before"
-                    thumb={v.before ? thumbBy.get(v.before.hash) : undefined}
-                  />
-                  <DiffSide
-                    label={bLabel}
-                    item={v.after ?? undefined}
-                    annotations={v.shapes_after}
-                    variant="after"
-                    thumb={v.after ? thumbBy.get(v.after.hash) : undefined}
-                  />
-                </div>
-              </li>
-            ))}
-          </ul>
-        </section>
+        <VisualDiff
+          pairs={visual}
+          aLabel={aLabel}
+          bLabel={bLabel}
+          thumbs={thumbBy}
+          open={openPair}
+          onOpen={(p) => onOpenPair?.(p)}
+          capped={visual.length >= visual_items}
+          large={large}
+        />
       )}
 
       {first.ann_changes.length > 0 && (
@@ -580,50 +585,6 @@ function Balance({
       )}
       {moved(splits) && <DumbbellTable caption="Items by split" noun="items" aLabel={aLabel} bLabel={bLabel} rows={splits} />}
     </>
-  );
-}
-
-function DiffSide({
-  label,
-  item,
-  annotations,
-  variant,
-  thumb,
-}: {
-  label: string;
-  item: CompareSide | undefined;
-  annotations: StateAnnotation[];
-  variant: 'before' | 'after';
-  thumb: string | undefined;
-}) {
-  return (
-    <figure className="diff-side">
-      {!item ? (
-        <div className="diff-side-none blueprint">
-          <span className="quiet">Not in {label}</span>
-        </div>
-      ) : thumb && item.width && item.height ? (
-        <span className="overlay-fit" style={{ aspectRatio: `${item.width} / ${item.height}` }}>
-          <Thumb src={thumb} alt={`${item.path} at ${label}`} label={extOf(item.path)}>
-            <AnnotationOverlay
-              width={item.width}
-              height={item.height}
-              annotations={annotations}
-              hidden={new Set()}
-              opacity={1}
-              variant={variant}
-            />
-          </Thumb>
-        </span>
-      ) : (
-        <div className="diff-side-none blueprint">
-          <span className="quiet">No preview yet</span>
-        </div>
-      )}
-      <figcaption className="data">
-        {label} · {annotations.length} shape{annotations.length === 1 ? '' : 's'}
-      </figcaption>
-    </figure>
   );
 }
 

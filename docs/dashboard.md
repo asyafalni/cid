@@ -508,7 +508,18 @@ Every dataset page (all five tabs) shares one header and the release tape.
     folders, a path leading back up, the folder in the URL (`dir=`). The summary
     stays the whole comparison's.
   - Visual diff (built): changed items with before (dashed) and after (solid)
-    overlays side by side.
+    overlays side by side. *Built (2026-11-27), as a review:* the changed items are
+    a grid of pairs, twelve first and all of the first page's sixty on request,
+    each saying in words what changed, its annotations matched by id
+    (`truck → car · 5 moved · 1 removed`, `new item`, `file changed`). A pair opens
+    large over the page, as a link (`pair=<path>`): the two pictures at full size
+    (the original bytes; for a restricted dataset its blurred preview, since clear
+    bytes come only with a logged reveal), and a table of every annotation that
+    changed: its class (renames struck through), what changed (`moved 40 px right`,
+    `reshaped`, `attributes`, `added`, `removed`) and who made it. ← and → step
+    through the pairs; Escape closes. It replaced one full-width pair after
+    another, which was 14,000 pixels tall for 21 photos and unreadable for a real
+    review pass.
   - Table diff (built): under each modified CSV, Parquet or JSONL file, rows added and
     removed, with the first 20 each way one click away; the same answer `cid diff`
     prints. With the table's key in `.cidkeys`, rows changed too, cell by cell, old

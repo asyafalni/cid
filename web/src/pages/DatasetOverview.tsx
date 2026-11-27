@@ -47,6 +47,8 @@ export function DatasetOverview() {
     num?: string;
     num_from?: string;
     num_to?: string;
+    /** Releases: the changed item compared large. */
+    pair?: string;
     rows?: string;
     row?: number;
     what?: string;
@@ -331,9 +333,11 @@ export function DatasetOverview() {
           overview={o}
           a={search.a}
           b={search.b}
-          onPick={(patch) => setSearch({ ...patch, dir: undefined })}
+          onPick={(patch) => setSearch({ ...patch, dir: undefined, pair: undefined })}
           dir={search.dir}
-          onDir={(dir) => setSearch({ dir })}
+          onDir={(dir) => setSearch({ dir, pair: undefined })}
+          openPair={search.pair}
+          onOpenPair={(pair) => setSearch({ pair })}
         />
       ) : view === 'health' ? (
         <HealthTab name={name} overview={o} commit={pinnedCommit} pin={pin} />

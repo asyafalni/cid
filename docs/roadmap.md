@@ -75,9 +75,13 @@ format, its embedder, an item's source) or on a parked decision (U10).
      (`deploy/compose/demo.sh`: fifty real street photos with their boxes and a review
      pass between two releases, a file dataset, a model), loaded and checked by
      `tests/quickstart.sh`; the README's screenshots retaken from it; "A look inside"
-     laid out in full rows (it showed seven photos and an orphan). Seen while looking,
-     not yet done: Compare lays every changed picture out in one page, 14,000 pixels
-     for 21 photos, where it should page them.
+     laid out in full rows (it showed seven photos and an orphan); the stack starts
+     again after a stop (the bucket step refused a bucket that existed, so after a
+     reboot the server never started). And Compare's pictures as a review: a grid
+     of pairs, each saying what changed ("truck → car · 5 moved"), opened large as
+     a link (`pair=`) with every box's change to the pixel and who made it, the
+     arrow keys stepping through; at full size unless the dataset is restricted.
+     It was one full-width pair after another, 14,000 pixels for 21 photos.
   10. **Tier E, reach** (section 7; direction set 2026-11-25). Everything above that
       can be built is built, so the work turns to who can pick cid up. All four are
       done (E1 to E4, 2026-11-25/26).
