@@ -604,7 +604,7 @@ fn materialize(
         std.debug.assert(std.mem.order(u8, a.path, b.path) == .lt);
     };
     var tracked = loadTracked(arena, io, ws) catch return error.CorruptLocalState;
-    const files = scan.scanWorkdir(arena, io, ws.work_dir) catch return error.CorruptLocalState;
+    const files = scan.scanWorkdir(arena, io, ws.items_dir) catch return error.CorruptLocalState;
 
     // Safety first: an affected path with local edits stops everything.
     for (items) |item| {
@@ -655,10 +655,10 @@ fn materialize(
     for (items) |item| {
         const unchanged = if (tracked.get(item.path)) |t| std.mem.eql(u8, &t.hash_hex, item.hash) else false;
         if (!unchanged) {
-            try remote_mod.placeFromCache(io, cache_dir, item.hash, ws.work_dir, item.path);
+            try remote_mod.placeFromCache(io, cache_dir, item.hash, ws.items_dir, item.path);
             changed += 1;
         }
-        const stat = ws.work_dir.statFile(io, item.path, .{}) catch return error.CorruptLocalState;
+        const stat = ws.items_dir.statFile(io, item.path, .{}) catch return error.CorruptLocalState;
         var entry: index_mod.TrackedEntry = .{
             .path = item.path,
             .hash_hex = undefined,
@@ -670,7 +670,7 @@ fn materialize(
     }
     for (tracked.items()) |t| {
         if (findState(items, t.path) == null) {
-            ws.work_dir.deleteFile(io, t.path) catch {};
+            ws.items_dir.deleteFile(io, t.path) catch {};
             changed += 1;
         }
     }
@@ -810,7 +810,7 @@ fn recache(io: std.Io, ws: *workspace.Workspace, cache_dir: std.Io.Dir, commits:
     for (commits) |commit| {
         for (commit.changes) |ch| {
             if (ch.op != .add or !std.mem.eql(u8, &ch.hash_hex, hash)) continue;
-            const stored = cache.storeFile(io, ws.work_dir, ch.path, cache_dir, null) catch continue;
+            const stored = cache.storeFile(io, ws.items_dir, ch.path, cache_dir, null) catch continue;
             if (std.mem.eql(u8, &stored.hash_hex, hash)) return;
         }
     }

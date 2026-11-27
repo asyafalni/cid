@@ -492,6 +492,14 @@ both themes, and works with reduced motion. Beauty never costs a budget.
 - ~~**B9. "Show command" and the `⌘K` palette**~~ (done 2026-11-20; the palette
   jumps to places; actions in it came 2026-11-21).
 
+- **B11. Cleanup for built files.** *Found 2026-11-27.* `cid admin gc` looks at
+  items and abandoned uploads only. A version's built files (`exports/`, `states/`,
+  `diffs/`) are written again under a new name whenever they change (a provisional
+  one made final, the yolo layout of 2026-11-27), and the old object stays in
+  storage for good. gc should list those no `version_files` row or kept diff names,
+  older than the retention period, and delete them only with `--apply`, as it does
+  items (invariant 10).
+
 ## 5. Tier C: the direction (in this order)
 
 ### C1. The Hugging Face read door
@@ -696,18 +704,23 @@ and assembling a server by hand. In order:
      - **VOC loads, with two arguments**: `data_path=<folder>`,
        `labels_path=<folder>/Annotations` (50 samples, 226 boxes). With none it
        looks for `data/`.
-     - **YOLO is refused, and this is cid's fault**: "YOLOv5 image paths must
-       contain '/images/', which is replaced with '/labels/'". cid writes a photo
-       at its own path (`frames/a.jpg`) and its label at `labels/frames/a.txt`.
-       Ultralytics finds labels by the same replacement
-       (`ultralytics/data/utils.py`, `img2label_paths`), so by its source it would
-       look for `frames/a.txt` beside the photo, find none, and treat every photo
-       as empty. Not yet run against Ultralytics itself; the dashboard's Python
-       snippet for yolo has therefore never been proven. **Next, before anything
-       else here:** the yolo export places photos under `images/<path>` and labels
-       under `labels/<path>` (the layout both tools expect), with a real-client
-       test. It changes where a `--format yolo` clone puts its files, so it goes
-       through the client (clone, pull, checkout, status) with its own tests.
+     - **YOLO was refused, and that was cid's fault** (fixed 2026-11-27):
+       "YOLOv5 image paths must contain '/images/', which is replaced with
+       '/labels/'". cid wrote a photo at its own path (`frames/a.jpg`) and its
+       label at `labels/frames/a.txt`. Ultralytics finds labels by the same
+       replacement and, run for real (8.x, in a container), refused the old
+       folder too: `path: .` in `dataset.yaml` is read from where the trainer
+       runs, not from the file. The export now keeps photos under
+       `images/<path>`, names them `./images/<path>` in the split lists, and
+       writes no `path:` line; a `--format yolo` clone places its files there,
+       and one made before is moved the next time a command opens it
+       (`.cid/layout`), still clean to `cid status`. Checked by hand against
+       both tools: FiftyOne loads it with no arguments but the split
+       (`dataset_type=fo.types.YOLOv5Dataset, split="train"`), and Ultralytics
+       builds its training set from it (39 photos, 179 boxes: cid's counts).
+       Left to say on the page: Ultralytics wants a `train` and a `val` split,
+       and a dataset with only one gets a `dataset.yaml` it refuses; cid lists
+       the splits a dataset has and invents none.
   1. **Prove the folders load.** `tests/fiftyone_client.sh` (test-only, in CI, as
      `tests/hf_client.sh` is): `cid clone --format coco|yolo|voc`, then
      `fo.Dataset.from_dir` on each, and the sample, box and class counts equal the

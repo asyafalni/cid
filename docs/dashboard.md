@@ -397,7 +397,7 @@ Every dataset page (all five tabs) shares one header and the release tape.
   `--split`/`--class` flags `cid clone` takes, so the subset is real), and the resulting
   `cid clone …` command; the download size, summed exactly from the pinned release's
   items rather than estimated; and a Python snippet that loads the folder the command
-  writes (ultralytics for yolo, `json` for jsonl, `pathlib` for files). cid ships no
+  writes (ultralytics for yolo, which needs a `train` and a `val` split in the dataset, `json` for jsonl, `pathlib` for files). cid ships no
   Python package; the snippet is documentation shaped as code. The command uses
   the SSH address, e.g.
   `cid clone cid@cidhub.com:your-org/datasets/person-vehicle --release v5.0.0 --format yolo`,

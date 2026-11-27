@@ -1,6 +1,9 @@
 //! The `yolo` export: one label file per image (same relative path under
 //! labels/, extension .txt), classes.txt with the index map, per-split
-//! image lists and a dataset.yaml. Boxes only; geometry is pixel
+//! image lists and a dataset.yaml. The images themselves sit under
+//! images/ (`items_folder`; the client places them there), because that
+//! is how the tools find a label: Ultralytics and FiftyOne both take an
+//! image's path and swap its last `/images/` for `/labels/`. Boxes only; geometry is pixel
 //! {x, y, w, h} (top-left), normalized against the item's recorded
 //! width and height.
 //!
@@ -16,6 +19,16 @@ const repeat = @import("../util/repeat.zig").repeat;
 const bundle = @import("bundle.zig");
 
 pub const split_names = [_][]const u8{ "train", "val", "test" };
+
+/// Where a yolo folder keeps its images, beside `labels/`.
+pub const items_folder = "images";
+
+/// An image's line in a split list: its place in the folder, written
+/// from the list's own folder (`./`), which is how Ultralytics reads a
+/// relative line; a bare one it would read from wherever it was run.
+pub fn listLine(arena: std.mem.Allocator, image_path: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "./" ++ items_folder ++ "/{s}\n", .{image_path});
+}
 
 pub const Failure = struct { path: []const u8, why: []const u8 };
 
@@ -58,8 +71,10 @@ pub const Writer = struct {
 
     /// dataset.yaml, after the split lists (`present`: which were written).
     pub fn end(self: Writer, out: bundle.Bundle, arena: std.mem.Allocator, present: [split_names.len]bool) !void {
+        // No `path:` line: without one the tools take the yaml's own
+        // folder, wherever the clone sits; `path: .` meant wherever the
+        // trainer happened to be run from.
         var yaml: std.ArrayList(u8) = .empty;
-        try yaml.appendSlice(arena, "path: .\n");
         for (split_names, present) |name, here| {
             if (here) try yaml.print(arena, "{s}: {s}.txt\n", .{ name, name });
         }
@@ -127,6 +142,9 @@ test "normalized boxes, sorted classes, the yaml, named failures" {
     );
     const yaml = files.get("dataset.yaml").?;
     try std.testing.expect(std.mem.indexOf(u8, yaml, "train: train.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, yaml, "path:") == null);
+    // A list's line and the label it leads to, by the tools' own rule.
+    try std.testing.expectEqualStrings("./images/img/a.jpg\n", try listLine(arena, "img/a.jpg"));
     try std.testing.expect(std.mem.indexOf(u8, yaml, "nc: 2") != null);
     try std.testing.expect(std.mem.indexOf(u8, yaml, "0: person") != null);
 

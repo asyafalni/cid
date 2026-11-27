@@ -608,7 +608,9 @@ asks the server what it still lacks, whole files and pieces alike, and sends onl
 ## Formats
 
 - **`files`** (default for file datasets): the folder tree exactly as committed.
-- **Annotated datasets:** `yolo` (images), `coco` (images: one instances file per split,
+- **Annotated datasets:** `yolo` (images, kept under `images/` beside `labels/`, as
+  Ultralytics and FiftyOne find a label: `labels/<path>.txt`, `classes.txt`, a list per
+  split and `dataset.yaml`), `coco` (images: one instances file per split,
   `annotations/instances_<split>.json`; boxes, polygons and masks, a mask kept as its
   COCO RLE), `voc` (images: `Annotations/<path>.xml` with boxes in VOC's 1-based
   pixels, `ImageSets/Main/<split>.txt`) and `jsonl` (universal: one line per item with

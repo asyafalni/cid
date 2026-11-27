@@ -85,6 +85,12 @@ pub fn readOnlyReason(arena: std.mem.Allocator, config: Config) ?[]const u8 {
 
 pub const Workspace = struct {
     work_dir: std.Io.Dir,
+    /// Where the dataset's own files sit: the folder itself, or the folder
+    /// inside it a format keeps them in (`itemsFolder`). Every path of an
+    /// item is under here; `.cid/`, `.cidignore` and an export's generated
+    /// files are under `work_dir`.
+    items_dir: std.Io.Dir,
+    items_owned: bool = false,
     cid_dir: std.Io.Dir,
     config: Config,
     /// Where `add` reports the hashing of large changes (the CLI sets it).
@@ -92,9 +98,24 @@ pub const Workspace = struct {
 
     /// Closes `.cid/`; `work_dir` is caller-owned and stays open.
     pub fn close(self: *Workspace, io: std.Io) void {
+        if (self.items_owned) self.items_dir.close(io);
         self.cid_dir.close(io);
     }
 };
+
+/// The folder a format keeps the items in, or null for the folder itself.
+/// A yolo export keeps its images under `images/`, beside `labels/`: the
+/// tools that read it (Ultralytics, FiftyOne) find an image's label by
+/// swapping the last `/images/` in its path for `/labels/`.
+pub fn itemsFolder(config: Config) ?[]const u8 {
+    if (std.mem.eql(u8, config.kind, "annotated") and std.mem.eql(u8, config.format, "yolo")) return "images";
+    return null;
+}
+
+/// `.cid/layout` names the layout the folder's items are in, once they
+/// are: a yolo clone made before images moved under `images/` has none,
+/// and is moved there the next time any command opens it.
+const layout_file = "layout";
 
 pub const OpenError = error{ NotADataset, CorruptLocalState } || std.mem.Allocator.Error;
 
@@ -107,7 +128,44 @@ pub fn open(arena: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) OpenError!Wor
     var diagnostics: std.zon.parse.Diagnostics = .{ .errors = &.{} };
     const config = std.zon.parse.fromSlice(Config, .{ .gpa = arena, .arena = arena, .source = config_text, .diagnostics = &diagnostics }) catch
         return error.CorruptLocalState;
-    return .{ .work_dir = dir, .cid_dir = cid_dir, .config = config };
+    var ws: Workspace = .{ .work_dir = dir, .items_dir = dir, .cid_dir = cid_dir, .config = config };
+    if (itemsFolder(config)) |sub| {
+        dir.createDirPath(io, sub) catch return error.CorruptLocalState;
+        ws.items_dir = dir.openDir(io, sub, .{ .iterate = true }) catch return error.CorruptLocalState;
+        ws.items_owned = true;
+        errdefer ws.close(io);
+        const settled = if (cid_dir.readFileAlloc(io, layout_file, arena, .limited(64))) |text| std.mem.eql(u8, std.mem.trim(u8, text, " \n"), sub) else |_| false;
+        if (!settled) {
+            try moveItemsInto(arena, io, &ws);
+            local.writeFileAtomic(io, cid_dir, layout_file, sub) catch return error.CorruptLocalState;
+        }
+    }
+    return ws;
+}
+
+/// A folder whose items sat beside `.cid/` moves them into the items
+/// folder: each tracked file still at its old place and not yet at its
+/// new one is renamed there (its content and times kept, so it stays
+/// unchanged to `cid status`), and the folders that emptied are removed.
+/// Interrupted, it finishes on the next open: what has moved is skipped.
+fn moveItemsInto(arena: std.mem.Allocator, io: std.Io, ws: *Workspace) OpenError!void {
+    const tracked = loadTracked(arena, io, ws) catch |err| switch (err) {
+        error.FileNotFound => return, // nothing placed yet: a clone in progress
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.CorruptLocalState,
+    };
+    for (tracked.items()) |t| {
+        if (ws.items_dir.access(io, t.path, .{})) |_| continue else |_| {}
+        ws.work_dir.access(io, t.path, .{}) catch continue; // gone from both: `status` says deleted
+        if (std.mem.lastIndexOfScalar(u8, t.path, '/')) |sep| ws.items_dir.createDirPath(io, t.path[0..sep]) catch return error.CorruptLocalState;
+        std.Io.Dir.rename(ws.work_dir, t.path, ws.items_dir, t.path, io) catch return error.CorruptLocalState;
+        // The folders it left, innermost first, while they are empty.
+        var parent = t.path;
+        while (std.mem.lastIndexOfScalar(u8, parent, '/')) |sep| {
+            parent = parent[0..sep];
+            ws.work_dir.deleteDir(io, parent) catch break;
+        }
+    }
 }
 
 pub const InitError = error{ AlreadyADataset, BadAddress, InitFailed } || std.mem.Allocator.Error;
@@ -292,7 +350,7 @@ fn stage(
     var idx = loadIndex(arena, io, ws) catch return error.CorruptLocalState;
     var tracked = loadTracked(arena, io, ws) catch return error.CorruptLocalState;
     var links: std.ArrayList([]const u8) = .empty;
-    const files = scan.scanWorkdirLinks(arena, io, ws.work_dir, &links) catch return error.CorruptLocalState;
+    const files = scan.scanWorkdirLinks(arena, io, ws.items_dir, &links) catch return error.CorruptLocalState;
 
     var specs = try arena.alloc([]const u8, raw_paths.len);
     for (raw_paths, 0..) |raw, i| specs[i] = normalizeSpec(raw);
@@ -335,7 +393,7 @@ fn stage(
     // Present files under the given paths: stage when new or changed.
     for (files, fresh) |f, must| {
         if (!must) continue;
-        const stored = cache.storeFile(io, ws.work_dir, f.path, cache_dir, ws.progress) catch
+        const stored = cache.storeFile(io, ws.items_dir, f.path, cache_dir, ws.progress) catch
             return error.StoreFailed;
         if (ws.progress) |p| p.fileDone();
         if (tracked.get(f.path)) |t| {
@@ -488,7 +546,7 @@ pub fn restoreWorktree(
     const remote_mod = @import("remote.zig");
     var idx = loadIndex(arena, io, ws) catch return error.CorruptLocalState;
     var tracked = loadTracked(arena, io, ws) catch return error.CorruptLocalState;
-    const files = scan.scanWorkdir(arena, io, ws.work_dir) catch return error.CorruptLocalState;
+    const files = scan.scanWorkdir(arena, io, ws.items_dir) catch return error.CorruptLocalState;
 
     var specs = try arena.alloc([]const u8, raw_paths.len);
     for (raw_paths, 0..) |raw, i| specs[i] = normalizeSpec(raw);
@@ -539,9 +597,9 @@ pub fn restoreWorktree(
                 if (r.size == f.size and r.mtime_ns == f.mtime_ns) continue;
             }
         }
-        remote_mod.placeFromCache(io, cache_dir, &want.hash_hex, ws.work_dir, want.path) catch
+        remote_mod.placeFromCache(io, cache_dir, &want.hash_hex, ws.items_dir, want.path) catch
             return error.StoreFailed;
-        const stat = ws.work_dir.statFile(io, want.path, .{}) catch return error.CorruptLocalState;
+        const stat = ws.items_dir.statFile(io, want.path, .{}) catch return error.CorruptLocalState;
         if (want.from_index) {
             var e = idx.get(want.path).?;
             e.size = stat.size;
@@ -577,7 +635,7 @@ pub fn status(arena: std.mem.Allocator, io: std.Io, ws: *Workspace) !Status {
     const tracked = loadTracked(arena, io, ws) catch return error.CorruptLocalState;
     const head = local.loadHead(arena, io, ws.cid_dir) catch return error.CorruptLocalState;
     var links: std.ArrayList([]const u8) = .empty;
-    const files = scan.scanWorkdirLinks(arena, io, ws.work_dir, &links) catch return error.CorruptLocalState;
+    const files = scan.scanWorkdirLinks(arena, io, ws.items_dir, &links) catch return error.CorruptLocalState;
     const last_pushed = local.readLastPushed(arena, io, ws.cid_dir);
     const commits = local.listUnpushed(arena, io, ws.cid_dir, last_pushed) catch return error.CorruptLocalState;
 

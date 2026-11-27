@@ -256,7 +256,7 @@ pub fn build(
                         if (paths.len > 0) {
                             present[i] = true;
                             var text: std.ArrayList(u8) = .empty;
-                            for (paths) |p| try text.print(batch.arena(), "{s}\n", .{p});
+                            for (paths) |p| try text.appendSlice(batch.arena(), try yolo.listLine(batch.arena(), p));
                             bundle.put(name ++ ".txt", text.items) catch return error.WriteFailed;
                         }
                         if (paths.len < version.batch_rows) break;

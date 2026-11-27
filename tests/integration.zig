@@ -3653,9 +3653,35 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
         "0 0.100000 0.200000 0.100000 0.200000\n",
         try readWholeFile(io, yo_dir.dir, "labels/img/a.txt", arena),
     );
-    try std.testing.expectEqualStrings("img/a.jpg\n", try readWholeFile(io, yo_dir.dir, "train.txt", arena));
+    // The image sits under images/, and its line in the split list names
+    // it there: the tools find its label by swapping images/ for labels/.
+    try yo_dir.dir.access(io, "images/img/a.jpg", .{});
+    try std.testing.expectError(error.FileNotFound, yo_dir.dir.access(io, "img/a.jpg", .{}));
+    try std.testing.expectEqualStrings("./images/img/a.jpg\n", try readWholeFile(io, yo_dir.dir, "train.txt", arena));
     const yaml = try readWholeFile(io, yo_dir.dir, "dataset.yaml", arena);
     try std.testing.expect(std.mem.indexOf(u8, yaml, "0: person") != null);
+    try std.testing.expect(std.mem.indexOf(u8, yaml, "path:") == null);
+    {
+        var fresh_ws = try cid.client.workspace.open(arena, io, yo_dir.dir);
+        defer fresh_ws.close(io);
+        const fresh_st = try cid.client.workspace.status(arena, io, &fresh_ws);
+        try std.testing.expectEqual(@as(usize, 0), fresh_st.unstaged_new.len + fresh_st.unstaged_modified.len + fresh_st.unstaged_deleted.len);
+    }
+
+    // A yolo clone made before images moved: the image beside .cid/, no
+    // layout recorded. Opening it moves the image, and it is still clean.
+    try yo_dir.dir.createDirPath(io, "img");
+    try std.Io.Dir.rename(yo_dir.dir, "images/img/a.jpg", yo_dir.dir, "img/a.jpg", io);
+    try yo_dir.dir.deleteTree(io, "images");
+    try yo_dir.dir.deleteFile(io, ".cid/layout");
+    {
+        var old_ws = try cid.client.workspace.open(arena, io, yo_dir.dir);
+        defer old_ws.close(io);
+        try yo_dir.dir.access(io, "images/img/a.jpg", .{});
+        try std.testing.expectError(error.FileNotFound, yo_dir.dir.access(io, "img", .{}));
+        const old_st = try cid.client.workspace.status(arena, io, &old_ws);
+        try std.testing.expectEqual(@as(usize, 0), old_st.unstaged_new.len + old_st.unstaged_modified.len + old_st.unstaged_deleted.len);
+    }
 
     // The platform adds a vehicle box; a pull regenerates the sidecars.
     {

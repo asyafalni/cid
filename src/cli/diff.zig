@@ -80,7 +80,7 @@ fn localDiff(ctx: *const common.Context, ws: *workspace.Workspace, staged: bool)
 }
 
 fn sizeOf(ctx: *const common.Context, ws: *workspace.Workspace, path: []const u8) ?u64 {
-    const stat = ws.work_dir.statFile(ctx.io, path, .{}) catch return null;
+    const stat = ws.items_dir.statFile(ctx.io, path, .{}) catch return null;
     return stat.size;
 }
 
