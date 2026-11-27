@@ -16,9 +16,9 @@ same change.
 ## 0. Where the work stands
 
 Everything is on `main`; no branch or pull request is open (rechecked 2026-11-27).
-What is left that the code alone can settle is U12 (the home sidebar, decided
-2026-11-27), then U13 to U15 (taken from a look at Hangar the same day; all in Tier U),
-E5 (FiftyOne, asked for the same day; Tier E) and item 11's local disk (below); the rest
+What is left that the code alone can settle is U13 to U15 (Tier U, taken from a look
+at Hangar on 2026-11-27, the day U12, the home sidebar, was built), E5 (FiftyOne,
+asked for the same day; Tier E) and item 11's local disk (below); the rest
 waits on the owner (U11, the first release, the GitHub live check, card editing and
 item 11's run on the office staging server), on the annotation platform (the Validator's report
 format, its embedder, an item's source) or on a parked decision (U10).
@@ -327,8 +327,8 @@ Close the "behind" rows without giving up an "ahead" one.
   labels look right), and watch without helping. What they stumble on goes to the
   top of this tier.
 
-- **U12. The home sidebar.** *Decided 2026-11-27 with the owner, who found the home
-  page awkward without one.* Not a rail on every page: cid has four destinations, and
+- ~~**U12. The home sidebar.**~~ (built 2026-11-27; `docs/dashboard.md`, 4.1)
+  *Decided 2026-11-27 with the owner, who found the home page awkward without one.* Not a rail on every page: cid has four destinations, and
   Browse and Compare need their width. Hugging Face has no sidebar on a dataset's own
   page either; its sidebar is on the listing, and holds the filters. So the home page
   gets a left sidebar in place of its row of dropdowns, and a dataset's page keeps its

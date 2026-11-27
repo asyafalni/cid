@@ -290,7 +290,7 @@ test('a release touched by a purge says it is intact except its purged items', a
 test('a model is named a model: on its card, in its header, and in the home filter', async ({ page }) => {
   await signIn(page);
   await page.goto('/?kind=model');
-  await expect(page.getByLabel('Filter by kind')).toHaveValue('model');
+  await expect(page.getByRole('region', { name: 'Kind' }).getByRole('button', { name: /^model/ })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('link', { name: 'e2e/models/tiny-bert' }).first()).toBeVisible();
   await expect(page.getByRole('link', { name: 'e2e/datasets/demo' })).toHaveCount(0);
   await page.goto('/d/e2e/models/tiny-bert');
@@ -977,9 +977,68 @@ test('home: a card per dataset, the same as rows in List, and search reaches cla
 
   // A file type: the text files live in demo, not in boxes.
   await page.getByLabel('Search datasets').fill('');
-  await page.getByLabel('Filter by type').selectOption('.txt');
+  await page.getByRole('region', { name: 'File type' }).getByRole('button', { name: /^\.txt/ }).click();
+  await expect(page).toHaveURL(/type=\.txt/);
   await expect(page.getByRole('link', { name: 'e2e/datasets/demo', exact: true })).toBeVisible();
   await expect(page.getByRole('link', { name: 'e2e/datasets/boxes', exact: true })).toHaveCount(0);
+});
+
+test('home: the sidebar narrows by group and by filter, each value counted against the others', async ({ page }) => {
+  await signIn(page);
+  const side = page.getByRole('complementary', { name: 'Filter datasets' });
+  const kind = side.getByRole('region', { name: 'Kind' });
+  // A group is a folder of the dataset paths; a click narrows, in the URL.
+  await side.locator('.side-value[title="e2e/models"]').click();
+  await expect(page).toHaveURL(/group=e2e%2Fmodels|group=e2e\/models/);
+  await expect(page.locator('.ds-card')).toHaveCount(1);
+  await expect(page.getByRole('link', { name: 'e2e/models/tiny-bert', exact: true })).toBeVisible();
+  // The other groups' counts are of this group now: one model, and no
+  // annotated dataset, which is said and not offered.
+  await expect(kind.getByRole('button', { name: /^model/ })).toContainText('1');
+  await expect(kind.getByRole('button', { name: /^annotated/ })).toBeDisabled();
+  // A group never counts itself away: its siblings stay, to switch to.
+  await expect(side.locator('.side-value[title="e2e/datasets"]')).toBeEnabled();
+
+  // What is on is said above the grid, each with its own way off.
+  const chip = page.getByRole('button', { name: 'Remove the filter Groups: e2e/models' });
+  await expect(chip).toBeVisible();
+  await kind.getByRole('button', { name: /^model/ }).click();
+  await expect(page).toHaveURL(/kind=model/);
+  // Back undoes one click.
+  await page.goBack();
+  await expect(page).not.toHaveURL(/kind=/);
+  await chip.click();
+  await expect(page).not.toHaveURL(/group=/);
+
+  // The sort is a link too; a name settles it.
+  await page.goto('/?group=e2e/datasets');
+  await page.getByLabel('Sort datasets').selectOption('name');
+  await expect(page).toHaveURL(/sort=name/);
+  await expect(page.locator('.ds-card-link').first()).toHaveText('e2e/datasets/attrs2');
+
+  // The keyboard: `f` to the first filter, `/` to the search.
+  await page.locator('body').click({ position: { x: 1, y: 1 } });
+  await page.keyboard.press('f');
+  await expect(page.locator('.side-value:focus')).toHaveCount(1);
+  await page.locator('body').click({ position: { x: 1, y: 1 } });
+  await page.keyboard.press('/');
+  await expect(page.getByLabel('Search datasets')).toBeFocused();
+});
+
+test('home on a phone: the sidebar folds under a button that says how many filters are on', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signIn(page);
+  await page.goto('/?kind=model');
+  const side = page.getByRole('complementary', { name: 'Filter datasets' });
+  await expect(side).toBeHidden();
+  const toggle = page.getByRole('button', { name: 'Filters (1 on)' });
+  await toggle.click();
+  await expect(side).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  // It opens in place: the cards are still on the page beneath it.
+  await expect(page.getByRole('link', { name: 'e2e/models/tiny-bert', exact: true })).toBeVisible();
+  // Nothing spills past the screen.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
 test('home: a visited dataset appears under Recently viewed', async ({ page }) => {
@@ -989,7 +1048,7 @@ test('home: a visited dataset appears under Recently viewed', async ({ page }) =
   await expect(page.getByRole('region', { name: 'Use this dataset' })).toBeVisible();
   await page.goto('/');
   const recent = page.getByRole('navigation', { name: 'Recently viewed' });
-  await expect(recent.getByRole('link', { name: 'e2e/datasets/boxes' })).toBeVisible();
+  await expect(recent.getByRole('link', { name: 'boxes e2e/datasets' })).toBeVisible();
 });
 
 test('owners see a dataset\'s deploy keys on its overview; a reader does not', async ({ page }) => {
@@ -1071,7 +1130,7 @@ test('a signed-in person stars a dataset, finds it under Starred, and finds owne
   await expect(page.getByRole('button', { name: 'Unstar e2e/datasets/boxes' })).toHaveAttribute('aria-pressed', 'true');
   // A star is kept on the server, for this person: a reload still has it.
   await page.reload();
-  await expect(page.getByRole('navigation', { name: 'Starred' }).getByRole('link', { name: 'e2e/datasets/boxes' })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Starred' }).getByRole('link', { name: 'boxes e2e/datasets' })).toBeVisible();
   await page.getByRole('button', { name: 'Unstar e2e/datasets/boxes' }).click();
   await expect(page.getByRole('navigation', { name: 'Starred' })).toHaveCount(0);
 

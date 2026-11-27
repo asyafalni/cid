@@ -24,18 +24,31 @@ export function HomeSkeleton() {
           <p className="home-hint">Names, classes, file types and owners.</p>
         </div>
       </header>
-      <ul className="ds-cards" aria-label="Datasets, loading">
-        {Array.from({ length: 6 }, (_, i) => (
-          <li key={i} className="ds-card panel ds-card--skeleton">
-            <span className="mosaic skeleton-block" />
-            <span className="ds-card-body">
-              <Bar width="70%" />
-              <Bar width="40%" />
-              <Bar width="55%" />
-            </span>
-          </li>
-        ))}
-      </ul>
+      <div className="home-body">
+        {/* The sidebar's room, so the cards do not move when it comes. */}
+        <aside className="home-side" aria-hidden="true">
+          <Bar width="60%" />
+          <Bar width="85%" />
+          <Bar width="70%" />
+        </aside>
+        <div className="home-main">
+          <div className="home-bar" aria-hidden="true">
+            <Bar width="8rem" />
+          </div>
+          <ul className="ds-cards" aria-label="Datasets, loading">
+            {Array.from({ length: 6 }, (_, i) => (
+              <li key={i} className="ds-card panel ds-card--skeleton">
+                <span className="mosaic skeleton-block" />
+                <span className="ds-card-body">
+                  <Bar width="70%" />
+                  <Bar width="40%" />
+                  <Bar width="55%" />
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearch } from '@tanstack/react-router';
 import { ApiError, getMe, kindLabel, listDatasets, setStar, type DatasetSummary } from '../api';
@@ -7,21 +7,17 @@ import { Thumb } from '../Thumb';
 import { Airship } from '../Airship';
 import { HomeSkeleton } from '../Skeleton';
 import { recentDatasets } from '../recent';
-
-type HomeSearch = {
-  q?: string;
-  kind?: 'files' | 'annotated' | 'model';
-  type?: string;
-  released?: 'yes' | 'no';
-  restricted?: 'yes' | 'no';
-  layout?: 'list';
-};
+import { HomeSidebar } from '../HomeSidebar';
+import { facetKeys, facetTitle, matching, valueLabel, type HomeSearch } from '../homeFilter';
+import { typingIn } from '../keys';
 
 // Datasets home (docs/dashboard.md §4.1): the fleet. A sky with the search
 // in it, then a card per dataset, led by a mosaic of real previews (or type
 // tiles for data that is not visual), with the kind, file types, size,
 // newest release and last activity; or the same as compact rows (List).
-// Search, filters and the layout live in the URL, like Browse's.
+// Beside them, a sidebar: the way back to starred and recent datasets,
+// the path tree, and each filter as a list with its counts (roadmap U12).
+// Search, filters, the sort and the layout live in the URL, like Browse's.
 export function Home() {
   const search = useSearch({ strict: false }) as HomeSearch;
   const navigate = useNavigate();
@@ -52,6 +48,28 @@ export function Home() {
     return () => clearTimeout(timer);
   });
 
+  // `/` goes to the search and `f` to the first filter, as in Browse.
+  const searchRef = useRef<HTMLInputElement>(null);
+  const sideRef = useRef<HTMLElement>(null);
+  // On a narrow screen the sidebar is folded under a button.
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (typingIn(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === '/') {
+        e.preventDefault();
+        searchRef.current?.focus();
+      } else if (e.key === 'f') {
+        e.preventDefault();
+        setFiltersOpen(true);
+        // After the fold opens, when it was shut.
+        requestAnimationFrame(() => sideRef.current?.querySelector<HTMLElement>('.side-value:not(:disabled)')?.focus());
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   if (query.isPending) return <HomeSkeleton />;
   if (query.isError) {
     const err = query.error;
@@ -75,13 +93,13 @@ export function Home() {
     );
   }
 
-  const shown = datasets.filter((d) => matches(d, search));
-  const filtered = Boolean(search.q || search.kind || search.type || search.released || search.restricted);
-  const allTypes = [...new Set(datasets.flatMap((d) => d.types.map((t) => t.ext)))].sort();
-  const anyRestricted = datasets.some((d) => d.restricted);
+  const shown = sorted(matching(datasets, search), search.sort);
+  const on = facetKeys.filter((k) => search[k] !== undefined);
+  const filtered = Boolean(search.q) || on.length > 0;
+  const none = Object.fromEntries(facetKeys.map((k) => [k, undefined])) as Partial<HomeSearch>;
   const byName = new Map(datasets.map((d) => [d.name, d]));
   const recent = recentDatasets().filter((n) => byName.has(n));
-  const starred = datasets.filter((d) => d.starred);
+  const starred = datasets.filter((d) => d.starred).map((d) => d.name);
   const list = search.layout === 'list';
 
   const star = (d: DatasetSummary) =>
@@ -113,6 +131,7 @@ export function Home() {
             className="home-search"
             placeholder="Search datasets"
             aria-label="Search datasets"
+            ref={searchRef}
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
           />
@@ -120,152 +139,140 @@ export function Home() {
         </div>
       </header>
 
-      {!filtered && (starred.length > 0 || recent.length > 0) && (
-        <div className="home-shortcuts">
-          {starred.length > 0 && (
-            <nav className="recent" aria-label="Starred">
-              <span className="quiet">Starred</span>
-              {starred.map((d) => (
-                <Link key={d.name} to="/d/$" params={{ _splat: d.name }} className="chip data">
-                  {d.name}
-                </Link>
-              ))}
-            </nav>
-          )}
-          {recent.length > 0 && (
-            <nav className="recent" aria-label="Recently viewed">
-              <span className="quiet">Recently viewed</span>
-              {recent.map((n) => (
-                <Link key={n} to="/d/$" params={{ _splat: n }} className="chip data">
-                  {n}
-                </Link>
-              ))}
-            </nav>
-          )}
-        </div>
-      )}
+      <div className="home-body">
+        <button
+          className="home-filters-toggle"
+          aria-expanded={filtersOpen}
+          aria-controls="home-side"
+          onClick={() => setFiltersOpen((o) => !o)}
+        >
+          Filters{on.length > 0 ? ` (${on.length} on)` : ''}
+        </button>
+        <aside id="home-side" ref={sideRef} className={filtersOpen ? 'home-side home-side--open' : 'home-side'} aria-label="Filter datasets">
+          <HomeSidebar datasets={datasets} search={search} starred={starred} recent={recent} onPick={setSearch} />
+        </aside>
 
-      <div className="filter-bar home-filters" role="search" aria-label="Filter datasets">
-        <Picker
-          label="kind"
-          value={search.kind}
-          options={[
-            ['files', 'files'],
-            ['annotated', 'annotated'],
-            ['model', 'model'],
-          ]}
-          onChange={(v) => setSearch({ kind: v as HomeSearch['kind'] })}
-        />
-        <Picker
-          label="type"
-          value={search.type}
-          options={allTypes.map((t) => [t, t === 'file' ? 'no extension' : t])}
-          onChange={(v) => setSearch({ type: v })}
-        />
-        <Picker
-          label="releases"
-          value={search.released}
-          options={[
-            ['yes', 'has releases'],
-            ['no', 'none yet'],
-          ]}
-          onChange={(v) => setSearch({ released: v as HomeSearch['released'] })}
-        />
-        {anyRestricted && (
-          <Picker
-            label="restricted"
-            value={search.restricted}
-            options={[
-              ['yes', 'restricted'],
-              ['no', 'open'],
-            ]}
-            onChange={(v) => setSearch({ restricted: v as HomeSearch['restricted'] })}
-          />
-        )}
-        {filtered && (
-          <button
-            className="filter-clear"
-            onClick={() =>
-              setSearch({ q: undefined, kind: undefined, type: undefined, released: undefined, restricted: undefined })
-            }
-          >
-            Clear filters
-          </button>
-        )}
-        <div className="format-picker home-layout" role="radiogroup" aria-label="Layout">
-          {(['cards', 'list'] as const).map((m) => (
-            <button
-              key={m}
-              role="radio"
-              aria-checked={(m === 'list') === list}
-              className={(m === 'list') === list ? 'format on' : 'format'}
-              onClick={() => setSearch({ layout: m === 'list' ? 'list' : undefined })}
-            >
-              {m}
-            </button>
-          ))}
+        <div className="home-main">
+          <div className="home-bar">
+            {/* What is on, each with its own way off. */}
+            {on.map((k) => (
+              <button
+                key={k}
+                className="chip home-on"
+                aria-label={`Remove the filter ${facetTitle[k]}: ${valueLabel(k, search[k]!)}`}
+                onClick={() => setSearch({ [k]: undefined })}
+              >
+                <span className="quiet">{facetTitle[k].toLowerCase()}</span> {valueLabel(k, search[k]!)}
+                <span aria-hidden="true"> ×</span>
+              </button>
+            ))}
+            {filtered && (
+              <button className="filter-clear" onClick={() => setSearch({ q: undefined, ...none })}>
+                Clear filters
+              </button>
+            )}
+            <label className="facet home-sort">
+              <span className="facet-label" aria-hidden="true">
+                sort
+              </span>
+              <select
+                aria-label="Sort datasets"
+                value={search.sort ?? 'pushed'}
+                onChange={(e) => setSearch({ sort: e.target.value === 'pushed' ? undefined : (e.target.value as HomeSearch['sort']) })}
+              >
+                <option value="pushed">newest push</option>
+                <option value="name">name</option>
+                <option value="size">size</option>
+                <option value="items">items</option>
+              </select>
+            </label>
+            <div className="format-picker home-layout" role="radiogroup" aria-label="Layout">
+              {(['cards', 'list'] as const).map((m) => (
+                <button
+                  key={m}
+                  role="radio"
+                  aria-checked={(m === 'list') === list}
+                  className={(m === 'list') === list ? 'format on' : 'format'}
+                  onClick={() => setSearch({ layout: m === 'list' ? 'list' : undefined })}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {shown.length === 0 ? (
+            <div className="empty blueprint">
+              <h2>No dataset matches</h2>
+              <p className="quiet">Search looks at names, classes, file types and owners. Clear the filters to see every dataset.</p>
+            </div>
+          ) : list ? (
+            <ul className="manifest">
+              {shown.map((d) => (
+                <li key={d.name} className="manifest-row panel">
+                  <Mosaic dataset={d} />
+                  <div className="manifest-main">
+                    <Link to="/d/$" params={{ _splat: d.name }} className="data manifest-name">
+                      {d.name}
+                    </Link>
+                    <span className="manifest-kind">{kindLabel(d.kind)}</span>
+                    {d.restricted && <span className="chip restricted-badge">restricted</span>}
+                    {d.owners.length > 0 && <span className="quiet manifest-owners">owned by {d.owners.join(', ')}</span>}
+                    <p className="manifest-facts quiet data">
+                      <Facts d={d} />
+                    </p>
+                  </div>
+                  <div className="manifest-side">
+                    {star(d)}
+                    <Release d={d} />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <ul className="ds-cards">
+              {shown.map((d) => (
+                <li key={d.name} className="ds-card panel">
+                  <Mosaic dataset={d} />
+                  <div className="ds-card-body">
+                    <div className="ds-card-title">
+                      {/* The whole card is the link's target area (::after). */}
+                      <Link to="/d/$" params={{ _splat: d.name }} className="ds-card-link data">
+                        {d.name}
+                      </Link>
+                      {star(d)}
+                    </div>
+                    <p className="ds-card-kind">
+                      {kindLabel(d.kind)}
+                      {d.restricted && <span className="chip restricted-badge">restricted</span>}
+                      {d.owners.length > 0 && <span className="quiet"> · owned by {d.owners.join(', ')}</span>}
+                    </p>
+                    <p className="ds-card-facts data">
+                      <Facts d={d} />
+                    </p>
+                    <div className="ds-card-foot">
+                      <Release d={d} />
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
-
-      {shown.length === 0 ? (
-        <div className="empty blueprint">
-          <h2>No dataset matches</h2>
-          <p className="quiet">Search looks at names, classes, file types and owners. Clear the filters to see every dataset.</p>
-        </div>
-      ) : list ? (
-        <ul className="manifest">
-          {shown.map((d) => (
-            <li key={d.name} className="manifest-row panel">
-              <Mosaic dataset={d} />
-              <div className="manifest-main">
-                <Link to="/d/$" params={{ _splat: d.name }} className="data manifest-name">
-                  {d.name}
-                </Link>
-                <span className="manifest-kind">{kindLabel(d.kind)}</span>
-                {d.restricted && <span className="chip restricted-badge">restricted</span>}
-                {d.owners.length > 0 && <span className="quiet manifest-owners">owned by {d.owners.join(', ')}</span>}
-                <p className="manifest-facts quiet data">
-                  <Facts d={d} />
-                </p>
-              </div>
-              <div className="manifest-side">
-                {star(d)}
-                <Release d={d} />
-              </div>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <ul className="ds-cards">
-          {shown.map((d) => (
-            <li key={d.name} className="ds-card panel">
-              <Mosaic dataset={d} />
-              <div className="ds-card-body">
-                <div className="ds-card-title">
-                  {/* The whole card is the link's target area (::after). */}
-                  <Link to="/d/$" params={{ _splat: d.name }} className="ds-card-link data">
-                    {d.name}
-                  </Link>
-                  {star(d)}
-                </div>
-                <p className="ds-card-kind">
-                  {kindLabel(d.kind)}
-                  {d.restricted && <span className="chip restricted-badge">restricted</span>}
-                  {d.owners.length > 0 && <span className="quiet"> · owned by {d.owners.join(', ')}</span>}
-                </p>
-                <p className="ds-card-facts data">
-                  <Facts d={d} />
-                </p>
-                <div className="ds-card-foot">
-                  <Release d={d} />
-                </div>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
     </div>
   );
+}
+
+/** Newest push first unless asked otherwise; a name settles every tie, so
+ * the order never depends on the server's. */
+function sorted(datasets: DatasetSummary[], sort: HomeSearch['sort']): DatasetSummary[] {
+  const by = (d: DatasetSummary) => (sort === 'size' ? d.bytes : sort === 'items' ? d.items : 0);
+  return [...datasets].sort((a, b) => {
+    if (sort === 'name') return a.name.localeCompare(b.name);
+    if (sort === undefined) return (b.last_push ?? '').localeCompare(a.last_push ?? '') || a.name.localeCompare(b.name);
+    return by(b) - by(a) || a.name.localeCompare(b.name);
+  });
 }
 
 function Facts({ d }: { d: DatasetSummary }) {
@@ -349,55 +356,4 @@ function Mosaic({ dataset: d }: { dataset: DatasetSummary }) {
       )}
     </span>
   );
-}
-
-function Picker({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string | undefined;
-  options: [string, string][];
-  onChange: (value: string | undefined) => void;
-}) {
-  return (
-    <label className="facet">
-      <span className="facet-label" aria-hidden="true">
-        {label}
-      </span>
-      <select
-        aria-label={`Filter by ${label}`}
-        value={value ?? '\u0000any'}
-        onChange={(e) => onChange(e.target.value === '\u0000any' ? undefined : e.target.value)}
-      >
-        <option value={'\u0000any'}>any</option>
-        {options.map(([v, text]) => (
-          <option key={v} value={v}>
-            {text}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function matches(d: DatasetSummary, s: HomeSearch): boolean {
-  if (s.kind && d.kind !== s.kind) return false;
-  if (s.type && !d.types.some((t) => t.ext === s.type)) return false;
-  if (s.released === 'yes' && !d.latest_release) return false;
-  if (s.released === 'no' && d.latest_release) return false;
-  if (s.restricted === 'yes' && !d.restricted) return false;
-  if (s.restricted === 'no' && d.restricted) return false;
-  if (s.q) {
-    const q = s.q.toLowerCase();
-    const hit =
-      d.name.toLowerCase().includes(q) ||
-      d.classes.some((c) => c.toLowerCase().includes(q)) ||
-      d.types.some((t) => t.ext.toLowerCase().includes(q)) ||
-      d.owners.some((o) => o.toLowerCase().includes(q));
-    if (!hit) return false;
-  }
-  return true;
 }

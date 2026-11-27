@@ -2200,17 +2200,6 @@
   }
 }
 
-.home-shortcuts {
-  margin-bottom: var(--space-2);
-}
-
-.home-filters {
-  margin-bottom: var(--space-6);
-}
-
-.home-layout {
-  margin-left: auto;
-}
 
 .ds-cards {
   list-style: none;
@@ -2354,26 +2343,6 @@
 
   .ds-cards {
     grid-template-columns: 1fr;
-  }
-
-  .home-filters {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .home-filters .facet {
-    display: grid;
-    gap: var(--space-1);
-  }
-
-  .home-filters .facet select {
-    width: 100%;
-  }
-
-  .home-layout {
-    grid-column: 1 / -1;
-    margin-left: 0;
-    justify-self: start;
   }
 }
 
@@ -3632,4 +3601,186 @@ button.ann-attr:focus-visible {
   background: var(--panel-raised);
   border: 1px solid var(--line);
   border-radius: var(--radius-chip);
+}
+
+/* The home page's sidebar (docs/dashboard.md 4.1): the way back to the
+   datasets a person uses, then each filter as a list with its counts.
+   Calm: it sits on the page's ground with no panel of its own, so the
+   cards stay the page's objects and the sky its one decoration. */
+.home-body {
+  display: grid;
+  grid-template-columns: 15rem minmax(0, 1fr);
+  gap: var(--space-8);
+  align-items: start;
+}
+
+.home-side {
+  position: sticky;
+  top: calc(var(--topbar-h) + var(--space-4));
+  max-height: calc(100vh - var(--topbar-h) - 2 * var(--space-4));
+  overflow-y: auto;
+  display: grid;
+  gap: var(--space-6);
+  /* Room for the focus ring of the values at its edges. */
+  padding: 2px;
+  font-size: 0.875rem;
+}
+
+.home-filters-toggle {
+  display: none;
+}
+
+.side-title {
+  margin: 0 0 var(--space-2);
+  padding-left: var(--space-2);
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.side-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.side-value,
+.side-link {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 1.875rem;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-chip);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.side-value:hover:not(:disabled),
+.side-link:hover {
+  background: color-mix(in srgb, var(--aether) 10%, transparent);
+}
+
+.side-value:focus-visible,
+.side-link:focus-visible,
+.side-more:focus-visible,
+.home-on:focus-visible,
+.home-filters-toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* The value in use: a filled row and a brass edge, never colour alone
+   (aria-pressed says it too). */
+.side-value--on {
+  background: color-mix(in srgb, var(--aether) 16%, transparent);
+  box-shadow: inset 3px 0 0 var(--brass);
+  font-weight: 600;
+}
+
+.side-value:disabled {
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 0.6;
+}
+
+.side-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-count {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.side-link {
+  flex-direction: column;
+  gap: 0;
+}
+
+.side-where {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.side-more {
+  margin: var(--space-1) 0 0 var(--space-2);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--aether);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.home-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2rem;
+  margin-bottom: var(--space-4);
+}
+
+.home-on {
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.home-on:hover {
+  border-color: var(--aether);
+}
+
+.home-sort {
+  margin-left: auto;
+}
+
+/* A narrow screen: the sidebar folds under a button over the grid, and
+   opens in place, the count and the cards still in view below it. */
+@media (max-width: 900px) {
+  .home-body {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+  }
+
+  .home-filters-toggle {
+    display: block;
+    justify-self: start;
+    padding: var(--space-2) var(--space-4);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-chip);
+    background: var(--panel);
+    color: var(--text);
+    font: inherit;
+  }
+
+  .home-side {
+    position: static;
+    max-height: none;
+    display: none;
+  }
+
+  .home-side--open {
+    display: grid;
+    padding: var(--space-3);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-panel);
+    background: var(--panel);
+  }
 }

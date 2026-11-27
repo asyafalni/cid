@@ -13,6 +13,7 @@ import { Keys } from './pages/Keys';
 import { Tokens } from './pages/Tokens';
 import { NotFound } from './pages/NotFound';
 import { getMe } from './api';
+import type { HomeSearch } from './homeFilter';
 
 // Signed in means the server says so: a GitLab session cookie or a pasted
 // token, either way answered by /v0/me. Asked once per page load; signing
@@ -40,23 +41,18 @@ const homeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
   // The home's search and filters are a link too.
-  validateSearch: (
-    search: Record<string, unknown>,
-  ): {
-    q?: string;
-    kind?: 'files' | 'annotated' | 'model';
-    type?: string;
-    released?: 'yes' | 'no';
-    restricted?: 'yes' | 'no';
-    layout?: 'list';
-  } => ({
+  validateSearch: (search: Record<string, unknown>): HomeSearch => ({
     // Cards are the default, so only the list is spelled.
     layout: search.layout === 'list' ? 'list' : undefined,
     q: typeof search.q === 'string' && search.q !== '' ? search.q : undefined,
+    group: typeof search.group === 'string' && search.group !== '' ? search.group : undefined,
     kind: search.kind === 'files' || search.kind === 'annotated' || search.kind === 'model' ? search.kind : undefined,
     type: typeof search.type === 'string' ? search.type : undefined,
     released: search.released === 'yes' || search.released === 'no' ? search.released : undefined,
     restricted: search.restricted === 'yes' || search.restricted === 'no' ? search.restricted : undefined,
+    health: search.health === 'fail' || search.health === 'warn' || search.health === 'pass' ? search.health : undefined,
+    // Newest push first is the default, so only the others are spelled.
+    sort: search.sort === 'name' || search.sort === 'size' || search.sort === 'items' ? search.sort : undefined,
   }),
   beforeLoad: requireSignIn,
   component: Home,

@@ -273,12 +273,32 @@ are cid's own for now.
   the page costs one query however many people open it, at any dataset size. The
   overview and the dataset repository read the same statistics. A restricted
   dataset shows type tiles, never a clear thumbnail.
-- Search by name, class, file type and owner. Filters: file type, kind, has releases,
-  restricted (shown only when some dataset is restricted). All in the URL.
-- "Recently viewed" and "Starred" rows. Recently viewed lives in the viewer's browser;
-  a star is a per-person bookmark kept on the server for the signed-in person
-  (`stars`), so the server token, which is nobody, cannot star. Owners are the
-  Maintainers, shown and searchable by name.
+- Search by name, class, file type and owner (`/` goes to it).
+- **The sidebar** (roadmap U12, built 2026-11-27), left of the cards, in place of a
+  row of dropdowns. Top to bottom: **Starred** and **Recently viewed** as links
+  (recently viewed lives in the viewer's browser; a star is a per-person bookmark kept
+  on the server for the signed-in person (`stars`), so the server token, which is
+  nobody, cannot star); **Groups**, the dataset paths as a tree (`group=`); then
+  **Kind**, **File type**, **Releases**, **Access** (restricted or open) and
+  **Health** (failing, warnings, passing, from the head's kept checks). A group is
+  drawn only when it offers a choice.
+  - Every value is a button with its count, **counted against the other filters**,
+    so a count is what a click gives. A value that would give nothing stays in its
+    place, dimmed and not offered; the values of the filter in use stay too, so it
+    can be switched in one click. Their order never changes under a filter (file
+    types by how common they are over everything; the eight commonest, then
+    "Show all N").
+  - The listing is already in the browser: a click filters with no request. One
+    history entry a click, everything in the URL (`group`, `kind`, `type`,
+    `released`, `restricted`, `health`, `sort`), the links from before it still good.
+  - Above the cards: each filter in use as a chip with its own ×, "Clear filters",
+    the sort (newest push, the default; name; size; items) and cards or list.
+  - `f` puts the cursor on the first filter, as in Browse.
+  - It is sticky under the top bar and scrolls by itself when taller than the
+    window; it has no panel or decoration of its own (3.4). Below 900 px it folds
+    under a "Filters (2 on)" button and opens in place, above the cards.
+  - Not on a dataset's own page, by decision: its tabs keep the full width.
+  Owners are the Maintainers, shown and searchable by name.
 - *Built (2026-11-23):* each card's health marks (the Health tab's own checks).
   Searching descriptions waits on card editing, which is a parked decision.
 
