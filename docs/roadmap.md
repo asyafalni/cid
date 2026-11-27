@@ -685,6 +685,29 @@ and assembling a server by hand. In order:
   already writes what FiftyOne reads (COCO, YOLO, VOC folders, and the Hugging
   Face door), so most of this is proving it and closing the gaps the proof finds.
   In order:
+  0. **Tried by hand, 2026-11-27** (FiftyOne 1.22.1 in a container with a MongoDB
+     beside it, on the demo's street-scenes v1.1: 50 photos, 226 boxes), before any
+     test was written:
+     - **COCO loads, with two arguments**: `data_path=<folder>` and
+       `labels_path=<folder>/annotations/instances_<split>.json`, a split at a
+       time (39 + 6 + 5 samples, 179 + 25 + 22 boxes: cid's own counts). With no
+       arguments it looks for `data/` and `labels.json` and refuses. It needs
+       `pycocotools`, which FiftyOne does not install.
+     - **VOC loads, with two arguments**: `data_path=<folder>`,
+       `labels_path=<folder>/Annotations` (50 samples, 226 boxes). With none it
+       looks for `data/`.
+     - **YOLO is refused, and this is cid's fault**: "YOLOv5 image paths must
+       contain '/images/', which is replaced with '/labels/'". cid writes a photo
+       at its own path (`frames/a.jpg`) and its label at `labels/frames/a.txt`.
+       Ultralytics finds labels by the same replacement
+       (`ultralytics/data/utils.py`, `img2label_paths`), so by its source it would
+       look for `frames/a.txt` beside the photo, find none, and treat every photo
+       as empty. Not yet run against Ultralytics itself; the dashboard's Python
+       snippet for yolo has therefore never been proven. **Next, before anything
+       else here:** the yolo export places photos under `images/<path>` and labels
+       under `labels/<path>` (the layout both tools expect), with a real-client
+       test. It changes where a `--format yolo` clone puts its files, so it goes
+       through the client (clone, pull, checkout, status) with its own tests.
   1. **Prove the folders load.** `tests/fiftyone_client.sh` (test-only, in CI, as
      `tests/hf_client.sh` is): `cid clone --format coco|yolo|voc`, then
      `fo.Dataset.from_dir` on each, and the sample, box and class counts equal the
