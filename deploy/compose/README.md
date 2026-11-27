@@ -89,6 +89,33 @@ cid diff v1.0.0 v1.1.0        # calls.csv, rows: 1 added, 0 removed
     git --git-dir /git/demo.git log --stat
   ```
 
+## 5. Fill it with the demo
+
+To see every page of the dashboard with something on it, load the demo into a fresh
+stack (it needs the network, for the photos):
+
+```sh
+sh deploy/compose/demo.sh
+```
+
+It makes three datasets, the way their real counterparts are made:
+
+- `demo/datasets/street-scenes`, annotated: fifty street photos with the boxes their
+  annotators drew, written as the annotation platform writes them. v1.0 holds a
+  detector's mistakes in seven photos (boxes 40 pixels off, cars called trucks, two
+  signs that are not there); v1.1 is the review that fixes them, ten more photos, and
+  one photo moved to another split. Open Releases to compare the two.
+- `demo/datasets/city-sounds`, files: recordings, two clips, a PDF and tables, pushed
+  with `cid add`, `commit`, `push`. Between its releases a CSV gains a row and has a
+  cell changed; Compare shows both.
+- `demo/models/street-detector`, a model, released with
+  `--trained-on demo/datasets/street-scenes@v1.1`: each page links to the other.
+
+The photos are from Open Images, CC BY 2.0, fetched from its bucket and checked
+against the hashes in [`demo/street-scenes.tsv`](demo/street-scenes.tsv);
+[`demo/CREDITS.md`](demo/CREDITS.md) names each author. The README's screenshots are
+this demo (`node web/e2e/readme-shots.mjs` retakes them).
+
 ## Stopping, and starting over
 
 ```sh

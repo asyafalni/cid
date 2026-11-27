@@ -2268,13 +2268,21 @@
   font-size: 0.875rem;
 }
 
+/* Eight items at most: one row of eight, two of four, or four of two,
+   never seven and an orphan (which is what filling by width gave). */
 .look-inside-strip {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: var(--space-3);
+}
+
+@media (max-width: 1100px) {
+  .look-inside-strip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 .look-tile:hover {

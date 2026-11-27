@@ -71,7 +71,13 @@ format, its embedder, an item's source) or on a parked decision (U10).
      list (and a name never starts with `-`, after `cid tag -l` made a release "-l"),
      `cid help <command>` and `--help` that never runs the command, `add -A`,
      `remote -v`, `diff --cached`, and a checkout to an older commit no longer counting
-     pushed commits as unpushed.
+     pushed commits as unpushed. Done 2026-11-27: a demo for the one-machine setup
+     (`deploy/compose/demo.sh`: fifty real street photos with their boxes and a review
+     pass between two releases, a file dataset, a model), loaded and checked by
+     `tests/quickstart.sh`; the README's screenshots retaken from it; "A look inside"
+     laid out in full rows (it showed seven photos and an orphan). Seen while looking,
+     not yet done: Compare lays every changed picture out in one page, 14,000 pixels
+     for 21 photos, where it should page them.
   10. **Tier E, reach** (section 7; direction set 2026-11-25). Everything above that
       can be built is built, so the work turns to who can pick cid up. All four are
       done (E1 to E4, 2026-11-25/26).

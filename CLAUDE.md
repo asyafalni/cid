@@ -764,7 +764,10 @@ deploy/package.sh, install.sh  a release's archive per platform (the binary, lib
 deploy/import-tags.sh        a DVC or Git LFS repository into cid, every git tag a release
                              (docs/coming-from.md)
 deploy/compose/              cid on one machine: the server image (Dockerfile, at the root)
-                             with TimescaleDB and SeaweedFS, and the walkthrough
+                             with TimescaleDB and SeaweedFS, and the walkthrough;
+                             demo.sh fills it with three demo datasets (real street
+                             photos with their boxes, files, a model), which the
+                             README's screenshots show (web/e2e/readme-shots.mjs)
 deploy/nas/                  laid over deploy/compose: SeaweedFS's data files on a
                              network share, its file index in PostgreSQL
 web/                         dashboard: React + Vite + TypeScript (see docs/dashboard.md)
@@ -799,8 +802,8 @@ sh tests/import_tags.sh            # deploy/import-tags.sh against real DVC and 
                                    # (services + `zig build`; dvc from tests/import_requirements.txt,
                                    # git lfs; test-only)
 sh tests/proxy.sh                  # deploy/proxy/ configs carry a push, clone, release (docker)
-sh tests/quickstart.sh             # deploy/compose/'s walkthrough, word for word (docker; builds
-                                   # the image, on ports of its own)
+sh tests/quickstart.sh             # deploy/compose/'s walkthrough, word for word, then its demo
+                                   # (docker; builds the image, on ports of its own)
 sh tests/nas.sh                    # deploy/nas/ on a real NFS mount: push, release, clone, the
                                    # store's disk lost, the share gone mid-push (docker)
 sh tests/hf_client.sh              # the Hugging Face door read by huggingface_hub and datasets

@@ -74,6 +74,11 @@ datasets. It shows media as media and every change between two versions, and eve
 is a link. It changes no data. Two themes, Night flight and Daybreak, follow the system
 or the switch in the top bar. Design: [`docs/dashboard.md`](docs/dashboard.md).
 
+The screenshots are of the demo that [`deploy/compose/demo.sh`](deploy/compose/README.md#5-fill-it-with-the-demo)
+loads into a fresh server: run it and you are looking at the same pages. Its street
+photos are from Open Images, CC BY 2.0; [the credits](deploy/compose/demo/CREDITS.md)
+name each author.
+
 **Every dataset on the server**, led by its own previews (type tiles for data that is not visual).
 
 | Night flight | Daybreak |
@@ -83,21 +88,24 @@ or the switch in the top bar. Design: [`docs/dashboard.md`](docs/dashboard.md).
 **A dataset:** its owners and releases in the header, a look inside, and the exact `cid clone`
 command for any format or subset.
 
-![A dataset's overview: its owners, the release tape, sample items with their boxes, the card and the clone command](docs/screenshots/overview.png)
+![A dataset's overview: the release tape, eight of its photos with their boxes, the card with the release's notes, and the clone command](docs/screenshots/overview.png)
 
-**Compare two releases of an annotated dataset:** the moved box, old (dashed) beside new.
+**Compare two releases of an annotated dataset:** a review pass, photo by photo. The
+boxes as the detector left them in v1.0 (dashed) beside the reviewer's in v1.1.
 
-![Comparing two releases: a person box moved between v1.0.0 and v1.1.0](docs/screenshots/compare-annotations.png)
+![Comparing two releases: on a photo of a bus, the boxes of v1.0 sit left of their objects, and v1.1 puts them right](docs/screenshots/compare-annotations.png)
 
-**Compare a table:** rows added and removed, computed on the server.
+**Compare a table:** the rows added, removed and changed, cell by cell, computed on the
+server.
 
-![Comparing two releases of a CSV file: 2 rows added, 2 removed](docs/screenshots/compare-table-rows.png)
+![Comparing two releases of a CSV file: one row added, and one changed from 77 to 79 in its noise_db column](docs/screenshots/compare-table-rows.png)
 
-**Browse a release**, with an item open: its size, dimensions, hash, history and download.
+**Browse a release**, with an item open: its boxes, each one's class, author and
+labelling policy, then its size, dimensions, hash and history.
 
 | Night flight | Daybreak |
 |---|---|
-| ![Browsing a file dataset in the dark theme](docs/screenshots/browse-night.png) | ![Browsing a file dataset in the light theme](docs/screenshots/browse-daybreak.png) |
+| ![Browsing an annotated dataset in the dark theme, a photo of a bus open with its boxes](docs/screenshots/browse-night.png) | ![The same in the light theme](docs/screenshots/browse-daybreak.png) |
 
 **Sign-in** with GitLab, or with the server's token when GitLab sign-in is not set up;
 and where an unknown address lands.

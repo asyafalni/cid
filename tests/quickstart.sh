@@ -7,6 +7,7 @@
 #   sh tests/quickstart.sh          # builds the image, then tears all down
 #   KEEP=1 sh tests/quickstart.sh   # leaves the stack up
 #   NO_BUILD=1 sh tests/quickstart.sh   # uses the cid:local image as it is
+#   NO_DEMO=1 sh tests/quickstart.sh    # without the demo (it needs the network)
 #
 # A project (cid-quickstart) and ports of its own, so it runs beside the
 # test services and beside a stack someone is using.
@@ -94,5 +95,18 @@ has "git holds the dataset card" "README.md" $COMPOSE exec -T cid git --git-dir 
 
 has "the dashboard is served" "<title>" curl -sf "$CID_SERVER/"
 has "the store answers where clients are sent" "HTTP/" sh -c "curl -s -o /dev/null -D - http://127.0.0.1:$CID_S3_PORT | head -1"
+
+# The demo (README.md, step 5), loaded as that page says. It fetches its
+# photos from Open Images' bucket: NO_DEMO=1 leaves it out when offline.
+if [ -z "${NO_DEMO:-}" ]; then
+    overview() { curl -sf -H "Authorization: Bearer $CID_TOKEN" "$CID_SERVER/v0/datasets/$1/-/overview"; }
+    ok  "the demo loads" env COMPOSE="$COMPOSE" PATH="$(dirname "$CID"):$PATH" sh "$ROOT/deploy/compose/demo.sh"
+    has "demo: fifty photos in the annotated dataset" '"items":50' overview demo/datasets/street-scenes
+    has "demo: its second release is the pinned one" '"pinned_release":"v1.1"' overview demo/datasets/street-scenes
+    has "demo: the review changed boxes, counted" '"ann_changed":' overview demo/datasets/street-scenes
+    has "demo: the file dataset has its releases" '"pinned_release":"v1.1"' overview demo/datasets/city-sounds
+    has "demo: the model names what it was trained on" 'street-scenes' overview demo/models/street-detector
+    has "demo: loading it twice is refused, in words" "already here" sh "$ROOT/deploy/compose/demo.sh"
+fi
 
 if [ "$fails" -eq 0 ]; then say "quickstart: all passed"; else say "quickstart: $fails failed"; exit 1; fi
