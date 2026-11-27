@@ -68,6 +68,12 @@ jobs:
           docker compose -f docker-compose.test.yml run --rm seaweedfs-bucket
       - name: Read through HF_ENDPOINT
         run: sh tests/hf_client.sh
+      # cid's yolo, coco and voc exports, loaded by the real FiftyOne
+      # (tests/fiftyone_client.sh; it starts its own MongoDB in docker).
+      - name: Load the exports in FiftyOne
+        run: |
+          pip install -r tests/fiftyone_requirements.txt
+          sh tests/fiftyone_client.sh
       # The MCP door, read by the official client (tests/mcp_client.sh).
       - uses: actions/setup-node@v7
         with:

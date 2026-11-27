@@ -722,21 +722,21 @@ and assembling a server by hand. In order:
        Left to say on the page: Ultralytics wants a `train` and a `val` split,
        and a dataset with only one gets a `dataset.yaml` it refuses; cid lists
        the splits a dataset has and invents none.
-  1. **Prove the folders load.** `tests/fiftyone_client.sh` (test-only, in CI, as
-     `tests/hf_client.sh` is): `cid clone --format coco|yolo|voc`, then
-     `fo.Dataset.from_dir` on each, and the sample, box and class counts equal the
-     release's. Not yet known, and the first thing the test settles: whether cid's
-     layouts are the ones FiftyOne's importers expect without extra arguments (its
-     COCO importer wants one labels file and a data folder; cid writes one
-     instances file per split; its YOLO importer wants a `dataset.yaml`). Where
-     they differ, cid's export gains what is missing, never a FiftyOne-only format.
+  1. ~~**Prove the folders load.**~~ (done 2026-11-27: `tests/fiftyone_client.sh`,
+     FiftyOne 1.22.1, test-only, in CI.) One release cloned as yolo, coco and
+     voc, each loaded as a person would: yolo with the split alone, coco and voc
+     with `data_path` and `labels_path`; the box is where cid has it. FiftyOne
+     keeps its datasets in MongoDB, so the test starts a throwaway one in docker.
+     Ultralytics was run by hand only (it brings PyTorch, too heavy for every
+     push).
   2. **One line from the hub door.** FiftyOne loads from a Hugging Face endpoint
      (`fiftyone.utils.huggingface.load_from_hub`), which reads a `fiftyone.yml`
      beside the data. The door generates one for an annotated dataset, as it
      generates the `README.md`, so `HF_ENDPOINT=<cid>` and a repo id are all a
      person types; the revision is a cid release.
-  3. **Say it on the page**: a FiftyOne tab in "Use this" (U13), shown for
-     annotated image datasets, with the pinned release in it.
+  3. ~~**Say it on the page**~~ (done 2026-11-27): a FiftyOne tab in "Use this"
+     on annotated datasets: the yolo clone at the pinned release, then the lines
+     that open it, a split at a time.
   4. **Keep where it came from.** Each FiftyOne sample carries the cid item id,
      path and release it was loaded from (the jsonl export has them), so a view
      made in FiftyOne (the suspected mistakes, a hard slice) can be named back to
@@ -745,8 +745,8 @@ and assembling a server by hand. In order:
   Not in it: writing labels from FiftyOne into an annotated dataset (annotations
   change only in the annotation platform, a non-goal), running FiftyOne on the
   server, or its plugins. A restricted dataset is never offered to it through the
-  dashboard's snippets; the door's own rules already hold. Items 1 to 3 are about
-  two days; item 4 waits on its design.
+  dashboard's snippets; the door's own rules already hold. Left: item 2 (about a
+  day) and item 4, which waits on its design.
 
 Left in this tier, each waiting on something outside the code: the first release
 (the owner pushes the tag), and the MCP config shown beside a new token on the

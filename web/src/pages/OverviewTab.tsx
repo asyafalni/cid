@@ -281,13 +281,16 @@ function UseThisDataset({
   // libraries through the door, and an agent's client through the MCP
   // door. Each is what a test drives for real (tests/hf_client.sh,
   // tests/mcp_client.sh); nothing is offered that nobody ran.
-  const ways = [
+  type Way = 'cid' | 'lib' | 'hub' | 'fiftyone' | 'agent';
+  const ways: (readonly [Way, string])[] = [
     ['cid', 'cid'],
     ['lib', o.kind === 'model' ? 'transformers' : 'datasets'],
     ['hub', 'huggingface_hub'],
+    // An annotated dataset's yolo clone opens in FiftyOne as it is
+    // (tests/fiftyone_client.sh loads one for real).
+    ...(o.kind === 'annotated' ? ([['fiftyone', 'FiftyOne']] as const) : []),
     ['agent', 'AI agent'],
-  ] as const;
-  type Way = (typeof ways)[number][0];
+  ];
   const [way, setWay] = useState<Way>('cid');
 
   // The pinned version's real items, so the size line is a sum, not a
@@ -314,7 +317,14 @@ function UseThisDataset({
     .concat(atCommit ? ` && cd ${folder} && cid checkout ${atCommit}` : atBranch ? ` && cd ${folder} && cid checkout ${atBranch}` : '');
   const snippet = pythonFor(format, folder);
   const revision = pinned ?? (atCommit ? commitAlias(atCommit) : atBranch);
-  const hf = way === 'hub' ? hubSnippet(o, revision) : way === 'agent' ? agentSnippet() : hfSnippet(o, revision);
+  const hf =
+    way === 'hub'
+      ? hubSnippet(o, revision)
+      : way === 'agent'
+        ? agentSnippet()
+        : way === 'fiftyone'
+          ? fiftyoneSnippet(o, pinned, folder)
+          : hfSnippet(o, revision);
 
   function copy(what: 'command' | 'snippet' | 'hf', text: string) {
     void navigator.clipboard.writeText(text).then(() => {
@@ -429,14 +439,16 @@ function UseThisDataset({
         ) : (
           <section
             className="snippet snippet--first"
-            aria-label={way === 'agent' ? 'With an AI agent' : 'With Hugging Face libraries'}
+            aria-label={way === 'agent' ? 'With an AI agent' : way === 'fiftyone' ? 'In FiftyOne' : 'With Hugging Face libraries'}
           >
             <div className="snippet-head">
               <span className="quiet">
                 {way === 'agent'
                   ? 'Give an agent this server to read, no clone'
-                  : way === 'hub'
-                    ? 'The files of this version, into the Hugging Face cache'
+                  : way === 'fiftyone'
+                    ? 'Clone it as yolo, then open it in FiftyOne'
+                    : way === 'hub'
+                      ? 'The files of this version, into the Hugging Face cache'
                     : 'Read it with Hugging Face libraries, no clone'}
               </span>
               <button className="action action--quiet" onClick={() => copy('hf', hf)}>
@@ -458,6 +470,12 @@ function UseThisDataset({
                 ) : null}
                 : its releases, items, what changed, its health. Read only.
               </p>
+            ) : way === 'fiftyone' ? (
+              <p className="quiet">
+                The first line is a shell command; your SSH key is the login. A split at a time:{' '}
+                {o.splits.length > 0 ? o.splits.map((x) => x.name).join(', ') : 'this version has none, and FiftyOne asks for one'}.
+                Annotations change in the annotation platform, not in FiftyOne.
+              </p>
             ) : (
               <p className="quiet">
                 HF_TOKEN is a personal token from your <a href="/tokens">Tokens</a> page. Read only: changes go
@@ -477,6 +495,14 @@ function hubSnippet(o: Overview, pinned: string | null): string {
   const env = `# export HF_ENDPOINT=${location.origin} HF_TOKEN=<your cid personal token>\n`;
   const kind = o.kind === 'model' ? '' : 'repo_type="dataset", ';
   return `${env}from huggingface_hub import snapshot_download\n\nfolder = snapshot_download("${hfRepoId(o.name)}", ${kind}revision="${pinned ?? 'main'}")`;
+}
+
+// FiftyOne reads a yolo clone with no argument but the split: cid keeps
+// the images under images/, where FiftyOne looks for them.
+function fiftyoneSnippet(o: Overview, pinned: string | null, folder: string): string {
+  const split = o.splits.some((x) => x.name === 'train') ? 'train' : (o.splits[0]?.name ?? 'train');
+  const clone = `cid clone cid@${location.hostname}:${o.name}${pinned ? ` --release ${pinned}` : ''} --format yolo`;
+  return `# ${clone}\nimport fiftyone as fo\n\nds = fo.Dataset.from_dir(\n    dataset_dir="${folder}",\n    dataset_type=fo.types.YOLOv5Dataset,\n    split="${split}",\n)\nfo.launch_app(ds)`;
 }
 
 // The MCP door (src/server/mcp.zig): one line makes this server's read

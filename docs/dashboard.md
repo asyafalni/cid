@@ -390,8 +390,10 @@ Every dataset page (all five tabs) shares one header and the release tape.
   libraries and no clone (`load_dataset`, or `AutoModel.from_pretrained`) through the
   server's Hugging Face door, with the two environment variables it needs;
   `huggingface_hub` takes the version's files the same way (`snapshot_download`);
-  `AI agent` is the line that gives an agent's client the MCP door. A tab exists only
-  for what a test drives for real (`tests/hf_client.sh`, `tests/mcp_client.sh`).
+  `FiftyOne` (annotated datasets) is the yolo clone and the lines that open it there,
+  a split at a time; `AI agent` is the line that gives an agent's client the MCP
+  door. A tab exists only for what a test drives for real (`tests/hf_client.sh`,
+  `tests/fiftyone_client.sh`, `tests/mcp_client.sh`).
   The `cid` tab: the format picker (`files`, `jsonl`, `yolo`, `coco`, `voc`
   for annotated datasets, `files` only for file datasets), split/class subset picker (the same
   `--split`/`--class` flags `cid clone` takes, so the subset is real), and the resulting

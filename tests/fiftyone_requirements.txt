@@ -1,0 +1,5 @@
+# The FiftyOne client tests/fiftyone_client.sh loads cid's exports with
+# (test-only: cid itself never needs Python). Pinned; bump on purpose.
+# pycocotools is what FiftyOne's COCO importer asks for and does not install.
+fiftyone==1.22.1
+pycocotools==2.0.11

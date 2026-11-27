@@ -810,6 +810,9 @@ sh tests/nas.sh                    # deploy/nas/ on a real NFS mount: push, rele
                                    # store's disk lost, the share gone mid-push (docker)
 sh tests/hf_client.sh              # the Hugging Face door read by huggingface_hub and datasets
                                    # (Python with tests/hf_requirements.txt; test-only)
+sh tests/fiftyone_client.sh        # the yolo, coco and voc exports loaded by the real FiftyOne
+                                   # (Python with tests/fiftyone_requirements.txt, docker for
+                                   # its MongoDB; test-only)
 sh tests/mcp_client.sh             # the MCP door read by the official client (Node, after
                                    # `npm ci --prefix tests/mcp_client`; test-only)
 
@@ -841,7 +844,8 @@ printed test binary directly to see the truth.
 
 CI runs on every push: format, unit and integration tests on Linux x86-64, the
 dashboard's lint, typecheck and Playwright suite, the Hugging Face door read by the real
-clients (`tests/hf_client.sh`), the MCP door read by the official client
+clients (`tests/hf_client.sh`), the exports loaded by the real FiftyOne
+(`tests/fiftyone_client.sh`), the MCP door read by the official client
 (`tests/mcp_client.sh`), a DVC and a Git LFS repository imported tag by tag
 (`tests/import_tags.sh`), the server image and its walkthrough
 (`tests/quickstart.sh`), the same image with its files on an NFS share

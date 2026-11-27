@@ -345,6 +345,15 @@ test('"Use this" shows the same version through Hugging Face libraries', async (
   const agent = page.getByRole('region', { name: 'With an AI agent' });
   await expect(agent).toContainText('claude mcp add --transport http cid http://127.0.0.1:7177/mcp');
   await expect(agent).toContainText('e2e/datasets/demo at v1.0.0');
+  // A file dataset has no FiftyOne tab; an annotated one opens there from
+  // its yolo clone, a split at a time.
+  await expect(tabs.getByRole('tab', { name: 'FiftyOne' })).toHaveCount(0);
+  await page.goto('/d/e2e/datasets/boxes?release=v1.1.0');
+  await page.getByRole('tab', { name: 'FiftyOne' }).click();
+  const fiftyone = page.getByRole('region', { name: 'In FiftyOne' });
+  await expect(fiftyone).toContainText('cid clone cid@127.0.0.1:e2e/datasets/boxes --release v1.1.0 --format yolo');
+  await expect(fiftyone).toContainText('dataset_type=fo.types.YOLOv5Dataset');
+  await expect(fiftyone).toContainText('split="train"');
   await page.goto('/d/e2e/models/tiny-bert');
   await page.getByRole('tab', { name: 'transformers' }).click();
   const model = page.getByRole('region', { name: 'With Hugging Face libraries' });
