@@ -18,7 +18,7 @@ same change.
 Everything is on `main`; no branch or pull request is open (rechecked 2026-11-27).
 What is left that the code alone can settle is U12 (the home sidebar, decided
 2026-11-27), then U13 to U15 (taken from a look at Hangar the same day; all in Tier U),
-and item 11's local disk (below); the rest
+E5 (FiftyOne, asked for the same day; Tier E) and item 11's local disk (below); the rest
 waits on the owner (U11, the first release, the GitHub live check, card editing and
 item 11's run on the office staging server), on the annotation platform (the Validator's report
 format, its embedder, an item's source) or on a parked decision (U10).
@@ -647,6 +647,39 @@ and assembling a server by hand. In order:
   `dvc checkout` fails before `dvc pull` runs, so it released nearly empty
   folders, silently). The DVC and Git LFS imports are now one script,
   `deploy/import-tags.sh`, with `tests/import_tags.sh` against both real tools.
+
+- **E5. FiftyOne, with no glue code.** *Asked for by the owner 2026-11-27.*
+  [FiftyOne](https://voxel51.com/fiftyone) is where many vision teams look at a
+  dataset and hunt its label mistakes. cid versions the dataset; FiftyOne should
+  open any version of it in one line, and nothing here duplicates its app. cid
+  already writes what FiftyOne reads (COCO, YOLO, VOC folders, and the Hugging
+  Face door), so most of this is proving it and closing the gaps the proof finds.
+  In order:
+  1. **Prove the folders load.** `tests/fiftyone_client.sh` (test-only, in CI, as
+     `tests/hf_client.sh` is): `cid clone --format coco|yolo|voc`, then
+     `fo.Dataset.from_dir` on each, and the sample, box and class counts equal the
+     release's. Not yet known, and the first thing the test settles: whether cid's
+     layouts are the ones FiftyOne's importers expect without extra arguments (its
+     COCO importer wants one labels file and a data folder; cid writes one
+     instances file per split; its YOLO importer wants a `dataset.yaml`). Where
+     they differ, cid's export gains what is missing, never a FiftyOne-only format.
+  2. **One line from the hub door.** FiftyOne loads from a Hugging Face endpoint
+     (`fiftyone.utils.huggingface.load_from_hub`), which reads a `fiftyone.yml`
+     beside the data. The door generates one for an annotated dataset, as it
+     generates the `README.md`, so `HF_ENDPOINT=<cid>` and a repo id are all a
+     person types; the revision is a cid release.
+  3. **Say it on the page**: a FiftyOne tab in "Use this" (U13), shown for
+     annotated image datasets, with the pinned release in it.
+  4. **Keep where it came from.** Each FiftyOne sample carries the cid item id,
+     path and release it was loaded from (the jsonl export has them), so a view
+     made in FiftyOne (the suspected mistakes, a hard slice) can be named back to
+     cid as item paths: `cid clone --items <file>` or the Browse link for them.
+     This needs a design first: a clone narrowed by a list of paths is new.
+  Not in it: writing labels from FiftyOne into an annotated dataset (annotations
+  change only in the annotation platform, a non-goal), running FiftyOne on the
+  server, or its plugins. A restricted dataset is never offered to it through the
+  dashboard's snippets; the door's own rules already hold. Items 1 to 3 are about
+  two days; item 4 waits on its design.
 
 Left in this tier, each waiting on something outside the code: the first release
 (the owner pushes the tag), and the MCP config shown beside a new token on the
