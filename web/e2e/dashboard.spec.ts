@@ -892,6 +892,14 @@ test('Ctrl-K jumps to a dataset, a release, a tab or an item by typing', async (
   await expect(palette).toHaveCount(0);
 });
 
+test('a dataset with one version offers nothing to compare', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/docs?view=releases');
+  const compare = page.getByRole('region', { name: 'Compare two versions' });
+  await expect(compare).toContainText('Nothing to compare yet: this is the only version.');
+  await expect(page.getByRole('combobox', { name: 'Compare from' })).toHaveCount(0);
+});
+
 test('on a branch, compare offers main\'s versions too, and compares the branch with main in one click', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/many?view=releases&branch=fix');

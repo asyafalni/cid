@@ -64,34 +64,43 @@ export function ReleasesTab({
 
   return (
     <div className="releases">
-      <section aria-label="Compare two versions" className="panel card compare-picker">
-        <div className="compare-row">
+      {every.length < 2 ? (
+        // One version has nothing to compare with: no picker offering it
+        // against itself.
+        <section aria-label="Compare two versions" className="panel card compare-picker">
           <h2>Compare</h2>
-          <VersionSelect
-            label="Compare from"
-            groups={groups}
-            value={aSel}
-            onChange={(v) => onPick({ a: v })}
-          />
-          <span className="compare-with">with</span>
-          <VersionSelect
-            label="Compare to"
-            groups={groups}
-            value={bSel}
-            onChange={(v) => onPick({ b: v })}
-          />
-          {onBranch && mainHead && commits[0] && (
-            // Both ends in the URL, so the link and Show command say it too.
-            <button className="filter-clear" onClick={() => onPick({ a: labelOf(mainHead), b: labelOf(commits[0]) })}>
-              Compare with main
-            </button>
+          <p className="quiet">Nothing to compare yet: this is the only version. The next one compares with it here.</p>
+        </section>
+      ) : (
+        <section aria-label="Compare two versions" className="panel card compare-picker">
+          <div className="compare-row">
+            <h2>Compare</h2>
+            <VersionSelect
+              label="Compare from"
+              groups={groups}
+              value={aSel}
+              onChange={(v) => onPick({ a: v })}
+            />
+            <span className="compare-with">with</span>
+            <VersionSelect
+              label="Compare to"
+              groups={groups}
+              value={bSel}
+              onChange={(v) => onPick({ b: v })}
+            />
+            {onBranch && mainHead && commits[0] && (
+              // Both ends in the URL, so the link and Show command say it too.
+              <button className="filter-clear" onClick={() => onPick({ a: labelOf(mainHead), b: labelOf(commits[0]) })}>
+                Compare with main
+              </button>
+            )}
+          </div>
+          {aSel && bSel && aSel !== bSel && (
+            <Comparison name={name} overview={overview} commits={every} aLabel={aSel} bLabel={bSel} dir={dir} onDir={onDir} openPair={openPair} onOpenPair={onOpenPair} />
           )}
-        </div>
-        {aSel && bSel && aSel !== bSel && (
-          <Comparison name={name} overview={overview} commits={every} aLabel={aSel} bLabel={bSel} dir={dir} onDir={onDir} openPair={openPair} onOpenPair={onOpenPair} />
-        )}
-        {aSel === bSel && <p className="quiet">Pick two different versions to compare.</p>}
-      </section>
+          {aSel === bSel && <p className="quiet">Pick two different versions to compare.</p>}
+        </section>
+      )}
 
       <section aria-label="History">
         <h2 className="history-title">History</h2>
