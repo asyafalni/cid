@@ -524,23 +524,41 @@ function Comparison({
       )}
 
       {first.ann_changes.length > 0 && (
-        <ul className="change-list">
-          {first.ann_changes.map((c, i) => (
-            <li key={i} className="change">
-              <span className={`change-verb change-verb--${c.change === 'removed' ? 'deleted' : c.change === 'changed' ? 'modified' : 'added'}`}>
-                <Icon name={c.change === 'removed' ? 'removed' : c.change === 'changed' ? 'changed' : 'added'} /> {c.change}
+        // One line per item, not per shape: what happened to its
+        // annotations, counted, and the classes it happened to. A review
+        // pass over forty photos is forty lines, not three hundred.
+        <ul className="change-list ann-by-item" aria-label="Annotation changes by item">
+          {annChangesByItem(first.ann_changes).map((g) => (
+            <li key={g.path} className="change">
+              {visual.some((v) => v.path === g.path) && onOpenPair ? (
+                <button className="row-link data change-path" onClick={() => onOpenPair(g.path)}>
+                  {g.path}
+                </button>
+              ) : (
+                <span className="data change-path">{g.path}</span>
+              )}
+              <span className="ann-counts">
+                {(['added', 'changed', 'removed'] as const)
+                  .filter((k) => g[k] > 0)
+                  .map((k) => (
+                    <span
+                      key={k}
+                      className={`change-verb change-verb--${k === 'removed' ? 'deleted' : k === 'changed' ? 'modified' : 'added'}`}
+                    >
+                      <Icon name={k} /> {g[k]} {k}
+                    </span>
+                  ))}
               </span>
-              <span>
-                {c.kind ?? '?'} {c.class ?? ''}
+              <span className="quiet">
+                {g.labels.map(([label, n]) => (n > 1 ? `${label} ×${n}` : label)).join(', ')}
               </span>
-              <span className="quiet data">on {c.item_path ?? '?'}</span>
             </li>
           ))}
         </ul>
       )}
       {s.ann_added + s.ann_changed + s.ann_removed > first.ann_changes.length && (
         <p className="quiet">
-          The first {first.ann_changes.length.toLocaleString()} annotation changes are listed. For all of them, run{' '}
+          The first {first.ann_changes.length.toLocaleString()} annotation changes are counted above, by item. For all of them, run{' '}
           <code className="data">cid diff {aLabel} {bLabel}</code>.
         </p>
       )}
@@ -787,4 +805,30 @@ function ChangeSize({ before, after }: { before: number | null; after: number | 
     );
   const size = after ?? before;
   return size === null ? null : <span className="quiet data">{humanBytes(size)}</span>;
+}
+
+type AnnGroup = { path: string; added: number; changed: number; removed: number; labels: [string, number][] };
+
+/** The annotation changes, one entry per item in the order they came
+ * (by path), each with its counts by kind of change and by shape label
+ * ("box car"), most first. */
+function annChangesByItem(
+  changes: { change: 'added' | 'changed' | 'removed'; kind: string | null; class: string | null; item_path: string | null }[],
+): AnnGroup[] {
+  const groups = new Map<string, { g: AnnGroup; labels: Map<string, number> }>();
+  for (const c of changes) {
+    const path = c.item_path ?? '?';
+    let entry = groups.get(path);
+    if (!entry) {
+      entry = { g: { path, added: 0, changed: 0, removed: 0, labels: [] }, labels: new Map() };
+      groups.set(path, entry);
+    }
+    entry.g[c.change] += 1;
+    const label = [c.kind ?? '?', c.class].filter(Boolean).join(' ');
+    entry.labels.set(label, (entry.labels.get(label) ?? 0) + 1);
+  }
+  return [...groups.values()].map(({ g, labels }) => ({
+    ...g,
+    labels: [...labels.entries()].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0])),
+  }));
 }

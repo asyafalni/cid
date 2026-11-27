@@ -956,6 +956,38 @@ test('a dataset with one version offers nothing to compare', async ({ page }) =>
   await expect(page.getByRole('combobox', { name: 'Compare from' })).toHaveCount(0);
 });
 
+test('compare lists annotation changes one line per item, counted, and opens the item\'s pair', async ({ page }) => {
+  await signIn(page);
+  // The review pass moved one person box; the server's answer gains three
+  // more changes on the same photo and one on another, as a busier pass has.
+  await page.route('**/-/browse/compare**', async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    if (Array.isArray(body.ann_changes) && body.ann_changes.length > 0) {
+      const on = body.ann_changes[0].item_path;
+      body.ann_changes.push(
+        { change: 'changed', kind: 'box', class: 'person', item_path: on },
+        { change: 'added', kind: 'box', class: 'car', item_path: on },
+        { change: 'removed', kind: 'point', class: null, item_path: on },
+        { change: 'added', kind: 'box', class: 'car', item_path: 'zz/other.png' },
+      );
+    }
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto('/d/e2e/datasets/boxes?view=releases&a=v1.0.0&b=v1.1.0');
+  const list = page.getByRole('list', { name: 'Annotation changes by item' });
+  await expect(list.getByRole('listitem')).toHaveCount(2);
+  const street = list.getByRole('listitem').first();
+  await expect(street).toContainText('frames/street.png');
+  await expect(street).toContainText('1 added');
+  await expect(street).toContainText('2 changed');
+  await expect(street).toContainText('1 removed');
+  await expect(street).toContainText('box person ×2, box car, point');
+  // The photo is among the pictures: its path opens it large.
+  await street.getByRole('button', { name: 'frames/street.png' }).click();
+  await expect(page).toHaveURL(/pair=frames%2Fstreet\.png/);
+});
+
 test('on a branch, compare offers main\'s versions too, and compares the branch with main in one click', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/many?view=releases&branch=fix');

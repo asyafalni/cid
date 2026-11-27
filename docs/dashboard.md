@@ -568,8 +568,12 @@ Every dataset page (all five tabs) shares one header and the release tape.
     annotations added/changed/removed, as totals, and the same per class (a changed
     annotation counts under its class at the later version).
   - Change list (built): a flat list of changed paths with their sizes, small
-    before/after thumbnails for modified pictures, a page at a time; the first
-    annotation changes, with `cid diff` named for the rest. *Built (2026-11-24):* the
+    before/after thumbnails for modified pictures, a page at a time, and each one's
+    size before and after; the first annotation changes, one line per item (its
+    counts added, changed and removed, and the shapes by label, "box person ×2";
+    its path opens the item's pair when it has one), with `cid diff` named for the
+    rest (2026-11-27: one line per shape made a review pass of forty photos 72 lines
+    long, below a grid that already showed them). *Built (2026-11-24):* the
     folder tree, a level at a time as the Files tab walks it: the changed folders
     with their changes in signs and words (`+2 ~1 −1`, "2 added, 1 modified, 1
     deleted"); a folder opens to the changes under it alone and its own changed
