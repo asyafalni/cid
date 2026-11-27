@@ -107,7 +107,13 @@ format, its embedder, an item's source) or on a parked decision (U10).
       (DVC in MinIO, cid on an NFS share). At 1 GB: 3.0 times the data on the
       importing machine before, 1.26 after; 208 s, every release DVC's checkout.
       Next, the owner's (agreed 2026-11-27): the rehearsal at a tenth of the real
-      size on the office staging server, then 1 TB there.
+      size on the office staging server, then 1 TB there. The owner's setup, as
+      they described it: NFS; at least twice the data free on the importing
+      machine; DVC's cache shared, on the NAS; files of every size. With DVC's
+      cache on another disk than the checkout, hard links cannot reach it, so DVC
+      copies: the importing machine then holds the data once plus one batch,
+      inside the twice it has. Fewer bytes there would need DVC's symbolic links
+      read through by `cid add`, the decision left open above.
       Left: the numbers on the owner's own NAS (`deploy/nas/README.md` says how to
       take them; the test share is a laptop's), SMB untried, and the owner's own
       import. Still open, and the owner's to decide because it touches invariant 2:
