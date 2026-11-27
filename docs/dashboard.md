@@ -322,13 +322,19 @@ data or over a picture (3.4).
     history entry a click, everything in the URL (`group`, `kind`, `type`,
     `released`, `restricted`, `health`, `sort`), the links from before it still good.
   - Above the cards: each filter in use as a chip with its own ×, "Clear filters",
-    the sort (newest push, the default; name; size; items) and cards or list.
+    the sort (newest push, the default; name; size; items; most read) and cards or
+    list.
   - `f` puts the cursor on the first filter, as in Browse.
   - It is sticky under the top bar and scrolls by itself when taller than the
     window; it has no panel or decoration of its own (3.4). Below 900 px it folds
     under a "Filters (2 on)" button and opens in place, above the cards.
   - Not on a dataset's own page, by decision: its tabs keep the full width.
   Owners are the Maintainers, shown and searchable by name.
+- **How much it is read** (roadmap U15, built 2026-11-28): a card says how many
+  times a clone, pull or checkout fetched one of the dataset's versions in the last
+  30 days, and the sort can put the most read first. One row per dataset and day
+  (`dataset_reads`), counted where the server hands the CLI a version's items; a
+  count, never who. Reads through the Hugging Face and MCP doors are not counted.
 - *Built (2026-11-23):* each card's health marks (the Health tab's own checks).
   Searching descriptions waits on card editing, which is a parked decision.
 

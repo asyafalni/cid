@@ -9,6 +9,8 @@ export type DatasetSummary = {
   default_format: string;
   latest_release: string | null;
   last_push: string | null; // ISO date or null
+  /** Times a clone, pull or checkout fetched a version over the last 30 days. */
+  reads_30d: number;
   /** At the head of main, from the commit's cached stats. */
   items: number;
   bytes: number;

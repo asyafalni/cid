@@ -3719,6 +3719,22 @@ test "annotated clone --format: jsonl and yolo sidecars, clean status, pull rege
     const sub_label = try readWholeFile(io, sub_dir.dir, "labels/img/a.txt", arena);
     try std.testing.expectEqualStrings("0 0.250000 0.250000 0.500000 0.500000\n", sub_label);
 
+    // Each clone and the pull fetched a version once: the listing counts
+    // them for the last 30 days (never who), and a dataset nobody cloned
+    // counts none.
+    {
+        const Listed = struct { name: []const u8, reads_30d: u64 };
+        const listing = cid.api.handle(arena, &deps, &scope, "GET", "/v0/datasets", "Bearer test-token", "");
+        const all = try std.json.parseFromSliceLeaky(struct { datasets: []const Listed }, arena, listing.body, .{ .ignore_unknown_fields = true });
+        var seen = false;
+        for (all.datasets) |d| if (std.mem.eql(u8, d.name, "test/datasets/fmt")) {
+            seen = true;
+            // jsonl, yolo and the subset clone, and the yolo folder's pull.
+            try std.testing.expectEqual(@as(u64, 4), d.reads_30d);
+        };
+        try std.testing.expect(seen);
+    }
+
     // The folder remembers the subset, refuses to record changes, and a
     // pull keeps the same shape.
     var sub_ws = try cid.client.workspace.open(arena, io, sub_dir.dir);

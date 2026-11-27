@@ -186,6 +186,7 @@ export function Home() {
                 <option value="name">name</option>
                 <option value="size">size</option>
                 <option value="items">items</option>
+                <option value="reads">most read</option>
               </select>
             </label>
             <div className="format-picker home-layout" role="radiogroup" aria-label="Layout">
@@ -271,7 +272,7 @@ export function Home() {
 /** Newest push first unless asked otherwise; a name settles every tie, so
  * the order never depends on the server's. */
 function sorted(datasets: DatasetSummary[], sort: HomeSearch['sort']): DatasetSummary[] {
-  const by = (d: DatasetSummary) => (sort === 'size' ? d.bytes : sort === 'items' ? d.items : 0);
+  const by = (d: DatasetSummary) => (sort === 'size' ? d.bytes : sort === 'items' ? d.items : sort === 'reads' ? d.reads_30d : 0);
   return [...datasets].sort((a, b) => {
     if (sort === 'name') return a.name.localeCompare(b.name);
     if (sort === undefined) return (b.last_push ?? '').localeCompare(a.last_push ?? '') || a.name.localeCompare(b.name);
@@ -300,6 +301,16 @@ function Release({ d }: { d: DatasetSummary }) {
         <span className="quiet">no releases yet</span>
       )}
       {d.last_push && <span className="quiet data">{d.last_push.slice(0, 10)}</span>}
+      {d.reads_30d > 0 && (
+        // How much it is used: clones, pulls and checkouts, never by whom.
+        <span
+          className="quiet data ds-card-reads"
+          title={`Cloned, pulled or checked out ${d.reads_30d.toLocaleString()} ${d.reads_30d === 1 ? 'time' : 'times'} in the last 30 days`}
+        >
+          <Icon name="download" /> {d.reads_30d.toLocaleString()}
+          <span className="visually-hidden"> {d.reads_30d === 1 ? 'read' : 'reads'} in the last 30 days</span>
+        </span>
+      )}
       <HealthMark d={d} />
     </>
   );

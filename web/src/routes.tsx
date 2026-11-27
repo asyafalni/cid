@@ -52,7 +52,7 @@ const homeRoute = createRoute({
     restricted: search.restricted === 'yes' || search.restricted === 'no' ? search.restricted : undefined,
     health: search.health === 'fail' || search.health === 'warn' || search.health === 'pass' ? search.health : undefined,
     // Newest push first is the default, so only the others are spelled.
-    sort: search.sort === 'name' || search.sort === 'size' || search.sort === 'items' ? search.sort : undefined,
+    sort: search.sort === 'name' || search.sort === 'size' || search.sort === 'items' || search.sort === 'reads' ? search.sort : undefined,
   }),
   beforeLoad: requireSignIn,
   component: Home,

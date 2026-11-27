@@ -592,6 +592,7 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
         owners: ?[]const u8,
         latest_release: ?[]const u8,
         last_push: ?[]const u8,
+        reads_30d: i64,
         head: ?[]const u8,
         stats: ?[]const u8,
         health: ?[]const u8,
@@ -606,6 +607,9 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
         "   ORDER BY r.commit_id DESC LIMIT 1) AS latest_release, " ++
         "  (SELECT to_char(max(c.recorded_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') " ++
         "   FROM commits c WHERE c.dataset_id = d.dataset_id) AS last_push, " ++
+        // Clones, pulls and checkouts over the last 30 days (dataset_reads).
+        "  (SELECT coalesce(sum(x.reads), 0)::bigint FROM dataset_reads x WHERE x.dataset_id = d.dataset_id " ++
+        "   AND x.day > (now() AT TIME ZONE 'UTC')::date - 30) AS reads_30d, " ++
         "  h.commit_id::text AS head, c.stats::text AS stats, c.health::text AS health " ++
         "FROM datasets d " ++
         "LEFT JOIN refs h ON h.dataset_id = d.dataset_id AND h.name = 'main' AND h.kind = 'branch' " ++
@@ -625,6 +629,8 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
         default_format: []const u8,
         latest_release: ?[]const u8,
         last_push: ?[]const u8,
+        /// Times a clone, pull or checkout fetched a version, last 30 days.
+        reads_30d: u64,
         items: u64,
         bytes: u64,
         types: []const Type,
@@ -672,6 +678,7 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
             .default_format = row.default_format,
             .latest_release = row.latest_release,
             .last_push = row.last_push,
+            .reads_30d = @intCast(@max(row.reads_30d, 0)),
             .items = st.items,
             .bytes = st.bytes,
             .types = types,
@@ -2703,6 +2710,12 @@ fn versionFile(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Datase
         }),
     };
     const url = deps.s3.presignGet(scope, file.key, presign_secs) catch return error.Storage;
+    // One read of the dataset: a clone, pull or checkout fetches a version's
+    // items once (an export's sidecars come with a second request, not
+    // counted again). A count for the listing; failing to keep it never
+    // fails the read.
+    if (kind == .state) _ = deps.db.exec(scope, "INSERT INTO dataset_reads (dataset_id, day, reads) VALUES ($1::uuid, (now() AT TIME ZONE 'UTC')::date, 1) " ++
+        "ON CONFLICT (dataset_id, day) DO UPDATE SET reads = dataset_reads.reads + 1", .{ds.id}) catch {};
     return json(arena, .ok, .{ .commit = commit_id, .url = url, .hash = file.file_hash, .final = file.final, .total = total });
 }
 

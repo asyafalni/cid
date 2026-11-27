@@ -13,7 +13,7 @@ export type HomeSearch = {
   released?: 'yes' | 'no';
   restricted?: 'yes' | 'no';
   health?: 'fail' | 'warn' | 'pass';
-  sort?: 'name' | 'size' | 'items';
+  sort?: 'name' | 'size' | 'items' | 'reads';
   layout?: 'list';
 };
 

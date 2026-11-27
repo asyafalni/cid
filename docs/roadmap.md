@@ -15,11 +15,10 @@ same change.
 
 ## 0. Where the work stands
 
-Everything is on `main`; no branch or pull request is open (rechecked 2026-11-27).
-What is left that the code alone can settle is U15 (Tier U, taken from a look
-at Hangar on 2026-11-27; U12, the home sidebar, U13 and U14 were built that day), U16
-(cid's own icons, asked for that day), E5 (FiftyOne,
-asked for the same day; Tier E) and item 11's local disk (below); the rest
+Everything is on `main`; no branch or pull request is open (rechecked 2026-11-28).
+What is left that the code alone can settle is the rest of U16 (the screens
+photographed again with cid's icons), the rest of E5 (FiftyOne through the hub door)
+and item 11's local disk (below); the rest
 waits on the owner (U11, the first release, the GitHub live check, card editing and
 item 11's run on the office staging server), on the annotation platform (the Validator's report
 format, its embedder, an item's source) or on a parked decision (U10).
@@ -399,7 +398,7 @@ today is the hub's own ground: finding one thing among many, and saying how to u
 | Sort the listing | Updated, name, size, downloads, likes | None | **U12** (newest push, name, size, items) |
 | "Use this" | A tab per client: `datasets`, pandas, Polars, DuckDB, the hub library, its CLI, git | The same as tabs since U13: cid, `datasets`, `huggingface_hub`, an agent | **Level**; DuckDB and pandas tabs wait on a test |
 | Work in progress | A Jobs badge and drawer: pulls, indexing, exports, with progress | "git up to date" in the header; a version being prepared says nothing | **U14** |
-| How much it is used | Downloads over 30 days, on the card and as a sort | Not counted | **U15** |
+| How much it is used | Downloads over 30 days, on the card and as a sort | Clones, pulls and checkouts over 30 days, on the card and as a sort (U15) | **Level** |
 | Facts beside the card | A right rail: format, licence, task, rows, splits with sizes, used by | In the card itself: types, splits, classes, lineage | Level; licence and task wait on card editing (parked) |
 | Search | `/` opens a palette grouped by kind | `Ctrl K`, datasets, tabs, items and actions | Level |
 | Grid or list | Yes, in the URL | Yes, in the URL | Level |
@@ -424,12 +423,11 @@ today is the hub's own ground: finding one thing among many, and saying how to u
   ("preparing this version", "previews: 1,240 of 50,000", "not in git yet"), from
   `version_jobs`, the `previews` queue and the git queue; gone when done. No drawer,
   no page of its own: cid has no jobs a person starts. One read route; about a day.
-- **U15. How much a dataset is read.** Clones and pulls over the last 30 days, on
-  the card and as a sort on the home page: which datasets matter. Counted per
-  dataset and day from the item lists a clone reads (never who, outside the
-  activity log a restricted dataset already keeps). One small table and one route;
-  about a day. Take it after U12, which gives the sort a place.
-
+- ~~**U15. How much a dataset is read.**~~ (built 2026-11-28.) A card shows the
+  clones, pulls and checkouts of the last 30 days, and the home page sorts by them.
+  Counted per dataset and day (`dataset_reads`, migration 0013) where the server
+  hands the CLI a version's items; never who. Not counted, until someone asks:
+  reads through the Hugging Face and MCP doors.
 - **U16. cid's own icons.** *First pass built 2026-11-27 (35 icons, on the tabs,
   the header, cards, the sidebar, Health and type tiles; `docs/dashboard.md`, 3.5).
   Copy, download and compare's marks followed the same day. Left: the screens

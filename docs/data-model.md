@@ -557,6 +557,10 @@ Built from content or from sealed versions, so never stale; each row is written 
 - `row_diffs (hash_a, hash_b, kind_a, kind_b, status done|unreadable, result, reason)`:
   the row-level diff of two table contents, computed the first time anyone asks and
   kept; an unreadable table is an answer too, never retried.
+- `dataset_reads (dataset_id, day, reads)`: how many times a clone, pull or checkout
+  fetched one of a dataset's versions that day (UTC), for the home page's "read in the
+  last 30 days" and its sort. A count, never who; not history, and nothing reads it
+  but the listing.
 - `version_files (commit_id, kind state|jsonl|yolo, subset, file_hash, final, built_at)`:
   a version's items file (`state`) or an export, whole or narrowed to a subset
   (canonical JSON of sorted splits and classes), as a gzip file in storage. `final` is

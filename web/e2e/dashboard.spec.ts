@@ -858,6 +858,14 @@ test('the command copied from "Use this dataset" works as pasted, subset and all
   // Only the class it asked for, re-indexed from zero.
   expect(readFileSync(resolve(dir, 'boxes/classes.txt'), 'utf8')).toBe('person\n');
   expect(readFileSync(resolve(dir, 'boxes/labels/frames/street.txt'), 'utf8').trim().split('\n')).toHaveLength(1);
+
+  // That clone is a read of the dataset: its card counts it, and the home
+  // page can put the most read first.
+  await page.goto('/?sort=reads');
+  await expect(page.getByLabel('Sort datasets')).toHaveValue('reads');
+  const card = page.locator('.ds-card', { has: page.getByRole('link', { name: 'e2e/datasets/boxes', exact: true }) });
+  await expect(card.locator('.ds-card-reads')).toContainText(/\d+ reads? in the last 30 days/);
+  await expect(page.locator('.ds-card').first().locator('.ds-card-reads')).toBeVisible();
 });
 
 test('"Show command" gives the cid command for the view on screen, and it does the same thing when run', async ({ page }) => {
