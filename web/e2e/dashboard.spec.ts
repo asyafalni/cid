@@ -99,6 +99,21 @@ test('browse shows thumbnails for images and honest tiles for the rest', async (
   await expect(page.getByText('200×150')).toBeVisible();
 });
 
+test('a text tile with a long line never widens the page on a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signIn(page);
+  // Whatever a file holds: one line far wider than any screen.
+  const long = `{"classes": [${Array.from({ length: 40 }, (_, i) => `"class-${i}"`).join(', ')}]}\n`;
+  await page.route('**/-/text?**', (route) =>
+    route.fulfill({ json: { text: long, truncated: false, binary: false, size: long.length } }),
+  );
+  for (const path of ['/d/e2e/models/tiny-bert', '/d/e2e/models/tiny-bert?view=browse&mode=gallery']) {
+    await page.goto(path);
+    await expect(page.locator('.tile-text-lines').first()).toContainText('class-0');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth), path).toBeLessThanOrEqual(390);
+  }
+});
+
 test('a preview missing from storage shows the item as itself, never a broken image', async ({ page }) => {
   await signIn(page);
   // The store answers every thumbnail with a 404, as for a purged or lost

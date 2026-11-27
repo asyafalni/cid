@@ -3595,6 +3595,9 @@ button.ann-attr:focus-visible {
 .tile-text {
   position: relative;
   display: block;
+  /* Its lines never widen the tile: a long line is cut, not a grid
+     pushed past the screen. */
+  contain: inline-size;
   width: 100%;
   aspect-ratio: 4 / 3;
   overflow: hidden;
