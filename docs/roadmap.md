@@ -17,8 +17,7 @@ same change.
 
 Everything is on `main`; no branch or pull request is open (rechecked 2026-11-28).
 What is left that the code alone can settle is the rest of U16 (the screens
-photographed again with cid's icons), the rest of E5 (FiftyOne through the hub door)
-and item 11's local disk (below); the rest
+photographed again with cid's icons) and item 11's local disk (below); the rest
 waits on the owner (U11, the first release, the GitHub live check, card editing and
 item 11's run on the office staging server), on the annotation platform (the Validator's report
 format, its embedder, an item's source) or on a parked decision (U10).
@@ -727,11 +726,20 @@ and assembling a server by hand. In order:
      keeps its datasets in MongoDB, so the test starts a throwaway one in docker.
      Ultralytics was run by hand only (it brings PyTorch, too heavy for every
      push).
-  2. **One line from the hub door.** FiftyOne loads from a Hugging Face endpoint
-     (`fiftyone.utils.huggingface.load_from_hub`), which reads a `fiftyone.yml`
-     beside the data. The door generates one for an annotated dataset, as it
-     generates the `README.md`, so `HF_ENDPOINT=<cid>` and a repo id are all a
-     person types; the revision is a cid release.
+  2. ~~**One line from the hub door.**~~ *Looked at 2026-11-28 and not built.*
+     FiftyOne's hub loader (`fiftyone.utils.huggingface.load_from_hub`, 1.22.1,
+     read in its source) cannot be served well from cid's side:
+     - it uses `revision` only to find `fiftyone.yml`; the data is then
+       downloaded with no revision at all ("for now don't support multiple
+       revisions storage"), so a release asked for by name would show `main`'s
+       data under it, silently;
+     - its other path, for Parquet repos, asks a hard-coded
+       `datasets-server.huggingface.co` for rows, whatever `HF_ENDPOINT` says: it
+       would send the dataset's name to Hugging Face and get nothing;
+     - what is left is FiftyOne's own dataset format (`samples.json`), private to
+       it and tied to its version: the FiftyOne-only format this item ruled out.
+     The way in that pins a release is the one built: `cid clone --format yolo`,
+     then `fo.Dataset.from_dir`. Reopen if FiftyOne's loader learns revisions.
   3. ~~**Say it on the page**~~ (done 2026-11-27): a FiftyOne tab in "Use this"
      on annotated datasets: the yolo clone at the pinned release, then the lines
      that open it, a split at a time.
@@ -743,8 +751,7 @@ and assembling a server by hand. In order:
   Not in it: writing labels from FiftyOne into an annotated dataset (annotations
   change only in the annotation platform, a non-goal), running FiftyOne on the
   server, or its plugins. A restricted dataset is never offered to it through the
-  dashboard's snippets; the door's own rules already hold. Left: item 2 (about a
-  day) and item 4, which waits on its design.
+  dashboard's snippets; the door's own rules already hold. Left: item 4, which waits on its design.
 
 Left in this tier, each waiting on something outside the code: the first release
 (the owner pushes the tag), and the MCP config shown beside a new token on the
