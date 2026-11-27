@@ -652,6 +652,14 @@ CREATE UNLOGGED TABLE gc_candidates (    -- one run's candidates, scratch
   the hash. History keeps every row.
 - **Also taken:** staged uploads (`uploads/<dataset_id>/…`) never recorded within
   the period, i.e. abandoned pushes.
+- **And left-over derived files** (since 2026-11-27): an items file (`states/…`),
+  an export (`exports/…`) or a diff for the CLI (`diffs/…jsonl.gz`) written before
+  the period that no `version_files` or `version_diffs` row names. Each is named by
+  its content, so one written again with other content (a provisional items file
+  after its media metadata arrived, an export whose layout changed) lands under a
+  new name and the old one is never read again. Every row is read first and its name
+  kept (`src/core/derived.zig` names them for the server and for gc alike); a
+  compare's Parquet files, named by the pair alone, are not touched.
 
 Each run refills `gc_candidates` (its `TRUNCATE` also keeps two runs from
 interleaving).

@@ -43,6 +43,7 @@ const console_mod = @import("browse/console.zig");
 const bundle_mod = @import("../export/bundle.zig");
 const versions = @import("../core/version.zig");
 const health_mod = @import("../core/health.zig");
+const derived = @import("../core/derived.zig");
 const nilo = @import("nilo_http");
 const token_mod = @import("../access/token.zig");
 const Uuid = @import("../util/uuid7.zig").Uuid;
@@ -2770,11 +2771,7 @@ fn subsetHash(arena: std.mem.Allocator, subset_key: []const u8) HandleError![]co
 /// states/… for a version's items, exports/… for an export
 /// (CLAUDE.md, storage layout); subset and content named by hash.
 fn fileKey(arena: std.mem.Allocator, dataset_id: []const u8, commit_id: []const u8, kind: bundle_mod.Kind, subset_key: []const u8, file_hash: []const u8) HandleError![]const u8 {
-    const sub = (try subsetHash(arena, subset_key))[0..16];
-    return switch (kind) {
-        .state => std.fmt.allocPrint(arena, "states/{s}/{s}-{s}-{s}.jsonl.gz", .{ dataset_id, commit_id, sub, file_hash[0..16] }),
-        .jsonl, .yolo, .hf, .coco, .voc => std.fmt.allocPrint(arena, "exports/{s}/{s}/{t}-{s}-{s}.jsonl.gz", .{ dataset_id, commit_id, kind, sub, file_hash[0..16] }),
-    };
+    return derived.fileKey(arena, dataset_id, commit_id, @tagName(kind), subset_key, file_hash);
 }
 
 /// A gzip file of JSON lines being written in the work folder, its hash
@@ -2897,7 +2894,7 @@ fn compare(arena: std.mem.Allocator, deps: *Deps, scope: anytype, ds: Dataset, p
 }
 
 fn diffKey(arena: std.mem.Allocator, dataset_id: []const u8, a: []const u8, b: []const u8, file_hash: []const u8) HandleError![]const u8 {
-    return std.fmt.allocPrint(arena, "diffs/{s}/{s}-{s}-{s}.jsonl.gz", .{ dataset_id, a, b, file_hash[0..16] });
+    return derived.diffKey(arena, dataset_id, a, b, file_hash);
 }
 
 /// Stored jsonb text → a JSON value for the response (never re-encoded as

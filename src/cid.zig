@@ -43,6 +43,7 @@ pub const state = @import("core/version.zig");
 pub const health = @import("core/health.zig");
 pub const purge = @import("core/purge.zig");
 pub const gc = @import("core/gc.zig");
+pub const derived = @import("core/derived.zig");
 pub const preview = @import("preview/worker.zig");
 pub const media = @import("media/sniff.zig");
 pub const canonical = @import("manifest/canonical.zig");
@@ -93,6 +94,7 @@ pub const ExitCode = enum(u8) {
 };
 
 test {
+    _ = derived;
     _ = command;
     _ = help;
     _ = version;

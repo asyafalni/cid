@@ -5078,6 +5078,25 @@ test "gc: never deletes what a release or branch head holds; collected bytes can
     // An upload staged and never pushed.
     const junk_key = try cid.api.stagedKey(arena, ds_id, repeat("00", 32));
     try s3c.putObject(&scope, junk_key, "abandoned");
+    // The head's items file, as a clone reads it, and a row names; beside
+    // it the same version's file from before it was written again, an
+    // export and a diff no row names any more. A compare's Parquet is
+    // named by its pair alone, and stays.
+    const head = (try db.rawOne([]const u8, &fscope, "SELECT commit_id::text FROM commits WHERE dataset_id = $1::uuid ORDER BY cutoff_rev DESC LIMIT 1", .{ds_id})).?;
+    _ = try remote.state(arena, head);
+    const StateRow = struct {
+        pub const nilo_table = .projection;
+        subset: []const u8,
+        file_hash: []const u8,
+    };
+    const state_row = (try db.rawOne(StateRow, &fscope, "SELECT subset, file_hash FROM version_files WHERE commit_id = $1::uuid AND kind = 'state'", .{head})).?;
+    const state_key = try cid.derived.fileKey(arena, ds_id, head, "state", state_row.subset, state_row.file_hash);
+    try std.testing.expect((try s3c.headObject(&scope, state_key)) != null);
+    const stale_state = try cid.derived.fileKey(arena, ds_id, head, "state", state_row.subset, repeat("ab", 32));
+    const stale_export = try cid.derived.fileKey(arena, ds_id, head, "jsonl", "{}", repeat("cd", 32));
+    const stale_diff = try cid.derived.diffKey(arena, ds_id, head, head, repeat("ef", 32));
+    const pair_index = try std.fmt.allocPrint(arena, "diffs/{s}/{s}-{s}.d1.items.parquet", .{ ds_id, head, head });
+    for ([_][]const u8{ stale_state, stale_export, stale_diff, pair_index }) |k| try s3c.putObject(&scope, k, "left over");
     try std.Io.sleep(io, .fromSeconds(1), .awake); // storage stamps whole seconds
 
     // Showing deletes nothing, and only the middle commit's file is a
@@ -5085,6 +5104,8 @@ test "gc: never deletes what a release or branch head holds; collected bytes can
     const shown = try cid.gc.run(std.testing.allocator, &standalone.db, &scope, &s3c, .{ .days = 0 });
     try std.testing.expect(shown.items >= 1);
     try std.testing.expect(shown.staged >= 1);
+    try std.testing.expect(shown.derived >= 3);
+    try std.testing.expect((try s3c.headObject(&scope, stale_state)) != null);
     for (hashes, 0..) |h, i| {
         const listed = try db.rawOne(i64, &fscope, "SELECT 1::bigint FROM gc_candidates WHERE item_hash = decode($1, 'hex')", .{&h});
         try std.testing.expectEqual(i == 2, listed != null);
@@ -5101,6 +5122,12 @@ test "gc: never deletes what a release or branch head holds; collected bytes can
     }
     try std.testing.expect((try db.rawOne(i64, &fscope, "SELECT 1::bigint FROM collected_items WHERE item_hash = decode($1, 'hex')", .{&hashes[2]})) != null);
     try std.testing.expect((try s3c.headObject(&scope, junk_key)) == null);
+    // The left-over derived files go; the one a row names, and the pair's
+    // Parquet, stay, and a clone still reads the version.
+    for ([_][]const u8{ stale_state, stale_export, stale_diff }) |k| try std.testing.expect((try s3c.headObject(&scope, k)) == null);
+    try std.testing.expect((try s3c.headObject(&scope, state_key)) != null);
+    try std.testing.expect((try s3c.headObject(&scope, pair_index)) != null);
+    _ = try remote.state(arena, head);
     // Asking for collected bytes is answered in words, not with dead links.
     try std.testing.expectError(error.Collected, remote.downloads(arena, &.{&hashes[2]}));
     _ = try remote.downloads(arena, &.{&hashes[0]});

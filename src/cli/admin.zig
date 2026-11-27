@@ -849,8 +849,11 @@ fn runGc(
         verb,          report.items,          plural(report.items), report.bytes, options.days, plural(options.days),
         report.staged, plural(report.staged),
     }) catch return .network;
+    out.print("{s} {d} derived file{s} ({Bi:.1}) no version still names: items files, exports and diffs, each built again when asked for.\n", .{
+        verb, report.derived, plural(report.derived), report.derived_bytes,
+    }) catch return .network;
     out.writeAll("Kept: everything in a release or a branch head, and anything used within that period.\n") catch return .network;
-    if (!options.apply and (report.items > 0 or report.staged > 0))
+    if (!options.apply and (report.items > 0 or report.staged > 0 or report.derived > 0))
         out.writeAll("Run 'cid admin gc --apply' to delete them.\n") catch return .network;
     out.flush() catch return .network;
     return .ok;

@@ -13,6 +13,12 @@
 //! deletes the bytes before it commits. A push or registration upserts the
 //! same row (waiting for that commit), then refuses a collected hash, and
 //! the client's retry uploads the bytes again.
+//!
+//! Derived files go too: an items file, an export or a diff for the CLI
+//! (`derived.zig`) that no row names any more, written before the period.
+//! Each is rebuilt on request, and a row is the only way to reach one, so
+//! one no row names is never read again: a provisional file written anew,
+//! a version's cache dropped by a migration.
 
 const std = @import("std");
 const dbx = @import("../store/db.zig");
@@ -20,6 +26,7 @@ const blob = @import("../store/blob.zig");
 const version = @import("version.zig");
 const worker = @import("../preview/worker.zig");
 const content_hash = @import("../util/hash.zig");
+const derived = @import("derived.zig");
 
 pub const Error = error{ Db, Storage, OutOfMemory };
 
@@ -35,6 +42,9 @@ pub const Report = struct {
     bytes: u64 = 0,
     /// Abandoned uploads in the staging area.
     staged: u64 = 0,
+    /// Derived files no row names (items files, exports, diffs).
+    derived: u64 = 0,
+    derived_bytes: u64 = 0,
 };
 
 const batch_rows = 1000;
@@ -94,6 +104,7 @@ pub fn run(gpa: std.mem.Allocator, db: *dbx.sql.Db, scope: anytype, s3: *blob.Cl
     }
 
     try clearStaged(gpa, db, scope, s3, days, options.apply, &report);
+    try clearDerived(gpa, db, scope, s3, days, options.apply, &report);
     return report;
 }
 
@@ -184,4 +195,93 @@ fn clearStaged(gpa: std.mem.Allocator, db: *dbx.sql.Db, scope: anytype, s3: *blo
         try cursor_buf.appendSlice(gpa, next.view());
         cursor = cursor_buf.items;
     }
+}
+
+/// Derived files (`derived.prefixes`) no `version_files` or
+/// `version_diffs` row names, written before the period. The names every
+/// row gives are gathered first, then storage is listed a page at a time:
+/// a file written after the gathering is newer than the period, so a
+/// build in flight is never taken (with `days` 0, as tests run, it could
+/// be; a server builds again on the next request).
+fn clearDerived(gpa: std.mem.Allocator, db: *dbx.sql.Db, scope: anytype, s3: *blob.Client, days: i64, apply: bool, report: *Report) Error!void {
+    var names = std.heap.ArenaAllocator.init(gpa);
+    defer names.deinit();
+    const keep = try keptDerived(names.allocator(), db, scope);
+
+    const cutoff = (db.rawOne([]const u8, scope, "SELECT to_char((now() - $1::bigint * interval '1 day') AT TIME ZONE 'UTC', " ++
+        "'YYYY-MM-DD\"T\"HH24:MI:SS')", .{days}) catch return error.Db).?;
+    for (derived.prefixes) |prefix| {
+        var cursor: ?[]const u8 = null;
+        var cursor_buf: std.ArrayList(u8) = .empty;
+        defer cursor_buf.deinit(gpa);
+        while (true) {
+            var batch = dbx.Run.init(gpa);
+            defer batch.deinit();
+            const page = s3.list(&batch, prefix, cursor) catch return error.Storage;
+            for (page.objects) |object| {
+                const key = object.key.view();
+                if (!derived.isDerived(key) or keep.contains(key)) continue;
+                const stamp = object.last_modified.view();
+                if (stamp.len < 19 or std.mem.order(u8, stamp[0..19], cutoff) != .lt) continue;
+                if (apply) s3.deleteObject(&batch, key) catch |err| switch (err) {
+                    error.NotFound => {},
+                    else => return error.Storage,
+                };
+                report.derived += 1;
+                report.derived_bytes += object.size;
+            }
+            const next = page.next orelse break;
+            cursor_buf.clearRetainingCapacity();
+            try cursor_buf.appendSlice(gpa, next.view());
+            cursor = cursor_buf.items;
+        }
+    }
+}
+
+/// Every derived file a row names, read 5,000 rows at a time: a few per
+/// version kept or asked for, never per item.
+fn keptDerived(arena: std.mem.Allocator, db: *dbx.sql.Db, scope: anytype) Error!std.StringHashMapUnmanaged(void) {
+    var keep: std.StringHashMapUnmanaged(void) = .empty;
+    const File = struct {
+        pub const nilo_table = .projection;
+        dataset_id: []const u8,
+        commit_id: []const u8,
+        kind: []const u8,
+        subset: []const u8,
+        file_hash: []const u8,
+    };
+    var after_commit: []const u8 = "00000000-0000-0000-0000-000000000000";
+    var after_kind: []const u8 = "";
+    var after_subset: []const u8 = "";
+    while (true) {
+        const rows = db.raw(File, scope, "SELECT c.dataset_id::text AS dataset_id, f.commit_id::text AS commit_id, f.kind, f.subset, f.file_hash " ++
+            "FROM version_files f JOIN commits c USING (commit_id) WHERE (f.commit_id, f.kind, f.subset) > ($1::uuid, $2, $3) " ++
+            "ORDER BY f.commit_id, f.kind, f.subset LIMIT 5000", .{ after_commit, after_kind, after_subset }) catch return error.Db;
+        for (rows) |r| try keep.put(arena, try derived.fileKey(arena, r.dataset_id, r.commit_id, r.kind, r.subset, r.file_hash), {});
+        if (rows.len < 5000) break;
+        const last = rows[rows.len - 1];
+        after_commit = last.commit_id;
+        after_kind = last.kind;
+        after_subset = last.subset;
+    }
+    const Diff = struct {
+        pub const nilo_table = .projection;
+        dataset_id: []const u8,
+        commit_a: []const u8,
+        commit_b: []const u8,
+        file_hash: []const u8,
+    };
+    var after_a: []const u8 = "00000000-0000-0000-0000-000000000000";
+    var after_b: []const u8 = "00000000-0000-0000-0000-000000000000";
+    while (true) {
+        const rows = db.raw(Diff, scope, "SELECT dataset_id::text AS dataset_id, commit_a::text AS commit_a, commit_b::text AS commit_b, file_hash " ++
+            "FROM version_diffs WHERE (commit_a, commit_b) > ($1::uuid, $2::uuid) ORDER BY commit_a, commit_b LIMIT 5000", .{ after_a, after_b }) catch
+            return error.Db;
+        for (rows) |r| try keep.put(arena, try derived.diffKey(arena, r.dataset_id, r.commit_a, r.commit_b, r.file_hash), {});
+        if (rows.len < 5000) break;
+        const last = rows[rows.len - 1];
+        after_a = last.commit_a;
+        after_b = last.commit_b;
+    }
+    return keep;
 }
