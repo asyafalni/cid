@@ -302,12 +302,28 @@ test('a model is named a model: on its card, in its header, and in the home filt
 test('"Use this" shows the same version through Hugging Face libraries', async ({ page }) => {
   await signIn(page);
   await page.goto('/d/e2e/datasets/demo?release=v1.0.0');
+  // One tab per way in; the cid command is the one open.
+  const tabs = page.getByRole('tablist', { name: 'Ways to use it' });
+  await expect(tabs.getByRole('tab', { name: 'cid', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await tabs.getByRole('tab', { name: 'datasets', exact: true }).click();
   const ds = page.getByRole('region', { name: 'With Hugging Face libraries' });
   await expect(ds).toContainText('HF_ENDPOINT=http://127.0.0.1:7177');
   await expect(ds).toContainText('load_dataset("e2e/datasets__demo", revision="v1.0.0")');
+  // The arrows move along the tabs: the files as huggingface_hub takes them.
+  await page.keyboard.press('ArrowRight');
+  await expect(tabs.getByRole('tab', { name: 'huggingface_hub' })).toBeFocused();
+  await expect(ds).toContainText('snapshot_download("e2e/datasets__demo", repo_type="dataset", revision="v1.0.0")');
+  // And an agent's client, through the MCP door.
+  await page.keyboard.press('ArrowRight');
+  const agent = page.getByRole('region', { name: 'With an AI agent' });
+  await expect(agent).toContainText('claude mcp add --transport http cid http://127.0.0.1:7177/mcp');
+  await expect(agent).toContainText('e2e/datasets/demo at v1.0.0');
   await page.goto('/d/e2e/models/tiny-bert');
+  await page.getByRole('tab', { name: 'transformers' }).click();
   const model = page.getByRole('region', { name: 'With Hugging Face libraries' });
   await expect(model).toContainText('AutoModel.from_pretrained("e2e/models__tiny-bert", revision="v1.1.0")');
+  await page.getByRole('tab', { name: 'huggingface_hub' }).click();
+  await expect(model).toContainText('snapshot_download("e2e/models__tiny-bert", revision="v1.1.0")');
 });
 
 test('lineage: a model release names what it was trained on, and the dataset names the model', async ({ page }) => {
@@ -347,6 +363,7 @@ test('a commit can be pinned: from the history or the tape, and every view and c
   // The commands reach the same version.
   const use = page.getByRole('region', { name: 'Use this dataset' });
   await expect(use).toContainText(`&& cd many && cid checkout ${commit}`);
+  await page.getByRole('tab', { name: 'datasets', exact: true }).click();
   await expect(page.getByRole('region', { name: 'With Hugging Face libraries' })).toContainText(
     `revision="${commit.replaceAll('-', '')}00000000"`,
   );
@@ -369,6 +386,7 @@ test('a branch can be viewed: its own tape, its head, and commands that check it
   await expect(page.locator('.dataset-meta')).toContainText('132 items');
   await expect(page.locator('.tape')).toContainText('on fix');
   await expect(page.getByRole('region', { name: 'Use this dataset' })).toContainText('&& cd many && cid checkout fix');
+  await page.getByRole('tab', { name: 'datasets', exact: true }).click();
   await expect(page.getByRole('region', { name: 'With Hugging Face libraries' })).toContainText('revision="fix"');
   // It stays on the branch from tab to tab, and main is one pick away.
   await page.getByRole('link', { name: 'Files', exact: true }).click();

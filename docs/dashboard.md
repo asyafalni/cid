@@ -177,6 +177,14 @@ the tagline in its three places, and the reduced-motion switch. Items marked
   airship, and the 404 page is "Lost in the clouds": cid's airship over the sky, what
   went wrong in plain words, a search box and the way home. An unknown address and a
   dataset the server does not know (or will not show) both land there.
+- **The logo is the airship** (decided with the owner 2026-11-27). The top bar
+  carries it small beside the name (`AirshipMark`, a few heavy lines that hold at
+  24 px), the favicon draws it in pixels, and the home page flies it large.
+- **The goggles** (2026-11-27): an engineer's goggles that spell the name, on the
+  sign-in page. The left lens is the c, the bridge with its rivet the i, the right
+  lens and its stem the d; brass rims, an aether rivet, the sky at dusk in the
+  lenses (`web/src/Goggles.tsx`). Our own drawing, like the airship: goggles are
+  an engineer's, not any character's (the name rule in `CLAUDE.md`).
 - **Pixel touches, small and few:** the favicon is a pixel airship, and each release
   badge carries a 6 × 4 pixel gem in brass. Nowhere else.
 - **Tagline.** In the product UI, "cid · Controlled Iterative Datasets" appears in
@@ -349,10 +357,15 @@ Every dataset page (all five tabs) shares one header and the release tape.
   from a sample of 24: those with a preview first, a settings file (a name starting
   with a dot, such as `.cidkeys`) last, so a dataset with waveforms never opens on a
   tile that says "file".
-- **Use this dataset** (built; "Use this model" on a model): a second snippet reads
-  the pinned release with Hugging Face libraries and no clone (`load_dataset`, or
-  `AutoModel.from_pretrained` for a model) through the server's Hugging Face door,
-  with the two environment variables it needs. Then the format picker (`files`, `jsonl`, `yolo`, `coco`, `voc`
+- **Use this dataset** (built; "Use this model" on a model): one tab per way in
+  (roadmap U13), the arrows moving along them. `cid` is open first, described next.
+  `datasets` (`transformers` on a model) reads the pinned release with Hugging Face
+  libraries and no clone (`load_dataset`, or `AutoModel.from_pretrained`) through the
+  server's Hugging Face door, with the two environment variables it needs;
+  `huggingface_hub` takes the version's files the same way (`snapshot_download`);
+  `AI agent` is the line that gives an agent's client the MCP door. A tab exists only
+  for what a test drives for real (`tests/hf_client.sh`, `tests/mcp_client.sh`).
+  The `cid` tab: the format picker (`files`, `jsonl`, `yolo`, `coco`, `voc`
   for annotated datasets, `files` only for file datasets), split/class subset picker (the same
   `--split`/`--class` flags `cid clone` takes, so the subset is real), and the resulting
   `cid clone …` command; the download size, summed exactly from the pinned release's

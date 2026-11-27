@@ -4,6 +4,7 @@ import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-route
 import { clearToken, getMe } from './api';
 import { applyTheme, storedTheme, type Theme } from './theme';
 import { Palette } from './Palette';
+import { AirshipMark } from './Airship';
 
 // The shell: a top bar (wordmark, search, theme, account), the deck, and
 // a footer carrying the tagline. The sign-in page gets the whole viewport
@@ -17,6 +18,7 @@ export function Shell() {
     <div className="shell">
       <header className="topbar">
         <Link to="/" className="wordmark" aria-label="cid, all datasets">
+          <AirshipMark className="wordmark-logo" />
           cid
         </Link>
         {/* The home has its own, larger search. */}

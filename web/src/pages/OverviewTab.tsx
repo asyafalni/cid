@@ -275,6 +275,18 @@ function UseThisDataset({
   const [splits, setSplits] = useState<ReadonlySet<string>>(new Set());
   const [classes, setClasses] = useState<ReadonlySet<string>>(new Set());
   const [copied, setCopied] = useState<'command' | 'snippet' | 'hf' | null>(null);
+  // One tab per way in (roadmap U13): the cid command, the Hugging Face
+  // libraries through the door, and an agent's client through the MCP
+  // door. Each is what a test drives for real (tests/hf_client.sh,
+  // tests/mcp_client.sh); nothing is offered that nobody ran.
+  const ways = [
+    ['cid', 'cid'],
+    ['lib', o.kind === 'model' ? 'transformers' : 'datasets'],
+    ['hub', 'huggingface_hub'],
+    ['agent', 'AI agent'],
+  ] as const;
+  type Way = (typeof ways)[number][0];
+  const [way, setWay] = useState<Way>('cid');
 
   // The pinned version's real items, so the size line is a sum, not a
   // guess: counted on the server with the CLI's subset rule (src/client/
@@ -299,7 +311,8 @@ function UseThisDataset({
     .join(' ')
     .concat(atCommit ? ` && cd ${folder} && cid checkout ${atCommit}` : atBranch ? ` && cd ${folder} && cid checkout ${atBranch}` : '');
   const snippet = pythonFor(format, folder);
-  const hf = hfSnippet(o, pinned ?? (atCommit ? commitAlias(atCommit) : atBranch));
+  const revision = pinned ?? (atCommit ? commitAlias(atCommit) : atBranch);
+  const hf = way === 'hub' ? hubSnippet(o, revision) : way === 'agent' ? agentSnippet() : hfSnippet(o, revision);
 
   function copy(what: 'command' | 'snippet' | 'hf', text: string) {
     void navigator.clipboard.writeText(text).then(() => {
@@ -311,94 +324,163 @@ function UseThisDataset({
   return (
     <section className="panel panel--release card" aria-label={o.kind === 'model' ? 'Use this model' : 'Use this dataset'}>
       <h2>{o.kind === 'model' ? 'Use this model' : 'Use this dataset'}</h2>
-      {formats.length > 1 && (
-        <div className="format-picker" role="radiogroup" aria-label="Export format">
-          {formats.map((f) => (
-            <button
-              key={f}
-              role="radio"
-              aria-checked={format === f}
-              className={format === f ? 'format on' : 'format'}
-              onClick={() => setFormat(f)}
-            >
-              {f}
+      <div className="use-tabs" role="tablist" aria-label="Ways to use it">
+        {ways.map(([id, label], i) => (
+          <button
+            key={id}
+            id={`use-tab-${id}`}
+            role="tab"
+            aria-selected={way === id}
+            aria-controls="use-panel"
+            tabIndex={way === id ? 0 : -1}
+            className={way === id ? 'use-tab use-tab--on' : 'use-tab'}
+            onClick={() => setWay(id)}
+            // The arrows move along the tabs, as tabs do.
+            onKeyDown={(e) => {
+              const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+              if (step === 0) return;
+              e.preventDefault();
+              const next = ways[(i + step + ways.length) % ways.length][0];
+              setWay(next);
+              document.getElementById(`use-tab-${next}`)?.focus();
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div id="use-panel" role="tabpanel" aria-labelledby={`use-tab-${way}`}>
+        {way === 'cid' ? (
+          <>
+          {formats.length > 1 && (
+            <div className="format-picker" role="radiogroup" aria-label="Export format">
+              {formats.map((f) => (
+                <button
+                  key={f}
+                  role="radio"
+                  aria-checked={format === f}
+                  className={format === f ? 'format on' : 'format'}
+                  onClick={() => setFormat(f)}
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {o.splits.length > 0 && (
+            <SubsetPicker
+              label="Splits"
+              values={o.splits.map((x) => x.name)}
+              chosen={splits}
+              onChange={setSplits}
+            />
+          )}
+          {o.classes.length > 0 && (
+            <SubsetPicker
+              label="Classes"
+              values={o.classes.map((x) => x.name)}
+              chosen={classes}
+              onChange={setClasses}
+            />
+          )}
+
+          <div className="command-row">
+            <code className="command data">{command}</code>
+            <button className="action" onClick={() => copy('command', command)}>
+              {copied === 'command' ? 'Copied' : 'Copy'}
             </button>
-          ))}
-        </div>
-      )}
+          </div>
+          <p className="quiet data subset-size" aria-live="polite">
+            {kept === null
+              ? 'Counting…'
+              : kept.items === 0
+                ? 'No item matches this subset. Pick fewer splits or classes.'
+                : splits.size + classes.size > 0
+                  ? `${kept.items.toLocaleString()} of ${kept.total.toLocaleString()} items · ${humanBytes(kept.bytes)}`
+                  : `${kept.items.toLocaleString()} ${kept.items === 1 ? 'item' : 'items'} · ${humanBytes(kept.bytes)}`}
+          </p>
+          <p className="quiet">
+            Works as pasted: your SSH key is the login.{' '}
+            {pinned
+              ? `Pinned to ${pinned}.`
+              : atCommit
+                ? `Pinned to commit ${atCommit.slice(0, 13)}, which is not a release.`
+                : atBranch
+                  ? `The newest commit on ${atBranch}, a draft line of work.`
+                  : 'No releases yet, so this clones the newest commit.'}
+          </p>
 
-      {o.splits.length > 0 && (
-        <SubsetPicker
-          label="Splits"
-          values={o.splits.map((x) => x.name)}
-          chosen={splits}
-          onChange={setSplits}
-        />
-      )}
-      {o.classes.length > 0 && (
-        <SubsetPicker
-          label="Classes"
-          values={o.classes.map((x) => x.name)}
-          chosen={classes}
-          onChange={setClasses}
-        />
-      )}
-
-      <div className="command-row">
-        <code className="command data">{command}</code>
-        <button className="action" onClick={() => copy('command', command)}>
-          {copied === 'command' ? 'Copied' : 'Copy'}
-        </button>
+          <div className="snippet">
+            <div className="snippet-head">
+              <span className="quiet">Then, in Python</span>
+              <button className="action action--quiet" onClick={() => copy('snippet', snippet)}>
+                {copied === 'snippet' ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            <pre className="data">
+              <code>{snippet}</code>
+            </pre>
+          </div>
+          </>
+        ) : (
+          <section
+            className="snippet snippet--first"
+            aria-label={way === 'agent' ? 'With an AI agent' : 'With Hugging Face libraries'}
+          >
+            <div className="snippet-head">
+              <span className="quiet">
+                {way === 'agent'
+                  ? 'Give an agent this server to read, no clone'
+                  : way === 'hub'
+                    ? 'The files of this version, into the Hugging Face cache'
+                    : 'Read it with Hugging Face libraries, no clone'}
+              </span>
+              <button className="action action--quiet" onClick={() => copy('hf', hf)}>
+                {copied === 'hf' ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            <pre className="data">
+              <code>{hf}</code>
+            </pre>
+            {way === 'agent' ? (
+              <p className="quiet">
+                The token is a personal one from your <a href="/tokens">Tokens</a> page; any MCP client takes the
+                same address. Then ask it about <code className="data">{o.name}</code>
+                {revision ? (
+                  <>
+                    {' '}
+                    at <code className="data">{revision}</code>
+                  </>
+                ) : null}
+                : its releases, items, what changed, its health. Read only.
+              </p>
+            ) : (
+              <p className="quiet">
+                HF_TOKEN is a personal token from your <a href="/tokens">Tokens</a> page. Read only: changes go
+                through <code className="data">cid push</code>.
+              </p>
+            )}
+          </section>
+        )}
       </div>
-      <p className="quiet data subset-size" aria-live="polite">
-        {kept === null
-          ? 'Counting…'
-          : kept.items === 0
-            ? 'No item matches this subset. Pick fewer splits or classes.'
-            : splits.size + classes.size > 0
-              ? `${kept.items.toLocaleString()} of ${kept.total.toLocaleString()} items · ${humanBytes(kept.bytes)}`
-              : `${kept.items.toLocaleString()} ${kept.items === 1 ? 'item' : 'items'} · ${humanBytes(kept.bytes)}`}
-      </p>
-      <p className="quiet">
-        Works as pasted: your SSH key is the login.{' '}
-        {pinned
-          ? `Pinned to ${pinned}.`
-          : atCommit
-            ? `Pinned to commit ${atCommit.slice(0, 13)}, which is not a release.`
-            : atBranch
-              ? `The newest commit on ${atBranch}, a draft line of work.`
-              : 'No releases yet, so this clones the newest commit.'}
-      </p>
-
-      <div className="snippet">
-        <div className="snippet-head">
-          <span className="quiet">Then, in Python</span>
-          <button className="action action--quiet" onClick={() => copy('snippet', snippet)}>
-            {copied === 'snippet' ? 'Copied' : 'Copy'}
-          </button>
-        </div>
-        <pre className="data">
-          <code>{snippet}</code>
-        </pre>
-      </div>
-
-      <section className="snippet" aria-label="With Hugging Face libraries">
-        <div className="snippet-head">
-          <span className="quiet">Or read it with Hugging Face libraries, no clone</span>
-          <button className="action action--quiet" onClick={() => copy('hf', hf)}>
-            {copied === 'hf' ? 'Copied' : 'Copy'}
-          </button>
-        </div>
-        <pre className="data">
-          <code>{hf}</code>
-        </pre>
-        <p className="quiet">
-          HF_TOKEN is a personal token from your <a href="/tokens">Tokens</a> page. Read only: changes go
-          through <code className="data">cid push</code>.
-        </p>
-      </section>
     </section>
   );
+}
+
+// The files of a version through the same door, as huggingface_hub
+// downloads them: a folder in its cache, each file checked.
+function hubSnippet(o: Overview, pinned: string | null): string {
+  const env = `# export HF_ENDPOINT=${location.origin} HF_TOKEN=<your cid personal token>\n`;
+  const kind = o.kind === 'model' ? '' : 'repo_type="dataset", ';
+  return `${env}from huggingface_hub import snapshot_download\n\nfolder = snapshot_download("${hfRepoId(o.name)}", ${kind}revision="${pinned ?? 'main'}")`;
+}
+
+// The MCP door (src/server/mcp.zig): one line makes this server's read
+// tools an agent's.
+function agentSnippet(): string {
+  return `claude mcp add --transport http cid ${location.origin}/mcp \\\n  --header "Authorization: Bearer <your cid personal token>"`;
 }
 
 // The same version through the Hugging Face door (src/server/hf.zig):

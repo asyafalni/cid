@@ -37,6 +37,25 @@
   color: var(--aether);
 }
 
+/* The logo in the top bar: cid's airship, small, beside the name. */
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.wordmark-logo {
+  display: block;
+  height: 1.625rem;
+  width: auto;
+}
+
+.wordmark:focus-visible {
+  outline: none;
+  border-radius: var(--radius-chip);
+  box-shadow: var(--focus-ring);
+}
+
 .topbar-search {
   flex: 0 1 20rem;
 }
@@ -388,6 +407,13 @@
 
 .signin-wordmark {
   font-size: 3rem;
+  line-height: 1;
+}
+
+.signin-logo {
+  display: block;
+  height: 4.5rem;
+  width: auto;
 }
 
 .signin form {
@@ -3783,4 +3809,45 @@ button.ann-attr:focus-visible {
     border-radius: var(--radius-panel);
     background: var(--panel);
   }
+}
+
+/* "Use this": one tab per way in. Underlined, not boxed, so they do not
+   read as the export format's switch just beneath them. */
+.use-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--line);
+}
+
+.use-tab {
+  margin-bottom: -1px;
+  padding: var(--space-1) 0 var(--space-2);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-muted);
+  font-family: var(--font-data);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.use-tab:hover {
+  color: var(--text);
+}
+
+.use-tab--on {
+  color: var(--text);
+  border-bottom-color: var(--brass);
+  font-weight: 600;
+}
+
+.use-tab:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.snippet--first {
+  margin-top: 0;
 }

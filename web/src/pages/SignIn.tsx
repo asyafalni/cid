@@ -3,6 +3,7 @@ import { Airship } from '../Airship';
 import { useQuery } from '@tanstack/react-query';
 import { useSearch } from '@tanstack/react-router';
 import { clearToken, getAuthConfig, getMe, setToken } from '../api';
+import { Goggles } from '../Goggles';
 
 // The one page that is mostly sky (docs/dashboard.md: sky gradients only
 // where there is no data). The server's git host first when it offers
@@ -51,7 +52,9 @@ export function SignIn() {
       <div className="sky-clouds" aria-hidden="true" />
       <Airship className="signin-airship" />
       <div className="signin-card blueprint">
-        <h1 className="signin-wordmark">cid</h1>
+        <h1 className="signin-wordmark" aria-label="cid">
+          <Goggles className="signin-logo" />
+        </h1>
         <p className="tagline">cid · Controlled Iterative Datasets</p>
         {host && (
           <a className="action signin-gitlab" href={`/auth/${host.toLowerCase()}`}>

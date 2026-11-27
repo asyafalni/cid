@@ -25,3 +25,20 @@ export function Airship({ className }: { className?: string }) {
     </svg>
   );
 }
+
+// The same airship drawn for small sizes: cid's logo in the top bar, the
+// shape the favicon draws in pixels. Fewer, heavier lines, so it holds at
+// 24 px: the envelope with its brass band, the fins, the gondola.
+export function AirshipMark({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 40 28" aria-hidden="true" focusable="false">
+      <g fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <ellipse cx="17" cy="10" rx="14" ry="7.5" />
+        <path d="M30 7l7-4-1.5 7 1.5 7-7-4" />
+        <path d="M12 17l2 4M22 17l-2 4" />
+        <path d="M11 21h12l-2 5h-8z" />
+      </g>
+      <path d="M15.5 2.6h3v14.8h-3z" fill="var(--brass)" />
+    </svg>
+  );
+}

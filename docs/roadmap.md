@@ -16,8 +16,9 @@ same change.
 ## 0. Where the work stands
 
 Everything is on `main`; no branch or pull request is open (rechecked 2026-11-27).
-What is left that the code alone can settle is U13 to U15 (Tier U, taken from a look
-at Hangar on 2026-11-27, the day U12, the home sidebar, was built), E5 (FiftyOne,
+What is left that the code alone can settle is U14 and U15 (Tier U, taken from a look
+at Hangar on 2026-11-27; U12, the home sidebar, and U13 were built that day), U16
+(cid's own icons, asked for that day), E5 (FiftyOne,
 asked for the same day; Tier E) and item 11's local disk (below); the rest
 waits on the owner (U11, the first release, the GitHub live check, card editing and
 item 11's run on the office staging server), on the annotation platform (the Validator's report
@@ -396,7 +397,7 @@ today is the hub's own ground: finding one thing among many, and saying how to u
 |---|---|---|---|
 | Listing filters | A sidebar of facets with counts, in the URL | Three dropdowns, no counts | **U12**, without its three flaws |
 | Sort the listing | Updated, name, size, downloads, likes | None | **U12** (newest push, name, size, items) |
-| "Use this" | A tab per client: `datasets`, pandas, Polars, DuckDB, the hub library, its CLI, git | The cid command, then one Python snippet | **U13** |
+| "Use this" | A tab per client: `datasets`, pandas, Polars, DuckDB, the hub library, its CLI, git | The same as tabs since U13: cid, `datasets`, `huggingface_hub`, an agent | **Level**; DuckDB and pandas tabs wait on a test |
 | Work in progress | A Jobs badge and drawer: pulls, indexing, exports, with progress | "git up to date" in the header; a version being prepared says nothing | **U14** |
 | How much it is used | Downloads over 30 days, on the card and as a sort | Not counted | **U15** |
 | Facts beside the card | A right rail: format, licence, task, rows, splits with sizes, used by | In the card itself: types, splits, classes, lineage | Level; licence and task wait on card editing (parked) |
@@ -406,13 +407,15 @@ today is the hub's own ground: finding one thing among many, and saying how to u
 | Compare two versions | No | Files, rows, annotations, pictures | **Ahead** |
 | Annotations, media, health, restricted data | A row viewer only | Drawn, played, checked, blurred | **Ahead** |
 
-- **U13. "Use this", one tab per way in.** The panel shows the cid command and one
-  Python snippet. Make it tabs, each paste-ready with this server's address and the
-  pinned version: `cid` (as now), Hugging Face `datasets` and `huggingface_hub`
-  (the door, C1), DuckDB and pandas over the door's Parquet and files where the
-  door serves them, and the MCP line for an agent. A tab is shown only for what
-  `tests/hf_client.sh` or `tests/mcp_client.sh` proves works, never a snippet
-  nobody ran. A restricted dataset keeps the cid tab alone. Small; dashboard only.
+- ~~**U13. "Use this", one tab per way in.**~~ (built 2026-11-27.) The panel
+  stacked the cid command, a Python snippet and a Hugging Face snippet. It is tabs
+  now, each paste-ready with this server's address and the pinned version: `cid`
+  (the command, its format and subset, as before), `datasets` (or `transformers`
+  for a model), `huggingface_hub` (`snapshot_download`: the version's files) and
+  an AI agent (the MCP line). Each is something `tests/hf_client.sh` or
+  `tests/mcp_client.sh` drives for real. Left out until a test runs them: DuckDB,
+  pandas and Polars over the door. A restricted dataset shows the same tabs: both
+  doors apply its limits and log its reads themselves.
 - **U14. Say what the server is still doing.** A new head is prepared in the
   background (statistics, browse index, items file, export), previews are drawn one
   file at a time, and a release's git copy may be waiting; today only git's state is
@@ -425,6 +428,29 @@ today is the hub's own ground: finding one thing among many, and saying how to u
   dataset and day from the item lists a clone reads (never who, outside the
   activity log a restricted dataset already keeps). One small table and one route;
   about a day. Take it after U12, which gives the sort a place.
+
+- **U16. cid's own icons.** *Asked for by the owner 2026-11-27: the dashboard has
+  few icons, and reads plainer than it should.* Today's marks are type and Unicode
+  (`✓`, `!`, `★`, `×`, `?`), which differ from font to font. One small set, drawn
+  for cid in the airship's hand (`docs/dashboard.md`, 3: the workshop up close):
+  a 20 px grid, 1.5 px strokes in the text's colour, square caps, brass for the one
+  accent a drawing may carry. Inline SVG from one file (`web/src/icons.tsx`), no
+  icon font and no dependency. Where they go, in the order to draw them:
+  1. **What a thing is:** the three kinds (files, annotated, model) on cards, the
+     header and the sidebar; file types on a type tile (table, text, sound, video,
+     document, archive, weights, unknown), so a tile says more than `.bin`.
+  2. **Where you are:** the six tabs, the sidebar's group titles, a folder and a
+     file in the Files tab and compare's tree.
+  3. **What you can do:** copy, download, star, compare, pin, reveal, open in git,
+     clear, show command, sort, the cards and list switch.
+  4. **How it is:** pass, warning, fail, restricted, purged, not in git yet,
+     preparing (U14); added, changed, removed in a compare.
+  Rules: an icon never stands alone where words fit (a label beside it, or an
+  accessible name where they do not); never colour alone; none inside a table of
+  data or over a picture (3.4, calm data areas); the whole set under 8 KB gzipped,
+  inside the first-load budget. Done when every Unicode mark above is replaced,
+  the screens are photographed again in both themes (as U1), and axe still passes.
+  About two days: the drawing is the work.
 
 Looked at and not taken: discussions and pull requests on a dataset (the paired git
 repository's host has them); collections and likes (stars and groups cover it until
