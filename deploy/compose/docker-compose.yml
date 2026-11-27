@@ -82,7 +82,15 @@ services:
     depends_on:
       seaweedfs:
         condition: service_healthy
-    entrypoint: ["sh", "-c", "echo 's3.bucket.create -name cid' | weed shell -master=seaweedfs:9333"]
+    # Only when missing: the stack is started again after a reboot, and
+    # SeaweedFS answers a second create with an error, which would keep
+    # the server from ever starting. Any other failure still stops it.
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        echo 's3.bucket.list' | weed shell -master=seaweedfs:9333 2>&1 | grep -qE '^[[:space:]]*cid([[:space:]]|$$)'
+        || echo 's3.bucket.create -name cid' | weed shell -master=seaweedfs:9333
     restart: "no"
 
 volumes:

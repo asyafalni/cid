@@ -100,13 +100,28 @@ has "the store answers where clients are sent" "HTTP/" sh -c "curl -s -o /dev/nu
 # photos from Open Images' bucket: NO_DEMO=1 leaves it out when offline.
 if [ -z "${NO_DEMO:-}" ]; then
     overview() { curl -sf -H "Authorization: Bearer $CID_TOKEN" "$CID_SERVER/v0/datasets/$1/-/overview"; }
-    ok  "the demo loads" env COMPOSE="$COMPOSE" PATH="$(dirname "$CID"):$PATH" sh "$ROOT/deploy/compose/demo.sh"
+    demo() { env COMPOSE="$COMPOSE" PATH="$(dirname "$CID"):$PATH" sh "$ROOT/deploy/compose/demo.sh"; }
+    ok  "the demo loads" demo
     has "demo: fifty photos in the annotated dataset" '"items":50' overview demo/datasets/street-scenes
     has "demo: its second release is the pinned one" '"pinned_release":"v1.1"' overview demo/datasets/street-scenes
     has "demo: the review changed boxes, counted" '"ann_changed":' overview demo/datasets/street-scenes
     has "demo: the file dataset has its releases" '"pinned_release":"v1.1"' overview demo/datasets/city-sounds
     has "demo: the model names what it was trained on" 'street-scenes' overview demo/models/street-detector
-    has "demo: loading it twice is refused, in words" "already here" sh "$ROOT/deploy/compose/demo.sh"
+    has "demo: loading it twice is refused, in words" "already here" demo
 fi
+
+# Stopped and started again, as after a reboot: everything comes back.
+# (A second start once failed here: the bucket step refused a bucket that
+# already existed, and the server never started.)
+$COMPOSE down >/dev/null 2>&1
+if $COMPOSE up -d --no-build >"$WORK/up-again.log" 2>&1; then
+    up=
+    for _ in $(seq 120); do curl -sf "$CID_SERVER/v0/ping" >/dev/null 2>&1 && { up=1; break; }; sleep 1; done
+    [ -n "$up" ] && say "ok: the stack starts again" || { say "FAIL: the server did not answer after a restart"; fails=$((fails+1)); }
+else
+    say "FAIL: the stack did not start again"; tail -5 "$WORK/up-again.log"; fails=$((fails+1))
+fi
+has "after the restart, the releases are all there" "v1.1.0" sh -c "cd '$WORK/copy' && '$CID' log"
+ok  "and a fresh clone is still whole" sh -c "cd '$WORK' && '$CID' clone cid@127.0.0.1:you/datasets/demo again >/dev/null && diff -r -x .cid '$WORK/demo' '$WORK/again'"
 
 if [ "$fails" -eq 0 ]; then say "quickstart: all passed"; else say "quickstart: $fails failed"; exit 1; fi
