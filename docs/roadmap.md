@@ -17,7 +17,8 @@ same change.
 
 Everything is on `main`; no branch or pull request is open (rechecked 2026-11-27).
 What is left that the code alone can settle is U12 (the home sidebar, decided
-2026-11-27, Tier U) and item 11's local disk (below); the rest
+2026-11-27), then U13 to U15 (taken from a look at Hangar the same day; all in Tier U),
+and item 11's local disk (below); the rest
 waits on the owner (U11, the first release, the GitHub live check, card editing and
 item 11's run on the office staging server), on the annotation platform (the Validator's report
 format, its embedder, an item's source) or on a parked decision (U10).
@@ -362,11 +363,77 @@ Close the "behind" rows without giving up an "ahead" one.
     decoration of its own (the sky stays the page's one). It scrolls by itself when
     taller than the window.
 
+  Learned from Hangar's listing (below), which is this design with three flaws to
+  avoid: choosing a value there hides its siblings, so a filter cannot be switched
+  without first being cleared (here every value stays, with its count); its sidebar
+  scrolls away with the page (here it is sticky); nothing above its grid says which
+  filters are on (here the chips). Taken from it: a group shows its eight commonest
+  values, then "Show all N".
+
   Done when: at 1440 px the grid still shows three cards a row; a filter change
   repaints in under 100 ms with 500 datasets; axe passes in both themes; every
   control is reachable and operable by keyboard; an e2e test covers a group, a
   facet's counts under another filter, a dimmed empty value, the chips, the sort,
   the old `?kind=` links and the phone layout.
+
+### Hangar, looked at 2026-11-27
+
+[Hangar](https://github.com/hangar-hub/hangar) is a self-hosted hub that speaks the
+Hugging Face API, git with LFS, Ollama and LM Studio: a private Hugging Face, models
+first ("a home for your arsenal of models"; `/` is the model list), datasets a second
+section with a row viewer. A Go server with an embedded React dashboard, SQLite or
+Postgres, files on disk or S3, each repository a real git repository. Elastic License
+2.0 (source-available). Very young: first commit 2026-10-18, one author, eleven
+releases in ten days. Its demo (demo.hangar.page) runs on sample data, so what follows
+is its design as seen there at 1440 and 390 px, not its speed.
+
+It is a hub, not version control: a model's or dataset's history is git's commits, and
+nothing compares two versions, draws an annotation, checks a dataset's health or
+blurs a restricted one. That is where cid stays ahead. Where it is better than cid
+today is the hub's own ground: finding one thing among many, and saying how to use it.
+
+| | Hangar | cid | Then |
+|---|---|---|---|
+| Listing filters | A sidebar of facets with counts, in the URL | Three dropdowns, no counts | **U12**, without its three flaws |
+| Sort the listing | Updated, name, size, downloads, likes | None | **U12** (newest push, name, size, items) |
+| "Use this" | A tab per client: `datasets`, pandas, Polars, DuckDB, the hub library, its CLI, git | The cid command, then one Python snippet | **U13** |
+| Work in progress | A Jobs badge and drawer: pulls, indexing, exports, with progress | "git up to date" in the header; a version being prepared says nothing | **U14** |
+| How much it is used | Downloads over 30 days, on the card and as a sort | Not counted | **U15** |
+| Facts beside the card | A right rail: format, licence, task, rows, splits with sizes, used by | In the card itself: types, splits, classes, lineage | Level; licence and task wait on card editing (parked) |
+| Search | `/` opens a palette grouped by kind | `Ctrl K`, datasets, tabs, items and actions | Level |
+| Grid or list | Yes, in the URL | Yes, in the URL | Level |
+| Lineage | Model to dataset, on both pages | The same (C3) | Level |
+| Compare two versions | No | Files, rows, annotations, pictures | **Ahead** |
+| Annotations, media, health, restricted data | A row viewer only | Drawn, played, checked, blurred | **Ahead** |
+
+- **U13. "Use this", one tab per way in.** The panel shows the cid command and one
+  Python snippet. Make it tabs, each paste-ready with this server's address and the
+  pinned version: `cid` (as now), Hugging Face `datasets` and `huggingface_hub`
+  (the door, C1), DuckDB and pandas over the door's Parquet and files where the
+  door serves them, and the MCP line for an agent. A tab is shown only for what
+  `tests/hf_client.sh` or `tests/mcp_client.sh` proves works, never a snippet
+  nobody ran. A restricted dataset keeps the cid tab alone. Small; dashboard only.
+- **U14. Say what the server is still doing.** A new head is prepared in the
+  background (statistics, browse index, items file, export), previews are drawn one
+  file at a time, and a release's git copy may be waiting; today only git's state is
+  said. In the dataset's header, one quiet line while any of it is pending
+  ("preparing this version", "previews: 1,240 of 50,000", "not in git yet"), from
+  `version_jobs`, the `previews` queue and the git queue; gone when done. No drawer,
+  no page of its own: cid has no jobs a person starts. One read route; about a day.
+- **U15. How much a dataset is read.** Clones and pulls over the last 30 days, on
+  the card and as a sort on the home page: which datasets matter. Counted per
+  dataset and day from the item lists a clone reads (never who, outside the
+  activity log a restricted dataset already keeps). One small table and one route;
+  about a day. Take it after U12, which gives the sort a place.
+
+Looked at and not taken: discussions and pull requests on a dataset (the paired git
+repository's host has them); collections and likes (stars and groups cover it until
+someone asks); mirroring from huggingface.co (`deploy/import-tags.sh` and
+`docs/coming-from.md` bring a dataset in once, with its history); a scan of model
+files for unsafe pickles (cid does not interpret file contents, invariant 15);
+uploading and editing files in the browser (invariant 17); storage quotas and an
+admin area (dashboard administration is parked); a form to edit card metadata
+(card editing is parked, and licence and task facets wait on it).
 
 Every change here keeps the budgets in `docs/dashboard.md`, section 7, passes axe in
 both themes, and works with reduced motion. Beauty never costs a budget.
