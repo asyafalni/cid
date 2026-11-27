@@ -492,7 +492,8 @@ both themes, and works with reduced motion. Beauty never costs a budget.
 - ~~**B9. "Show command" and the `⌘K` palette**~~ (done 2026-11-20; the palette
   jumps to places; actions in it came 2026-11-21).
 
-- **B10. Cleanup for built files.** *Found 2026-11-27.* `cid admin gc` looks at
+- **B10. Cleanup for built files.** *Found and built 2026-11-27: `cid admin gc` takes them
+  (`src/core/derived.zig`, docs/data-model.md, "Cleanup").* `cid admin gc` looks at
   items and abandoned uploads only. A version's built files (`exports/`, `states/`,
   `diffs/`) are written again under a new name whenever they change (a provisional
   one made final, the yolo layout of 2026-11-27), and the old object stays in
