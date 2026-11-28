@@ -26,6 +26,12 @@ const pages: [string, string][] = [
   ['home-cards', '/'],
   ['home-list', '/?layout=list'],
   ['home-search-none', '/?q=nothing-is-called-this'],
+  // The sidebar at work: a group and a filter on, then filters nothing meets.
+  ['home-filtered', '/?group=e2e%2Fdatasets&kind=annotated&sort=reads'],
+  ['home-filtered-none', '/?kind=model&health=fail'],
+  ['overview-model', '/d/e2e/models/tiny-bert'],
+  ['browse-gallery-text', `${media}?view=browse&mode=gallery`],
+  ['releases-one-version', '/d/e2e/datasets/docs?view=releases'],
   ['lost-page', '/no/such/page'],
   ['lost-dataset', '/d/e2e/datasets/nope'],
   ['overview-files', demo],

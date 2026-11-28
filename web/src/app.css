@@ -3818,14 +3818,19 @@ button.ann-attr:focus-visible {
    read as the export format's switch just beneath them. */
 .use-tabs {
   display: flex;
-  flex-wrap: wrap;
   gap: var(--space-4);
   margin-bottom: var(--space-4);
-  border-bottom: 1px solid var(--line);
+  /* One row at any width: it scrolls sideways when the tabs do not fit,
+     so the underline of the one in use stays on the bar's line. The line
+     is drawn inside the bar, as the dataset's tab bar draws its own. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  box-shadow: inset 0 -1px 0 var(--line);
 }
 
 .use-tab {
-  margin-bottom: -1px;
+  flex: none;
+  white-space: nowrap;
   padding: var(--space-1) 0 var(--space-2);
   border: 0;
   border-bottom: 2px solid transparent;
@@ -3975,4 +3980,28 @@ button.ann-attr:focus-visible {
   clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
+}
+
+/* Phone width (found by the screens run, 2026-11-28): a list row's
+   release, date, reads and health wrap to a second line instead of pushing
+   the page wide; an activity event's last cell breaks a long id. */
+@media (max-width: 600px) {
+  .manifest-side {
+    flex-wrap: wrap;
+    row-gap: var(--space-1);
+    white-space: normal;
+  }
+
+  .manifest-side > * {
+    white-space: nowrap;
+  }
+
+  .activity-table td:last-child {
+    overflow-wrap: anywhere;
+  }
+
+  .activity-table th,
+  .activity-table td {
+    padding-inline: var(--space-1);
+  }
 }

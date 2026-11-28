@@ -16,8 +16,7 @@ same change.
 ## 0. Where the work stands
 
 Everything is on `main`; no branch or pull request is open (rechecked 2026-11-28).
-What is left that the code alone can settle is the rest of U16 (the screens
-photographed again with cid's icons) and item 11's local disk (below); the rest
+What is left that the code alone can settle is item 11's local disk (below); the rest
 waits on the owner (U11, the first release, the GitHub live check, card editing and
 item 11's run on the office staging server), on the annotation platform (the Validator's report
 format, its embedder, an item's source) or on a parked decision (U10).
@@ -430,7 +429,8 @@ today is the hub's own ground: finding one thing among many, and saying how to u
 - **U16. cid's own icons.** *First pass built 2026-11-27 (35 icons, on the tabs,
   the header, cards, the sidebar, Health and type tiles; `docs/dashboard.md`, 3.5).
   Copy, download and compare's marks followed the same day. Left: the screens
-  photographed again (as U1), and the README's screenshots retaken.* *Asked for by the owner 2026-11-27: the dashboard has
+  photographed again (done 2026-11-28: 61 pages, both themes, three widths; two
+  phone-width faults found and fixed, the measured report empty).* *Asked for by the owner 2026-11-27: the dashboard has
   few icons, and reads plainer than it should.* Today's marks are type and Unicode
   (`✓`, `!`, `★`, `×`, `?`), which differ from font to font. One small set, drawn
   for cid in the airship's hand (`docs/dashboard.md`, 3: the workshop up close):
