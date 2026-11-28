@@ -11,7 +11,7 @@ import { HomeSidebar } from '../HomeSidebar';
 import { facetKeys, facetTitle, matching, valueLabel, type HomeSearch } from '../homeFilter';
 import { typingIn } from '../keys';
 import { Marked } from '../SearchBox';
-import { search as findAll } from '../search';
+import { lift, search as findAll } from '../search';
 import { Icon } from '../icons';
 import { TypeIcon } from '../TypeTile';
 
@@ -48,12 +48,29 @@ export function Home() {
   }
   useEffect(() => {
     if (typed === (search.q ?? '')) return;
-    const timer = setTimeout(() => setSearch({ q: typed === '' ? undefined : typed }), 250);
+    // A filter word the sidebar has a control for (`kind:model`) becomes
+    // that filter, shown as its chip; the rest stays the search. Only once
+    // the word is whole: a space after it, or the search left alone a while.
+    const timer = setTimeout(() => {
+      const lifted = lift(typed);
+      const whole = /\s$/.test(typed) || Object.keys(lifted.filters).length === 0;
+      if (!whole) return setSearch({ q: typed === '' ? undefined : typed });
+      setSearch({ q: lifted.q, ...lifted.filters });
+    }, 250);
     return () => clearTimeout(timer);
   });
 
   // `/` goes to the search and `f` to the first filter, as in Browse.
   const searchRef = useRef<HTMLInputElement>(null);
+  // A link that came with filter words in its search (the top bar's box
+  // sends them as typed): they become the sidebar's filters here too,
+  // unless someone is typing in the box right now.
+  useEffect(() => {
+    if (document.activeElement === searchRef.current) return;
+    const lifted = lift(search.q);
+    if (Object.keys(lifted.filters).length === 0) return;
+    void navigate({ to: '/', search: (old: Record<string, unknown>) => ({ ...old, q: lifted.q, ...lifted.filters }), replace: true });
+  }, [search.q, navigate]);
   const sideRef = useRef<HTMLElement>(null);
   // On a narrow screen the sidebar is folded under a button.
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -147,7 +164,7 @@ export function Home() {
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
           />
-          <p className="home-hint">Names, classes, file types, owners and releases. Words in any order; a typo is forgiven.</p>
+          <p className="home-hint">Names, classes, file types, owners and releases, in any order; a typo is forgiven. Narrow with kind: type: class: owner: group: health:</p>
         </div>
       </header>
 

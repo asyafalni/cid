@@ -320,8 +320,15 @@ data or over a picture (3.4).
     to one, Enter alone opens the home page with the words as its search, where
     the order is "best match" unless a sort is chosen. Empty, it offers starred
     and recently viewed. `/` reaches it (the home page's own box there).
-  - Not yet: filter words (`kind:model`), release notes and commit messages, a
-    file by its path across datasets, and the 1,000-dataset measurement.
+  - **Filter words**, in any of the three: `kind:model`, `type:.wav`,
+    `class:person`, `owner:olu`, `group:org/speech`, `health:fail`,
+    `is:restricted`, `has:release`, `no:release`. The top bar's box offers them
+    as they are typed (`ki` offers `kind:`; `kind:` offers its values, each with
+    how many datasets it would leave), and taking one keeps the box open. On the
+    home page a filter word the sidebar has a control for becomes that filter,
+    with its chip; `class:` and `owner:` stay in the search.
+  - Not yet: release notes and commit messages, a file by its path across
+    datasets, and the 1,000-dataset measurement.
 - **The sidebar** (roadmap U12, built 2026-11-27), left of the cards, in place of a
   row of dropdowns. Top to bottom: **Starred** and **Recently viewed** as links
   (recently viewed lives in the viewer's browser; a star is a per-person bookmark kept

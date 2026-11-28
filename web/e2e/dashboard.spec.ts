@@ -1127,8 +1127,34 @@ test('search answers as you type on every page: ranked, a typo forgiven, and it 
   await page.getByRole('combobox', { name: 'Search datasets' }).fill('zzzzqq');
   await expect(page.getByRole('listbox', { name: 'Search results' })).toContainText('Nothing matches');
 
+  // Filter words: the box offers them as they are typed, with what each
+  // would leave, and taking one keeps the box open for more.
+  const again = page.getByRole('combobox', { name: 'Search datasets' });
+  const found = page.getByRole('listbox', { name: 'Search results' });
+  await again.fill('e2e kind:');
+  const offer = found.getByRole('group', { name: 'Filters' }).getByRole('option', { name: /kind:model/ });
+  await expect(offer).toContainText('1 match');
+  await offer.click();
+  await expect(again).toHaveValue('e2e kind:model ');
+  await expect(found.getByRole('option', { name: /e2e\/models\/tiny-bert/ })).toBeVisible();
+  await expect(found.getByRole('option', { name: /e2e\/datasets\/demo/ })).toHaveCount(0);
+  // A class asked for by name is the reason given.
+  await again.fill('class:person e2e');
+  await expect(found.getByRole('option', { name: /e2e\/datasets\/boxes/ })).toContainText('class person');
+  // On the home page a filter word becomes the sidebar's filter, with its chip.
+  await again.fill('kind:model tiny');
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/kind=model/);
+  await expect(page).toHaveURL(/q=tiny/);
+  await expect(page.getByRole('button', { name: 'Remove the filter Kind: model' })).toBeVisible();
+  await expect(page.getByLabel('Search datasets')).toHaveValue('tiny');
+  await page.getByLabel('Search datasets').fill('health:fail ');
+  await expect(page).toHaveURL(/health=fail/);
+  await expect(page.getByRole('button', { name: 'Remove the filter Health: failing' })).toBeVisible();
+
   // The palette asks the same engine.
-  await page.keyboard.press('Escape');
+  await page.goto('/d/e2e/datasets/demo');
+  await expect(page.getByRole('region', { name: 'Use this dataset' })).toBeVisible();
   await page.keyboard.press('Control+k');
   await page.getByRole('dialog', { name: 'Jump to' }).getByRole('combobox').fill('boxs');
   await expect(page.getByRole('dialog', { name: 'Jump to' }).getByRole('option', { name: /e2e\/datasets\/boxes/ })).toBeVisible();

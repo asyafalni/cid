@@ -4126,3 +4126,18 @@ mark {
   border-bottom: 2px solid var(--brass);
   border-radius: 2px 2px 0 0;
 }
+
+.search-offer {
+  align-items: baseline;
+}
+
+.search-offer .icon {
+  align-self: center;
+  margin-top: 0;
+}
+
+.search-offer-says {
+  margin-left: auto;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}

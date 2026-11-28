@@ -21,7 +21,7 @@ export function HomeSkeleton() {
             <Bar width="12rem" />
           </p>
           <input type="search" className="home-search" placeholder="Search datasets" aria-label="Search datasets" disabled />
-          <p className="home-hint">Names, classes, file types, owners and releases. Words in any order; a typo is forgiven.</p>
+          <p className="home-hint">Names, classes, file types, owners and releases, in any order; a typo is forgiven. Narrow with kind: type: class: owner: group: health:</p>
         </div>
       </header>
       <div className="home-body">

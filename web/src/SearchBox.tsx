@@ -6,7 +6,7 @@ import { humanBytes } from './format';
 import { Icon } from './icons';
 import { typingIn } from './keys';
 import { recentDatasets } from './recent';
-import { pieces, search, wordsOf, type Hit, type Mark } from './search';
+import { filterWords, offers, pieces, search, type Hit, type Mark, type Offer } from './search';
 
 /** A text with the stretches a search matched marked (`<mark>`). */
 export function Marked({ text, marks }: { text: string; marks: Mark[] }) {
@@ -50,19 +50,24 @@ export function SearchBox() {
       if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
     }
     window.addEventListener('keydown', onKey);
-    window.addEventListener('mousedown', onDown);
+    // On the way down, before a row's own handler redraws the list: after
+    // it, the row pressed is no longer in the box, and would read as a
+    // press outside.
+    window.addEventListener('mousedown', onDown, true);
     return () => {
       window.removeEventListener('keydown', onKey);
-      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('mousedown', onDown, true);
     };
   }, []);
 
-  const words = wordsOf(q);
-  // With words: the best matches, datasets before models. Without: the
+  const asking = q.trim() !== '';
+  // A filter word being typed (`ki`, `kind:`): what it could be.
+  const offered: Offer[] = asking ? offers(all, q) : [];
+  // With a search: the best matches, datasets before models. Without: the
   // way back to what this person uses.
   let groups: { title: string; hits: Hit[] }[];
   let total = 0;
-  if (words.length > 0) {
+  if (asking) {
     const hits = search(all, q);
     total = hits.length;
     const shown = hits.slice(0, most);
@@ -85,7 +90,18 @@ export function SearchBox() {
   }
   groups = groups.filter((g) => g.hits.length > 0);
   const flat = groups.flatMap((g) => g.hits);
-  const at = Math.min(active, flat.length - 1);
+  // Arrows walk the offers first, then the results.
+  const rows = offered.length + flat.length;
+  const at = Math.min(active, rows - 1);
+
+  // An offer taken replaces the word being typed and leaves the box open.
+  const take = (o: Offer) => {
+    const tokens = q.split(/\s+/);
+    tokens[tokens.length - 1] = o.text;
+    setQ(o.text.endsWith(':') ? tokens.join(' ') : `${tokens.join(' ')} `);
+    setActive(-1);
+    input.current?.focus();
+  };
 
   const go = (h: Hit) => {
     setOpen(false);
@@ -95,13 +111,14 @@ export function SearchBox() {
   };
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (at >= 0 && flat[at]) return go(flat[at]);
+    if (at >= 0 && at < offered.length) return take(offered[at]);
+    if (at >= offered.length && flat[at - offered.length]) return go(flat[at - offered.length]);
     setOpen(false);
     void navigate({ to: '/', search: q.trim() === '' ? {} : { q: q.trim() } });
   };
 
-  const showing = open && (flat.length > 0 || words.length > 0);
-  let row = -1;
+  const showing = open && (rows > 0 || asking);
+  let row = offered.length - 1;
   return (
     <form className="topbar-search" role="search" onSubmit={submit} ref={box}>
       <input
@@ -129,7 +146,7 @@ export function SearchBox() {
           if (e.key === 'ArrowDown') {
             e.preventDefault();
             setOpen(true);
-            setActive((a) => Math.min(a + 1, flat.length - 1));
+            setActive((a) => Math.min(a + 1, rows - 1));
           } else if (e.key === 'ArrowUp') {
             e.preventDefault();
             setActive((a) => Math.max(a - 1, -1));
@@ -144,6 +161,31 @@ export function SearchBox() {
       </kbd>
       {showing && (
         <div className="search-results panel" id={listId} role="listbox" aria-label="Search results">
+          {offered.length > 0 && (
+            <div role="group" aria-label="Filters">
+              <p className="search-group">Filters</p>
+              {offered.map((o, i) => (
+                <div
+                  key={o.text}
+                  id={`${listId}-${i}`}
+                  role="option"
+                  aria-selected={i === at}
+                  className={i === at ? 'search-hit search-offer on' : 'search-hit search-offer'}
+                  onMouseEnter={() => setActive(i)}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    take(o);
+                  }}
+                >
+                  <Icon name="filter" />
+                  <span className="data search-hit-name">{o.text}</span>
+                  <span className="quiet search-offer-says">
+                    {o.count !== undefined ? `${o.count.toLocaleString()} ${o.count === 1 ? 'match' : 'matches'}` : o.says}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
           {groups.map((g) => (
             <div key={g.title} role="group" aria-label={g.title}>
               <p className="search-group">{g.title}</p>
@@ -181,12 +223,15 @@ export function SearchBox() {
               })}
             </div>
           ))}
-          {words.length > 0 && (
+          {asking && (
             <p className="search-foot quiet" aria-live="polite">
               {datasets.isPending
                 ? 'Looking…'
                 : total === 0
-                  ? 'Nothing matches. Search looks at names, classes, file types, owners and releases.'
+                  ? `Nothing matches. Search looks at names, classes, file types, owners and releases; narrow with ${Object.keys(filterWords)
+                      .slice(0, 5)
+                      .map((k) => `${k}:`)
+                      .join(' ')}`
                   : total > flat.length
                     ? `Enter for all ${total.toLocaleString()} results`
                     : `${total} ${total === 1 ? 'result' : 'results'} · Enter opens them on the home page`}

@@ -496,8 +496,9 @@ today is the hub's own ground: finding one thing among many, and saying how to u
 
   Built 2026-11-28: the engine with ranking, typo tolerance and "why" (2, 3), the
   top-bar box (4), and the home page and the palette on the same engine (1).
-  Next, in order: the filter words (5); release notes and messages in the
-  listing (6); the 1,000-dataset measurement (8); the design for 7.
+  The filter words (5) followed the same day. Next, in order: release notes and
+  messages in the listing (6); the 1,000-dataset measurement (8); the design
+  for 7.
 
 Looked at and not taken: discussions and pull requests on a dataset (the paired git
 repository's host has them); collections and likes (stars and groups cover it until

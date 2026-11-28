@@ -1,5 +1,5 @@
 import type { DatasetSummary } from './api';
-import { hit, wordsOf } from './search';
+import { match } from './search';
 
 // The home page's filters (docs/dashboard.md §4.1): what the sidebar
 // offers, how a dataset answers each, and the counts beside every value.
@@ -63,7 +63,7 @@ function passes(d: DatasetSummary, key: FacetKey | 'q', s: HomeSearch): boolean 
   switch (key) {
     case 'q':
       // The one engine (search.ts): every word found somewhere in it.
-      return !s.q || hit(d, wordsOf(s.q)) !== null;
+      return !s.q || match(d, s.q) !== null;
     case 'group':
       return !s.group || d.name.startsWith(`${s.group}/`);
     case 'kind':
