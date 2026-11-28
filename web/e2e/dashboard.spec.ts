@@ -1077,6 +1077,63 @@ test('home: a card per dataset, the same as rows in List, and search reaches cla
   await expect(page.getByRole('link', { name: 'e2e/datasets/boxes', exact: true })).toHaveCount(0);
 });
 
+test('search answers as you type on every page: ranked, a typo forgiven, and it says why', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/d/e2e/datasets/demo');
+  await expect(page.getByRole('region', { name: 'Use this dataset' })).toBeVisible();
+  // `/` reaches the box from anywhere.
+  await page.locator('body').click({ position: { x: 1, y: 1 } });
+  await page.keyboard.press('/');
+  const box = page.getByRole('combobox', { name: 'Search datasets' });
+  await expect(box).toBeFocused();
+  const results = page.getByRole('listbox', { name: 'Search results' });
+
+  // One letter wrong still finds it, the matched part of the name marked.
+  await box.fill('boxs');
+  const boxes = results.getByRole('option', { name: /e2e\/datasets\/boxes/ });
+  await expect(boxes).toBeVisible();
+  await expect(boxes.locator('mark')).toHaveText('boxes');
+
+  // A class finds the dataset whose name never says it, and says so.
+  await box.fill('person');
+  await expect(results.getByRole('option', { name: /e2e\/datasets\/boxes/ })).toContainText('class person');
+  await expect(results.getByRole('option', { name: /e2e\/datasets\/demo/ })).toHaveCount(0);
+
+  // Words in any order; models under their own heading.
+  await box.fill('bert e2e');
+  await expect(results.getByRole('group', { name: 'Models' }).getByRole('option', { name: /e2e\/models\/tiny-bert/ })).toBeVisible();
+
+  // The best match is first: a name that is the word beats one holding it.
+  await box.fill('demo');
+  await expect(results.getByRole('option').first()).toContainText('e2e/datasets/demo');
+
+  // Arrows and Enter go to one.
+  await box.fill('boxs');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/d\/e2e\/datasets\/boxes/);
+
+  // Enter alone opens every result on the home page, best match first.
+  await page.keyboard.press('/');
+  await page.getByRole('combobox', { name: 'Search datasets' }).fill('person');
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\?q=person/);
+  await expect(page.getByLabel('Sort datasets').locator('option:checked')).toHaveText('best match');
+  const card = page.locator('.ds-card', { has: page.getByRole('link', { name: 'e2e/datasets/boxes', exact: true }) });
+  await expect(card).toContainText('matches class person');
+
+  // Nothing found is said, with what search looks at.
+  await page.goto('/d/e2e/datasets/demo');
+  await page.getByRole('combobox', { name: 'Search datasets' }).fill('zzzzqq');
+  await expect(page.getByRole('listbox', { name: 'Search results' })).toContainText('Nothing matches');
+
+  // The palette asks the same engine.
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Control+k');
+  await page.getByRole('dialog', { name: 'Jump to' }).getByRole('combobox').fill('boxs');
+  await expect(page.getByRole('dialog', { name: 'Jump to' }).getByRole('option', { name: /e2e\/datasets\/boxes/ })).toBeVisible();
+});
+
 test('home: the sidebar narrows by group and by filter, each value counted against the others', async ({ page }) => {
   await signIn(page);
   const side = page.getByRole('complementary', { name: 'Filter datasets' });

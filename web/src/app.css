@@ -4018,3 +4018,111 @@ button.ann-attr:focus-visible {
     box-shadow: none;
   }
 }
+
+/* Search, the front door (roadmap U17). The top bar's box answers under
+   itself as you type. */
+.topbar-search {
+  position: relative;
+}
+
+.topbar-search input {
+  padding-right: 2rem;
+}
+
+.topbar-search input:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* The key that reaches the box from anywhere; gone while typing in it. */
+.topbar-search-key {
+  position: absolute;
+  right: var(--space-2);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 0 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--text-muted);
+  font-family: var(--font-data);
+  font-size: 0.7rem;
+  line-height: 1.3;
+  pointer-events: none;
+}
+
+.topbar-search:focus-within .topbar-search-key {
+  display: none;
+}
+
+.search-results {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  z-index: 30;
+  width: min(34rem, calc(100vw - 2 * var(--gutter)));
+  max-height: min(70vh, 32rem);
+  overflow-y: auto;
+  padding: var(--space-2);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--bg) 60%, transparent);
+}
+
+.search-group {
+  margin: var(--space-2) var(--space-2) var(--space-1);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.search-hit {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-chip);
+  cursor: pointer;
+}
+
+.search-hit .icon {
+  margin-top: 2px;
+  color: var(--text-muted);
+}
+
+.search-hit.on {
+  background: color-mix(in srgb, var(--aether) 14%, transparent);
+  box-shadow: inset 3px 0 0 var(--brass);
+}
+
+.search-hit-main {
+  display: grid;
+  min-width: 0;
+}
+
+.search-hit-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-hit-facts {
+  font-size: 0.8rem;
+}
+
+.search-why {
+  color: var(--text);
+}
+
+.search-foot {
+  margin: var(--space-2) var(--space-2) var(--space-1);
+  font-size: 0.8rem;
+}
+
+/* What a search matched: marked in the text, underlined in brass, never by
+   a fill alone. */
+mark {
+  background: color-mix(in srgb, var(--brass) 22%, transparent);
+  color: inherit;
+  border-bottom: 2px solid var(--brass);
+  border-radius: 2px 2px 0 0;
+}

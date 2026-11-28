@@ -1,10 +1,11 @@
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
+import { Link, Outlet, useRouterState } from '@tanstack/react-router';
 import { clearToken, getMe } from './api';
 import { applyTheme, storedTheme, type Theme } from './theme';
 import { Palette } from './Palette';
 import { AirshipMark } from './Airship';
+import { SearchBox } from './SearchBox';
 
 // The shell: a top bar (wordmark, search, theme, account), the deck, and
 // a footer carrying the tagline. The sign-in page gets the whole viewport
@@ -22,7 +23,7 @@ export function Shell() {
           cid
         </Link>
         {/* The home has its own, larger search. */}
-        {path !== '/' && <TopSearch />}
+        {path !== '/' && <SearchBox />}
         <div className="topbar-end">
           <ThemeSwitch />
           {me.data && (
@@ -60,26 +61,6 @@ export function Shell() {
       <Palette />
       <footer className="footer">cid · Controlled Iterative Datasets</footer>
     </div>
-  );
-}
-
-function TopSearch() {
-  const navigate = useNavigate();
-  const [q, setQ] = useState('');
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    void navigate({ to: '/', search: q.trim() === '' ? {} : { q: q.trim() } });
-  };
-  return (
-    <form className="topbar-search" role="search" onSubmit={submit}>
-      <input
-        type="search"
-        aria-label="Search datasets"
-        placeholder="Search datasets"
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-      />
-    </form>
   );
 }
 

@@ -303,7 +303,25 @@ data or over a picture (3.4).
   the page costs one query however many people open it, at any dataset size. The
   overview and the dataset repository read the same statistics. A restricted
   dataset shows type tiles, never a clear thumbnail.
-- Search by name, class, file type and owner (`/` goes to it).
+- **Search, the front door** (roadmap U17; the first part built 2026-11-28). One
+  engine (`web/src/search.ts`) behind three doors: the top bar's box on every
+  page, the home page's own, and the `Ctrl K` palette, so a thing found in one is
+  found in all, in the same order. It works on the listing the browser holds: no
+  request per keystroke.
+  - Words in any order, every one found somewhere: in the name, a class, an
+    owner, a file type, the newest release. A name's start beats its middle, the
+    last part of a path beats a folder above it, a name beats a class beats an
+    owner; equal matches go to the one read more. One mistyped letter still finds
+    a name (words of four letters or more).
+  - It says why: the matched part of the name is marked, and a match elsewhere is
+    named ("class person", "owner Olu", "3 .wav files").
+  - The top bar's box answers under itself as you type: datasets, then models,
+    eight at most, each with its kind, size and newest release; arrows and Enter go
+    to one, Enter alone opens the home page with the words as its search, where
+    the order is "best match" unless a sort is chosen. Empty, it offers starred
+    and recently viewed. `/` reaches it (the home page's own box there).
+  - Not yet: filter words (`kind:model`), release notes and commit messages, a
+    file by its path across datasets, and the 1,000-dataset measurement.
 - **The sidebar** (roadmap U12, built 2026-11-27), left of the cards, in place of a
   row of dropdowns. Top to bottom: **Starred** and **Recently viewed** as links
   (recently viewed lives in the viewer's browser; a star is a per-person bookmark kept

@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useRouterState } from '@tanstack/react-router';
 import { getBrowse, getOverview, listDatasets } from './api';
 import { commandFor, viewStateOf } from './command';
+import { search } from './search';
 
 // The command palette (docs/dashboard.md, design language): ⌘K or Ctrl-K
 // anywhere, then type to jump to a dataset, a release or tab of the one on
@@ -104,8 +105,17 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
         });
     }
   }
-  for (const d of datasets.data?.datasets ?? [])
-    if (matches(d.name)) results.push({ key: `d:${d.name}`, label: d.name, kind: d.kind === 'model' ? 'model' : 'dataset', target: { to: '/d/$', params: { _splat: d.name } } });
+  // Datasets and models through the one engine (search.ts): ranked, a
+  // typo forgiven, found by a class or an owner as well as by name.
+  for (const h of search(datasets.data?.datasets ?? [], q).slice(0, 8)) {
+    const d = h.dataset;
+    results.push({
+      key: `d:${d.name}`,
+      label: d.name,
+      kind: `${d.kind === 'model' ? 'model' : 'dataset'}${h.why.length > 0 ? ` · ${h.why[0]}` : ''}`,
+      target: { to: '/d/$', params: { _splat: d.name } },
+    });
+  }
   for (const [label, to] of [
     ['all datasets', '/'],
     ['SSH keys', '/keys'],

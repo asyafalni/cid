@@ -10,6 +10,8 @@ import { recentDatasets } from '../recent';
 import { HomeSidebar } from '../HomeSidebar';
 import { facetKeys, facetTitle, matching, valueLabel, type HomeSearch } from '../homeFilter';
 import { typingIn } from '../keys';
+import { Marked } from '../SearchBox';
+import { search as findAll } from '../search';
 import { Icon } from '../icons';
 import { TypeIcon } from '../TypeTile';
 
@@ -95,7 +97,15 @@ export function Home() {
     );
   }
 
-  const shown = sorted(matching(datasets, search), search.sort);
+  // With words in the search, the best match comes first unless a sort is
+  // asked for, and each card says what matched (search.ts).
+  const found = new Map(findAll(matching(datasets, search), search.q).map((h) => [h.dataset.name, h]));
+  const ranked = [...found.values()].map((h) => h.dataset);
+  const shown = search.q && search.sort === undefined ? ranked : sorted(ranked, search.sort);
+  const why = (d: DatasetSummary) => {
+    const reasons = found.get(d.name)?.why ?? [];
+    return reasons.length > 0 && <span className="search-why data"> · matches {reasons.join(', ')}</span>;
+  };
   const on = facetKeys.filter((k) => search[k] !== undefined);
   const filtered = Boolean(search.q) || on.length > 0;
   const none = Object.fromEntries(facetKeys.map((k) => [k, undefined])) as Partial<HomeSearch>;
@@ -137,7 +147,7 @@ export function Home() {
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
           />
-          <p className="home-hint">Names, classes, file types and owners.</p>
+          <p className="home-hint">Names, classes, file types, owners and releases. Words in any order; a typo is forgiven.</p>
         </div>
       </header>
 
@@ -182,7 +192,7 @@ export function Home() {
                 value={search.sort ?? 'pushed'}
                 onChange={(e) => setSearch({ sort: e.target.value === 'pushed' ? undefined : (e.target.value as HomeSearch['sort']) })}
               >
-                <option value="pushed">newest push</option>
+                <option value="pushed">{search.q ? 'best match' : 'newest push'}</option>
                 <option value="name">name</option>
                 <option value="size">size</option>
                 <option value="items">items</option>
@@ -216,13 +226,14 @@ export function Home() {
                   <Mosaic dataset={d} />
                   <div className="manifest-main">
                     <Link to="/d/$" params={{ _splat: d.name }} className="data manifest-name">
-                      {d.name}
+                      <Marked text={d.name} marks={found.get(d.name)?.marks ?? []} />
                     </Link>
                     <span className="manifest-kind">
                       <Icon name={d.kind} /> {kindLabel(d.kind)}
                     </span>
                     {d.restricted && <span className="chip restricted-badge">restricted</span>}
                     {d.owners.length > 0 && <span className="quiet manifest-owners">owned by {d.owners.join(', ')}</span>}
+                    {why(d)}
                     <p className="manifest-facts quiet data">
                       <Facts d={d} />
                     </p>
@@ -243,7 +254,7 @@ export function Home() {
                     <div className="ds-card-title">
                       {/* The whole card is the link's target area (::after). */}
                       <Link to="/d/$" params={{ _splat: d.name }} className="ds-card-link data">
-                        {d.name}
+                        <Marked text={d.name} marks={found.get(d.name)?.marks ?? []} />
                       </Link>
                       {star(d)}
                     </div>
@@ -251,6 +262,7 @@ export function Home() {
                       <Icon name={d.kind} /> {kindLabel(d.kind)}
                       {d.restricted && <span className="chip restricted-badge">restricted</span>}
                       {d.owners.length > 0 && <span className="quiet"> · owned by {d.owners.join(', ')}</span>}
+                      {why(d)}
                     </p>
                     <p className="ds-card-facts data">
                       <Facts d={d} />
