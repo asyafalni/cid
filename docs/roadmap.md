@@ -16,7 +16,8 @@ same change.
 ## 0. Where the work stands
 
 Everything is on `main`; no branch or pull request is open (rechecked 2026-11-28).
-What is left that the code alone can settle is item 11's local disk (below); the rest
+What is left that the code alone can settle is U17 (search as the front door, asked
+for 2026-11-28; Tier U) and item 11's local disk (below); the rest
 waits on the owner (U11, the first release, the GitHub live check, card editing and
 item 11's run on the office staging server), on the annotation platform (the Validator's report
 format, its embedder, an item's source) or on a parked decision (U10).
@@ -398,7 +399,7 @@ today is the hub's own ground: finding one thing among many, and saying how to u
 | Work in progress | A Jobs badge and drawer: pulls, indexing, exports, with progress | "git up to date" in the header; a version being prepared says nothing | **U14** |
 | How much it is used | Downloads over 30 days, on the card and as a sort | Clones, pulls and checkouts over 30 days, on the card and as a sort (U15) | **Level** |
 | Facts beside the card | A right rail: format, licence, task, rows, splits with sizes, used by | In the card itself: types, splits, classes, lineage | Level; licence and task wait on card editing (parked) |
-| Search | `/` opens a palette grouped by kind | `Ctrl K`, datasets, tabs, items and actions | Level |
+| Search | `/` opens a palette grouped by kind | `Ctrl K`, datasets, tabs, items and actions | **U17**: ranked, grouped, says why, on every page |
 | Grid or list | Yes, in the URL | Yes, in the URL | Level |
 | Lineage | Model to dataset, on both pages | The same (C3) | Level |
 | Compare two versions | No | Files, rows, annotations, pictures | **Ahead** |
@@ -452,6 +453,51 @@ today is the hub's own ground: finding one thing among many, and saying how to u
   inside the first-load budget. Done when every Unicode mark above is replaced,
   the screens are photographed again in both themes (as U1), and axe still passes.
   About two days: the drawing is the work.
+
+- **U17. Search, the front door.** *Asked for by the owner 2026-11-28: once a server
+  holds hundreds of datasets and models, search is how anyone gets anywhere, and
+  Hugging Face's is good.* What Hugging Face does well: a box on every page that
+  answers as you type, results grouped by kind, Enter for the full list, and a
+  full-text search of cards. What cid has: a top-bar box that answers only on Enter,
+  a home page box that matches a substring of names, classes, types and owners in
+  no order, and a `Ctrl K` palette with a flat list of twelve.
+
+  Where cid should end up, and where it beats Hugging Face:
+  1. **One engine, three doors.** The top-bar box, the home page and the palette
+     ask the same code (`web/src/search.ts`), so a thing found in one is found in
+     all, in the same order.
+  2. **Ranked, and forgiving.** Words in any order; a name's start beats its
+     middle, the last part of a path beats a folder above it, a name beats a class
+     beats an owner; one mistyped letter still finds it. Hugging Face matches
+     substrings of the repo id.
+  3. **It says why.** Each result shows what matched, marked: the part of the
+     name, or "class person", "owner Olu", "release v1.2 notes". Hugging Face
+     shows the name alone.
+  4. **Instant, as you type, on every page**: the top-bar box opens its results
+     under itself, grouped (datasets, models, then this dataset's releases and
+     items), each with its kind's icon, size and newest release; arrows and Enter;
+     `/` reaches it from anywhere. Enter with nothing chosen opens the home page
+     with the words as its search. Empty, it offers starred and recently viewed.
+  5. **Words that filter**: `kind:model`, `type:.wav`, `class:person`,
+     `owner:olu`, `group:org/speech`, `health:fail`, `is:restricted`,
+     `has:release`, typed in any box, offered as you type, and shown as the
+     sidebar's chips. Hugging Face's quick search has none.
+  6. **What is inside, not only names**: classes and file types (now), release
+     names and their notes, the newest commit messages. The card's own text waits
+     on card editing (parked).
+  7. **A file by its path, across every dataset** ("where is `calib-0042.wav`?"):
+     the one part that needs the server, since paths live in each version's browse
+     index. Its own design first: which versions (heads only), how many datasets a
+     query may open, and the budget. Not in the first slice.
+  8. **Budgets**: results repaint within 50 ms of a keystroke with 1,000 datasets
+     loaded, and the listing they come from answers in under 500 ms at that size
+     (measured, with a seeded server; today's listing signs four thumbnails a
+     dataset, which will not hold at 1,000 and is part of this item).
+
+  Order: the engine with ranking, typo tolerance and "why" (2, 3), the top-bar box
+  (4) and the home page on the same engine; then the filter words (5) and the
+  palette (1); then release notes and messages in the listing (6); then the
+  1,000-dataset measurement (8); then the design for 7.
 
 Looked at and not taken: discussions and pull requests on a dataset (the paired git
 repository's host has them); collections and likes (stars and groups cover it until
