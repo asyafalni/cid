@@ -110,16 +110,23 @@ export function allows(d: DatasetSummary, a: Asked): boolean {
   return true;
 }
 
-/** A dataset against a whole search, filter words and all. */
-export function match(d: DatasetSummary, q: string | undefined): Hit | null {
+/** A whole search, filter words and all, made ready to ask of each
+ * dataset in turn. A mistyped word is forgiven only when no dataset
+ * holds it as typed: a near miss must never crowd out, or add to, what
+ * was actually asked for (typing one more letter never finds more). */
+export function matcher(datasets: DatasetSummary[], q: string | undefined): (d: DatasetSummary) => Hit | null {
   const { words, asked } = parse(q);
-  if (!allows(d, asked)) return null;
-  const h = hit(d, words);
-  if (h === null) return null;
-  // A class or an owner asked for by name is a reason too.
-  for (const c of asked.classes) for (const x of d.classes) if (x.toLowerCase().includes(c) && !h.why.includes(`class ${x}`)) h.why.push(`class ${x}`);
-  for (const o of asked.owners) for (const x of d.owners) if (x.toLowerCase().includes(o) && !h.why.includes(`owner ${x}`)) h.why.push(`owner ${x}`);
-  return h;
+  const none: ReadonlySet<string> = new Set();
+  const loose = new Set(words.filter((w) => w.length >= 4 && !datasets.some((d) => find(d, w, false) !== null)));
+  return (d) => {
+    if (!allows(d, asked)) return null;
+    const h = hit(d, words, loose.size > 0 ? loose : none);
+    if (h === null) return null;
+    // A class or an owner asked for by name is a reason too.
+    for (const c of asked.classes) for (const x of d.classes) if (x.toLowerCase().includes(c) && !h.why.includes(`class ${x}`)) h.why.push(`class ${x}`);
+    for (const o of asked.owners) for (const x of d.owners) if (x.toLowerCase().includes(o) && !h.why.includes(`owner ${x}`)) h.why.push(`owner ${x}`);
+    return h;
+  };
 }
 
 const breaks = /[/\-_. ]/;
@@ -141,8 +148,9 @@ function near(a: string, b: string): boolean {
 
 type Found = { score: number; mark?: Mark; why?: string };
 
-/** The best place one word is found in a dataset, or null. */
-function find(d: DatasetSummary, word: string): Found | null {
+/** The best place one word is found in a dataset, or null. `loose` lets a
+ * near miss of a name count: only for a word no dataset holds exactly. */
+function find(d: DatasetSummary, word: string, loose: boolean): Found | null {
   const name = d.name.toLowerCase();
   const leafAt = name.lastIndexOf('/') + 1;
   let best: Found | null = null;
@@ -188,7 +196,7 @@ function find(d: DatasetSummary, word: string): Found | null {
 
   // One mistyped letter, in a name only, and only for a word long enough
   // that a near miss means something.
-  if (best === null && word.length >= 4) {
+  if (best === null && loose && word.length >= 4) {
     let at = 0;
     for (const part of name.split(breaks)) {
       const head = part.slice(0, word.length);
@@ -213,13 +221,14 @@ function merged(marks: Mark[]): Mark[] {
   return out;
 }
 
-/** A dataset against the words: null unless every word is found in it. */
-export function hit(d: DatasetSummary, words: string[]): Hit | null {
+/** A dataset against the words: null unless every word is found in it.
+ * The words in `loose` may be one letter off a name. */
+function hit(d: DatasetSummary, words: string[], loose: ReadonlySet<string>): Hit | null {
   let score = 0;
   const marks: Mark[] = [];
   const why: string[] = [];
   for (const w of words) {
-    const f = find(d, w);
+    const f = find(d, w, loose.has(w));
     if (f === null) return null;
     score += f.score;
     if (f.mark) marks.push(f.mark);
@@ -233,9 +242,10 @@ export function hit(d: DatasetSummary, words: string[]): Hit | null {
  * same everywhere and never the server's. */
 export function search(datasets: DatasetSummary[], q: string | undefined): Hit[] {
   if ((q ?? '').trim() === '') return datasets.map((d) => ({ dataset: d, score: 0, marks: [], why: [] }));
+  const ask = matcher(datasets, q);
   const hits: Hit[] = [];
   for (const d of datasets) {
-    const h = match(d, q);
+    const h = ask(d);
     if (h) hits.push(h);
   }
   // Filter words alone rank nothing: the order given is kept.
@@ -276,7 +286,8 @@ export function offers(datasets: DatasetSummary[], q: string): Offer[] {
   const key = last.slice(0, colon);
   const typed = last.slice(colon + 1);
   if (!(key in filterWords)) return [];
-  const within = datasets.filter((d) => match(d, rest) !== null);
+  const ask = matcher(datasets, rest);
+  const within = datasets.filter((d) => ask(d) !== null);
   const counts = new Map<string, number>();
   const add = (v: string) => counts.set(v, (counts.get(v) ?? 0) + 1);
   for (const d of within) {

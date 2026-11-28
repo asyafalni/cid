@@ -496,9 +496,26 @@ today is the hub's own ground: finding one thing among many, and saying how to u
 
   Built 2026-11-28: the engine with ranking, typo tolerance and "why" (2, 3), the
   top-bar box (4), and the home page and the palette on the same engine (1).
-  The filter words (5) followed the same day. Next, in order: release notes and
-  messages in the listing (6); the 1,000-dataset measurement (8); the design
-  for 7.
+  The filter words (5) followed the same day, and the measurement (8):
+  `tests/bench/listing_1k.sh` fills a database of its own with 1,001 annotated
+  datasets (four pictures with thumbnails, classes, a release each). Measured
+  2026-11-28, ReleaseFast, and what it changed:
+  - the listing took 0.39 to 0.54 s, because it asked the database about each
+    thumbnail by itself (4,004 queries); with one query for them all, and a
+    picture many datasets hold signed once, 0.05 s;
+  - the home page drew all 1,001 cards (21,366 elements; the first one readable
+    1.1 s after sign-in); it now draws 60 and more as the end nears (1,607
+    elements, 0.24 s);
+  - a mistyped word was forgiven even when datasets held it as typed, so `d042`
+    found 208 where `d04` found 100; a near miss now counts only when nothing
+    holds the word, and `d042` finds its 10;
+  - a keystroke to its results: 23 to 31 ms in the top bar's box, 21 to 30 ms on
+    the home page (budget 50); a sidebar filter 67 ms (budget 100).
+  Still open from it: the listing is 2.2 MB of JSON, plain from the server. The
+  proxy configs compress it now (`deploy/proxy/`); a server reached with no proxy
+  sends it whole. The lasting fix is a listing without thumbnail links and one
+  request for those of the cards on screen. Next, in order: that; release notes
+  and messages in the listing (6); the design for 7.
 
 Looked at and not taken: discussions and pull requests on a dataset (the paired git
 repository's host has them); collections and likes (stars and groups cover it until

@@ -327,8 +327,15 @@ data or over a picture (3.4).
     how many datasets it would leave), and taking one keeps the box open. On the
     home page a filter word the sidebar has a control for becomes that filter,
     with its chip; `class:` and `owner:` stay in the search.
-  - Not yet: release notes and commit messages, a file by its path across
-    datasets, and the 1,000-dataset measurement.
+  - A mistyped word is forgiven only when no dataset holds it as typed, so one
+    more letter never finds more.
+  - The home page draws 60 cards and more as the end nears ("Show more" does it
+    by hand), so a server with a thousand datasets opens as fast as one with ten.
+    Measured at 1,001 datasets (`tests/bench/listing_1k.sh`, 2026-11-28): the
+    listing 0.05 s, the first card 0.24 s after sign-in, a keystroke to its
+    results 21 to 31 ms.
+  - Not yet: release notes and commit messages, and a file by its path across
+    datasets.
 - **The sidebar** (roadmap U12, built 2026-11-27), left of the cards, in place of a
   row of dropdowns. Top to bottom: **Starred** and **Recently viewed** as links
   (recently viewed lives in the viewer's browser; a star is a per-person bookmark kept

@@ -8,7 +8,10 @@
 # Caddy sets no request size or response time limit by default, so long
 # requests (a release of a million items takes about half a minute) and
 # 64 MB API bodies pass as they are.
+# Answers are compressed here: the server sends them plain, and the
+# listing of a thousand datasets is 2 MB of JSON as it comes.
 cid.example.com {
+	encode zstd gzip
 	reverse_proxy 127.0.0.1:7070
 }
 

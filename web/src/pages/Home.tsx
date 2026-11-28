@@ -60,6 +60,25 @@ export function Home() {
     return () => clearTimeout(timer);
   });
 
+  // How many cards are drawn; back to one page whenever what is asked changes.
+  const asked = JSON.stringify({ ...search, layout: undefined });
+  const [limit, setLimit] = useState(cards_a_page);
+  const [limitFor, setLimitFor] = useState(asked);
+  if (limitFor !== asked) {
+    setLimitFor(asked);
+    setLimit(cards_a_page);
+  }
+  const moreRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    const el = moreRef.current;
+    if (!el) return;
+    const seen = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) setLimit((l) => l + cards_a_page);
+    }, { rootMargin: '1200px' });
+    seen.observe(el);
+    return () => seen.disconnect();
+  });
+
   // `/` goes to the search and `f` to the first filter, as in Browse.
   const searchRef = useRef<HTMLInputElement>(null);
   // A link that came with filter words in its search (the top bar's box
@@ -116,9 +135,16 @@ export function Home() {
 
   // With words in the search, the best match comes first unless a sort is
   // asked for, and each card says what matched (search.ts).
-  const found = new Map(findAll(matching(datasets, search), search.q).map((h) => [h.dataset.name, h]));
+  // Asked of the whole listing, then narrowed: what counts as a typo must
+  // not depend on which filters are on.
+  const kept = new Set(matching(datasets, search).map((d) => d.name));
+  const found = new Map(findAll(datasets, search.q).filter((h) => kept.has(h.dataset.name)).map((h) => [h.dataset.name, h]));
   const ranked = [...found.values()].map((h) => h.dataset);
-  const shown = search.q && search.sort === undefined ? ranked : sorted(ranked, search.sort);
+  const every = search.q && search.sort === undefined ? ranked : sorted(ranked, search.sort);
+  // A page of cards at a time: a server with a thousand datasets is not a
+  // thousand cards drawn before the first can be read. More come as the
+  // end nears, or at a press.
+  const shown = every.slice(0, limit);
   const why = (d: DatasetSummary) => {
     const reasons = found.get(d.name)?.why ?? [];
     return reasons.length > 0 && <span className="search-why data"> · matches {reasons.join(', ')}</span>;
@@ -152,7 +178,7 @@ export function Home() {
           <h1>Datasets</h1>
           <p className="home-count" aria-live="polite">
             {filtered
-              ? `${shown.length} of ${datasets.length} datasets`
+              ? `${every.length} of ${datasets.length} datasets`
               : `${datasets.length} ${datasets.length === 1 ? 'dataset' : 'datasets'} on this server`}
           </p>
           <input
@@ -231,7 +257,7 @@ export function Home() {
             </div>
           </div>
 
-          {shown.length === 0 ? (
+          {every.length === 0 ? (
             <div className="empty blueprint">
               <h2>No dataset matches</h2>
               <p className="quiet">Search looks at names, classes, file types and owners. Clear the filters to see every dataset.</p>
@@ -292,11 +318,22 @@ export function Home() {
               ))}
             </ul>
           )}
+          {every.length > shown.length && (
+            <p className="home-more quiet" ref={moreRef}>
+              {shown.length.toLocaleString()} of {every.length.toLocaleString()} shown.{' '}
+              <button className="filter-clear" onClick={() => setLimit((l) => l + cards_a_page)}>
+                Show more
+              </button>
+            </p>
+          )}
         </div>
       </div>
     </div>
   );
 }
+
+/** Cards drawn at a time (three or four rows of a wide screen, many times over). */
+const cards_a_page = 60;
 
 /** Newest push first unless asked otherwise; a name settles every tie, so
  * the order never depends on the server's. */

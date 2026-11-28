@@ -1,5 +1,5 @@
 import type { DatasetSummary } from './api';
-import { match } from './search';
+import { matcher } from './search';
 
 // The home page's filters (docs/dashboard.md §4.1): what the sidebar
 // offers, how a dataset answers each, and the counts beside every value.
@@ -59,11 +59,8 @@ function groupsOf(name: string): string[] {
   return parts.map((_, i) => parts.slice(0, i + 1).join('/'));
 }
 
-function passes(d: DatasetSummary, key: FacetKey | 'q', s: HomeSearch): boolean {
+function passes(d: DatasetSummary, key: FacetKey, s: HomeSearch): boolean {
   switch (key) {
-    case 'q':
-      // The one engine (search.ts): every word found somewhere in it.
-      return !s.q || match(d, s.q) !== null;
     case 'group':
       return !s.group || d.name.startsWith(`${s.group}/`);
     case 'kind':
@@ -81,7 +78,10 @@ function passes(d: DatasetSummary, key: FacetKey | 'q', s: HomeSearch): boolean 
 
 /** The datasets the search and every filter let through, but `except`'s own. */
 export function matching(datasets: DatasetSummary[], s: HomeSearch, except?: FacetKey): DatasetSummary[] {
-  return datasets.filter((d) => passes(d, 'q', s) && facetKeys.every((k) => k === except || passes(d, k, s)));
+  // The search through the one engine (search.ts), asked of the whole
+  // listing: a typo is forgiven only when nothing holds the word as typed.
+  const found = s.q ? matcher(datasets, s.q) : null;
+  return datasets.filter((d) => (found === null || found(d) !== null) && facetKeys.every((k) => k === except || passes(d, k, s)));
 }
 
 export type FacetValue = { value: string; count: number; depth: number };

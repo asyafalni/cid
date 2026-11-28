@@ -642,34 +642,58 @@ fn listDatasets(arena: std.mem.Allocator, deps: *Deps, scope: anytype, account: 
         /// background); never computed for a listing.
         health: ?Marks,
     };
-    const list = try arena.alloc(Entry, rows.len);
-    for (list, rows) |*e, row| {
-        // The head's statistics, as the listing query already read them;
-        // aggregated (and kept) only the first time anyone asks.
-        const st: versions.Stats = if (row.head) |head_commit|
+    // Every dataset's statistics first (kept on its head commit; aggregated
+    // only the first time anyone asks), so the previews of all their
+    // pictures can be looked up in one query below, not one a picture: at
+    // 1,000 datasets that was 4,000 queries a listing.
+    const stats = try arena.alloc(versions.Stats, rows.len);
+    var wanted: std.StringArrayHashMapUnmanaged(void) = .empty;
+    for (stats, rows) |*st, row| {
+        st.* = if (row.head) |head_commit|
             versions.kept(arena, row.stats) orelse versions.stats(arena, deps.db, scope, row.dataset_id, head_commit) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return error.Db,
             }
         else
             .{};
+        for (st.visual) |hash| try wanted.put(arena, hash, {});
+    }
+    // Only previews that already exist are handed out (the structural
+    // ffmpeg guarantee): which of the wanted ones are done, and blurred.
+    const Drawn = struct {
+        pub const nilo_table = .projection;
+        hash: []const u8,
+        blurred: bool,
+    };
+    var drawn: std.StringHashMapUnmanaged(bool) = .empty;
+    if (wanted.count() > 0) {
+        const done = deps.db.raw(Drawn, scope, "SELECT encode(p.item_hash, 'hex') AS hash, p.blurred FROM previews p " ++
+            "WHERE p.status = 'done' AND p.item_hash IN (SELECT decode(h, 'hex') FROM unnest($1::text[]) AS h)", .{wanted.keys()}) catch return error.Db;
+        for (done) |d| try drawn.put(arena, d.hash, d.blurred);
+    }
+    // A picture many datasets hold is signed once.
+    var signed: std.StringHashMapUnmanaged([]const u8) = .empty;
+
+    const list = try arena.alloc(Entry, rows.len);
+    for (list, rows, stats) |*e, row, st| {
         const types = try arena.alloc(Type, @min(st.types.len, 8));
         for (types, st.types[0..types.len]) |*t, c| t.* = .{ .ext = c.name, .count = c.count };
         const class_names = try arena.alloc([]const u8, @min(st.classes.len, 50));
         for (class_names, st.classes[0..class_names.len]) |*n, c| n.* = c.name;
-        // Only previews that already exist are handed out (the structural
-        // ffmpeg guarantee); a restricted dataset's card shows the blurred
-        // renditions, and none where a blur does not exist yet — never a
-        // clear thumbnail (invariant 20).
+        // A restricted dataset's card shows the blurred renditions, and
+        // none where a blur does not exist yet: never a clear thumbnail
+        // (invariant 20).
         var mosaic: std.ArrayList(Thumb) = .empty;
-        {
-            for (st.visual) |hash| {
-                const done = deps.db.rawOne(i64, scope, "SELECT 1::bigint FROM previews WHERE item_hash = decode($1, 'hex') AND status = 'done' AND (blurred OR NOT $2)", .{ hash, row.restricted }) catch return error.Db;
-                if (done == null) continue;
-                const key = (if (row.restricted) preview_worker.blurKey(arena, hash) else preview_worker.thumbKey(arena, hash)) catch return error.OutOfMemory;
-                const url = deps.s3.presignGet(scope, key, presign_secs) catch return error.Storage;
-                try mosaic.append(arena, .{ .hash = hash, .url = url });
-            }
+        for (st.visual) |hash| {
+            const blurred = drawn.get(hash) orelse continue;
+            if (row.restricted and !blurred) continue;
+            const key = (if (row.restricted) preview_worker.blurKey(arena, hash) else preview_worker.thumbKey(arena, hash)) catch return error.OutOfMemory;
+            const url = signed.get(key) orelse url: {
+                const fresh = deps.s3.presignGet(scope, key, presign_secs) catch return error.Storage;
+                try signed.put(arena, key, fresh);
+                break :url fresh;
+            };
+            try mosaic.append(arena, .{ .hash = hash, .url = url });
         }
         e.* = .{
             .name = row.name,

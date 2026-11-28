@@ -4141,3 +4141,9 @@ mark {
   font-size: 0.8rem;
   white-space: nowrap;
 }
+
+.home-more {
+  margin-top: var(--space-6);
+  text-align: center;
+  font-size: 0.85rem;
+}
