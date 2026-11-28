@@ -4005,3 +4005,16 @@ button.ann-attr:focus-visible {
     padding-inline: var(--space-1);
   }
 }
+
+/* On a phone the ways in do not fit one row, and a row that scrolls hid
+   the last of them with nothing to say so: they wrap, each still
+   underlined when in use, without the bar's line that a second row
+   would leave floating. */
+@media (max-width: 600px) {
+  .use-tabs {
+    flex-wrap: wrap;
+    row-gap: var(--space-1);
+    overflow: visible;
+    box-shadow: none;
+  }
+}

@@ -1133,6 +1133,13 @@ test('home on a phone: the sidebar folds under a button that says how many filte
   await expect(page.getByRole('link', { name: 'e2e/models/tiny-bert', exact: true })).toBeVisible();
   // Nothing spills past the screen.
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+
+  // On a dataset's page every way in is on screen, none scrolled out of sight.
+  await page.goto('/d/e2e/datasets/boxes');
+  const ways = page.getByRole('tablist', { name: 'Ways to use it' });
+  await ways.scrollIntoViewIfNeeded();
+  for (const tab of await ways.getByRole('tab').all()) await expect(tab).toBeInViewport({ ratio: 1 });
+  expect(await ways.evaluate((n) => n.scrollWidth - n.clientWidth)).toBe(0);
 });
 
 test('home: a visited dataset appears under Recently viewed', async ({ page }) => {
